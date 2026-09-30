@@ -5546,14 +5546,18 @@ fn stop_setup_past_its_prune(root: &Path, meanwhile: fn(&Path)) -> (String, bool
 
 /// Given a `rigger setup` whose rebuild stopped past its prune and its swap, when the log gains
 /// events before setup runs again - a decision the active run records with `rigger emit`, which
-/// the owed graph does not fold, or a run another writer of the log starts, closing the run that
-/// was active - then the rerun resumes its unpruned shadow and prunes a fresh copy of it from the
-/// whole run attribution it gathered, the first pass's included: it keeps the active run's
-/// decision, prunes the run that closed, folds every event the log gained, keeps no rebuild state
-/// and leaves `rigger reset --runs` nothing to prune; and a cold rebuild of the same log yields the
-/// same graph, every node and edge, and the same report - the one prune of the whole log, never
-/// the sum of two: when the run that closed is the one that was active, `shared` is dropped with
-/// the retired edge it owns, 5 nodes and no edge left to reclaim.
+/// the owed graph does not fold, a run another writer of the log starts, closing the run that was
+/// active, or a closed run's decision id the active run records again about another file - or a
+/// swap cut short left its private pruned copy behind, then the rerun resumes its unpruned shadow,
+/// folding only what the log gained past it - its one progress line counts exactly those events,
+/// and a rerun the log gained nothing for folds none - and prunes a fresh copy of it from the whole
+/// run attribution it gathered, the first pass's included, never reading a stale copy and leaving
+/// none behind: it keeps the active run's decision, prunes the run that closed, keeps the id the
+/// active run re-recorded governing both files its two recordings name, folds every event the log
+/// gained, keeps no rebuild state and leaves `rigger reset --runs` nothing to prune; and a cold
+/// rebuild of the same log yields the same graph, every node and edge, and the same report - the
+/// one prune of the whole log, never the sum of two: when the run that closed is the one that was
+/// active, `shared` is dropped with the retired edge it owns, 5 nodes and no edge left to reclaim.
 #[test]
 fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run_that_closed() {
     let active_run_decides: fn(&Path) = |root| {
@@ -5578,18 +5582,52 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 .unwrap();
         });
     };
-    for (meanwhile, gains, kept, report) in [
+    let active_run_re_records_a_closed_runs_decision: fn(&Path) = |root| {
+        let (out, err, ok) = run_rigger(
+            root,
+            &[
+                "emit",
+                "DecisionMade",
+                r#"{"id":"d-dead","summary":"s","governs":["src/h.rs"],"supersedes":""}"#,
+            ],
+        );
+        assert!(ok, "the emit appends; stdout: {out} stderr: {err}");
+    };
+    let a_swap_cut_short_left_its_copy: fn(&Path) = |root| {
+        std::fs::write(
+            rigger_file(root, "graph.db.pruned"),
+            b"left by a swap cut short",
+        )
+        .unwrap();
+    };
+    for (meanwhile, gains, kept, d_dead_governs, report) in [
         (
             active_run_decides,
             1,
             vec!["d-live", "d-window", "l1", "shared"],
+            vec![],
             "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
         ),
         (
             another_writer_starts_a_run,
             2,
             vec!["d-r3", "l1"],
+            vec![],
             "pruned 5 dead-run node(s) and reclaimed 0 superseded edge(s) from the rebuilt graph",
+        ),
+        (
+            active_run_re_records_a_closed_runs_decision,
+            1,
+            vec!["d-dead", "d-live", "l1", "shared"],
+            vec!["src/f.rs", "src/h.rs"],
+            "pruned 2 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
+        ),
+        (
+            a_swap_cut_short_left_its_copy,
+            0,
+            vec!["d-live", "l1", "shared"],
+            vec![],
+            "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt graph",
         ),
     ] {
         let dir = temp_store_project();
@@ -5599,10 +5637,9 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         let held = read_run_events(root).len();
         let (stopped, stopped_ok) = stop_setup_past_its_prune(root, meanwhile);
         let graph_db = rigger_file(root, "graph.db");
-        let gained: Vec<u64> = read_run_events(root)[held..]
-            .iter()
-            .map(|e| e.position)
-            .collect();
+        let log = read_run_events(root);
+        let head = log.last().unwrap().position;
+        let gained: Vec<u64> = log[held..].iter().map(|e| e.position).collect();
         // Whether the graph's applied ledger records each event the log gained.
         let folded = || -> Vec<bool> { gained.iter().map(|&p| applied(&graph_db, p)).collect() };
         let folded_before = folded();
@@ -5610,13 +5647,16 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
         let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
         let resumed = (
             ok,
+            rebuild_progress(&out),
             after_rebuilt(&out),
             provenance_nodes(root),
+            live_governs(root, "d-dead"),
             folded(),
             [
                 holds_table(&graph_db, "rebuild_cursor"),
                 holds_table(&graph_db, "rebuild_run_closure"),
                 rigger_file(root, "graph.db.rebuild").exists(),
+                rigger_file(root, "graph.db.pruned").exists(),
             ],
             menus_runs_prune(root),
         );
@@ -5640,19 +5680,151 @@ fn a_setup_resumed_past_its_prune_keeps_the_active_runs_gains_and_prunes_the_run
                 vec![false; gains],
                 (
                     true,
+                    (gains > 0)
+                        .then(|| {
+                            format!("rebuilt {gains} events, through position {head} of {head} (100%)")
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>(),
                     Some(report.to_string()),
                     kept.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                    d_dead_governs
+                        .iter()
+                        .map(|file: &&str| file.to_string())
+                        .collect::<Vec<_>>(),
                     vec![true; gains],
-                    [false, false, false],
+                    [false, false, false, false],
                     runs_prunable(0, 0),
                 ),
                 (true, Some(report.to_string()), resumed_graph),
             ),
-            "the rerun keeps what the active run gained and prunes what closed, from the whole \
-             gathered attribution, with the report a cold rebuild makes; rerun stdout: {out} \
-             stderr: {err}; cold stdout: {cold} stderr: {cold_err}"
+            "the rerun folds only what the log gained, keeps what the active run gained and prunes \
+             what closed, from the whole gathered attribution, with the report a cold rebuild \
+             makes; rerun stdout: {out} stderr: {err}; cold stdout: {cold} stderr: {cold_err}"
         );
     }
+}
+
+/// The progress lines a `rigger setup` rebuild printed in `out`, in order: how many events each
+/// batch carried it through.
+fn rebuild_progress(out: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| l.starts_with("rebuilt ") && l.ends_with("%)"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The files the node `id` in `root`'s `graph.db` governs through a live edge, sorted.
+fn live_governs(root: &Path, id: &str) -> Vec<String> {
+    let graph = rigger::contextgraph::sqlite::Projector::open(
+        rigger_file(root, "graph.db").to_str().unwrap(),
+        &run_stream_identity(root),
+    )
+    .unwrap();
+    let mut files: Vec<String> = graph
+        .whole()
+        .unwrap()
+        .edges
+        .into_iter()
+        .filter(|e| {
+            e.from == id && e.rel == rigger::contextgraph::REL_GOVERNS && e.valid_to.is_none()
+        })
+        .map(|e| e.to)
+        .collect();
+    files.sort();
+    files
+}
+
+/// Given a `rigger setup` whose rebuild swapped its pruned graph in and stopped before it folded the
+/// tail - the state it leaves once the owed mark and the shadow are gone, the next two steps its
+/// swap takes: `graph.db` holding the rebuild's cursor, no shadow beside it - when the log gains an
+/// event no fold made (another writer's) and an agent's `rigger emit`, which folds at once into the
+/// current file, then the next `rigger setup` names no cause and prints no progress, because the
+/// ledger owes the tail to the swapped-in cursor rather than to a lost fold, folds exactly the tail
+/// and meets the emitted event once, reports the prune stamped with the swap, drops the rebuild
+/// state, and leaves the graph a cold rebuild of the same log yields; a setup after it owes nothing.
+#[test]
+fn a_setup_stopped_in_its_tail_is_finished_by_the_next_setup_folding_exactly_the_tail() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    lose_graph(root);
+    let (stopped, stopped_ok) = stop_setup_past_its_prune(root, |root| {
+        std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
+    });
+    let graph_db = rigger_file(root, "graph.db");
+    let swapped_cursor = holds_table(&graph_db, "rebuild_cursor");
+    let unfolded = append_unfolded_decision(
+        root,
+        br#"{"id":"d-tail","summary":"s","governs":["src/t.rs"],"supersedes":""}"#,
+    );
+    let (emitted, emit_err, emit_ok) = emit_decision(root, "d-emitted");
+    let emitted_at = read_run_events(root).last().unwrap().position;
+    let before = (applied(&graph_db, unfolded), applied(&graph_db, emitted_at));
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let finished = (
+        ok,
+        out.lines()
+            .filter(|l| l.starts_with("rebuilding graph.db"))
+            .collect::<Vec<_>>(),
+        rebuild_progress(&out),
+        after_rebuilt(&out),
+        (applied(&graph_db, unfolded), applied(&graph_db, emitted_at)),
+        provenance_nodes(root),
+        [
+            holds_table(&graph_db, "rebuild_cursor"),
+            holds_table(&graph_db, "rebuild_run_closure"),
+            rigger_file(root, "graph.db.rebuild").exists(),
+        ],
+    );
+    let (again, again_err, again_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let finished_graph = whole_graph(root);
+    lose_graph(root);
+    let (cold, cold_err, cold_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert_eq!(
+        (
+            stopped_ok,
+            after_rebuilt(&stopped),
+            swapped_cursor,
+            emit_ok && emitted.ends_with(" and folded it into the context graph\n"),
+            before,
+            finished,
+            again_ok && !again.contains("graph.db"),
+            (cold_ok, finished_graph),
+        ),
+        (
+            false,
+            None,
+            true,
+            true,
+            (false, true),
+            (
+                true,
+                Vec::<&str>::new(),
+                Vec::<String>::new(),
+                Some(
+                    "pruned 3 dead-run node(s) and reclaimed 1 superseded edge(s) from the rebuilt \
+                     graph"
+                        .to_string()
+                ),
+                (true, true),
+                vec![
+                    "d-emitted".to_string(),
+                    "d-live".to_string(),
+                    "d-tail".to_string(),
+                    "l1".to_string(),
+                    "shared".to_string(),
+                ],
+                [false, false, false],
+            ),
+            true,
+            (true, whole_graph(root)),
+        ),
+        "the next setup folds exactly the tail and reaches the cold graph; emit stdout: {emitted} \
+         stderr: {emit_err}; setup stdout: {out} stderr: {err}; second setup stdout: {again} \
+         stderr: {again_err}; cold stdout: {cold} stderr: {cold_err}"
+    );
 }
 
 /// Given a project that recorded decisions, a finding and a lesson with `rigger emit` before it
