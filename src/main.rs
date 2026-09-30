@@ -289,7 +289,9 @@ identity migration renames those streams and records one\n                      
 DecisionMade before either mode prunes. When no driver is\n                              \
 alive, it also closes the current run's units whose branch\n                              \
 work is landed on rigger-run, appending the UnitIntegrated\n                              \
-a hand landing never recorded\n  \
+a hand landing never recorded. It removes a stale\n                              \
+graph.db.pruned, the pruned copy a rebuild's stopped swap\n                              \
+left, unless a rebuild holds its shadow\n  \
 rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
 generation of the derived index, at the latest event per\n                              \
 replay key, delete the superseded generations and\n                              \
