@@ -6136,12 +6136,6 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock()
     let copy = rigger_file(root, "graph.db.pruned");
     let shadow = rigger_file(root, "graph.db.rebuild");
     std::fs::write(&copy, b"the copy a live swap is using").unwrap();
-    let removed = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter(|l| l.contains("graph.db.pruned"))
-            .map(str::to_string)
-            .collect()
-    };
     let rebuilding = hold_the_rebuild(root);
     let rebuilding_shadow = hold_shadow(root);
     let (held, held_err, held_ok) = run_rigger(root, &["reset", "--runs"]);
@@ -6151,10 +6145,10 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock()
     assert_eq!(
         (
             held_ok,
-            removed(&held),
+            lines_naming(&held, "graph.db.pruned"),
             kept,
             ok,
-            removed(&out),
+            lines_naming(&out, "graph.db.pruned"),
             copy.exists(),
             shadow.exists(),
         ),
@@ -6197,6 +6191,14 @@ enum RebuildPhase {
 /// Every `graph.db*` entry under `.rigger/` of `root` ([`dir_snapshot`]).
 fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     dir_snapshot(&rigger_file(root, ""), "graph.db")
+}
+
+/// Every line of `out` that names `needle`, in order.
+fn lines_naming(out: &str, needle: &str) -> Vec<String> {
+    out.lines()
+        .filter(|l| l.contains(needle))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Given a rebuild in progress holding `graph.db.lock` - before its first write, in its fold, in its
@@ -6259,10 +6261,7 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
         );
         let refused = (
             refused.status.success(),
-            out.lines()
-                .filter(|l| l.contains("graph.db"))
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
+            lines_naming(&out, "graph.db"),
             err.lines().last().map(str::to_string),
             shadow_opened,
             graph_files(root) == found,
@@ -6477,10 +6476,7 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let refused = (
         ok,
-        out.lines()
-            .filter(|l| l.contains("graph.db"))
-            .map(str::to_string)
-            .collect::<Vec<_>>(),
+        lines_naming(&out, "graph.db"),
         migrated(&err),
         err.lines().last().map(str::to_string),
         streams(),
@@ -6555,25 +6551,19 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
     let lock = rigger_file(root, "graph.db.lock");
     std::fs::create_dir(&lock).unwrap();
     let copy = rigger_file(root, "graph.db.pruned");
-    let graph_db_lines = |out: &str| -> Vec<String> {
-        out.lines()
-            .filter(|l| l.contains("graph.db"))
-            .map(str::to_string)
-            .collect()
-    };
 
     let found = graph_files(root);
     let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
     let setup = (
         ok,
-        graph_db_lines(&out),
+        lines_naming(&out, "graph.db"),
         err.lines().last().map(str::to_string),
         graph_files(root) == found,
     );
     let (no_copy, no_copy_err, no_copy_ok) = run_rigger(root, &["reset", "--runs"]);
     let no_copy = (
         no_copy_ok,
-        graph_db_lines(&no_copy),
+        lines_naming(&no_copy, "graph.db"),
         no_copy
             .lines()
             .find(|l| l.starts_with("reset --runs: pruned"))
@@ -6584,7 +6574,7 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
     let (over_copy, over_copy_err, over_copy_ok) = run_rigger(root, &["reset", "--runs"]);
     let over_copy = (
         over_copy_ok,
-        graph_db_lines(&over_copy),
+        lines_naming(&over_copy, "graph.db"),
         over_copy_err.lines().last().map(str::to_string),
         std::fs::read(&copy).unwrap(),
         lock.is_dir(),
