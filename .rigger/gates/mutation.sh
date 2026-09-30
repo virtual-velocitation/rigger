@@ -105,10 +105,10 @@
 #
 # THE BASELINE STAYS ON. The checkin stage lists `test` before `mutation`, but the conductor
 # runs every listed gate whatever the earlier ones returned and exports no record of their
-# verdicts to a gate command, and the `test` gate's plain `cargo test` covers the root package
-# alone - so nothing here can confirm the mutated packages are green on this tree. The
-# baseline (cargo-mutants runs it over the mutated packages only: seconds, not minutes) is
-# that confirmation; only the by-name rerun, which follows it on the same tree, skips its own.
+# verdicts to a gate command - so nothing here can confirm the mutated packages are green on
+# this tree. The baseline (cargo-mutants runs it over the mutated packages only: seconds, not
+# minutes) is that confirmation; only the by-name rerun, which follows it on the same tree,
+# skips its own.
 #
 # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
 # the logic has changed"). The sweep leaves three facts under `mutation-anchor/`, a sibling of

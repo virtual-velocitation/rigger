@@ -1017,7 +1017,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ebca87df825d",
+    "id": "dup-84051484757a",
     "classification": "semantic",
     "sites": [
       {
@@ -1562,8 +1562,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"scaffolded .rigger/gates/mutation.sh\"",
-        "content_hash": "dba909280155025d"
+        "name": "\"scaffolded .rigger/gates/{file}\"",
+        "content_hash": "c61f0d8b3c3e870e"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1598,7 +1598,12 @@
       {
         "file": "src/cli/setup.rs",
         "name": "\"../../.rigger/gates/mutation.sh\"",
-        "content_hash": "a33f8f9c3076ad1b"
+        "content_hash": "452d91e7f980731f"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"../../.rigger/gates/container-env.sh\"",
+        "content_hash": "452d91e7f980731f"
       },
       {
         "file": "src/cli/setup.rs",
@@ -3292,18 +3297,13 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates/mutation.sh\"",
-        "content_hash": "e981a879dccfe37c"
+        "name": "\".rigger/gates/{file}\"",
+        "content_hash": "dc7684e06683ddb3"
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates/mutation.sh\"",
-        "content_hash": "367fe62fa1fa2d00"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\"rigger init must write .rigger/gates/mutation.sh\"",
-        "content_hash": "6330ce3a5a38ef8d"
+        "name": "\".rigger/gates/container-env.sh\"",
+        "content_hash": "fe918358e1ecea10"
       },
       {
         "file": "tests/projections_stay_local.rs",

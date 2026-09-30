@@ -1417,7 +1417,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 - **Command::new call sites**: 85 site(s) - `dup-a74a72df63e6`
 - **/proc-path string literals**: 51 site(s) - `dup-478ddc23181e`
 - **sqlite Connection::open call sites**: 40 site(s) - `dup-577db88b9691`
-- **.rigger-path string literals**: 549 site(s) - `dup-ebca87df825d`
+- **.rigger-path string literals**: 549 site(s) - `dup-84051484757a`
 - **error-shaping helper functions**: 11 site(s) - `dup-2ee5d6ccf964`
 
 ### Clusters (41 exact, 126 near, 25 semantic)
@@ -1719,7 +1719,7 @@ mandatory sweep: Command::new call sites - 85 site(s), collected mechanically re
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:128-128` `Command::new`
 
-#### `dup-ebca87df825d` (semantic, 549 sites)
+#### `dup-84051484757a` (semantic, 549 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
@@ -2032,23 +2032,23 @@ __END__
 - `src/cli/mod.rs:8405-8405` `".rigger/store.conn beats the committed config"`
 - `src/cli/mod.rs:8836-8836` `"{name} must be written into .rigger/shim/"`
 - `src/cli/mod.rs:10100-10100` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
-- `src/cli/setup.rs:242-242` `".rigger/shim/"`
-- `src/cli/setup.rs:243-243` `".rigger/dash.url"`
-- `src/cli/setup.rs:244-244` `".rigger/dash.marker"`
-- `src/cli/setup.rs:245-245` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:246-246` `".rigger/store.conn"`
-- `src/cli/setup.rs:416-416` `"minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
+- `src/cli/setup.rs:247-247` `".rigger/shim/"`
+- `src/cli/setup.rs:248-248` `".rigger/dash.url"`
+- `src/cli/setup.rs:249-249` `".rigger/dash.marker"`
+- `src/cli/setup.rs:250-250` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:251-251` `".rigger/store.conn"`
+- `src/cli/setup.rs:421-421` `"minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
              (commit it so a rename never orphans this project's history)"`
-- `src/cli/setup.rs:421-421` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:424-424` `"scaffolded .rigger/instructions/README.md"`
-- `src/cli/setup.rs:427-427` `"scaffolded .rigger/gates/mutation.sh"`
-- `src/cli/setup.rs:431-431` `"scaffolded .rigger/agents/{{{}}}"`
-- `src/cli/setup.rs:672-672` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
-- `src/cli/setup.rs:722-722` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
+- `src/cli/setup.rs:426-426` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:429-429` `"scaffolded .rigger/instructions/README.md"`
+- `src/cli/setup.rs:432-432` `"scaffolded .rigger/gates/{file}"`
+- `src/cli/setup.rs:436-436` `"scaffolded .rigger/agents/{{{}}}"`
+- `src/cli/setup.rs:677-677` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
+- `src/cli/setup.rs:727-727` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:991-991` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1019-1019` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:1196-1196` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
+- `src/cli/setup.rs:996-996` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1024-1024` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:1201-1201` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
 # Replace the gate commands with your own.\n\
@@ -2157,35 +2157,36 @@ max_retries: 2          # attempt bound: the sweep, one remediation round, the s
 gates: [build, audit, test, lint, boundary, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n"`
-- `src/cli/setup.rs:1309-1309` `"../../.rigger/gates/mutation.sh"`
-- `src/cli/setup.rs:1777-1777` `".rigger/agents/"`
-- `src/cli/setup.rs:1830-1830` `".rigger/dash.url"`
-- `src/cli/setup.rs:1831-1831` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1832-1832` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1841-1841` `".rigger/store.conn"`
-- `src/cli/setup.rs:1858-1858` `".rigger/\n"`
-- `src/cli/setup.rs:1864-1864` `".rigger/dash.url"`
-- `src/cli/setup.rs:1867-1867` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1870-1870` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1871-1871` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:1318-1318` `"../../.rigger/gates/mutation.sh"`
+- `src/cli/setup.rs:1322-1322` `"../../.rigger/gates/container-env.sh"`
+- `src/cli/setup.rs:1792-1792` `".rigger/agents/"`
+- `src/cli/setup.rs:1845-1845` `".rigger/dash.url"`
+- `src/cli/setup.rs:1846-1846` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1847-1847` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1856-1856` `".rigger/store.conn"`
+- `src/cli/setup.rs:1873-1873` `".rigger/\n"`
+- `src/cli/setup.rs:1879-1879` `".rigger/dash.url"`
+- `src/cli/setup.rs:1882-1882` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1885-1885` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1886-1886` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:1879-1879` `".rigger/dash.url"`
-- `src/cli/setup.rs:1880-1880` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1881-1881` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:1882-1882` `"all three explicit per-file dash ignore lines are present in the committed \
-             .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:1892-1892` `".rigger/dash.url"`
+- `src/cli/setup.rs:1894-1894` `".rigger/dash.url"`
 - `src/cli/setup.rs:1895-1895` `".rigger/dash.marker"`
-- `src/cli/setup.rs:1898-1898` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2242-2242` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:2271-2271` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:2301-2301` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:2379-2379` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2604-2604` `".rigger"`
-- `src/cli/setup.rs:2623-2623` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:2700-2700` `".rigger/agents/rust-engineer.md"`
-- `src/cli/setup.rs:2723-2723` `".rigger/agents/sdet-author.md"`
+- `src/cli/setup.rs:1896-1896` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:1897-1897` `"all three explicit per-file dash ignore lines are present in the committed \
+             .gitignore even though .rigger/ already covers them, got:\n{content}"`
+- `src/cli/setup.rs:1907-1907` `".rigger/dash.url"`
+- `src/cli/setup.rs:1910-1910` `".rigger/dash.marker"`
+- `src/cli/setup.rs:1913-1913` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2257-2257` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:2286-2286` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:2316-2316` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:2394-2394` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2619-2619` `".rigger"`
+- `src/cli/setup.rs:2638-2638` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:2715-2715` `".rigger/agents/rust-engineer.md"`
+- `src/cli/setup.rs:2738-2738` `".rigger/agents/sdet-author.md"`
 - `src/cli/validate.rs:838-838` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1283-1283` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -2721,10 +2722,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:215-215` `".rigger/gates/red-before-green.sh"`
 - `tests/principle_gates_wiring.rs:316-316` `".rigger/agents"`
 - `tests/principle_gates_wiring.rs:326-326` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:336-336` `"sh .rigger/gates/mutation.sh"`
-- `tests/principle_gates_wiring.rs:342-342` `".rigger/gates/mutation.sh"`
-- `tests/principle_gates_wiring.rs:344-344` `".rigger/gates/mutation.sh"`
-- `tests/principle_gates_wiring.rs:345-345` `"rigger init must write .rigger/gates/mutation.sh"`
+- `tests/principle_gates_wiring.rs:338-338` `"sh .rigger/gates/mutation.sh"`
+- `tests/principle_gates_wiring.rs:345-345` `".rigger/gates/{file}"`
+- `tests/principle_gates_wiring.rs:371-371` `".rigger/gates/container-env.sh"`
 - `tests/projections_stay_local.rs:90-90` `"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:97-97` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
@@ -3679,7 +3679,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-driver/src/hooks.rs:232-249` `install_status_line`
-- `src/cli/setup.rs:874-878` `install_status_line`
+- `src/cli/setup.rs:879-883` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -3688,7 +3688,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:762-776` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:1605-1619` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:1620-1634` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-c650c3e62b50` (exact, 2 sites)
 
@@ -4186,7 +4186,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:271-278` `print_scaffold_pointer`
+- `src/cli/setup.rs:276-283` `print_scaffold_pointer`
 - `src/main.rs:363-365` `usage`
 
 #### `dup-dc79af9af1c6` (near, 2 sites)
@@ -4195,8 +4195,8 @@ Proposed home: `setup::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:822-830` `install_lookup_hook`
-- `src/cli/setup.rs:874-878` `install_status_line`
+- `src/cli/setup.rs:827-835` `install_lookup_hook`
+- `src/cli/setup.rs:879-883` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 
@@ -4796,7 +4796,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7218 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7219 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13748-13770` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17859-17912` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5079,10 +5079,10 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 10. Consolidate the 549 `.rigger`-path string-literal sites (`dup-ebca87df825d`) - the single largest cluster in the entire catalog by site count
+#### 10. Consolidate the 549 `.rigger`-path string-literal sites (`dup-84051484757a`) - the single largest cluster in the entire catalog by site count
 
 - Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 549 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-ebca87df825d` for the follow-up spec to consume directly, not re-enumerated here.
+- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-84051484757a` for the follow-up spec to consume directly, not re-enumerated here.
 - Expected line delta: negative - 549 literal compositions collapse toward one helper's call sites; the helper itself is small.
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 549 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
@@ -5162,7 +5162,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 128 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 192 clusters, 57 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-a74a72df63e6`, `dup-ebca87df825d`, `dup-577db88b9691`, `dup-478ddc23181e`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-2ee5d6ccf964`); the remaining 128 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 192 clusters, 57 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-a74a72df63e6`, `dup-84051484757a`, `dup-577db88b9691`, `dup-478ddc23181e`, `dup-cc7d493486f5`, `dup-28bd24c1f93d`, `dup-2ee5d6ccf964`); the remaining 128 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
