@@ -60,9 +60,9 @@ pub fn content_hash(src: &str) -> String {
 /// then release. This is the ONE cross-process write-lock authority both [`save`] (publish a whole
 /// snapshot) and [`reindex_under_lock`] (reload-modify-publish) go through, so there is a single
 /// `flock` discipline over the index, not two parallel ones. The lock is an `fs2` exclusive
-/// advisory lock - the project's one cross-process lock authority, non-optional in both feature
-/// lanes, the same `acquire_step_lock` uses, so the ungated store and the step lock share ONE
-/// cross-process lock crate. The lock file is created if absent; the lock releases when
+/// advisory lock, non-optional in both feature lanes - the lock this store and `acquire_step_lock`
+/// share. The graph rebuild lock (`Projector::lock_rebuild`) takes std's `File::try_lock` instead,
+/// on the same `flock(2)` primitive. The lock file is created if absent; the lock releases when
 /// `lock` drops (or the process dies), so a crashed writer never wedges the next one. A write error
 /// is reported over an unlock error.
 fn with_write_lock<F>(dir: &str, write: F) -> Result<(), String>
