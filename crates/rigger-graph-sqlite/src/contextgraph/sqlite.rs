@@ -3,7 +3,6 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -235,6 +234,45 @@ pub struct RebuildProgress {
     pub folded: usize,
 }
 
+/// Why a rebuild of `graph.db`, or `rigger reset` removing a stale pruned copy, is refused at once:
+/// another rebuild holds the rebuild lock ([`Projector::lock_rebuild`]). The one spelling of that
+/// refusal, which `rigger setup` exits on and `rigger reset --runs` reports.
+pub const REBUILD_IN_PROGRESS: &str =
+    "a rebuild of graph.db is in progress (a `rigger setup` holds graph.db.lock)";
+
+/// The exclusion a [`Projector::rebuild`] of one graph file holds, from before it opens or creates
+/// its shadow until its tail is folded and its cursor dropped (spec 101): the OS advisory lock on
+/// the zero-byte `<path>.lock` beside the graph file - a file no rebuild removes, and one SQLite
+/// never opens, so no connection's own locks ride on it. Only its holder ever has a shadow open,
+/// so a shadow is removed only when no other connection holds it. The lock is released when this
+/// is dropped, and by the OS when its process ends however it ends, so an interrupted rebuild
+/// leaves no stale lock.
+#[derive(Debug)]
+pub struct RebuildLock {
+    /// The graph file the rebuild is of.
+    path: String,
+    /// The locked `<path>.lock`, held open for as long as the lock is.
+    _locked: std::fs::File,
+}
+
+impl RebuildLock {
+    /// The graph file this lock excludes other rebuilds of.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// What [`Projector::forget_stale_copy`] found beside a graph file, and what it did with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleCopy {
+    /// No pruned copy stood there.
+    Absent,
+    /// A stale copy stood there, and it is removed.
+    Removed,
+    /// A copy stood there while a rebuild held the rebuild lock: that rebuild's own, kept.
+    InUse,
+}
+
 /// Projector is the SQLite-backed Projection.
 ///
 /// `project` is the plain project string `Namespaced::new` uses to build the `proj-<id>-`
@@ -333,7 +371,16 @@ impl Projector {
         })
     }
 
-    /// Pay the rebuild the `graph.db` at `path` owes (spec 101), and report whether there was one
+    /// Take the rebuild lock of the graph file at `path` (spec 101), never waiting: the OS advisory
+    /// lock on the zero-byte `<path>.lock` beside it, created if absent and never removed. Refused at
+    /// once with the one text ([`REBUILD_IN_PROGRESS`]) while another holds it - whatever that
+    /// rebuild is doing, and whether or not it has written yet - touching nothing but the lock file
+    /// the holder made; any other failure names the lock file.
+    pub fn lock_rebuild(path: &str) -> Result<RebuildLock, Error> {
+        take_rebuild_lock(path)?.ok_or_else(|| Error(REBUILD_IN_PROGRESS.to_string()))
+    }
+
+    /// Pay the rebuild the graph file `held` names owes (spec 101), and report whether there was one
     /// to pay - `None` when there was not, else what it did ([`Rebuilt`]): how many events it passed
     /// over because the fold rejects their payload (see `fold_source`) and what its run-closure
     /// prune removed - owed because its caller found it so (`owed`: what [`Projector::owed_against`]
@@ -344,7 +391,7 @@ impl Projector {
     /// put in place. The mark is dropped once the rebuilt file is in place.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
-    /// projection rather than the log's age - into a fresh SHADOW file beside `path`, in the
+    /// projection rather than the log's age - into a fresh SHADOW file beside the graph file, in the
     /// batches `source` hands it, each committed with the last position it folded and the run
     /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
     /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
@@ -362,12 +409,15 @@ impl Projector {
     ///
     /// The shadow is never pruned, because the drop set is not monotone in the log: an id a closed
     /// run recorded moves from drop to keep when the active run records it again, and a prune
-    /// cannot be undone. So the shadow stays a pure fold of the live selection, held under an
-    /// exclusive lock for the whole fold and swap, so a second rebuild racing this one is refused
-    /// as busy rather than interleaved - one that waited on that lock as the swap ended included
-    /// ([`lock_shadow`]). An interrupted rebuild leaves the live file untouched, or swapped whole,
-    /// and the next one resumes from the shadow's last committed batch without refolding it
-    /// ([`open_shadow`]) and prunes a fresh copy from the whole run attribution the shadow
+    /// cannot be undone. So the shadow stays a pure fold of the live selection. The rebuild runs
+    /// only under `held`, the graph file's rebuild lock ([`Projector::lock_rebuild`]), which its
+    /// caller took before this opened or created anything and holds through the fold, the swap and
+    /// the tail until the cursor is dropped: a second rebuild is refused at its lock, never
+    /// interleaved, whatever phase this one is in, and only this one ever has the shadow open
+    /// ([`open_shadow`]), so it ends it by closing and then removing it ([`remove_shadow`]). An
+    /// interrupted rebuild leaves the live file untouched, or swapped whole, and no lock - the OS
+    /// releases it with the process - and the next one resumes from the shadow's last committed
+    /// batch without refolding it and prunes a fresh copy from the whole run attribution the shadow
     /// gathered - the same graph and the same counts a cold rebuild reaches, however far the pass
     /// before it got.
     ///
@@ -380,12 +430,13 @@ impl Projector {
     /// reports the counts stamped with the swap. Only then is the rebuild state dropped, the cursor
     /// and the attribution together.
     pub fn rebuild(
-        path: &str,
+        held: &RebuildLock,
         project: &str,
         owed: bool,
         source: &mut RebuildSource,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
+        let path = held.path();
         let mut live = open_connection(path).map_err(be)?;
         let mut passed_over = 0;
         let shadow_path = shadow_of(path);
@@ -505,35 +556,21 @@ impl Projector {
     }
 
     /// Remove the stale pruned copy ([`pruned_copy`]) of the graph file at `path` that a rebuild's
-    /// stopped swap left, and answer whether there was one - unless a rebuild holds its shadow, in
-    /// which case the copy is that rebuild's own and is kept. A rebuild holds its shadow's exclusive
-    /// lock from before it writes a copy until after it removes it, so the lock this takes on the
-    /// shadow, without waiting, is free exactly when no rebuild is in its fold or its swap; the copy
-    /// is removed under that lock, and the shadow itself is never removed here, since a rebuild
-    /// resumes from it.
-    pub fn forget_stale_copy(path: &str) -> Result<bool, Error> {
+    /// stopped swap left, and answer what it found ([`StaleCopy`]) - unless a rebuild holds the
+    /// rebuild lock, in which case the copy may be the one its live swap is using, so it is kept
+    /// and the rebuild in progress is answered. The lock ([`Projector::lock_rebuild`]) is taken
+    /// first, never waiting, and held while the copy is removed, so no copy a swap is using is ever
+    /// removed under it; with no copy nothing is taken and nothing is made. The shadow is never
+    /// read or removed here, since a rebuild resumes from it.
+    pub fn forget_stale_copy(path: &str) -> Result<StaleCopy, Error> {
         let copy = pruned_copy(path);
         if !Path::new(&copy).exists() {
-            return Ok(false);
+            return Ok(StaleCopy::Absent);
         }
-        let shadow = shadow_of(path);
-        if !Path::new(&shadow).exists() {
-            remove_if_present(&copy)?;
-            return Ok(true);
+        match take_rebuild_lock(path)? {
+            Some(_held) => remove_if_present(&copy).map(|()| StaleCopy::Removed),
+            None => Ok(StaleCopy::InUse),
         }
-        let conn =
-            Connection::open_with_flags(&shadow, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
-                .map_err(be)?;
-        conn.busy_timeout(std::time::Duration::ZERO).map_err(be)?;
-        let held = match Transaction::new_unchecked(&conn, TransactionBehavior::Exclusive) {
-            Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
-                return Ok(false)
-            }
-            held => held.map_err(be)?,
-        };
-        remove_if_present(&copy)?;
-        drop(held);
-        Ok(true)
     }
 
     /// Fold `events` in ONE transaction, rolled back whole on any failure.
@@ -1209,6 +1246,27 @@ pub fn pruned_copy(path: &str) -> String {
     format!("{path}.pruned")
 }
 
+/// The rebuild lock of the graph file at `path` ([`Projector::lock_rebuild`]), taken without
+/// waiting: `None` while another holds it. The lock file `<path>.lock` is created if absent, never
+/// truncated, and any failure to open or lock it is reported naming it ([`failed_at`]).
+fn take_rebuild_lock(path: &str) -> Result<Option<RebuildLock>, Error> {
+    let lock = format!("{path}.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .map_err(|e| Error(failed_at(&lock, e)))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(RebuildLock {
+            path: path.to_string(),
+            _locked: file,
+        })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(Error(failed_at(&lock, e))),
+    }
+}
+
 /// The shadow file a [`Projector::rebuild`] of the graph file at `path` folds into and resumes.
 fn shadow_of(path: &str) -> String {
     format!("{path}.rebuild")
@@ -1232,9 +1290,9 @@ fn failed_at(path: impl AsRef<Path>, e: std::io::Error) -> String {
 /// stale copy at `copy` is removed, the shadow is written to a fresh one there (`VACUUM INTO`),
 /// that copy is pruned from the whole gathered attribution ([`prune_run_closure`]) and stamped
 /// with the current [`PROJECTION_VERSION`], and the open copy is handed back for the swap. The
-/// caller holds the shadow's exclusive lock throughout, so no other rebuild meets the copy; the
-/// copy is opened without being created, so one removed under it is an error, never an empty
-/// graph.
+/// caller holds the rebuild lock throughout ([`RebuildLock`]), so no other rebuild, and no `rigger
+/// reset`, meets the copy; the copy is opened without being created, so one removed under it is an
+/// error, never an empty graph.
 fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connection, Error> {
     remove_if_present(copy)?;
     shadow.execute("VACUUM INTO ?1", [copy]).map_err(be)?;
@@ -1247,54 +1305,29 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
     Ok(pruned)
 }
 
-/// Open the rebuild's shadow file at `path` under its lock ([`lock_shadow`]), held for the whole
-/// fold and swap so a second rebuild racing this one is refused as busy rather than interleaved. A
+/// Open the rebuild's shadow file at `path`, creating it when there is none. Only the holder of the
+/// rebuild lock ([`RebuildLock`]) calls this, so the shadow it opens is its own: no other rebuild
+/// has it open, waits on it or removes it, and none can take its name while this one holds it. A
 /// shadow is resumed only together with the run attribution it gathered: one holding a cursor
-/// without it could derive the prune from part of that attribution alone, so it is removed and
-/// opened again empty, to be folded from the start.
+/// without it could derive the prune from part of that attribution alone, so it is discarded
+/// ([`remove_shadow`]) and opened again empty, to be folded from the start - under the lock, like
+/// every other end of a shadow.
 fn open_shadow(path: &str) -> Result<Connection, Error> {
-    let shadow = lock_shadow(path)?;
+    let shadow = Connection::open(path).map_err(be)?;
     if has_table(&shadow, "rebuild_cursor")? && !has_table(&shadow, "rebuild_run_closure")? {
         remove_shadow(shadow, path)?;
-        return lock_shadow(path);
+        return Connection::open(path).map_err(be);
     }
     Ok(shadow)
 }
 
-/// Open the shadow file at `path` and take its lock, which the connection holds until it closes:
-/// refused as busy while another rebuild holds it, and refused the same way once taken when `path`
-/// no longer names the file opened - the rebuild that held the lock removed its shadow before it
-/// let go ([`remove_shadow`]) - so no rebuild resumes, prunes or swaps from a removed shadow.
-fn lock_shadow(path: &str) -> Result<Connection, Error> {
-    let shadow = Connection::open(path).map_err(be)?;
-    let opened = file_at(path);
-    shadow
-        .execute_batch("PRAGMA locking_mode = EXCLUSIVE;")
-        .map_err(be)?;
-    // The first read takes the lock.
-    shadow
-        .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
-        .map_err(be)?;
-    match opened {
-        Some(opened) if file_at(path) == Some(opened) => Ok(shadow),
-        // SQLite's own words for a lock another connection holds.
-        _ => Err(be("database is locked")),
-    }
-}
-
-/// The device and inode of the file at `path`, or `None` when nothing is there.
-fn file_at(path: &str) -> Option<(u64, u64)> {
-    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
-}
-
-/// End the shadow at `path` that `shadow` holds: the file is removed while `shadow` still holds its
-/// lock, and only then is the connection closed, its journal with it - so a rebuild waiting on that
-/// lock takes it only once `path` no longer names the file, and is refused as busy
-/// ([`lock_shadow`]).
+/// End the shadow at `path` that `shadow` holds: the connection is closed first, its journal with
+/// it, and only then is the file removed. The rebuild lock's holder is the shadow's sole owner, so
+/// no other connection holds the file it removes, no foreign journal pairs with its name, and no
+/// connection to a removed shadow is left while a newer shadow could take that name.
 fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
-    std::fs::remove_file(path).map_err(be)?;
     drop(shadow);
-    Ok(())
+    remove_if_present(path)
 }
 
 /// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], one committed transaction per
@@ -5530,10 +5563,7 @@ mod tests {
         let copy = dir.path().join("graph.db.pruned");
         std::fs::create_dir(&lock).unwrap();
         std::fs::write(&copy, b"left by a swap that stopped").unwrap();
-        let named = Err(format!(
-            "graph: {}: Is a directory (os error 21)",
-            lock.display()
-        ));
+        let named = format!("graph: {}: Is a directory (os error 21)", lock.display());
         assert_eq!(
             (
                 Projector::lock_rebuild(path)
@@ -5542,7 +5572,7 @@ mod tests {
                 Projector::forget_stale_copy(path).map_err(|e| e.to_string()),
                 copy.exists()
             ),
-            (named.clone(), named, true),
+            (Err(named.clone()), Err(named), true),
             "the lock file that cannot be opened is named, and the copy is kept"
         );
     }

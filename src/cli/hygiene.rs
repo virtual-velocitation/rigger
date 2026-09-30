@@ -762,13 +762,18 @@ fn live_writer_facts(
 fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Option<&Path>) -> Res {
     // The private pruned copy a rebuild's stopped swap left is a graph file with no other reaper
     // but the next rebuild: removed first, whether or not the graph goes on to refuse the prune,
-    // and kept while a rebuild holds its shadow (spec 101).
+    // and kept, naming the rebuild in progress, while a rebuild holds the rebuild lock (spec 101).
     let graph_db = loc.file("graph.db");
-    if Projector::forget_stale_copy(&graph_db)? {
-        println!(
-            "reset --runs: removed {}, the pruned copy a rebuild's stopped swap left beside graph.db",
-            contextgraph::sqlite::pruned_copy("graph.db")
-        );
+    let copy = contextgraph::sqlite::pruned_copy("graph.db");
+    match Projector::forget_stale_copy(&graph_db)? {
+        contextgraph::sqlite::StaleCopy::Absent => {}
+        contextgraph::sqlite::StaleCopy::Removed => println!(
+            "reset --runs: removed {copy}, the pruned copy a rebuild's stopped swap left beside graph.db"
+        ),
+        contextgraph::sqlite::StaleCopy::InUse => println!(
+            "reset --runs: kept {copy}: {}",
+            contextgraph::sqlite::REBUILD_IN_PROGRESS
+        ),
     }
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());

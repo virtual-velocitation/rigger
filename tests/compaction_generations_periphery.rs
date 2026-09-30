@@ -3432,12 +3432,12 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
         started.elapsed() < Duration::from_secs(4),
         "none of them waited on the rebuild's lock (the busy timeout is 5s)"
     );
-    let second = Projector::lock_rebuild(store.graph_db.to_str().unwrap()).map(drop);
+    let second = Projector::lock_rebuild(store.graph_db.to_str().unwrap())
+        .map(drop)
+        .map_err(|e| e.0);
     assert_eq!(
         second,
-        Err(rigger::contextgraph::Error(
-            rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS.to_string()
-        )),
+        Err(rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS.to_string()),
         "a second rebuild racing this one is refused at its lock, never interleaved in its shadow"
     );
 
@@ -6333,25 +6333,25 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
     let head = log.last().unwrap().position;
     // The rebuild's first two batches of two events are committed into its shadow; it stops.
     let mut batches = 0;
-    let stopped = common::cli::with_run_store(root, |store| {
-        let mut live = live_selection_of(store, &project, 2);
-        Projector::rebuild(
-            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-            &project,
-            true,
-            &mut |after, sink| {
-                live(after, &mut |events, head| {
-                    batches += 1;
-                    if batches > 2 {
-                        return Err(rigger::contextgraph::Error("stopped".to_string()));
-                    }
-                    sink(events, head)
-                })
-            },
-            &mut |_| {},
-        )
-        .map_err(|e| e.to_string())
-    });
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let mut live = live_selection_of(&backend, &project, 2);
+    let stopped = Projector::rebuild(
+        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+        &project,
+        true,
+        &mut |after, sink| {
+            live(after, &mut |events, head| {
+                batches += 1;
+                if batches > 2 {
+                    return Err(rigger::contextgraph::Error("stopped".to_string()));
+                }
+                sink(events, head)
+            })
+        },
+        &mut |_| {},
+    )
+    .map_err(|e| e.to_string());
+    drop(live);
     let cursor: u64 = rusqlite::Connection::open(rigger_file(root, "graph.db.rebuild"))
         .unwrap()
         .query_row("SELECT position FROM rebuild_cursor", [], |r| r.get(0))
@@ -6384,7 +6384,7 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
             (cold_ok, resumed_graph),
         ),
         (
-            Err("graph: stopped".to_string()),
+            Err("graph: event store: stopped".to_string()),
             (
                 1,
                 false,

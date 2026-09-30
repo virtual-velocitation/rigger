@@ -834,12 +834,19 @@ const REBUILD_BATCH: usize = 10_000;
 /// reset --derived` keeps - into a shadow file whose pruned copy replaces `graph.db` in one step
 /// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
 /// committed batch and finishing exactly the tail of one interrupted after its swap.
+///
+/// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
+/// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
+/// and holds it until the rebuild is paid or found not owed: while another rebuild holds it this
+/// setup is refused at once with the one refusal text naming the rebuild in progress, whatever
+/// phase that rebuild is in, having opened no graph file and made none.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
         Projector::forget_orphaned_mark(&graph_db)?;
         return Ok(false);
     }
+    let held = Projector::lock_rebuild(&graph_db)?;
     // The scaffold may just have minted the durable identity: the log moves to it first (the
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
@@ -852,7 +859,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
             pay_owed_rebuild(
-                &graph_db,
+                &held,
                 &project,
                 &mut |sink| {
                     store
@@ -894,12 +901,12 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
             let mut source =
                 contextgraph::sqlite::stream_source(&store, conductor::STREAM, REBUILD_BATCH);
-            pay_owed_rebuild(&graph_db, &project, &mut positions, &mut source)
+            pay_owed_rebuild(&held, &project, &mut positions, &mut source)
         }
     }
 }
 
-/// Read why the `graph.db` at `graph_db` owes its rebuild - its own records, and its ledger
+/// Read why the `graph.db` whose rebuild lock is `held` owes its rebuild - its own records, and its ledger
 /// against the positions `live` streams ([`Projector::owed_against`]) - say so naming each cause,
 /// and pay it by rebuilding from `source`, which also finishes a rebuild's own unfinished work (a
 /// standing shadow, or a swapped-in cursor's tail) with no cause to name, since the ledger owes
@@ -907,12 +914,12 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
 /// rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how many events it
 /// passed over because the fold rejects their payload; report whether it rebuilt.
 fn pay_owed_rebuild(
-    graph_db: &str,
+    held: &contextgraph::sqlite::RebuildLock,
     project: &str,
     live: &mut contextgraph::sqlite::PositionSource,
     source: &mut contextgraph::sqlite::RebuildSource,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let causes = Projector::open(graph_db, project)?.owed_against(live)?;
+    let causes = Projector::open(held.path(), project)?.owed_against(live)?;
     if !causes.is_empty() {
         println!(
             "rebuilding graph.db from the event log: {}, so the log's live selection is refolded \
@@ -921,7 +928,7 @@ fn pay_owed_rebuild(
         );
     }
     let mut printed = 0;
-    let rebuilt = Projector::rebuild(graph_db, project, !causes.is_empty(), source, &mut |at| {
+    let rebuilt = Projector::rebuild(held, project, !causes.is_empty(), source, &mut |at| {
         if let Some(line) = rebuild_progress_line(at, &mut printed) {
             println!("{line}");
         }
