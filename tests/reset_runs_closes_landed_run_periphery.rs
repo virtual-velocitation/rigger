@@ -17,9 +17,11 @@
 mod common;
 
 use common::cli::{
-    init_event_log, plant_marker, read_run_events, run_rigger_envs, run_rigger_ok, seed_run_events,
+    hold_step_lock, init_event_log, plant_marker, read_run_events, run_rigger_envs, run_rigger_ok,
+    seed_registry, seed_run_events,
 };
 use common::fixtures::{git_ok, git_ok_with_identity, git_out, temp_git_project_with_commit};
+use rigger::registry;
 use std::path::Path;
 
 /// The run's history up to the hand landing: unit `a` integrated by the conductor, then the
@@ -64,21 +66,47 @@ fn project(commit_work: bool, land: bool) -> tempfile::TempDir {
     dir
 }
 
-/// Seeds `events` into `root`, plants the in-flight spawn's liveness marker touched
-/// `marker_secs_ago` seconds ago (none when `None`), runs `rigger reset --runs`, and returns the
-/// run events before and after the reset.
+/// What stands around the run while `reset --runs` reads its liveness - the three signals spec
+/// 101 defines a live run by, each quiet unless a case sets it.
+struct Around {
+    /// The in-flight spawn's liveness marker, touched this many seconds ago (`None`: no marker).
+    marker_secs_ago: Option<u64>,
+    /// A `rigger step` holds the step lock for the whole reset.
+    step_lock: bool,
+    /// This store's registry entry last heartbeat this many ms ago (`None`: no entry).
+    heartbeat_ms_ago: Option<u64>,
+}
+
+/// No signal at all: nothing is driving the run. Each case sets the one signal it stands up over
+/// this.
+const QUIET: Around = Around {
+    marker_secs_ago: None,
+    step_lock: false,
+    heartbeat_ms_ago: None,
+};
+
+/// Seeds `events` into `root`, stands up the signals `around` names, runs `rigger reset --runs`,
+/// and returns the run events before and after the reset.
 fn reset_runs_over(
     root: &Path,
     events: &[(&str, &str)],
-    marker_secs_ago: Option<u64>,
+    around: Around,
 ) -> (Vec<String>, Vec<String>) {
     seed_run_events(root, events);
     let scratch = tempfile::tempdir().unwrap();
     let scratch_root = scratch.path().to_str().unwrap();
-    if let Some(age) = marker_secs_ago {
+    if let Some(age) = around.marker_secs_ago {
         let marker =
             rigger::liveness::marker_path(scratch_root, "r1", "checkin/implementer#1").unwrap();
         plant_marker(&marker, age);
+    }
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
+    let seeded = around
+        .heartbeat_ms_ago
+        .map(|ago| seed_registry("proj", &toplevel, registry::now_ms() - ago).0);
+    let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
+    if let Some(home) = &seeded {
+        envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
     }
     let types = |root: &Path| -> Vec<String> {
         read_run_events(root)
@@ -87,11 +115,9 @@ fn reset_runs_over(
             .collect()
     };
     let before = types(root);
-    let (_out, err, ok) = run_rigger_envs(
-        root,
-        &["reset", "--runs"],
-        &[("RIGGER_TMPDIR", scratch_root)],
-    );
+    let lock = around.step_lock.then(|| hold_step_lock(root));
+    let (_out, err, ok) = run_rigger_envs(root, &["reset", "--runs"], &envs);
+    drop(lock);
     assert!(ok, "rigger reset --runs must exit 0; stderr:\n{err}");
     (before, types(root))
 }
@@ -130,7 +156,7 @@ fn assert_checkin_closed(root: &Path, before: &[String], after: &[String]) {
 fn reset_runs_closes_a_dead_run_whose_checkin_is_landed_on_the_run_branch() {
     let dir = project(true, true);
     let root = dir.path();
-    let (before, after) = reset_runs_over(root, DEAD_RUN, None);
+    let (before, after) = reset_runs_over(root, DEAD_RUN, QUIET);
     assert_checkin_closed(root, &before, &after);
     assert_eq!(
         run_rigger_ok(root, &["status", "--line"]).trim(),
@@ -146,7 +172,31 @@ fn reset_runs_closes_a_dead_run_whose_in_flight_spawns_marker_outlived_its_bound
     let dir = project(true, true);
     let root = dir.path();
     let events: Vec<(&str, &str)> = DEAD_RUN.iter().copied().chain([IN_FLIGHT_SPAWN]).collect();
-    let (before, after) = reset_runs_over(root, &events, Some(301));
+    let (before, after) = reset_runs_over(
+        root,
+        &events,
+        Around {
+            marker_secs_ago: Some(301),
+            ..QUIET
+        },
+    );
+    assert_checkin_closed(root, &before, &after);
+}
+
+/// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
+/// registration leaves behind: nothing is driving the run, so the landed unit is closed.
+#[test]
+fn reset_runs_closes_a_dead_run_whose_registry_heartbeat_outlived_the_idle_window() {
+    let dir = project(true, true);
+    let root = dir.path();
+    let (before, after) = reset_runs_over(
+        root,
+        DEAD_RUN,
+        Around {
+            heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
+            ..QUIET
+        },
+    );
     assert_checkin_closed(root, &before, &after);
 }
 
@@ -155,13 +205,13 @@ fn assert_left_open(
     commit_work: bool,
     land: bool,
     extra: &[(&str, &str)],
-    marker_secs_ago: Option<u64>,
+    around: Around,
     why: &str,
 ) {
     let dir = project(commit_work, land);
     let root = dir.path();
     let events: Vec<(&str, &str)> = DEAD_RUN.iter().chain(extra).copied().collect();
-    let (before, after) = reset_runs_over(root, &events, marker_secs_ago);
+    let (before, after) = reset_runs_over(root, &events, around);
     assert_eq!(after, before, "{why}: the log must be untouched");
     assert_eq!(
         run_rigger_ok(root, &["status", "--line"]).trim(),
@@ -177,15 +227,42 @@ rigger::test_cases! {
         true,
         true,
         &[IN_FLIGHT_SPAWN],
-        Some(0),
+        Around {
+            marker_secs_ago: Some(0),
+            ..QUIET
+        },
         "a live run",
     );
+    /// A `rigger step` holding the step lock is driving the run: a landed branch stays open.
+    reset_runs_leaves_a_landed_run_open_while_a_step_holds_the_lock: assert_left_open(
+        true,
+        true,
+        &[],
+        Around {
+            step_lock: true,
+            ..QUIET
+        },
+        "a held step lock",
+    );
+    /// A registry heartbeat a minute inside the idle window is a live driver elsewhere on this
+    /// machine: a landed branch stays open.
+    reset_runs_leaves_a_landed_run_open_while_its_registry_heartbeat_is_inside_the_idle_window:
+        assert_left_open(
+            true,
+            true,
+            &[],
+            Around {
+                heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS - 60_000),
+                ..QUIET
+            },
+            "a heartbeat inside the idle window",
+        );
     /// Work that never reached the run branch is not landed.
     reset_runs_leaves_a_dead_run_open_while_its_work_is_not_on_the_run_branch: assert_left_open(
         true,
         false,
         &[],
-        None,
+        QUIET,
         "unlanded work",
     );
     /// A unit branch that never moved off its creation point carries no work: its tip is
@@ -194,7 +271,7 @@ rigger::test_cases! {
         false,
         false,
         &[],
-        None,
+        QUIET,
         "a workless branch",
     );
 }
