@@ -5119,8 +5119,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 757,
-        "end_line": 772
+        "start_line": 758,
+        "end_line": 773
       }
     ]
   },
@@ -5234,8 +5234,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 883,
-        "end_line": 891
+        "start_line": 884,
+        "end_line": 892
       }
     ]
   },
@@ -5289,8 +5289,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 800,
-        "end_line": 814
+        "start_line": 801,
+        "end_line": 815
       },
       {
         "file": "src/cli/setup.rs",

@@ -1669,7 +1669,7 @@ mod tests {
         let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
         let store = Namespaced::new(&backend, &identity);
         // A malformed SpawnRequested body: valid JSON but missing the fields `spawn::recorded`
-        // needs, so decoding it fails and `spawn::step_result` returns `Err`.
+        // needs, so decoding it fails and `spawn::recorded` returns `Err`.
         store
             .append(
                 conductor::STREAM,

@@ -273,7 +273,8 @@ fn live_spawn(
 
 /// Every spawn requested in `events` - the caller passes one run's slice, and `run_id` names the
 /// run its markers are filed under - that is [`live_spawn`] at `now`, in id order. A malformed
-/// request or result propagates as an error, never as "nothing is live".
+/// request, or a malformed result wherever a marker inside its bound needs it read, propagates as
+/// an error, never as "nothing is live".
 pub fn live_spawns(
     events: &[Event],
     scratch_root: &str,
