@@ -5733,6 +5733,60 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
     );
 }
 
+/// Given a stale `graph.db.pruned` beside the graph - the private pruned copy a rebuild's swap
+/// left when it stopped - when `rigger reset --runs` runs while a rebuild holds its shadow, then the
+/// copy is kept and reset says nothing of it; once no rebuild holds the shadow, `rigger reset
+/// --runs` removes the copy and says so, and never touches the shadow a rebuild resumes from.
+#[test]
+fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_its_shadow() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    let copy = rigger_file(root, "graph.db.pruned");
+    let shadow = rigger_file(root, "graph.db.rebuild");
+    std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+    let removed = |out: &str| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("graph.db.pruned"))
+            .map(str::to_string)
+            .collect()
+    };
+    let rebuilding = rusqlite::Connection::open(&shadow).unwrap();
+    rebuilding
+        .execute_batch("PRAGMA locking_mode = EXCLUSIVE; CREATE TABLE folding (x);")
+        .unwrap();
+    let (held, held_err, held_ok) = run_rigger(root, &["reset", "--runs"]);
+    let kept = copy.exists();
+    drop(rebuilding);
+    let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+    assert_eq!(
+        (
+            held_ok,
+            removed(&held),
+            kept,
+            ok,
+            removed(&out),
+            copy.exists(),
+            shadow.exists(),
+        ),
+        (
+            true,
+            Vec::<String>::new(),
+            true,
+            true,
+            vec![
+                "reset --runs: removed graph.db.pruned, the pruned copy a rebuild's stopped swap \
+                 left beside graph.db"
+                    .to_string()
+            ],
+            false,
+            true,
+        ),
+        "the copy is kept while a rebuild holds its shadow and removed once none does; held \
+         stderr: {held_err}; stdout: {out} stderr: {err}"
+    );
+}
+
 /// Append each of `events` to the run stream of `root` and fold it into its `graph.db` as it lands,
 /// as the conductor records a run: the live graph, never one a rebuild produced.
 fn fold_run_events(root: &Path, events: &[(&str, &str)]) {

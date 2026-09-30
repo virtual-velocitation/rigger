@@ -5299,6 +5299,52 @@ mod tests {
         Projector::forget_orphaned_mark(":memory:").unwrap();
     }
 
+    /// A stale pruned copy is forgotten - removed, answering that it was - when no shadow stands
+    /// beside it and when the shadow beside it is held by no rebuild, which it keeps; while a
+    /// rebuild holds its shadow the copy is its own and is kept; with no copy nothing is removed.
+    #[test]
+    fn a_stale_pruned_copy_is_forgotten_unless_a_rebuild_holds_its_shadow() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let copy = dir.path().join("graph.db.pruned");
+        let shadow = dir.path().join("graph.db.rebuild");
+        let stale = || std::fs::write(&copy, b"left by a swap that stopped").unwrap();
+        let forgotten = || (Projector::forget_stale_copy(path).unwrap(), copy.exists());
+
+        let nothing = forgotten();
+        stale();
+        let alone = forgotten();
+        stale();
+        let rebuilding = open_shadow(shadow.to_str().unwrap()).unwrap();
+        let held = forgotten();
+        rebuilding
+            .execute_batch("CREATE TABLE folding (x);")
+            .unwrap();
+        let held_through_its_fold = forgotten();
+        drop(rebuilding);
+        let released = forgotten();
+        assert_eq!(
+            (
+                nothing,
+                alone,
+                held,
+                held_through_its_fold,
+                released,
+                shadow.exists()
+            ),
+            (
+                (false, false),
+                (true, false),
+                (false, true),
+                (false, true),
+                (true, false),
+                true
+            ),
+            "a copy no rebuild holds is removed, one a rebuild holds is kept, and the shadow stays"
+        );
+    }
+
     /// Every LIVE `GOVERNS` edge as `(from, to, source, valid_from)`, read straight from the
     /// table (not through the live `subgraph` filter), so a test can COUNT the rows and prove a
     /// re-assertion collapsed into the one existing live edge rather than accreting a row per fold.
