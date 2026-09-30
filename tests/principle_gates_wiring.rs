@@ -354,24 +354,100 @@ fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
     }
 }
 
+/// The `fmt`, `clippy` and `build` gates cover every workspace crate: a bare `cargo clippy` or
+/// `cargo build` in this repository reaches only the root package, so a crate's own code would
+/// never be linted or built under any unit. Clippy stays on its one lane, the default features.
+#[test]
+fn the_fmt_clippy_and_build_gates_cover_the_workspace() {
+    for (gate, run) in [
+        ("fmt", "cargo fmt --all --check"),
+        (
+            "clippy",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+        ),
+        ("build", "cargo build --workspace"),
+    ] {
+        assert_eq!(repo_gate_command(gate), run, "the `{gate}` gate");
+    }
+}
+
 /// The per-unit `test` gate runs every workspace crate's tests, never the root package's
 /// alone (a bare `cargo test` here tests only the root package, so no crate's own unit tests
-/// would run under any unit), and it first sources the container runtime snippet - by a path
-/// relative to the worktree root the gate runs in, which the repository carries - so the
-/// container-backed tests run instead of skipping.
+/// would run under any unit), and it first sources the container runtime snippet the
+/// repository carries, so the container-backed tests run instead of skipping.
 #[test]
 fn the_test_gate_covers_the_workspace_with_the_container_runtime() {
-    let run = repo_gate_command("test");
-    let (sourced, tests) = run
-        .split_once(" && ")
-        .unwrap_or_else(|| panic!("the test gate sources the snippet, then tests: {run:?}"));
-    let snippet = sourced
-        .strip_prefix(". ")
-        .unwrap_or_else(|| panic!("the test gate's first command sources a file: {sourced:?}"));
-    assert_eq!(snippet, ".rigger/gates/container-env.sh");
-    assert!(
-        repo_root().join(snippet).is_file(),
-        "the sourced {snippet} is carried by the repository"
+    assert_eq!(
+        repo_gate_command("test"),
+        "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
+         exit 1; fi; cargo test --workspace"
     );
-    assert_eq!(tests, "cargo test --workspace");
+    assert!(repo_root().join(".rigger/gates/container-env.sh").is_file());
+}
+
+/// This repository's `test` gate command run under `sh -c` - as the conductor runs every gate -
+/// in the worktree `tree`, with a stand-in `cargo` that records its argv. Returns (passed,
+/// output, the argv line cargo recorded - empty when cargo never ran).
+fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
+    let bin = work.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(
+        repo_root().join("tests/fixtures/recording-cargo.sh"),
+        bin.join("cargo"),
+    )
+    .unwrap();
+    let dump = work.join("cargo.dump");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(repo_gate_command("test"))
+        .current_dir(tree)
+        .env("PATH", path)
+        .env("RECORDING_CARGO_DUMP_FILE", &dump)
+        .output()
+        .unwrap();
+    let args = std::fs::read_to_string(&dump)
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text, args)
+}
+
+/// The gate string comes from the operator's workflow but runs inside the unit's worktree, and
+/// a unit branch can predate the snippet: the tests still run, without it.
+#[test]
+fn the_test_gate_runs_the_tests_in_a_worktree_that_predates_the_snippet() {
+    let work = tempfile::tempdir().unwrap();
+    let tree = work.path().join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    let (passed, out, args) = run_test_gate(work.path(), &tree);
+    assert!(passed, "{out}");
+    assert_eq!(args, "ARGS:test --workspace", "{out}");
+}
+
+/// A snippet that is present but fails to source fails the gate before any test runs, never a
+/// silent run without the container runtime.
+#[test]
+fn the_test_gate_fails_when_its_snippet_fails_to_source() {
+    let work = tempfile::tempdir().unwrap();
+    let tree = work.path().join("tree");
+    std::fs::create_dir_all(tree.join(".rigger/gates")).unwrap();
+    std::fs::write(tree.join(".rigger/gates/container-env.sh"), "false\n").unwrap();
+    let (passed, out, args) = run_test_gate(work.path(), &tree);
+    assert!(
+        !passed,
+        "a snippet that fails to source must fail the gate: {out}"
+    );
+    assert!(args.is_empty(), "cargo must not run: {args}");
 }

@@ -22799,37 +22799,65 @@ fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
     }
 }
 
+/// Race `CLAIMANTS` claimants for one loopback port from `next_port` at once, until a round in
+/// which one of them binds it; returns that round's port and every claimant's result.
+///
+/// The port is probed free, released, and only then raced for, so another process on the machine
+/// can bind it in between. A round in which no claimant binds and each found the port held (the
+/// raw conflict, or a dash already serving it) is that theft: it says nothing about the singleton,
+/// so the race re-runs on a fresh port, a bounded number of times, and fails loudly past the
+/// bound. Every result of a round is collected before any is dropped, so a winner holds the
+/// address for its whole round.
+fn race_for_a_port_nobody_else_holds(
+    mut next_port: impl FnMut() -> u16,
+) -> (u16, Vec<std::io::Result<rigger::dash::SingletonBind>>) {
+    use rigger::dash::{bind_singleton, SingletonBind};
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Barrier};
+
+    const CLAIMANTS: usize = 8;
+    const ROUNDS: usize = 5;
+    for _ in 0..ROUNDS {
+        let port = next_port();
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let barrier = Arc::new(Barrier::new(CLAIMANTS));
+        let handles: Vec<_> = (0..CLAIMANTS)
+            .map(|_| {
+                let b = barrier.clone();
+                std::thread::spawn(move || {
+                    b.wait();
+                    bind_singleton(addr)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let taken_before_the_race = results.iter().all(|r| match r {
+            Ok(SingletonBind::Bound(_)) => false,
+            Ok(SingletonBind::AlreadyServing(_)) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::AddrInUse,
+        });
+        if !taken_before_the_race {
+            return (port, results);
+        }
+    }
+    panic!(
+        "another process took each of {ROUNDS} freshly probed loopback ports before the \
+         claimants reached it - no round could race for a free port"
+    );
+}
+
 /// Spec 50, criterion 1, the ATOMIC single-winner guarantee: when MANY claimants race the SAME
 /// (initially free) address at once, EXACTLY ONE binds it and NO OTHER ever becomes a second
 /// `Bound` - the singleton is atomic, not a check-then-bind two racers could both pass. Because
 /// `bind_singleton` never searches upward, a loser never drifts to a different port; it either
 /// recognizes an already-serving dash or surfaces the conflict, but it is NEVER a second holder
 /// of the address. This is the cold-race complement to the live-serving defer test, and the
-/// concurrency dimension the serialized unit tests cannot reach. Every result is collected before
-/// any is dropped, so the winner holds the address for the whole race.
+/// concurrency dimension the serialized unit tests cannot reach.
 #[test]
 fn a_concurrent_cold_race_yields_exactly_one_binder_never_two() {
-    use rigger::dash::{bind_singleton, SingletonBind};
-    use std::net::SocketAddr;
-    use std::sync::{Arc, Barrier};
+    use rigger::dash::SingletonBind;
 
-    let port = free_loopback_port();
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-
-    let n = 8usize;
-    let barrier = Arc::new(Barrier::new(n));
-    let mut handles = Vec::with_capacity(n);
-    for _ in 0..n {
-        let b = barrier.clone();
-        handles.push(std::thread::spawn(move || {
-            b.wait();
-            bind_singleton(addr)
-        }));
-    }
-    // Collect ALL results first (keeping every `Bound` listener alive) so the winner holds the
-    // address for the whole race - no result is dropped until the count below is settled.
-    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-
+    let (port, results) = race_for_a_port_nobody_else_holds(free_loopback_port);
     let mut bound = 0usize;
     for r in &results {
         match r {
@@ -22852,6 +22880,27 @@ fn a_concurrent_cold_race_yields_exactly_one_binder_never_two() {
         "a concurrent race for one free address must produce EXACTLY ONE binder (the singleton is \
          atomic); got {bound}. results: {results:?}"
     );
+}
+
+/// A race whose port another process took after it was probed free is not judged: the race
+/// re-runs on a fresh port, so a stolen port can never read as a broken singleton.
+#[test]
+fn a_cold_race_for_a_port_taken_after_its_probe_re_races_on_a_fresh_port() {
+    use rigger::dash::SingletonBind;
+
+    let thief = reserved_loopback_listener();
+    let stolen = thief.local_addr().unwrap().port();
+    let mut ports = vec![free_loopback_port(), stolen];
+    let (port, results) = race_for_a_port_nobody_else_holds(|| ports.pop().unwrap());
+    assert_ne!(
+        port, stolen,
+        "the stolen port's round must not be the one judged"
+    );
+    let bound = results
+        .iter()
+        .filter(|r| matches!(r, Ok(SingletonBind::Bound(_))))
+        .count();
+    assert_eq!(bound, 1, "the fresh port's round is judged: {results:?}");
 }
 
 /// Spec 50, criterion 1, the RECOGNITION CONTRACT through the BUILT binary: every `rigger dash`
