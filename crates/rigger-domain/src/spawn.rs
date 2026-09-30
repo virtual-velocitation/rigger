@@ -582,9 +582,11 @@ pub struct WaveItem {
     /// and run id. Carrying it on the wire is what keeps the worker-write path IDENTICAL to
     /// the sweep-read path under ANY scratch config: the thin driver frames both the
     /// heartbeat `touch` and its staleness watchdog around THIS path and never re-derives a
-    /// root of its own. Present only for a bounded spawn (a marker exists only when
-    /// `max_wall_clock` is set); [`WaveItem::from`] leaves it `None` because the scratch root
-    /// and run id are not known to a pure fold - `rigger step` fills it in.
+    /// root of its own. Present for every spawn, bounded or not (spec 101: the marker is how the
+    /// live-writer guard sees a worker; the sweep times out only a bounded one), and absent only
+    /// when there is no scratch root or the id is degenerate; [`WaveItem::from`] leaves it `None`
+    /// because the scratch root and run id are not known to a pure fold - `rigger step` fills
+    /// it in.
     #[serde(default)]
     pub marker_path: Option<String>,
     /// The unit's ONE build location (spec 77, criterion 1): the `cargo-target-<unit>`
@@ -1368,8 +1370,8 @@ mod tests {
     #[test]
     fn wave_item_marker_path_is_absent_from_a_pure_fold_and_null_on_the_wire_when_unset() {
         // `WaveItem::from` cannot know the scratch root or run id, so it leaves the resolved
-        // marker path absent; `rigger step` stamps it. An absent marker path is omitted from
-        // the wire (like an unbounded spawn's), so a slim manifest stays slim.
+        // marker path absent; `rigger step` stamps it on every spawn, bounded or not. An
+        // unstamped marker path rides the wire as an explicit null.
         let req = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "task");
         let item = WaveItem::from(&req);
         assert_eq!(item.marker_path, None, "a pure fold leaves the path unset");

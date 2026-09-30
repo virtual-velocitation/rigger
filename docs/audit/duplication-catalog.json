@@ -1057,7 +1057,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d77a1affc812",
+    "id": "dup-c443a541f37b",
     "classification": "semantic",
     "sites": [
       {
@@ -2138,6 +2138,16 @@
       {
         "file": "tests/cli.rs",
         "name": "\"the default marker path must never live under any .rigger; got: {marker_str:?}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"/.rigger/\"",
+        "content_hash": "2cbcbd8eff5ac139"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"the unbounded spawn's marker resolves under the scratch root's agent-live, never under \\\n         any .rigger; got: {marker_str:?}\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3847,7 +3857,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 557 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 559 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8313,6 +8323,30 @@
       }
     ],
     "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-903206b6dfc3",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/native_driver_pipelining_behavior.rs",
+        "name": "fast_units_review_runs_while_the_slow_sibling_still_builds",
+        "content_hash": "aa7e7003cc07d46d"
+      },
+      {
+        "file": "tests/native_driver_pipelining_behavior.rs",
+        "name": "a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a_false_stop",
+        "content_hash": "aa7e7003cc07d46d"
+      },
+      {
+        "file": "tests/native_driver_pipelining_behavior.rs",
+        "name": "every_spawn_with_a_marker_path_is_told_to_keep_it_fresh",
+        "content_hash": "aa7e7003cc07d46d"
+      }
+    ],
+    "proposed_home": "native_driver_pipelining_behavior::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

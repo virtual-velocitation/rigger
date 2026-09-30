@@ -806,22 +806,21 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
     let mut step = spawn::step_result(&events).map_err(|e| e.to_string())?;
-    // Stamp each bounded wave item with the RESOLVED absolute path of its liveness marker
-    // (spec 10, unit 3, BLOCKER-1): the thin driver frames both the worker's heartbeat
-    // `touch` and its staleness watchdog around THIS path, never re-deriving a scratch root
-    // of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
+    // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
+    // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
+    // and a bounded spawn's staleness watchdog around THIS path, never re-deriving a scratch
+    // root of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
     // resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default) the sweep
-    // above reads and this run's id - so the worker-write path is byte-identical to the
-    // sweep-read path under ANY scratch config. Only a bounded spawn carries a marker.
+    // above reads and this run's id - so the worker-write path is byte-identical to every
+    // reader's path under ANY scratch config. Bounded or not, every spawn carries a marker: the
+    // marker is how the live-writer guard sees a worker, and the sweep never times out an
+    // unbounded one however stale its marker gets.
     if let Some(root) = &scratch_root {
         for item in step.wave.iter_mut() {
-            if item.max_wall_clock.is_some() {
-                // A degenerate id (never a real spawn id rigger itself mints) yields no
-                // marker path at all rather than a fabricated placeholder - the item simply
-                // carries no liveness marker, the same as any other unbounded spawn.
-                item.marker_path = rigger::liveness::marker_path(root, &wave_run_id, &item.id)
-                    .map(|p| p.to_string_lossy().into_owned());
-            }
+            // A degenerate id (never a real spawn id rigger itself mints) yields no marker path
+            // at all rather than a fabricated placeholder - the item simply carries no marker.
+            item.marker_path = rigger::liveness::marker_path(root, &wave_run_id, &item.id)
+                .map(|p| p.to_string_lossy().into_owned());
         }
     }
     // Surface a spawn-budget HALT (Gap 13) distinct from convergence: the conductor sets

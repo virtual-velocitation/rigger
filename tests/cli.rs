@@ -7928,9 +7928,10 @@ fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fa
 }
 
 /// The single-stage liveness workflow with an UNBOUNDED default (`defaults.max_wall_clock`
-/// absent = 0), so the parked implementer carries NO per-spawn `max_wall_clock` and thus no
-/// marker on the wire - the exact spawn the sweep can never time out and the native driver's
-/// OUTER wall-clock is the only backstop for (spec 19c, unit 2).
+/// absent = 0), so the parked implementer carries NO per-spawn `max_wall_clock` - the exact
+/// spawn the sweep can never time out and the native driver's OUTER wall-clock is the only
+/// backstop for (spec 19c, unit 2). It still carries its liveness marker on the wire (spec 101:
+/// every spawn does, so the live-writer guard sees its worker), which the sweep never times out.
 const UNBOUNDED_LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
     body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
@@ -7938,31 +7939,58 @@ const UNBOUNDED_LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
 
 /// Spec 19c, Unit 2 (a) - the SURFACING half, end-to-end in real Rust: a hung UNBOUNDED-config
 /// spawn surfaces within a bounded time. Under an unbounded default the parked implementer
-/// carries NO `max_wall_clock` (so no marker, and `rigger step`'s liveness SWEEP - which times
-/// out only a positive bound - can never reach it). The native driver's OUTER wall-clock instead
-/// records a LIVENESS fault on the spawn's behalf (`rigger result <id> --error ... --meta
-/// '{"liveness_class":"infra"}'`); this test records exactly that fault via the CLI - the driver's
-/// courier command shape - and proves the next `rigger step` SURFACES it as a loud halt (naming
-/// the spawn, infra, no attempt charged), then re-surfaces it and never re-runs it, and that a
-/// real result clears it. The DRIVER side (that the outer wall-clock records this fault) is the
-/// source fixture `native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn`;
-/// together they prove the criterion end to end without running the harness-only JS.
+/// carries NO `max_wall_clock`, so `rigger step`'s liveness SWEEP - which times out only a
+/// positive bound - can never reach it, even though the spawn carries a marker path like any
+/// other (spec 101) and its marker has gone an hour untouched. The native driver's OUTER
+/// wall-clock instead records a LIVENESS fault on the spawn's behalf (`rigger result <id>
+/// --error ... --meta '{"liveness_class":"infra"}'`); this test records exactly that fault via
+/// the CLI - the driver's courier command shape - and proves the next `rigger step` SURFACES it
+/// as a loud halt (naming the spawn, infra, no attempt charged), then re-surfaces it and never
+/// re-runs it, and that a real result clears it. The DRIVER side (that the outer wall-clock
+/// records this fault) is the source fixture
+/// `native_driver_enforces_an_outer_wall_clock_that_surfaces_an_unbounded_spawn`; together they
+/// prove the criterion end to end without running the harness-only JS.
 #[test]
 fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &UNBOUNDED_LIVENESS_WORKFLOW);
 
-    // Step 1: the implementer parks in-flight. Being UNBOUNDED it carries NO marker path - the
-    // sweep has nothing to time out, which is exactly why the driver's outer wall-clock exists.
+    // Step 1: the implementer parks in-flight. Being UNBOUNDED it still carries its marker path
+    // (spec 101: every spawn does, so the live-writer guard sees its worker), resolved by the
+    // same `liveness::marker_path` authority a bounded spawn's is: `<scratch>/agent-live/<run>/
+    // <encoded id>`, never under any `.rigger`.
     let line = step_line(root, "the first step must succeed");
     assert!(
         line.contains(r#""id":"a/implementer#0""#),
         "step 1 parks the implementer in-flight; got: {line:?}"
     );
+    let marker_str = json_string_field(&line, "marker_path")
+        .expect("an unbounded-config spawn carries its resolved marker path like a bounded one");
+    let marker = std::path::Path::new(&marker_str);
     assert!(
-        json_string_field(&line, "marker_path").is_none(),
-        "an unbounded-config spawn carries no marker path (the sweep cannot time it out); got: {line:?}"
+        marker_str.contains("/agent-live/") && !marker_str.contains("/.rigger/"),
+        "the unbounded spawn's marker resolves under the scratch root's agent-live, never under \
+         any .rigger; got: {marker_str:?}"
+    );
+    assert_eq!(
+        marker.file_name().and_then(|n| n.to_str()),
+        rigger::liveness::marker_filename("a/implementer#0").as_deref(),
+        "the marker's leaf is the spawn id's encoding, from the single marker-path authority"
+    );
+
+    // Its marker going an hour untouched never makes the sweep call it hung: the sweep times out
+    // only a positive bound, so a marker on an unbounded spawn is a liveness signal, never a
+    // timeout. The spawn stays in flight, un-halted.
+    plant_stale_marker(marker);
+    let line = step_line(
+        root,
+        "a step over an unbounded spawn's stale marker must succeed",
+    );
+    assert!(
+        !line.contains(r#""halted":"#) && line.contains(r#""id":"a/implementer#0""#),
+        "an unbounded spawn's stale marker must never be swept as hung - it stays in flight; \
+         got: {line:?}"
     );
 
     // The native driver's OUTER wall-clock fired: it records a LIVENESS fault on the spawn's
