@@ -692,13 +692,13 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
              conductor mints, so `rigger status` stops reporting the finished run as working. \
              It only appends; a live run is left untouched.",
-            "- `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per \
-             replay key of each derived project-ingest type, deletes the superseded \
-             duplicates, and vacuums so the file shrinks on disk. Every other event - every \
-             decision, finding, lesson, gate verdict, the whole run history - survives \
-             byte-for-byte. Only the embedded sqlite backend can compact this way, and it \
-             refuses (unless overridden with `--force-live`) while a run is live against the \
-             store.",
+            "- `rigger reset --derived` compacts `events.db`: it keeps only each file's latest \
+             generation of the derived index, at the latest event per replay key, deletes the \
+             superseded generations and re-recordings, and vacuums so the file shrinks on disk. \
+             Every other event - every decision, finding, lesson, gate verdict, the whole run \
+             history - survives byte-for-byte. Only the embedded sqlite backend can compact \
+             this way, and it refuses (unless overridden with `--force-live`) while a run is \
+             live against the store.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
              per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
@@ -711,7 +711,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
         "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
          tool outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
          hand-deleted row can desync the graph from the log in ways `rigger reset \
-         --derived`'s own key-preserving compaction is specifically built to avoid. A store \
+         --derived`'s own compaction is specifically built to avoid. A store \
          file that is genuinely corrupt is an incident to fix at its root, never a reason \
          to reach for a database client.\n",
         "rigger-build-graph if `graph.db` needs regenerating rather than pruning; \
