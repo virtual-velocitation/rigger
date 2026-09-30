@@ -1404,7 +1404,10 @@ impl StoreLocation {
 /// worktree's own cwd (round 1's original defect). [`config_store::read_scratch_defaults`] requires
 /// neither a loadable fleet nor a passing validate, so it can never regress on either axis.
 /// Absent/unreadable resolves to `("", 0)`, matching [`config_store::read_scratch_workdir`]'s own
-/// tolerant-absent contract.
+/// tolerant-absent contract. `rigger reset` is the one reader that must NOT degrade - its
+/// live-writer guard may only refuse, and a lost `defaults.workdir` would hide a live spawn's
+/// marker - so it reads [`config_store::read_scratch_workdir`] fail-closed instead
+/// ([`hygiene::ResetEnv`]).
 fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
     let d = config_store::read_scratch_defaults(&loc.dir).unwrap_or_default();
     (d.workdir, d.max_retries)
@@ -2804,7 +2807,8 @@ fn liveness_ages_for_wave(
 /// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares. Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
 /// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
-/// an empty root, which every marker reader degrades to "no marker".
+/// an empty root, which status and watch degrade to "no marker" and `rigger reset` refuses
+/// ([`hygiene::ResetEnv`]).
 fn marker_root(repo: &str, workdir: &str) -> String {
     if repo.is_empty() {
         return String::new();

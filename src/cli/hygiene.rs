@@ -15,8 +15,9 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// [`reset_modes`]'s existing refusal exactly as before this menu existed, so that refusal and
 /// its tests are untouched.
 ///
-/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed and the backend
-/// requirement of every requested mode is settled BEFORE the first prune runs, so a composed
+/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, the scratch root,
+/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed), and the
+/// backend requirement of every requested mode is settled BEFORE the first prune runs, so a composed
 /// invocation never starts work it is already known to be unable to finish - the shape that used
 /// to leave the graph pruned and the log untouched because the log's backend was refused second.
 /// Each mode's own mutation is atomic (each is one transaction over one file), and the modes run
@@ -36,13 +37,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     let modes = reset_modes(args)?;
 
     let (loc, selection) = require_store_dir()?;
-    // The liveness probe's two ambient reads, resolved HERE at the composition root and handed
-    // to both modes that read run liveness (`--runs` closing a dead run, `--derived` refusing a
-    // live one) - the probe itself never reads the environment: the machine-global instance
-    // registry, and the scratch root this store's runs stamp their spawns' liveness markers under.
-    let registry_dir = rigger::registry::default_dir();
-    let (workdir, _max_retries) = scratch_defaults(&loc);
-    let marker_root = marker_root(&loc.repo_root(), &workdir);
+    let env = ResetEnv::resolve(&loc)?;
     // Before ANY prune reads a stream name: run the one-time spec-09 identity migration, exactly
     // as `run` / `step` / `workflow` / `playbooks` do before they open their store. Both prunes
     // address this project's history BY ITS CURRENT IDENTITY, and a store bloated enough to need
@@ -55,22 +50,22 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         migrate_identity_at(&loc)?;
     }
     if modes.runs {
-        reset_runs(&loc, &selection, registry_dir.as_deref(), &marker_root)?;
+        reset_runs(&loc, &selection, &env)?;
     }
     if modes.build_cache {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
         // graph `--runs`/`--derived` prune, and carrying NO backend requirement at all
-        // (spec 77 Design) - `reset_build_cache` resolves the one config value it needs
-        // (`defaults.workdir`) through the lightweight `config_store::read_scratch_workdir` probe
-        // itself, never the full `config::load` (which would additionally require a
-        // loadable agent fleet just to reclaim disk space). Dispatched BEFORE `--derived`
-        // below (not after, as its Design-bullet order might suggest) so a composed
-        // `--build-cache --derived` on a server-backed project still reclaims the cache and
-        // reports it - `--derived`'s own backend refusal below must never silently drop a
-        // sibling mode with no backend dependency of its own (spec 77 c4 review history:
-        // the identical composition defect an earlier attempt at this feature was caught
-        // for, reproduced independently before this fix landed).
-        reset_build_cache(&loc)?;
+        // (spec 77 Design) - the one config value it needs (`defaults.workdir`) comes from
+        // [`ResetEnv`]'s lightweight `config_store::read_scratch_workdir` probe, never the full
+        // `config::load` (which would additionally require a loadable agent fleet just to
+        // reclaim disk space). Dispatched BEFORE `--derived` below (not after, as its
+        // Design-bullet order might suggest) so a composed `--build-cache --derived` on a
+        // server-backed project still reclaims the cache and reports it - `--derived`'s own
+        // backend refusal below must never silently drop a sibling mode with no backend
+        // dependency of its own (spec 77 c4 review history: the identical composition defect an
+        // earlier attempt at this feature was caught for, reproduced independently before this
+        // fix landed).
+        reset_build_cache(&env)?;
     }
     if modes.scratch_orphans {
         reset_scratch_orphans()?;
@@ -101,11 +96,55 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
         if !modes.force_live {
-            refuse_derived_reset_if_live(&loc, &selection, registry_dir.as_deref(), &marker_root)?;
+            refuse_derived_reset_if_live(&loc, &selection, &env)?;
         }
         reset_derived(&loc)?;
     }
     Ok(())
+}
+
+/// What `rigger reset`'s modes read from outside the store, resolved ONCE by [`cmd_reset`] - the
+/// composition root - before the first prune runs, and handed to every mode that reads it, so no
+/// mode reads the configuration, the environment or the clock of its own and one command judges
+/// one scratch root at one instant.
+struct ResetEnv {
+    /// The store's configured `defaults.workdir` (empty when unset).
+    workdir: String,
+    /// The scratch root this store's runs write under ([`marker_root`]): the spawns' liveness
+    /// markers the guard reads, and the build caches `--build-cache` reclaims.
+    scratch_root: String,
+    /// The machine-global instance registry (spec 50); `None` in a homeless environment.
+    registry_dir: Option<PathBuf>,
+    /// The one instant, in Unix-epoch milliseconds, every liveness judgment of this command is
+    /// made at: registry heartbeats and spawn markers alike.
+    now_ms: u64,
+}
+
+impl ResetEnv {
+    /// Resolves the scratch root FAIL-CLOSED (ruling adj-u101gl-marker-root-fail-closed): a
+    /// `defaults` block [`config_store::read_scratch_workdir`] cannot parse fails the command with
+    /// the config's own error, and a store whose owning root has no UTF-8 path - which resolves
+    /// no scratch root at all - is refused, because the live-writer guard may only refuse: a root
+    /// it cannot resolve must never read as "no spawn marker, so nothing is live".
+    fn resolve(loc: &StoreLocation) -> Result<Self, Box<dyn std::error::Error>> {
+        let workdir = config_store::read_scratch_workdir(&loc.dir)?;
+        let scratch_root = marker_root(&loc.repo_root(), &workdir);
+        if scratch_root.is_empty() {
+            return Err(format!(
+                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
+                 write their liveness markers and build caches under cannot be resolved; \
+                 refusing rather than reading that as no live spawn",
+                loc.dir.display()
+            )
+            .into());
+        }
+        Ok(Self {
+            workdir,
+            scratch_root,
+            registry_dir: rigger::registry::default_dir(),
+            now_ms: rigger::registry::now_ms(),
+        })
+    }
 }
 
 /// Bare `rigger reset` (spec 68, "the reset surface"): a MENU, not an error. Prints one line per
@@ -274,29 +313,6 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     Ok(modes)
 }
 
-/// `rigger reset --build-cache` (spec 77 criterion 5, BOUNDED SHARED CACHE; gap 96): reclaims
-/// every dead footprint class `rigger validate` names with this verb - dead per-unit caches,
-/// dead spawns' registered scratch, unowned agent scratch ([`reclaim_dead_footprint`] over the
-/// one [`super::validate::measure_footprint`] accounting, skipping any entry a live process
-/// holds) - and the shared gate build cache under the resolved scratch root. All of it is
-/// rebuildable scratch, so this is the one reset mode with no store-mutation implication at
-/// all and no backend requirement (unlike `--derived`).
-///
-/// Resolves `repo`/`scratch` the SAME way every other scratch-touching command in this
-/// project does: `repo` is the parent of the ALREADY-RESOLVED store dir `cmd_reset` handed
-/// in (no second, independently-derived walk), and `scratch` is the read-only
-/// `scratch_root_path_from_env(repo, workdir)` authority `rigger validate`'s residue scan
-/// also resolves through - so `reset --build-cache` can never disagree with either about
-/// which directory is "the shared cache". `workdir` itself comes from
-/// [`config_store::read_scratch_workdir`], the LIGHTWEIGHT probe (mirroring
-/// [`config_store::read_store_config`]'s own shape) - never the full [`config::load`], which would
-/// additionally require a loadable agent fleet and a passing [`config::Config::validate`]
-/// just to learn one string field this pure filesystem reclaim has no other use for.
-///
-/// Delegates the actual reclaim to [`reclaim_shared_build_cache`], the ONE mutation
-/// authority over this resource, and reports what happened via
-/// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
-/// refusal when a rigger-launched shared-cache build holds the guard.
 /// `rigger reset --scratch-orphans`: reclaim every root under `<cache-home>/rigger` whose
 /// repo no longer exists ([`rigger::worktree::sweep_orphan_scratch_roots`]) and report how
 /// many went. The directory is resolved from the ambient `XDG_CACHE_HOME`/`HOME` exactly as
@@ -323,22 +339,32 @@ fn reset_scratch_orphans() -> Res {
     Ok(())
 }
 
-fn reset_build_cache(loc: &StoreLocation) -> Res {
-    let repo = loc
-        .dir
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let workdir = config_store::read_scratch_workdir(&loc.dir)?;
-    let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
-        &repo, &workdir,
-    ));
+/// `rigger reset --build-cache` (spec 77 criterion 5, BOUNDED SHARED CACHE; gap 96): reclaims
+/// every dead footprint class `rigger validate` names with this verb - dead per-unit caches,
+/// dead spawns' registered scratch, unowned agent scratch ([`reclaim_dead_footprint`] over the
+/// one [`super::validate::measure_footprint`] accounting, skipping any entry a live process
+/// holds) - and the shared gate build cache under the resolved scratch root. All of it is
+/// rebuildable scratch, so this is the one reset mode with no store-mutation implication at
+/// all and no backend requirement (unlike `--derived`).
+///
+/// The scratch root and `workdir` are [`ResetEnv`]'s, resolved once and fail-closed by
+/// [`cmd_reset`] from the ALREADY-RESOLVED store dir through [`marker_root`], the read-only
+/// `scratch_root_path_from_env(repo, workdir)` authority `rigger validate`'s residue scan and
+/// the live-writer guard also resolve through - so `reset --build-cache` can never disagree with
+/// either about which directory is "the shared cache".
+///
+/// Delegates the actual reclaim to [`reclaim_shared_build_cache`], the ONE mutation
+/// authority over this resource, and reports what happened via
+/// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
+/// refusal when a rigger-launched shared-cache build holds the guard.
+fn reset_build_cache(env: &ResetEnv) -> Res {
+    let scratch = PathBuf::from(&env.scratch_root);
     // Every dead class the footprint accounting names with this verb first (gap 96), so a
     // busy shared cache below never keeps the rest from being reclaimed - unless the run log
     // cannot be read: then nothing says which units and spawns are live, and every
     // liveness-dependent class is left alone (FAIL CLOSED), reported after the shared cache,
     // whose own guard lock decides it independently.
-    let (categories, liveness_unknown) = super::validate::measure_footprint(&cwd(), &workdir)?;
+    let (categories, liveness_unknown) = super::validate::measure_footprint(&cwd(), &env.workdir)?;
     if liveness_unknown.is_none() {
         for line in footprint_reclaim_lines(&reclaim_dead_footprint(&categories)) {
             println!("{line}");
@@ -529,17 +555,20 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
 /// it is alive right now:
 ///   - `step_lock_held`: a `rigger step` is running right now, possibly mid-wave before it has
 ///     even parked a spawn (see [`acquire_step_lock`]).
-///   - `live_spawns`: an in-flight spawn of the current run whose liveness marker is younger than
-///     its own wall-clock bound ([`rigger::liveness::live_spawns`]) - a worker still running its
-///     own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process alive.
+///   - `live_spawns`: an in-flight spawn of the current run - no recorded result, or only the
+///     step's liveness fault, which a resumed worker outlives - whose liveness marker is younger
+///     than its own wall-clock bound ([`rigger::liveness::live_spawns`]): a worker still running
+///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process
+///     alive.
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
 ///     project's exact store whose heartbeat is younger than [`rigger::registry::DEFAULT_IDLE_MS`]:
 ///     an in-process `rigger run`/`serve` (which never touches `step.lock`), or a driver between
 ///     two of its `rigger step`s, elsewhere on this machine.
 ///
-/// Unit terminality is NOT a liveness signal, and neither is a spawn request with no result on
-/// its own: a run whose driver died leaves both behind forever, and reading them as live made the
-/// run whose bloat most needs the compaction the one that refused it.
+/// Unit terminality is NOT a liveness signal, and neither is an in-flight spawn on its own,
+/// without a marker inside its bound: a run whose driver died leaves both behind forever, and
+/// reading them as live made the run whose bloat most needs the compaction the one that refused
+/// it.
 ///
 /// Pure (no IO) so the composition - list EVERY applicable reason, never just the first, so an
 /// operator sees the whole picture in one refusal instead of clearing one and retrying into the
@@ -618,14 +647,14 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// registry read) so the decision composition itself stays pure and unit-tested without any of
 /// the three.
 ///
-/// `registry_dir` and `marker_root` are INJECTED (mirrors [`dash_resolve_attach`]'s existing DI
-/// shape) rather than read ambiently in here: the composition root (`cmd_reset`) resolves them
-/// once - [`rigger::registry::default_dir`] and [`marker_root`] - exactly as every other
-/// ambient-environment read in this crate is pushed to a caller rather than repeated inside a
-/// callee. `None` (a homeless environment) degrades to zero registrations - the same degrade
-/// `register_run_instance` itself takes for the identical reason: the registry's loss is harmless
-/// discovery metadata, never a signal this guard can invent. An empty `marker_root` (no owning
-/// root resolved) reads no marker, the degrade every other marker reader takes.
+/// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
+/// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: the
+/// composition root (`cmd_reset`) resolves them once ([`ResetEnv::resolve`], the marker root
+/// fail-closed), exactly as every other ambient-environment read in this crate is pushed to a
+/// caller rather than repeated inside a callee. A `None` registry directory (a homeless
+/// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
+/// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
+/// signal this guard can invent.
 ///
 /// This probe is read-only in effect, not just in name: it reads via
 /// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
@@ -635,10 +664,11 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// would be unsafe).
 ///
 /// FAIL-SAFE in two different ways for two different faults:
-///   - a run-stream read failure propagates as a command error rather than folding into "no
-///     in-flight spawns" - this guard may only REFUSE a prune, never approve one it could not
-///     actually verify was safe (mirrors [`terminal_and_no_live_worker`]'s convention on the
-///     opposite rail: an unreadable stream is never read as "nobody is here").
+///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
+///     marker inside its bound needs it read) propagates as a command error rather than folding
+///     into "no in-flight spawns" - this guard may only REFUSE a prune, never approve one it
+///     could not actually verify was safe (mirrors [`terminal_and_no_live_worker`]'s convention
+///     on the opposite rail: an unreadable stream is never read as "nobody is here").
 ///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
 ///     fault) also propagates as a command error rather than being misread as "a step is
 ///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,
@@ -647,13 +677,12 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
-    registry_dir: Option<&Path>,
-    marker_root: &str,
+    env: &ResetEnv,
 ) -> Res {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let reasons = live_writer_facts(loc, selection, registry_dir, marker_root, &events)?.reasons();
+    let reasons = live_writer_facts(loc, selection, env, &events)?.reasons();
     if reasons.is_empty() {
         return Ok(());
     }
@@ -679,22 +708,22 @@ impl LiveWriterFacts {
     }
 
     /// Nothing is driving the run: none of the facts that make it live holds - the one
-    /// definition `reset --derived` refuses on. A non-terminal unit, or a spawn with no result
-    /// whose marker has outlived its bound, is not a driver - it is exactly what a dead driver
-    /// leaves behind.
+    /// definition `reset --derived` refuses on. A non-terminal unit, a spawn with no marker, or a
+    /// spawn whose marker has outlived its bound (whether it has no result or only the step's
+    /// liveness fault) is not a driver - it is exactly what a dead driver leaves behind.
     fn driver_dead(&self) -> bool {
         self.reasons().is_empty()
     }
 }
 
 /// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading the current run's
-/// spawn markers under `marker_root`. IMPURE (a lock probe, marker reads and an optional registry
-/// read) so the decisions built on it stay pure and unit-tested.
+/// spawn markers under `env`'s scratch root and judging every signal at `env`'s one instant.
+/// IMPURE (a lock probe, marker reads and an optional registry read) so the decisions built on it
+/// stay pure and unit-tested.
 fn live_writer_facts(
     loc: &StoreLocation,
     selection: &StoreSelection,
-    registry_dir: Option<&Path>,
-    marker_root: &str,
+    env: &ResetEnv,
     events: &[Event],
 ) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
@@ -711,14 +740,18 @@ fn live_writer_facts(
         Err(e) => return Err(e),
     };
 
-    // The current run's in-flight spawns, each judged by its own liveness marker against its own
-    // wall-clock bound - the same wave and markers `rigger status` shows as the live agents.
-    let wave = spawn::step_result(runscope::current_run(events))?.wave;
-    let run_id = runscope::current_run_id(events).unwrap_or_default();
-    let live_spawns =
-        rigger::liveness::live_spawns(marker_root, &run_id, &wave, std::time::SystemTime::now());
+    // The current run's spawns under the one live-spawn rule `rigger step`'s halted-spawn
+    // checkpoint also applies: no real result, and a marker inside the spawn's own bound.
+    let live_spawns = rigger::liveness::live_spawns(
+        runscope::current_run(events),
+        &env.scratch_root,
+        &runscope::current_run_id(events).unwrap_or_default(),
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(env.now_ms),
+    )?;
 
-    let driver_registrations = registry_dir
+    let driver_registrations = env
+        .registry_dir
+        .as_deref()
         .map(|dir| {
             let root = loc
                 .dir
@@ -729,14 +762,10 @@ fn live_writer_facts(
             // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign
             // project's registry entry as a side effect of checking THIS store for live writers
             // (spec 62 criterion 5 round 4 - see `read_live_no_prune`'s doc).
-            rigger::registry::read_live_no_prune(
-                dir,
-                rigger::registry::now_ms(),
-                rigger::registry::DEFAULT_IDLE_MS,
-            )
-            .into_iter()
-            .filter(|inst| inst.store == expected)
-            .count()
+            rigger::registry::read_live_no_prune(dir, env.now_ms, rigger::registry::DEFAULT_IDLE_MS)
+                .into_iter()
+                .filter(|inst| inst.store == expected)
+                .count()
         })
         .unwrap_or(0);
 
@@ -772,12 +801,7 @@ fn live_writer_facts(
 /// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
-fn reset_runs(
-    loc: &StoreLocation,
-    selection: &StoreSelection,
-    registry_dir: Option<&Path>,
-    marker_root: &str,
-) -> Res {
+fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -> Res {
     // The private pruned copy a rebuild's stopped swap left is a graph file with no other reaper
     // but the next rebuild: removed first, whether or not the graph goes on to refuse the prune,
     // and kept, naming the rebuild in progress, while a rebuild holds the rebuild lock (spec 101).
@@ -805,7 +829,7 @@ fn reset_runs(
     let boundary = superseded_edge_boundary(&events);
 
     let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
-    let facts = live_writer_facts(loc, selection, registry_dir, marker_root, &events)?;
+    let facts = live_writer_facts(loc, selection, env, &events)?;
     close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
@@ -1649,11 +1673,41 @@ mod tests {
         drop(store);
         drop(backend);
 
-        let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, None, "")
+        let env = ResetEnv {
+            workdir: String::new(),
+            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
+            registry_dir: None,
+            now_ms: rigger::registry::now_ms(),
+        };
+        let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, &env)
             .expect_err("a malformed spawn event must refuse, never read as quiet");
         assert!(
             !err.to_string().is_empty(),
             "the refusal must carry a message an operator can act on"
+        );
+    }
+
+    /// A store whose owning root has no UTF-8 path resolves no scratch root, and `reset` refuses
+    /// rather than reading that as "no spawn marker, so nothing is live" (the guard may only
+    /// refuse) or reclaiming a build cache under a root it never resolved.
+    #[cfg(unix)]
+    #[test]
+    fn reset_env_refuses_a_store_whose_owning_root_has_no_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir =
+            Path::new(std::ffi::OsStr::from_bytes(b"/nonexistent-\xff-root")).join(RIGGER_DIR);
+        let loc = StoreLocation { dir: dir.clone() };
+        let Err(err) = ResetEnv::resolve(&loc) else {
+            panic!("an owning root with no UTF-8 path must refuse, never resolve a scratch root");
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "reset: the store at {} has no UTF-8 owning root, so the scratch root its runs \
+                 write their liveness markers and build caches under cannot be resolved; \
+                 refusing rather than reading that as no live spawn",
+                dir.display()
+            )
         );
     }
 
