@@ -74,44 +74,14 @@ fn proc_of(pid: u32) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::process::{Child, Command, Stdio};
-
-    /// A shell that runs `setup`, reports readiness on stdout, then waits for its stdin to
-    /// close - so dropping the handle's stdin ends it without any signal.
-    fn holder(setup: &str, cwd: &Path) -> Child {
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{setup}; echo ready; read _"))
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn the holder");
-        let mut line = String::new();
-        std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(child.stdout.as_mut().unwrap()),
-            &mut line,
-        )
-        .unwrap();
-        assert_eq!(line.trim(), "ready");
-        child
-    }
-
-    /// Close `child`'s stdin so it exits on its own, then reap it.
-    fn release(mut child: Child) {
-        let mut stdin = child.stdin.take().unwrap();
-        let _ = stdin.flush();
-        drop(stdin);
-        child.wait().unwrap();
-    }
+    use crate::test_support::{release, waiting_shell};
 
     #[test]
     fn a_process_whose_cwd_is_inside_the_dir_holds_it() {
         let dir = tempfile::tempdir().unwrap();
         let inner = dir.path().join("inner");
         std::fs::create_dir_all(&inner).unwrap();
-        let child = holder("true", &inner);
+        let child = waiting_shell("true", &inner);
         let pid = child.id();
         assert!(processes_holding(dir.path()).contains(&pid));
         release(child);
@@ -123,7 +93,7 @@ mod tests {
         let file = dir.path().join("f");
         std::fs::write(&file, b"x").unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
-        let child = holder(&format!("exec 3< '{}'", file.display()), elsewhere.path());
+        let child = waiting_shell(&format!("exec 3< '{}'", file.display()), elsewhere.path());
         let pid = child.id();
         assert!(processes_holding(dir.path()).contains(&pid));
         assert!(
@@ -180,7 +150,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().canonicalize().unwrap().join("f");
         std::fs::write(&file, b"x").unwrap();
-        let child = holder(
+        let child = waiting_shell(
             &format!("exec 3< '{}' 4< '{}'", file.display(), file.display()),
             dir.path(),
         );

@@ -145,28 +145,44 @@ pub fn files_open_by(pid: u32, path: &Path) -> usize {
         .count()
 }
 
-/// A process holding the OS advisory lock on `file` - the lock `std::fs::File::try_lock` takes -
-/// returned once it holds it: a shell keeps `file` open on one descriptor, which `flock(1)` locks,
-/// and waits on its stdin. The OS releases the lock when the process is gone ([`cleanup`]).
-pub fn lock_holder(file: &Path) -> Child {
-    let mut holder = Command::new("sh")
+/// A shell in `cwd` that runs `setup` and, once it succeeded, says `ready` on its stdout and waits
+/// on its stdin, returned once it said so - so whatever `setup` opened stays open until the shell
+/// is ended: [`release`] closes its stdin so it exits on its own, and [`cleanup`] ends it through
+/// its handle. A `setup` that fails reaps the shell and panics.
+pub fn waiting_shell(setup: &str, cwd: &Path) -> Child {
+    let mut shell = Command::new("sh")
         .arg("-c")
-        .arg(r#"exec 9>>"$1" && flock -n 9 && echo locked && read _"#)
-        .arg("sh")
-        .arg(file)
+        .arg(format!("{setup} && echo ready && read _"))
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("spawn the lock holder");
+        .expect("spawn the waiting shell");
     let mut said = String::new();
-    std::io::BufReader::new(holder.stdout.as_mut().unwrap())
+    std::io::BufReader::new(shell.stdout.as_mut().unwrap())
         .read_line(&mut said)
         .unwrap();
-    if said != "locked\n" {
-        cleanup(&mut holder);
-        panic!("the holder did not take the lock on {}", file.display());
+    if said != "ready\n" {
+        cleanup(&mut shell);
+        panic!("the waiting shell's setup `{setup}` failed");
     }
-    holder
+    shell
+}
+
+/// Close the stdin of a [`waiting_shell`] so it exits on its own, then reap it.
+pub fn release(mut shell: Child) {
+    drop(shell.stdin.take());
+    shell.wait().unwrap();
+}
+
+/// A process holding the OS advisory lock on `file` - the lock `std::fs::File::try_lock` takes -
+/// returned once it holds it: a [`waiting_shell`] keeps `file` open on one descriptor, which
+/// `flock(1)` locks. The OS releases the lock when the process is gone ([`cleanup`]).
+pub fn lock_holder(file: &Path) -> Child {
+    waiting_shell(
+        &format!("exec 9>>'{}' && flock -n 9", file.display()),
+        Path::new("/"),
+    )
 }
 
 /// End and reap a fixture child unconditionally, ignoring errors - through the `Child` handle it
