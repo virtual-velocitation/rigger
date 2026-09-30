@@ -1695,4 +1695,36 @@ mod tests {
             Err(Error::Backend(_))
         ));
     }
+
+    /// [`live_spawns`] over unit `a`'s spawn bounded at 300 s followed by a result that cannot be
+    /// decoded, its marker touched just before the read when `marked`.
+    fn live_beside_a_malformed_result(marked: bool) -> Result<Vec<LiveSpawn>, Error> {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let a = park(&store, "a", Some(300));
+        let mut events = run_log(&store);
+        events.push(Event::new(spawn::TYPE_SPAWN_RESULT, b"{}".to_vec()));
+        if marked {
+            touched(root, &a);
+        }
+        live_spawns(&events, root, TEST_RUN, SystemTime::now())
+    }
+
+    /// A marker inside its bound needs the spawn's results read, so a malformed result fails the
+    /// read rather than reading as "nothing is live".
+    #[test]
+    fn live_spawns_fails_on_a_malformed_result_a_fresh_marker_needs_read() {
+        assert!(matches!(
+            live_beside_a_malformed_result(true),
+            Err(Error::Backend(_))
+        ));
+    }
+
+    /// With no marker the spawn is not live before any result is read: the marker is read first,
+    /// so the same malformed result is never reached.
+    #[test]
+    fn live_spawns_reads_no_result_for_a_spawn_with_no_marker() {
+        assert_eq!(live_beside_a_malformed_result(false).unwrap(), Vec::new());
+    }
 }
