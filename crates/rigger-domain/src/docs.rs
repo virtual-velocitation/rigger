@@ -266,11 +266,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
          graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
          BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \
          compaction leaves revision gaps by design, and a writer whose cursor was built before it \
-         ran could reissue a gap and reorder the log, so it refuses while a `rigger step` holds \
-         its lock, a unit in the current run is not yet terminal, a spawn is in flight, or a \
-         driver registration for this store is still live, naming what it found. `--force-live` \
-         overrides the refusal for an operator certain no writer is using the store; it checks \
-         nothing.\n"
+         ran could reissue a gap and reorder the log, so it refuses while the run is live - a \
+         `rigger step` holds its lock, an in-flight spawn's liveness marker is younger than its \
+         wall-clock bound, or a driver registration for this store has a heartbeat inside the \
+         idle window - naming what it found. A run whose driver died is not live: units it left \
+         non-terminal never block the compaction, and a spawn it left unanswered stops blocking \
+         once its marker outlives the spawn's bound (an unbounded spawn's never does, so record \
+         that spawn's result). `--force-live` overrides the refusal for an operator certain no \
+         writer is using the store; it checks nothing.\n"
     );
 
     let _ = writeln!(s, "## Spec shape\n");
@@ -687,8 +690,9 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
-             (no `rigger step` holds the lock, no spawn awaits a result, no `run`/`serve` is \
-             registered), it also closes the current run's units whose branch work is already \
+             (no `rigger step` holds the lock, no in-flight spawn's liveness marker is younger \
+             than its wall-clock bound, no registration for the store has a heartbeat inside the \
+             idle window), it also closes the current run's units whose branch work is already \
              landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
              conductor mints, so `rigger status` stops reporting the finished run as working. \
              It only appends; a live run is left untouched.",

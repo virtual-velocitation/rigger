@@ -36,6 +36,13 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     let modes = reset_modes(args)?;
 
     let (loc, selection) = require_store_dir()?;
+    // The liveness probe's two ambient reads, resolved HERE at the composition root and handed
+    // to both modes that read run liveness (`--runs` closing a dead run, `--derived` refusing a
+    // live one) - the probe itself never reads the environment: the machine-global instance
+    // registry, and the scratch root this store's runs stamp their spawns' liveness markers under.
+    let registry_dir = rigger::registry::default_dir();
+    let (workdir, _max_retries) = scratch_defaults(&loc);
+    let marker_root = marker_root(&loc.repo_root(), &workdir);
     // Before ANY prune reads a stream name: run the one-time spec-09 identity migration, exactly
     // as `run` / `step` / `workflow` / `playbooks` do before they open their store. Both prunes
     // address this project's history BY ITS CURRENT IDENTITY, and a store bloated enough to need
@@ -48,7 +55,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         migrate_identity_at(&loc)?;
     }
     if modes.runs {
-        reset_runs(&loc, &selection, rigger::registry::default_dir().as_deref())?;
+        reset_runs(&loc, &selection, registry_dir.as_deref(), &marker_root)?;
     }
     if modes.build_cache {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
@@ -92,15 +99,9 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // gaps by design, and a writer built before this compaction ran can reissue one of those
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
-        // verifies nothing - the operator owns that risk once they pass it). The registry read
-        // is resolved HERE, at the composition root, and handed in - the guard itself never
-        // reads the ambient environment (see `refuse_derived_reset_if_live`'s docs).
+        // verifies nothing - the operator owns that risk once they pass it).
         if !modes.force_live {
-            refuse_derived_reset_if_live(
-                &loc,
-                &selection,
-                rigger::registry::default_dir().as_deref(),
-            )?;
+            refuse_derived_reset_if_live(&loc, &selection, registry_dir.as_deref(), &marker_root)?;
         }
         reset_derived(&loc)?;
     }
@@ -521,32 +522,31 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     )
 }
 
-/// The reasons `rigger reset --derived` must refuse (spec 71, criterion 2), from four
-/// already-gathered facts - the recorded incident this guard exists to prevent is a compaction
-/// that ran WHILE a writer was still appending, so each fact covers a different shape that writer
-/// can take and none alone covers every shape:
+/// The reasons `rigger reset --derived` must refuse, from the three already-gathered facts that
+/// make a run LIVE (spec 101, THE LIVE-WRITER GUARD READS LIVENESS, owns this definition; the
+/// refusal itself is spec 71, criterion 2's). The recorded incident this guard exists to prevent
+/// is a compaction that ran WHILE a writer was still appending, and each fact is a writer proving
+/// it is alive right now:
 ///   - `step_lock_held`: a `rigger step` is running right now, possibly mid-wave before it has
-///     even parked a spawn (the narrowest, most immediate signal - see [`acquire_step_lock`]).
-///   - `live_units`: the CURRENT run's non-terminal unit branches ([`current_run_units`], the
-///     SAME authority `cmd_step`'s orphan-sweep and `validate`'s residue scan already fold on) -
-///     catches a unit that is live BETWEEN spawn rounds (its last spawn answered, its next not
-///     parked yet), which an in-flight-spawn check alone would miss.
-///   - `in_flight_spawn_ids`: a recorded spawn request in the current run with no result yet
-///     ([`spawn::step_result`]'s wave) - catches a pre-unit spawn (a plan/canary round the ledger
-///     has not folded into a unit yet) that `live_units` alone would miss, AND a worker (an agent
-///     process running its own `rigger emit`/`rigger result` couriers) that may be appending even
-///     with no `step`/`run`/`serve` process alive right now.
-///   - `driver_registrations`: a live entry in the machine-global instance registry (spec 50) for
-///     THIS project's exact store - an in-process `rigger run`/`serve` (which never touches
-///     `step.lock`, and whose next spawn may not be parked yet either) elsewhere on this machine.
+///     even parked a spawn (see [`acquire_step_lock`]).
+///   - `live_spawns`: an in-flight spawn of the current run whose liveness marker is younger than
+///     its own wall-clock bound ([`rigger::liveness::live_spawns`]) - a worker still running its
+///     own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process alive.
+///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
+///     project's exact store whose heartbeat is younger than [`rigger::registry::DEFAULT_IDLE_MS`]:
+///     an in-process `rigger run`/`serve` (which never touches `step.lock`), or a driver between
+///     two of its `rigger step`s, elsewhere on this machine.
+///
+/// Unit terminality is NOT a liveness signal, and neither is a spawn request with no result on
+/// its own: a run whose driver died leaves both behind forever, and reading them as live made the
+/// run whose bloat most needs the compaction the one that refused it.
 ///
 /// Pure (no IO) so the composition - list EVERY applicable reason, never just the first, so an
 /// operator sees the whole picture in one refusal instead of clearing one and retrying into the
-/// next - is unit-tested without any of the four. Empty means quiet: safe to compact.
+/// next - is unit-tested without any of the three. Empty means quiet: safe to compact.
 fn live_writer_reasons(
     step_lock_held: bool,
-    live_units: &std::collections::HashSet<String>,
-    in_flight_spawn_ids: &[String],
+    live_spawns: &[rigger::liveness::LiveSpawn],
     driver_registrations: usize,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
@@ -554,33 +554,45 @@ fn live_writer_reasons(
         reasons
             .push("a `rigger step` is running right now (it holds .rigger/step.lock)".to_string());
     }
-    if !live_units.is_empty() {
-        let mut slugs: Vec<&str> = live_units
-            .iter()
-            .map(|b| b.strip_prefix("rigger/u/").unwrap_or(b.as_str()))
-            .collect();
-        slugs.sort_unstable();
+    if !live_spawns.is_empty() {
+        let named: Vec<String> = live_spawns.iter().map(live_spawn_named).collect();
         reasons.push(format!(
-            "{} unit(s) in the current run are not yet terminal: {}",
-            slugs.len(),
-            slugs.join(", "),
-        ));
-    }
-    if !in_flight_spawn_ids.is_empty() {
-        reasons.push(format!(
-            "{} spawn(s) in the current run have no recorded result yet: {}",
-            in_flight_spawn_ids.len(),
-            in_flight_spawn_ids.join(", "),
+            "{} in-flight spawn(s) in the current run touched their liveness marker within their \
+             wall-clock bound: {}",
+            live_spawns.len(),
+            named.join(", "),
         ));
     }
     if driver_registrations > 0 {
         reasons.push(format!(
-            "{driver_registrations} driver registration(s) for this project's store are still \
-             live in the machine-global instance registry (spec 50) - a `run`/`serve`/`step` may \
-             be advancing this run elsewhere on this machine"
+            "{driver_registrations} driver registration(s) for this project's store in the \
+             machine-global instance registry (spec 50) heartbeat within the last {}s - a \
+             `run`/`serve`/`step` may be advancing this run elsewhere on this machine",
+            rigger::registry::DEFAULT_IDLE_MS / 1000,
         ));
     }
     reasons
+}
+
+/// One live spawn as a refusal names it: its id, how long ago its marker was touched, and the
+/// bound that keeps it live. An unbounded spawn's marker never goes stale (the step's own sweep
+/// never calls it hung either), so the only thing that ends it is its recorded result - named
+/// here, since that is the operator's way past it once its worker is gone.
+fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
+    let ago = s.silent_for.as_secs();
+    if s.bound.is_zero() {
+        format!(
+            "{id} (marker touched {ago}s ago; unbounded, so it stays live until its result is \
+             recorded - `rigger result {id} --error <why>` once its worker is gone)",
+            id = s.id,
+        )
+    } else {
+        format!(
+            "{} (marker touched {ago}s ago, bound {}s)",
+            s.id,
+            s.bound.as_secs()
+        )
+    }
 }
 
 /// The loud refusal `rigger reset --derived` prints for a non-empty [`live_writer_reasons`]:
@@ -589,7 +601,7 @@ fn live_writer_reasons(
 /// operator reads the same risk-owning sentence wherever they meet the flag.
 fn live_writer_refusal(reasons: &[String]) -> String {
     format!(
-        "reset --derived: refusing to compact the event log while run machinery looks live - {}. \
+        "reset --derived: refusing to compact the event log while the run is live - {}. \
          Compaction deletes superseded derived-index recordings, which leaves REVISION GAPS by \
          design; a writer whose append cursor was built before this compaction ran can reissue \
          one of those gap revisions, and every later event then sorts BELOW it in revision order \
@@ -601,17 +613,19 @@ fn live_writer_refusal(reasons: &[String]) -> String {
     )
 }
 
-/// Gather [`live_writer_reasons`]'s four facts and refuse `rigger reset --derived` (spec 71,
-/// criterion 2) when any applies. IMPURE (a lock probe, a store read, an optional registry read)
-/// so the decision composition itself stays pure and unit-tested without any of the four.
+/// Gather [`live_writer_reasons`]'s three facts and refuse `rigger reset --derived` (spec 71,
+/// criterion 2) when any applies. IMPURE (a lock probe, a store read, marker reads, an optional
+/// registry read) so the decision composition itself stays pure and unit-tested without any of
+/// the three.
 ///
-/// `registry_dir` is INJECTED (mirrors [`dash_resolve_attach`]'s existing DI shape) rather than
-/// read ambiently in here: the composition root (`cmd_reset`) resolves it once via
-/// [`rigger::registry::default_dir`], exactly as every other ambient-environment read in this
-/// crate is pushed to a caller rather than repeated inside a callee. `None` (a homeless
-/// environment) degrades to zero registrations - the same degrade `register_run_instance` itself
-/// takes for the identical reason: the registry's loss is harmless discovery metadata, never a
-/// signal this guard can invent.
+/// `registry_dir` and `marker_root` are INJECTED (mirrors [`dash_resolve_attach`]'s existing DI
+/// shape) rather than read ambiently in here: the composition root (`cmd_reset`) resolves them
+/// once - [`rigger::registry::default_dir`] and [`marker_root`] - exactly as every other
+/// ambient-environment read in this crate is pushed to a caller rather than repeated inside a
+/// callee. `None` (a homeless environment) degrades to zero registrations - the same degrade
+/// `register_run_instance` itself takes for the identical reason: the registry's loss is harmless
+/// discovery metadata, never a signal this guard can invent. An empty `marker_root` (no owning
+/// root resolved) reads no marker, the degrade every other marker reader takes.
 ///
 /// This probe is read-only in effect, not just in name: it reads via
 /// [`rigger::registry::read_live_no_prune`], never [`rigger::registry::read_live`], so checking
@@ -634,24 +648,24 @@ fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
     registry_dir: Option<&Path>,
+    marker_root: &str,
 ) -> Res {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let reasons = live_writer_facts(loc, selection, registry_dir, &events)?.reasons();
+    let reasons = live_writer_facts(loc, selection, registry_dir, marker_root, &events)?.reasons();
     if reasons.is_empty() {
         return Ok(());
     }
     Err(live_writer_refusal(&reasons).into())
 }
 
-/// The four facts [`live_writer_reasons`] composes, gathered once so both consumers read the
-/// same probe: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
+/// The three facts [`live_writer_reasons`] composes, gathered once so both consumers read the
+/// same liveness: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
 /// --runs`'s dead-driver test ([`close_landed_units`]).
 struct LiveWriterFacts {
     step_lock_held: bool,
-    live_units: std::collections::HashSet<String>,
-    in_flight_spawn_ids: Vec<String>,
+    live_spawns: Vec<rigger::liveness::LiveSpawn>,
     driver_registrations: usize,
 }
 
@@ -659,28 +673,28 @@ impl LiveWriterFacts {
     fn reasons(&self) -> Vec<String> {
         live_writer_reasons(
             self.step_lock_held,
-            &self.live_units,
-            &self.in_flight_spawn_ids,
+            &self.live_spawns,
             self.driver_registrations,
         )
     }
 
-    /// Nothing is driving the run: no `rigger step` holds the lock, no spawn awaits its result,
-    /// and no `run`/`serve` is registered for this store. A non-terminal unit alone is not a
-    /// driver - it is exactly what a dead driver leaves behind.
+    /// Nothing is driving the run: none of the facts that make it live holds - the one
+    /// definition `reset --derived` refuses on. A non-terminal unit, or a spawn with no result
+    /// whose marker has outlived its bound, is not a driver - it is exactly what a dead driver
+    /// leaves behind.
     fn driver_dead(&self) -> bool {
-        !self.step_lock_held
-            && self.in_flight_spawn_ids.is_empty()
-            && self.driver_registrations == 0
+        self.reasons().is_empty()
     }
 }
 
-/// Gather [`LiveWriterFacts`] over `events` (the whole run stream). IMPURE (a lock probe and an
-/// optional registry read) so the decisions built on it stay pure and unit-tested.
+/// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading the current run's
+/// spawn markers under `marker_root`. IMPURE (a lock probe, marker reads and an optional registry
+/// read) so the decisions built on it stay pure and unit-tested.
 fn live_writer_facts(
     loc: &StoreLocation,
     selection: &StoreSelection,
     registry_dir: Option<&Path>,
+    marker_root: &str,
     events: &[Event],
 ) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
@@ -697,12 +711,12 @@ fn live_writer_facts(
         Err(e) => return Err(e),
     };
 
-    let live_units = current_run_units(events).live_branches;
-    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(events))?
-        .wave
-        .into_iter()
-        .map(|w| w.id)
-        .collect();
+    // The current run's in-flight spawns, each judged by its own liveness marker against its own
+    // wall-clock bound - the same wave and markers `rigger status` shows as the live agents.
+    let wave = spawn::step_result(runscope::current_run(events))?.wave;
+    let run_id = runscope::current_run_id(events).unwrap_or_default();
+    let live_spawns =
+        rigger::liveness::live_spawns(marker_root, &run_id, &wave, std::time::SystemTime::now());
 
     let driver_registrations = registry_dir
         .map(|dir| {
@@ -728,8 +742,7 @@ fn live_writer_facts(
 
     Ok(LiveWriterFacts {
         step_lock_held,
-        live_units,
-        in_flight_spawn_ids,
+        live_spawns,
         driver_registrations,
     })
 }
@@ -759,7 +772,12 @@ fn live_writer_facts(
 /// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
-fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Option<&Path>) -> Res {
+fn reset_runs(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    registry_dir: Option<&Path>,
+    marker_root: &str,
+) -> Res {
     // The private pruned copy a rebuild's stopped swap left is a graph file with no other reaper
     // but the next rebuild: removed first, whether or not the graph goes on to refuse the prune,
     // and kept, naming the rebuild in progress, while a rebuild holds the rebuild lock (spec 101).
@@ -787,7 +805,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Opt
     let boundary = superseded_edge_boundary(&events);
 
     let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
-    let facts = live_writer_facts(loc, selection, registry_dir, &events)?;
+    let facts = live_writer_facts(loc, selection, registry_dir, marker_root, &events)?;
     close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
@@ -1475,32 +1493,31 @@ mod tests {
         );
     }
 
-    // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS ---
+    // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS (spec 101: it reads liveness) ---
 
-    fn no_live_units() -> std::collections::HashSet<String> {
-        std::collections::HashSet::new()
+    /// A live spawn `id`, its marker touched `ago` seconds back, bounded at `bound` seconds.
+    fn live_spawn(id: &str, ago: u64, bound: u64) -> rigger::liveness::LiveSpawn {
+        rigger::liveness::LiveSpawn {
+            id: id.to_string(),
+            silent_for: std::time::Duration::from_secs(ago),
+            bound: std::time::Duration::from_secs(bound),
+        }
     }
 
-    /// The pure core (spec 71, criterion 2): all four facts quiet is the only quiet state.
+    const STEP_LOCK_REASON: &str =
+        "a `rigger step` is running right now (it holds .rigger/step.lock)";
+
+    /// The pure core: all three facts quiet is the only quiet state, and each fact alone draws
+    /// exactly its own reason.
     #[test]
-    fn live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet() {
-        assert!(
-            live_writer_reasons(false, &no_live_units(), &[], 0).is_empty(),
-            "nothing live must draw no reason"
+    fn live_writer_reasons_is_empty_only_when_all_three_facts_are_quiet() {
+        assert_eq!(live_writer_reasons(false, &[], 0), Vec::<String>::new());
+        assert_eq!(live_writer_reasons(true, &[], 0), vec![STEP_LOCK_REASON]);
+        assert_eq!(
+            live_writer_reasons(false, &[live_spawn("a/implementer#0", 12, 300)], 0).len(),
+            1
         );
-        assert!(!live_writer_reasons(true, &no_live_units(), &[], 0).is_empty());
-        assert!(!live_writer_reasons(
-            false,
-            &std::collections::HashSet::from(["rigger/u/a".to_string()]),
-            &[],
-            0
-        )
-        .is_empty());
-        assert!(
-            !live_writer_reasons(false, &no_live_units(), &["a/implementer#0".to_string()], 0)
-                .is_empty()
-        );
-        assert!(!live_writer_reasons(false, &no_live_units(), &[], 1).is_empty());
+        assert_eq!(live_writer_reasons(false, &[], 1).len(), 1);
     }
 
     /// A held step lock is named by exactly what it is, and the refusal points at the override -
@@ -1508,7 +1525,7 @@ mod tests {
     /// override flag whose help text owns the risk").
     #[test]
     fn refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk() {
-        let reasons = live_writer_reasons(true, &no_live_units(), &[], 0);
+        let reasons = live_writer_reasons(true, &[], 0);
         let out = live_writer_refusal(&reasons);
         assert!(
             out.contains("step.lock"),
@@ -1528,43 +1545,50 @@ mod tests {
         );
     }
 
-    /// A unit that is still non-terminal - live BETWEEN spawn rounds, with no spawn currently in
-    /// flight - is named by its slug, distinctly from an in-flight spawn id.
+    /// Every live spawn is named by id with its marker's age and the bound keeping it live, in
+    /// the order given, and the count is stated.
     #[test]
-    fn refusal_names_a_non_terminal_unit_between_spawn_rounds() {
-        let live_units = std::collections::HashSet::from(["rigger/u/a".to_string()]);
-        let reasons = live_writer_reasons(false, &live_units, &[], 0);
-        let out = live_writer_refusal(&reasons);
-        assert!(
-            out.contains('a') && out.contains("not yet terminal"),
-            "must name the non-terminal unit; got {out:?}"
+    fn refusal_names_every_live_spawn_with_its_marker_age_and_bound() {
+        let spawns = [
+            live_spawn("a/implementer#0", 12, 300),
+            live_spawn("b/reviewer#1", 299, 3600),
+        ];
+        assert_eq!(
+            live_writer_reasons(false, &spawns, 0),
+            vec![
+                "2 in-flight spawn(s) in the current run touched their liveness marker within \
+                 their wall-clock bound: a/implementer#0 (marker touched 12s ago, bound 300s), \
+                 b/reviewer#1 (marker touched 299s ago, bound 3600s)"
+            ]
         );
     }
 
-    /// In-flight spawns are named individually by id, and the count is stated.
+    /// An unbounded spawn never goes stale, so its refusal names the one way it ends: recording
+    /// its result.
     #[test]
-    fn refusal_names_every_in_flight_spawn_id_and_the_count() {
-        let ids = vec!["a/implementer#0".to_string(), "b/reviewer#1".to_string()];
-        let reasons = live_writer_reasons(false, &no_live_units(), &ids, 0);
-        let out = live_writer_refusal(&reasons);
-        assert!(
-            out.contains("a/implementer#0") && out.contains("b/reviewer#1"),
-            "must name BOTH in-flight spawn ids; got {out:?}"
-        );
-        assert!(
-            out.contains('2'),
-            "must state the count of in-flight spawns; got {out:?}"
+    fn refusal_names_an_unbounded_live_spawn_and_the_result_that_ends_it() {
+        assert_eq!(
+            live_writer_reasons(false, &[live_spawn("a/implementer#0", 86_400, 0)], 0),
+            vec![
+                "1 in-flight spawn(s) in the current run touched their liveness marker within \
+                 their wall-clock bound: a/implementer#0 (marker touched 86400s ago; unbounded, \
+                 so it stays live until its result is recorded - `rigger result a/implementer#0 \
+                 --error <why>` once its worker is gone)"
+            ]
         );
     }
 
-    /// A live driver registration is named by its count and the mechanism (spec 50) it comes from.
+    /// Live driver registrations are named by their count, the mechanism (spec 50) they come from
+    /// and the idle window their heartbeat is inside.
     #[test]
-    fn refusal_names_the_driver_registration_count() {
-        let reasons = live_writer_reasons(false, &no_live_units(), &[], 3);
-        let out = live_writer_refusal(&reasons);
-        assert!(
-            out.contains('3') && out.contains("registration"),
-            "must state the registration count; got {out:?}"
+    fn refusal_names_the_driver_registration_count_and_the_idle_window() {
+        assert_eq!(
+            live_writer_reasons(false, &[], 3),
+            vec![
+                "3 driver registration(s) for this project's store in the machine-global \
+                 instance registry (spec 50) heartbeat within the last 900s - a \
+                 `run`/`serve`/`step` may be advancing this run elsewhere on this machine"
+            ]
         );
     }
 
@@ -1572,17 +1596,30 @@ mod tests {
     /// the whole picture in one refusal instead of clearing one and retrying into the next.
     #[test]
     fn refusal_names_every_applicable_reason_together_not_just_the_first() {
-        let live_units = std::collections::HashSet::from(["rigger/u/a".to_string()]);
-        let ids = vec!["b/reviewer#1".to_string()];
-        let reasons = live_writer_reasons(true, &live_units, &ids, 1);
-        let out = live_writer_refusal(&reasons);
-        assert!(out.contains("step.lock"), "must still name the lock");
-        assert!(out.contains('a'), "must still name the non-terminal unit");
-        assert!(out.contains("b/reviewer#1"), "must still name the spawn");
+        let spawns = [live_spawn("b/reviewer#1", 5, 300)];
+        let reasons = live_writer_reasons(true, &spawns, 1);
+        assert_eq!(reasons.len(), 3, "one reason per live fact: {reasons:?}");
+        assert_eq!(reasons[0], STEP_LOCK_REASON);
+        assert!(reasons[1].contains("b/reviewer#1"), "{reasons:?}");
         assert!(
-            out.contains("registration"),
-            "must still name the registration"
+            reasons[2].contains("1 driver registration(s)"),
+            "{reasons:?}"
         );
+    }
+
+    /// The one liveness definition decides `reset --runs`'s dead-driver test too: dead exactly
+    /// when no fact holds, live on any one of them.
+    #[test]
+    fn a_driver_is_dead_exactly_when_no_liveness_fact_holds() {
+        let facts = |step_lock_held, live_spawns: Vec<_>, driver_registrations| LiveWriterFacts {
+            step_lock_held,
+            live_spawns,
+            driver_registrations,
+        };
+        assert!(facts(false, vec![], 0).driver_dead());
+        assert!(!facts(true, vec![], 0).driver_dead());
+        assert!(!facts(false, vec![live_spawn("a/implementer#0", 1, 300)], 0).driver_dead());
+        assert!(!facts(false, vec![], 1).driver_dead());
     }
 
     /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn
@@ -1612,7 +1649,7 @@ mod tests {
         drop(store);
         drop(backend);
 
-        let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, None)
+        let err = refuse_derived_reset_if_live(&loc, &StoreSelection::Sqlite, None, "")
             .expect_err("a malformed spawn event must refuse, never read as quiet");
         assert!(
             !err.to_string().is_empty(),

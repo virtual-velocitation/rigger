@@ -205,10 +205,52 @@ pub fn marker_ages(
 ) -> std::collections::BTreeMap<String, u64> {
     wave.iter()
         .filter_map(|w| {
-            let path = marker_path(scratch_root, run_id, &w.id)?;
-            let mtime = std::fs::metadata(path).and_then(|md| md.modified()).ok()?;
+            let mtime = marker_touched_at(scratch_root, run_id, &w.id)?;
             let age = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
             Some((w.id.clone(), age))
+        })
+        .collect()
+}
+
+/// When a spawn's liveness marker was last touched: its mtime, or `None` when the spawn has no
+/// marker - absent, unreadable, or a degenerate root or id [`marker_path`] refuses. The one
+/// marker read every liveness reader in this module stats through.
+fn marker_touched_at(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<SystemTime> {
+    let path = marker_path(scratch_root, run_id, spawn_id)?;
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// An in-flight spawn its liveness marker proves alive (spec 101, THE LIVE-WRITER GUARD READS
+/// LIVENESS): its id, how long ago its marker was last touched, and the wall-clock bound that
+/// age was judged against ([`Duration::ZERO`] for an unbounded spawn, which [`is_stale`] never
+/// calls stale).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveSpawn {
+    pub id: String,
+    pub silent_for: Duration,
+    pub bound: Duration,
+}
+
+/// Every `wave` spawn (a run's in-flight spawns, [`spawn::step_result`]'s wave) whose liveness
+/// marker is not stale at `now` against the spawn's own `max_wall_clock` ([`is_stale`]), in wave
+/// order. A spawn with no marker is not live: nothing proves a worker ever started it. A spawn
+/// outside the wave has a recorded result and has ended, whatever its marker's age. An unbounded
+/// spawn's marker never goes stale, exactly as `rigger step`'s [`sweep`] never calls it hung.
+pub fn live_spawns(
+    scratch_root: &str,
+    run_id: &str,
+    wave: &[spawn::WaveItem],
+    now: SystemTime,
+) -> Vec<LiveSpawn> {
+    wave.iter()
+        .filter_map(|w| {
+            let touched = marker_touched_at(scratch_root, run_id, &w.id)?;
+            let bound = Duration::from_secs(w.max_wall_clock.unwrap_or(0));
+            (!is_stale(now, touched, bound)).then(|| LiveSpawn {
+                id: w.id.clone(),
+                silent_for: now.duration_since(touched).unwrap_or(Duration::ZERO),
+                bound,
+            })
         })
         .collect()
 }
@@ -419,12 +461,8 @@ pub fn sweep(
         // (conservative - see the fn docs); only a present-but-stale marker is hung. A
         // degenerate id ([`marker_path`] returns `None`) is treated identically - the same
         // conservative no-op, never a fabricated path to stat.
-        let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
+        let Some(last_seen) = marker_touched_at(scratch_root, run_id, &req.id) else {
             continue;
-        };
-        let last_seen = match std::fs::metadata(path).and_then(|m| m.modified()) {
-            Ok(mtime) => mtime,
-            Err(_) => continue,
         };
         in_flight.push(InFlightSpawn {
             id: req.id.clone(),
@@ -505,10 +543,7 @@ pub fn spawn_is_halted(
                 continue;
             }
         }
-        let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
-            continue;
-        };
-        let Ok(last_seen) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+        let Some(last_seen) = marker_touched_at(scratch_root, run_id, &req.id) else {
             continue;
         };
         let bound = req
@@ -1434,6 +1469,136 @@ mod tests {
         assert!(
             spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
             "a sibling with a real result is not live even while its marker is still fresh"
+        );
+    }
+
+    // --- live_spawns tests (spec 101, THE LIVE-WRITER GUARD READS LIVENESS) ---
+
+    /// A wave item for `id` with the wall-clock bound `secs` (`None` = unbounded).
+    fn wave_item(id: &str, secs: Option<u64>) -> spawn::WaveItem {
+        spawn::WaveItem {
+            id: id.to_string(),
+            max_wall_clock: secs,
+            ..Default::default()
+        }
+    }
+
+    /// Plants `id`'s marker under `root` for [`TEST_RUN`] and returns when it was touched.
+    fn touched(root: &str, id: &str) -> SystemTime {
+        plant_marker(root, id);
+        marker_touched_at(root, TEST_RUN, id).expect("the planted marker has an mtime")
+    }
+
+    /// [`live_spawns`] over `wave` under a fresh scratch root where every id in `marked` has a
+    /// marker, evaluated `later` after the first marker was touched.
+    fn live_after(wave: &[spawn::WaveItem], marked: &[&str], later: Duration) -> Vec<LiveSpawn> {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let at = marked
+            .iter()
+            .map(|id| touched(root, id))
+            .min()
+            .expect("every case marks at least one spawn");
+        live_spawns(root, TEST_RUN, wave, at + later)
+    }
+
+    fn live(id: &str, silent_secs: u64, bound_secs: u64) -> LiveSpawn {
+        LiveSpawn {
+            id: id.to_string(),
+            silent_for: Duration::from_secs(silent_secs),
+            bound: Duration::from_secs(bound_secs),
+        }
+    }
+
+    crate::test_cases! {
+        /// A marker touched inside the spawn's own bound proves it alive, named with the age the
+        /// marker has and the bound that age was judged against.
+        live_spawns_names_a_spawn_whose_marker_is_inside_its_bound: assert_eq!(
+            live_after(&[wave_item("a/i#0", Some(300))], &["a/i#0"], Duration::from_secs(10)),
+            vec![live("a/i#0", 10, 300)]
+        );
+        /// At exactly the bound the marker is not yet stale (stale is strictly past the bound).
+        live_spawns_keeps_a_marker_aged_exactly_its_bound: assert_eq!(
+            live_after(&[wave_item("a/i#0", Some(300))], &["a/i#0"], Duration::from_secs(300)),
+            vec![live("a/i#0", 300, 300)]
+        );
+        /// One second past the bound the marker is stale: the worker is gone.
+        live_spawns_drops_a_marker_one_second_past_its_bound: assert_eq!(
+            live_after(&[wave_item("a/i#0", Some(300))], &["a/i#0"], Duration::from_secs(301)),
+            Vec::<LiveSpawn>::new()
+        );
+        /// Each spawn is judged against its OWN bound: at 200 s the 300 s spawn is live and the
+        /// 100 s one is not, whatever order the wave holds them in.
+        live_spawns_judges_each_spawn_against_its_own_bound: assert_eq!(
+            live_after(
+                &[wave_item("short/i#0", Some(100)), wave_item("long/i#0", Some(300))],
+                &["short/i#0", "long/i#0"],
+                Duration::from_secs(200),
+            )
+            .into_iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+            vec!["long/i#0".to_string()]
+        );
+        /// Live spawns come back in wave order.
+        live_spawns_keeps_wave_order: assert_eq!(
+            live_after(
+                &[wave_item("b/i#0", Some(300)), wave_item("a/i#0", Some(300))],
+                &["b/i#0", "a/i#0"],
+                Duration::ZERO,
+            )
+            .into_iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+            vec!["b/i#0".to_string(), "a/i#0".to_string()]
+        );
+        /// A wave spawn no worker ever touched a marker for is not live.
+        live_spawns_skips_a_spawn_with_no_marker: assert_eq!(
+            live_after(
+                &[wave_item("a/i#0", Some(300)), wave_item("unmarked/i#0", Some(300))],
+                &["a/i#0"],
+                Duration::from_secs(10),
+            ),
+            vec![live("a/i#0", 10, 300)]
+        );
+        /// An unbounded spawn's marker never goes stale (`is_stale`'s zero-bound convention):
+        /// a day-old marker still reads live, with a zero bound.
+        live_spawns_never_calls_an_unbounded_spawns_marker_stale: assert_eq!(
+            live_after(&[wave_item("a/i#0", None)], &["a/i#0"], Duration::from_secs(86_400)),
+            vec![live("a/i#0", 86_400, 0)]
+        );
+        /// A bound recorded as zero is the same unbounded spawn.
+        live_spawns_reads_a_zero_bound_as_unbounded: assert_eq!(
+            live_after(&[wave_item("a/i#0", Some(0))], &["a/i#0"], Duration::from_secs(86_400)),
+            vec![live("a/i#0", 86_400, 0)]
+        );
+    }
+
+    /// A marker is read under the run it belongs to: another run's marker for the same spawn id
+    /// proves nothing about this run.
+    #[test]
+    fn live_spawns_reads_only_the_named_runs_marker() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let at = touched(root, "a/i#0");
+        let wave = [wave_item("a/i#0", Some(300))];
+        assert_eq!(live_spawns(root, "another-run", &wave, at), Vec::new());
+        assert_eq!(
+            live_spawns(root, TEST_RUN, &wave, at),
+            vec![live("a/i#0", 0, 300)]
+        );
+    }
+
+    /// A marker touched after `now` (clock skew) is not stale and reads as silent for zero.
+    #[test]
+    fn live_spawns_reads_a_future_marker_as_just_touched() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let at = touched(root, "a/i#0");
+        let wave = [wave_item("a/i#0", Some(300))];
+        assert_eq!(
+            live_spawns(root, TEST_RUN, &wave, at - Duration::from_secs(60)),
+            vec![live("a/i#0", 0, 300)]
         );
     }
 }

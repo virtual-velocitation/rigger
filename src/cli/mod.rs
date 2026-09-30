@@ -2795,13 +2795,21 @@ fn liveness_ages_for_wave(
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
+    rigger::liveness::marker_ages(&marker_root(repo, workdir), run_id, wave, now)
+}
+
+/// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
+/// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
+/// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
+/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares. Read-only: it
+/// resolves the root without creating it, so a report never conjures a scratch root nor runs the
+/// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
+/// an empty root, which every marker reader degrades to "no marker".
+fn marker_root(repo: &str, workdir: &str) -> String {
     if repo.is_empty() {
-        return std::collections::BTreeMap::new();
+        return String::new();
     }
-    // A read-only report resolves the root without creating it: `rigger status` must never
-    // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
-    let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
-    rigger::liveness::marker_ages(&root, run_id, wave, now)
+    rigger::worktree::scratch_root_path_from_env(repo, workdir)
 }
 
 /// Parsed `rigger watch` arguments (see [`parse_watch_args`]).
