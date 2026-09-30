@@ -249,7 +249,10 @@ impl Store {
     ///    writes is the valid-time of a surviving DERIVED row that takes an earlier valid-time
     ///    under property 2 - which is how a survivor whose superseded or duplicate fact-mates were
     ///    deleted keeps its fact's date - and it writes the value the fold would have derived
-    ///    anyway. No non-derived row is read, written, or moved.
+    ///    anyway. No non-derived row is written or moved, and the only non-derived rows the
+    ///    selection reads are its streams' alias definitions ([`FactIdentity::alias_type`]),
+    ///    replayed in position order so each recording's names resolve through the aliases
+    ///    defined before it.
     /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
     ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
     ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
