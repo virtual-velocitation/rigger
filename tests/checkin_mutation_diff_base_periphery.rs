@@ -341,6 +341,51 @@ fn three_commit_history(repo: &Path) -> [String; 3] {
     ]
 }
 
+/// The catch an earlier sweep recorded in `x.rs`: its mutant, then the test binary that failed
+/// on it first (`foo`), as one `caught.map` line.
+const FOO_CATCH: &str = "x.rs:1:4: replace x with ()\tfoo";
+
+/// The catch an earlier sweep recorded in `y.rs`, failed first by `bar`.
+const BAR_CATCH: &str = "y.rs:1:4: replace y with ()\tbar";
+
+/// [`three_commit_history`], then the commit a run starts from here - `x.rs` and `y.rs` landing
+/// with `tests/foo.rs` and `tests/bar.rs`, the binaries that catch their mutants - then that
+/// run's rewrite of `tests/foo.rs` beside its own `c.rs`, then its rewrite of `tests/bar.rs`
+/// beside its `d.rs`. Returns the history's first commit, the run base, the foo rewrite and the
+/// bar rewrite (HEAD).
+fn catch_history(repo: &Path) -> [String; 4] {
+    let [origin, _, _] = three_commit_history(repo);
+    [
+        origin,
+        commit_files(
+            repo,
+            &[
+                ("x.rs", "fn x() {}\n"),
+                ("y.rs", "fn y() {}\n"),
+                ("tests/foo.rs", "#[test]\nfn foo() {}\n"),
+                ("tests/bar.rs", "#[test]\nfn bar() {}\n"),
+            ],
+            "x.rs and y.rs land with the tests that catch their mutants",
+        ),
+        commit_files(
+            repo,
+            &[
+                ("tests/foo.rs", "#[test]\nfn foo() {\n    x();\n}\n"),
+                ("c.rs", "fn c() {}\n"),
+            ],
+            "this spec rewrites tests/foo.rs",
+        ),
+        commit_files(
+            repo,
+            &[
+                ("tests/bar.rs", "#[test]\nfn bar() {\n    y();\n}\n"),
+                ("d.rs", "fn d() {}\n"),
+            ],
+            "this spec rewrites tests/bar.rs",
+        ),
+    ]
+}
+
 /// The mutant an earlier sweep left unclosed in its anchor.
 const ANCHOR_MISS: &str = "a.rs:1:11: replace a with ()";
 
@@ -474,25 +519,69 @@ fn an_anchor_at_or_behind_the_run_base_is_a_previous_specs_so_the_whole_spec_dif
 #[test]
 fn an_anchor_of_this_run_that_head_holds_is_this_specs_own_so_the_re_sweep_starts_from_it() {
     let repo = tempfile::tempdir().unwrap();
-    let [origin, anchor, _head] = three_commit_history(repo.path());
-    let since_anchor = git_out(repo.path(), &["diff", &anchor, "--", "*.rs"]);
+    let dir = repo.path();
+    // This run started from `base`; its last sweep examined the foo rewrite, and the bar rewrite
+    // landed since.
+    let [_origin, base, anchor, _head] = catch_history(dir);
+    let since_anchor = git_out(dir, &["diff", &anchor, "--", "*.rs"]);
     assert_ne!(
         since_anchor,
-        git_out(repo.path(), &["diff", &origin, "--", "*.rs"]),
+        git_out(dir, &["diff", &base, "--", "*.rs"]),
         "fixture precondition: the diff since the anchor is narrower than the spec diff"
     );
-    let (run, _scratch) = run_gate_over_anchor(repo.path(), &origin, &anchor, Some(&origin), "");
+    let caught = format!("{FOO_CATCH}\n{BAR_CATCH}\n");
+    let (run, _scratch) = run_gate_over_anchor(dir, &base, &anchor, Some(&base), &caught);
     assert_swept(
         &run,
-        Some("mutants --list --workspace -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) "),
-        "this spec's own earlier miss is re-run by name",
+        Some(
+            "mutants --list --workspace -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) \
+             -F y\\.rs(:[0-9]+:[0-9]+)?: replace y with \\(\\) ",
+        ),
+        "this spec's own earlier miss is re-run by name, and so is the catch whose test changed \
+         since the anchor's tip (bar's) - never the one whose test changed only before it (foo's)",
     );
     assert_eq!(
-        unit_diff(repo.path()).trim_end(),
+        unit_diff(dir).trim_end(),
         since_anchor.trim_end(),
         "an anchor recording RIGGER_RUN_BASE whose tip HEAD holds is an earlier sweep of this \
          run, so the re-sweep covers the diff since it"
     );
+}
+
+#[test]
+fn a_catch_an_earlier_spec_recorded_is_re_run_by_name_when_this_spec_changes_its_test() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // A previous spec's run started from `origin`, and its last sweep examined the tree this run
+    // starts from (`base`), recording a catch by foo and one by bar. This spec rewrites
+    // tests/foo.rs beside its c.rs, and nothing else under tests/.
+    let [origin, base, foo_rewrite, _] = catch_history(dir);
+    git_ok(dir, &["checkout", "-q", &foo_rewrite]);
+    assert_eq!(
+        git_out(dir, &["diff", "--name-only", &base]),
+        "c.rs\ntests/foo.rs",
+        "fixture precondition: the spec diff rewrites tests/foo.rs and touches neither x.rs nor y.rs"
+    );
+    let caught = format!("{FOO_CATCH}\n{BAR_CATCH}\n");
+    // The record is not this run's, so it narrows nothing and its miss is not re-run; its catches
+    // are the project's whichever run recorded them, so the one whose catching test this spec
+    // changed is re-run by name on this spec's first sweep, bar's is not, and the map is carried
+    // whole.
+    for (case, recorded_base) in [
+        ("the previous run's base", Some(origin.as_str())),
+        ("no recorded base", None),
+    ] {
+        let (run, scratch) = run_gate_over_anchor(dir, &base, &base, recorded_base, &caught);
+        assert_narrowed_nothing(
+            dir,
+            &run,
+            scratch.path(),
+            &base,
+            &caught,
+            Some("mutants --list --workspace -F x\\.rs(:[0-9]+:[0-9]+)?: replace x with \\(\\) "),
+            case,
+        );
+    }
 }
 
 #[test]
@@ -528,18 +617,20 @@ fn an_anchor_of_this_run_that_head_does_not_hold_narrows_nothing() {
         git_out(repo.path(), &["diff", &rewritten, "--", "*.rs"]),
         "fixture precondition: the diff since the anchor is narrower than the spec diff"
     );
-    // An anchor HEAD does not hold narrows nothing, even one recording RIGGER_RUN_BASE, and its
-    // misses are not re-run by name.
-    let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, &rewritten, Some(&origin), "");
-    assert_narrowed_nothing(
-        repo.path(),
-        &run,
-        scratch.path(),
-        &origin,
-        "",
+    assert_eq!(
+        git_answer(repo.path(), &["cat-file", "-t", UNKNOWN_SHA]),
         None,
-        "a rewritten attempt",
+        "fixture precondition: a pruned anchor's tip names no object in this repository"
     );
+    // An anchor HEAD does not hold narrows nothing, even one recording RIGGER_RUN_BASE - a
+    // rewritten attempt's, or one whose tip was pruned - and its misses are not re-run by name.
+    for (case, tip) in [
+        ("a rewritten attempt", rewritten.as_str()),
+        ("a pruned tip", UNKNOWN_SHA),
+    ] {
+        let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, tip, Some(&origin), "");
+        assert_narrowed_nothing(repo.path(), &run, scratch.path(), &origin, "", None, case);
+    }
 }
 
 #[test]
