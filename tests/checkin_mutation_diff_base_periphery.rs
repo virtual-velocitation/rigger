@@ -28,11 +28,12 @@
 //! fails the gate by name as an environment failure.
 //!
 //! THE ANCHOR IS THIS SPEC'S OWN. The incremental anchor a sweep leaves under the scratch root
-//! narrows the next sweep to the diff since it only when it examined a commit of this spec - a
-//! tip past `$RIGGER_RUN_BASE`. A tip at or behind the run base is a previous spec's sweep: the
-//! gate sweeps the whole spec diff and re-runs none of that spec's misses. A tip HEAD does not
-//! hold narrows nothing either, and a run base git cannot resolve fails the gate rather than
-//! leaving the anchor to stand in for it.
+//! records the `$RIGGER_RUN_BASE` that sweep was given, and it narrows the next sweep to the diff
+//! since its tip only when that recorded base is this run's and HEAD holds the tip. Any other
+//! anchor narrows nothing - a previous spec's, whether its tip is behind, at or past the run base
+//! (an escalated check-in the run branch merged after this run started), one that records no
+//! base, one HEAD no longer holds: the gate sweeps the whole spec diff and re-runs none of its
+//! misses. A run base git cannot resolve fails the gate before anything runs.
 //!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
@@ -334,9 +335,15 @@ fn three_commit_history(repo: &Path) -> [String; 3] {
 const ANCHOR_MISS: &str = "a.rs:1:11: replace a with ()";
 
 /// Run the shipped gate in `repo` against `base`, with the incremental anchor an earlier sweep
-/// left under the scratch root: `tip` is the tree it examined and [`ANCHOR_MISS`] its one miss.
+/// left under the scratch root: `tip` is the tree it examined, [`ANCHOR_MISS`] its one miss and
+/// `recorded_base` the run base it was given (`None`: an anchor that records no base).
 /// Returns the run and the scratch root, so a test reads back the anchor this sweep left.
-fn run_gate_over_anchor(repo: &Path, base: &str, tip: &str) -> (GateRun, tempfile::TempDir) {
+fn run_gate_over_anchor(
+    repo: &Path,
+    base: &str,
+    tip: &str,
+    recorded_base: Option<&str>,
+) -> (GateRun, tempfile::TempDir) {
     let scratch = tempfile::tempdir().unwrap();
     write(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
     write(
@@ -344,6 +351,13 @@ fn run_gate_over_anchor(repo: &Path, base: &str, tip: &str) -> (GateRun, tempfil
         "mutation-anchor/missed.txt",
         &format!("{ANCHOR_MISS}\n"),
     );
+    if let Some(recorded) = recorded_base {
+        write(
+            scratch.path(),
+            "mutation-anchor/base",
+            &format!("{recorded}\n"),
+        );
+    }
     let mutants = scratch.path().join("cargo-mutants-checkin");
     let run = run_gate_with(
         repo,
@@ -355,14 +369,15 @@ fn run_gate_over_anchor(repo: &Path, base: &str, tip: &str) -> (GateRun, tempfil
     (run, scratch)
 }
 
-/// The incremental anchor left under the scratch root `scratch`: its tip and its misses, as
-/// written.
-fn anchor_left(scratch: &Path) -> (String, String) {
+/// The incremental anchor left under the scratch root `scratch`: its tip, its misses and the run
+/// base it records, as written.
+fn anchor_left(scratch: &Path) -> (String, String, String) {
     let anchor = scratch.join("mutation-anchor");
-    (
-        std::fs::read_to_string(anchor.join("tip")).unwrap(),
-        std::fs::read_to_string(anchor.join("missed.txt")).unwrap(),
-    )
+    let read = |fact: &str| {
+        std::fs::read_to_string(anchor.join(fact))
+            .unwrap_or_else(|e| panic!("the anchor must hold `{fact}`: {e}"))
+    };
+    (read("tip"), read("missed.txt"), read("base"))
 }
 
 #[test]
@@ -378,10 +393,10 @@ fn an_anchor_at_or_behind_the_run_base_is_a_previous_specs_so_the_whole_spec_dif
         vec!["+++ b/b.rs"],
         "fixture precondition: the spec diff is b.rs alone, and a.rs's change predates the run"
     );
-    // `origin`: a previous spec's sweep, older than the run base. `base`: a previous spec's
-    // sweep of exactly the tree this run started from.
+    // A previous spec's sweeps, of a run that started from `origin` and so record it: `older`
+    // examined that run's own starting tree, `equal` exactly the tree this run started from.
     for (case, tip) in [("older", &origin), ("equal", &base)] {
-        let (run, scratch) = run_gate_over_anchor(repo.path(), &base, tip);
+        let (run, scratch) = run_gate_over_anchor(repo.path(), &base, tip, Some(&origin));
         assert!(run.passed, "{case}: {}", run.output);
         let produced = unit_diff(repo.path());
         assert_eq!(
@@ -398,14 +413,15 @@ fn an_anchor_at_or_behind_the_run_base_is_a_previous_specs_so_the_whole_spec_dif
         );
         assert_eq!(
             anchor_left(scratch.path()),
-            (format!("{head}\n"), String::new()),
-            "{case}: the anchor this sweep leaves is this spec's own tree with this sweep's misses"
+            (format!("{head}\n"), String::new(), format!("{base}\n")),
+            "{case}: the anchor this sweep leaves is this spec's own tree with this sweep's misses, \
+             recording this run's base"
         );
     }
 }
 
 #[test]
-fn an_anchor_past_the_run_base_is_this_specs_own_so_the_re_sweep_starts_from_it() {
+fn an_anchor_of_this_run_that_head_holds_is_this_specs_own_so_the_re_sweep_starts_from_it() {
     let repo = tempfile::tempdir().unwrap();
     let [origin, anchor, _head] = three_commit_history(repo.path());
     let since_anchor = git_out(repo.path(), &["diff", &anchor, "--", "*.rs"]);
@@ -414,14 +430,14 @@ fn an_anchor_past_the_run_base_is_this_specs_own_so_the_re_sweep_starts_from_it(
         git_out(repo.path(), &["diff", &origin, "--", "*.rs"]),
         "fixture precondition: the diff since the anchor is narrower than the spec diff"
     );
-    let (run, _scratch) = run_gate_over_anchor(repo.path(), &origin, &anchor);
+    let (run, _scratch) = run_gate_over_anchor(repo.path(), &origin, &anchor, Some(&origin));
     assert!(run.passed, "{}", run.output);
     let produced = unit_diff(repo.path());
     assert_eq!(
         produced.trim_end(),
         since_anchor.trim_end(),
-        "an anchor past RIGGER_RUN_BASE is this spec's own earlier sweep, so the re-sweep covers \
-         the diff since it"
+        "an anchor recording RIGGER_RUN_BASE whose tip HEAD holds is an earlier sweep of this \
+         run, so the re-sweep covers the diff since it"
     );
     let cargo = run.cargo.lines().collect::<Vec<_>>();
     assert_eq!(
@@ -437,7 +453,7 @@ fn an_anchor_past_the_run_base_is_this_specs_own_so_the_re_sweep_starts_from_it(
 }
 
 #[test]
-fn an_anchor_past_the_run_base_that_head_does_not_hold_narrows_nothing() {
+fn an_anchor_of_this_run_that_head_does_not_hold_narrows_nothing() {
     let repo = tempfile::tempdir().unwrap();
     let [origin, middle, head] = three_commit_history(repo.path());
     // A checkin attempt rewritten away: a commit of this spec (past the run base) that the
@@ -469,14 +485,14 @@ fn an_anchor_past_the_run_base_that_head_does_not_hold_narrows_nothing() {
         git_out(repo.path(), &["diff", &rewritten, "--", "*.rs"]),
         "fixture precondition: the diff since the anchor is narrower than the spec diff"
     );
-    let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, &rewritten);
+    let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, &rewritten, Some(&origin));
     assert!(run.passed, "{}", run.output);
     let produced = unit_diff(repo.path());
     assert_eq!(
         produced.trim_end(),
         spec_diff.trim_end(),
-        "an anchor HEAD does not hold narrows nothing, however far past RIGGER_RUN_BASE it is: \
-         the sweep is the whole spec diff"
+        "an anchor HEAD does not hold narrows nothing, even one recording RIGGER_RUN_BASE: the \
+         sweep is the whole spec diff"
     );
     assert_eq!(
         run.cargo.lines().collect::<Vec<_>>(),
@@ -485,9 +501,75 @@ fn an_anchor_past_the_run_base_that_head_does_not_hold_narrows_nothing() {
     );
     assert_eq!(
         anchor_left(scratch.path()),
-        (format!("{head}\n"), String::new()),
-        "the anchor this sweep leaves is the tree it swept with this sweep's misses"
+        (format!("{head}\n"), String::new(), format!("{origin}\n")),
+        "the anchor this sweep leaves is the tree it swept with this sweep's misses, recording \
+         this run's base"
     );
+}
+
+#[test]
+fn a_previous_specs_tip_the_run_branch_merged_after_the_run_base_narrows_nothing() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // A previous spec's run started from `origin` and landed the a.rs change; this run started
+    // from `base`, and its unit landed b.rs.
+    let [origin, base, _unit] = three_commit_history(dir);
+    // That spec's check-in tip, one commit off this run's base: its sweep left the anchor, it
+    // escalated, and it was landed by hand onto the run branch during this run.
+    git_ok(dir, &["checkout", "-q", &base]);
+    write(dir, "c.rs", "fn c() {}\n");
+    git_commit_all(dir, "the previous spec's check-in");
+    let previous_tip = git_out(dir, &["rev-parse", "HEAD"]);
+    git_ok(dir, &["checkout", "-q", "-"]);
+    git_ok(dir, &["merge", "-q", "--no-edit", &previous_tip]);
+    let head = git_out(dir, &["rev-parse", "HEAD"]);
+    let count = |range: String| git_out(dir, &["rev-list", "--count", &range]);
+    assert_eq!(
+        (
+            count(format!("HEAD..{previous_tip}")),
+            count(format!("{base}..{previous_tip}")),
+        ),
+        ("0".to_string(), "1".to_string()),
+        "fixture precondition: HEAD holds the previous spec's tip and it is past the run base, so \
+         ancestry alone reads it as this spec's own"
+    );
+    let spec_diff = git_out(dir, &["diff", &base, "--", "*.rs"]);
+    assert_eq!(
+        spec_diff
+            .lines()
+            .filter(|l| l.starts_with("+++ "))
+            .collect::<Vec<_>>(),
+        vec!["+++ b/b.rs", "+++ b/c.rs"],
+        "fixture precondition: the spec diff is b.rs and the merged c.rs; the anchor's miss in \
+         a.rs is outside it"
+    );
+    // The previous spec's anchor records its own run's base; one written before the gate
+    // recorded a base records none.
+    for (case, recorded_base) in [
+        ("the previous run's base", Some(origin.as_str())),
+        ("no recorded base", None),
+    ] {
+        let (run, scratch) = run_gate_over_anchor(dir, &base, &previous_tip, recorded_base);
+        assert!(run.passed, "{case}: {}", run.output);
+        assert_eq!(
+            unit_diff(dir).trim_end(),
+            spec_diff.trim_end(),
+            "{case}: an anchor recording no base of this run narrows nothing, wherever its tip \
+             sits: the sweep is the whole spec diff"
+        );
+        assert_eq!(
+            run.cargo.lines().collect::<Vec<_>>(),
+            vec![run.sweep_line()],
+            "{case}: the previous spec's miss is not this spec's - the one sweep of unit.diff runs \
+             and no by-name rerun is even listed"
+        );
+        assert_eq!(
+            anchor_left(scratch.path()),
+            (format!("{head}\n"), String::new(), format!("{base}\n")),
+            "{case}: the anchor this sweep leaves is this spec's own tree with this sweep's \
+             misses, recording this run's base"
+        );
+    }
 }
 
 #[test]
@@ -504,11 +586,19 @@ fn a_run_base_naming_no_commit_here_fails_the_gate_and_never_narrows_to_the_anch
         .success(),
         "fixture precondition: the run base names no commit in this repository"
     );
-    let (run, scratch) = run_gate_over_anchor(repo.path(), unknown_base, &middle);
+    let (run, scratch) =
+        run_gate_over_anchor(repo.path(), unknown_base, &middle, Some(unknown_base));
     assert!(
         !run.passed,
         "a run base git cannot resolve leaves no spec diff to sweep, and an anchor HEAD holds \
-         never stands in for it: {}",
+         that records the same base never stands in for it: {}",
+        run.output
+    );
+    assert!(
+        run.output.contains(&format!(
+            "mutation gate: RIGGER_RUN_BASE {unknown_base} names no commit in this repository"
+        )),
+        "the refusal names the base it cannot resolve: {}",
         run.output
     );
     assert_eq!(
@@ -518,7 +608,11 @@ fn a_run_base_naming_no_commit_here_fails_the_gate_and_never_narrows_to_the_anch
     );
     assert_eq!(
         anchor_left(scratch.path()),
-        (format!("{middle}\n"), format!("{ANCHOR_MISS}\n")),
+        (
+            format!("{middle}\n"),
+            format!("{ANCHOR_MISS}\n"),
+            format!("{unknown_base}\n")
+        ),
         "a failed gate leaves the earlier anchor exactly as it was"
     );
 }
