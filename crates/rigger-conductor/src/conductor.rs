@@ -37046,11 +37046,25 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         // Seed the crash state: unit-a integrated at commit C, a durable compensation-queued
         // mark naming unit-a, and NO drained UnitFailed - the trigger fired, the drain did not.
+        // Before it integrated, unit-a's first attempt was rejected, so its latest UnitFailed
+        // still carries that earlier attempt's reject (gap 61's logged failure) - which the
+        // compensation re-entry, one attempt past it, must never be prompted with.
         let contradiction = r#"{"verdict":"approve","compensate":"unit-a"}"#;
+        let earlier_reject = "EARLIER-ATTEMPT-REJECT: already fixed before unit-a integrated";
         seed_events_in_run(
             &store,
             &[],
             &[
+                Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({
+                        "id": "unit-a",
+                        "attempts": 1,
+                        "cause": CAUSE_REJECT,
+                        "review_reason": earlier_reject,
+                    }))
+                    .unwrap(),
+                ),
                 Event::new(
                     ledger::TYPE_UNIT_INTEGRATED,
                     serde_json::to_vec(&json!({"id": "unit-a", "commit": commit_c})).unwrap(),
@@ -37114,6 +37128,11 @@ mod tests {
                 .first()
                 .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
             "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
+        );
+        assert!(
+            prompts.iter().all(|p| !p.contains(earlier_reject)),
+            "a compensation re-entry is never prompted with an EARLIER attempt's logged \
+             failure; prompts:\n{prompts:?}"
         );
     }
 
