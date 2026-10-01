@@ -113,15 +113,20 @@
 # (`caught.map`, read off the nextest FAIL line in each mutant's log). The anchor lives
 # OUTSIDE `$MUTANTS` because that root is reclaimed with the unit (2026-09-19: an escalation
 # reclaimed five hours of sweep state seconds after the gate wrote it). When the tip is an
-# ancestor of HEAD the sweep covers (a) every mutant in the diff since it and (b) by name,
-# every earlier miss plus every caught mutant whose catching binary's `tests/<binary>.rs`
-# changed since the tip (a change under a nested tests/ directory re-runs every mutant a
-# tests/*.rs binary caught; the crate's own unit-test binaries cannot see tests/ and keep
-# their catches). The rerun's misses join the sweep's own missed.txt so one file is the
-# verdict. No usable tip (a reclaimed unit, a fresh spec, the first sweep): the whole spec diff
-# against `$RIGGER_RUN_BASE`. A solo-merging unit's post-merge re-sweep is therefore the empty
-# merge delta and passes in seconds. A mutant the main sweep already examined is not examined
-# again by name.
+# ancestor of HEAD and past `$RIGGER_RUN_BASE` - it examined a commit of this spec, so it is
+# this spec's own anchor - the sweep covers (a) every mutant in the diff since it and (b) by
+# name, every earlier miss plus every caught mutant whose catching binary's
+# `tests/<binary>.rs` changed since the tip (a change under a nested tests/ directory re-runs
+# every mutant a tests/*.rs binary caught; the crate's own unit-test binaries cannot see
+# tests/ and keep their catches). The rerun's misses join the sweep's own missed.txt so one
+# file is the verdict. A solo-merging unit's post-merge re-sweep is therefore the empty merge
+# delta and passes in seconds. A mutant the main sweep already examined is not examined again
+# by name. No usable tip (a reclaimed unit, a fresh spec, the first sweep): the whole spec
+# diff against `$RIGGER_RUN_BASE`. A tip at or behind the run base is a fresh spec's: the
+# anchor lives under the project's scratch root, so on a run branch not rewritten between
+# specs the previous spec's last sweep is an ancestor of HEAD, and taking it would sweep every
+# change since it - operator commits included - and re-run that spec's misses, failing this
+# spec on survivors that are not its own.
 #
 # THE GATE OWNS ITS INSTRUMENT (2026-09-17: a remediation round excluded two survivors by name
 # with an equivalence argument that was wrong for one). The unit diff since `$RIGGER_RUN_BASE`
@@ -163,7 +168,8 @@ test ! -f "$container_env" || . "$container_env" || exit 1
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
-{ test -n "$anchor" && test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0; } || anchor=""
+{ test -n "$anchor" && test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0 &&
+    test "$(git rev-list --count "$RIGGER_RUN_BASE".."$anchor" 2>/dev/null || echo 0)" != 0; } || anchor=""
 
 rerun="$(if test -n "$anchor"; then
     cat "$last/missed.txt" 2>/dev/null
