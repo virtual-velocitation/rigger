@@ -46,7 +46,7 @@
 mod common;
 
 use common::fixtures::write_file;
-use common::git::{git_answer, git_commit_all, git_ok, git_out, init_repo};
+use common::git::{commit_files, git_answer, git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -323,16 +323,6 @@ fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping
 
     let run = run_gate(dir, None, FORTY_GIB_KB, true);
     assert_refused_before_anything_ran(dir, &run, "no RIGGER_RUN_BASE, so no spec diff to sweep");
-}
-
-/// Write each `(path, content)` of `files` into `repo`, commit everything as `message`, and return
-/// the new HEAD.
-fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> String {
-    for (rel, content) in files {
-        write(repo, rel, content);
-    }
-    git_commit_all(repo, message);
-    git_out(repo, &["rev-parse", "HEAD"])
 }
 
 /// Three commits on one line - `origin`, a change to `a.rs`, then a new `b.rs` - returned in

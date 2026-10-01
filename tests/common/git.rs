@@ -3,6 +3,7 @@
 
 #![allow(unused_imports)]
 
+use super::fixtures::write_file;
 use std::path::{Path, PathBuf};
 
 pub use super::fixtures::{
@@ -10,6 +11,16 @@ pub use super::fixtures::{
     git_out, init_repo, install_refusing_hook, run_git, temp_git_project_with_commit,
     trimmed_stdout,
 };
+
+/// Write each `(path, content)` of `files` into `repo` through the shared [`write_file`], commit
+/// everything as `message` through [`git_commit_all`], and return the new HEAD.
+pub fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> String {
+    for (rel, content) in files {
+        write_file(&repo.join(rel), content.as_bytes());
+    }
+    git_commit_all(repo, message);
+    git_out(repo, &["rev-parse", "HEAD"])
+}
 
 /// A git-LINKED worktree `name` nested under `root` (which must hold a commit) at
 /// `root/.rigger/tmp/<name>` - the shape a run spawns its unit worktrees in. Its own

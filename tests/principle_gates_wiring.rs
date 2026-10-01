@@ -6,7 +6,7 @@
 
 mod common;
 use common::cli::{run_rigger, temp_project};
-use common::git::{git_commit_all, git_ok, git_out, init_repo};
+use common::git::{commit_files, git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
@@ -187,14 +187,6 @@ fn the_audit_gate_fails_red_assertions_with_its_own_diagnostic() {
 /// The fixture's committed source file: one function and a trailing test module.
 const LIB: &str = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
 
-/// Write `content` to `rel` in `repo` and commit it as `msg`.
-fn commit_file(repo: &Path, rel: &str, content: &str, msg: &str) {
-    let path = repo.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, content).unwrap();
-    git_commit_all(repo, msg);
-}
-
 /// A fixture repository whose `rigger-run` branch holds `lib` as its one committed source file,
 /// checked out on a unit branch that `commits` (each `(path, content, message)`, in order) build
 /// on it. Returns the repository and each commit's short sha.
@@ -202,13 +194,13 @@ fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::Tem
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path();
     init_repo(repo);
-    commit_file(repo, "src/lib.rs", lib, "base");
+    commit_files(repo, &[("src/lib.rs", lib)], "base");
     git_ok(repo, &["branch", "rigger-run"]);
     git_ok(repo, &["checkout", "-q", "-b", "unit"]);
     let shas = commits
         .iter()
         .map(|(rel, content, msg)| {
-            commit_file(repo, rel, content, msg);
+            commit_files(repo, &[(*rel, *content)], msg);
             git_out(repo, &["rev-parse", "--short", "HEAD"])
         })
         .collect();
