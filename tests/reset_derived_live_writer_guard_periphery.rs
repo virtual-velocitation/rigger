@@ -680,10 +680,11 @@ fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configure
 }
 
 /// A store whose OWNING root has no UTF-8 path resolves no scratch root to read its spawns'
-/// markers under, and both reset modes that read liveness refuse it rather than reading the
-/// unresolved root as "no spawn marker, so nothing is live": `reset --derived` and `reset --runs`
-/// each exit non-zero naming why, and neither so much as opens the store first - its `events.db`
-/// is still the empty file it was seeded as, never given a schema, migrated or pruned.
+/// markers or its build caches under, and every reset mode that reads that root refuses it rather
+/// than reading the unresolved root as "no spawn marker, so nothing is live": `reset --derived`,
+/// `reset --runs` and `reset --build-cache` each exit non-zero naming why, and none so much as
+/// opens the store first - its `events.db` is still the empty file it was seeded as, never given
+/// a schema, migrated or pruned.
 #[cfg(unix)]
 #[test]
 fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() {
@@ -694,7 +695,7 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
         .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
     seed_store(&root);
     let events_db = rigger_file(&root, "events.db");
-    for mode in ["--derived", "--runs"] {
+    for mode in ["--derived", "--runs", "--build-cache"] {
         let (out, err, ok) = run_rigger_envs(&root, &["reset", mode], &[]);
         assert!(
             !ok,
@@ -749,23 +750,21 @@ fn reset_beside_an_orphan_root(root: &Path, args: &[&str]) -> ((String, String, 
     (said, orphan.exists())
 }
 
-/// `reset --scratch-orphans` from `root` exits 0, reports its sweep and reclaims the orphan
-/// root, `why` naming the case.
-fn assert_sweeps_the_orphan_root(root: &Path, why: &str) {
-    let ((out, err, ok), orphan_stands) =
-        reset_beside_an_orphan_root(root, &["reset", "--scratch-orphans"]);
-    assert!(
-        ok,
-        "{why}: reset --scratch-orphans must succeed; stderr: {err:?}"
-    );
+/// `rigger <args>` - a selection that includes `--scratch-orphans` - from `root` exits 0, reports
+/// its sweep and reclaims the orphan root, `why` naming the case; returns the invocation's
+/// `(stdout, stderr, success)`.
+fn assert_sweeps_the_orphan_root(root: &Path, args: &[&str], why: &str) -> (String, String, bool) {
+    let ((out, err, ok), orphan_stands) = reset_beside_an_orphan_root(root, args);
+    assert!(ok, "{why}: {args:?} must succeed; stderr: {err:?}");
     assert!(
         out.contains("--scratch-orphans: reclaimed 1 scratch root(s) whose repo no longer exists"),
-        "{why}: reset --scratch-orphans must report its sweep; stdout: {out:?}"
+        "{why}: {args:?} must report its sweep; stdout: {out:?}"
     );
     assert!(
         !orphan_stands,
         "{why}: the orphan scratch root must be reclaimed"
     );
+    (out, err, ok)
 }
 
 /// `reset --scratch-orphans` reads no configuration, so a `defaults` block the live-writer guard
@@ -775,7 +774,11 @@ fn reset_scratch_orphans_sweeps_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
     let _workdir = configure_unparsable_defaults(root);
-    assert_sweeps_the_orphan_root(root, "an unparsable defaults block");
+    assert_sweeps_the_orphan_root(
+        root,
+        &["reset", "--scratch-orphans"],
+        "an unparsable defaults block",
+    );
 }
 
 /// `reset --scratch-orphans` reads no scratch root, so a store whose owning root has no UTF-8
@@ -789,7 +792,11 @@ fn reset_scratch_orphans_sweeps_over_a_store_whose_owning_root_has_no_utf8_path(
         .path()
         .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
     seed_store(&root);
-    assert_sweeps_the_orphan_root(&root, "a non-UTF-8 owning root");
+    assert_sweeps_the_orphan_root(
+        &root,
+        &["reset", "--scratch-orphans"],
+        "a non-UTF-8 owning root",
+    );
 }
 
 /// `--force-live` skips the live-writer guard entirely, its scratch-root read included, so over a
@@ -833,6 +840,119 @@ fn reset_scratch_orphans_composed_with_derived_sweeps_nothing_over_an_unparsable
         orphan_stands,
         "the orphan scratch root must stand: no prune runs before the precheck fails"
     );
+}
+
+/// Given the disk reclaim an operator reaches for while a `workflow.yml` typo leaves the
+/// `defaults` block unparsable, when they compose the two modes that read none of it - `reset
+/// --scratch-orphans --derived --force-live` - then the sweep reclaims the orphan root and the
+/// compaction runs: no mode in the selection reads the scratch root, so nothing resolves it.
+#[test]
+fn reset_scratch_orphans_with_derived_force_live_sweeps_and_compacts_over_an_unparsable_defaults_block(
+) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let _workdir = configure_unparsable_defaults(root);
+    let why = "a selection of modes that read no scratch root, over an unparsable defaults block";
+    assert_compacted(
+        assert_sweeps_the_orphan_root(
+            root,
+            &["reset", "--scratch-orphans", "--derived", "--force-live"],
+            why,
+        ),
+        why,
+    );
+}
+
+/// Every mode that reads the scratch root resolves it BEFORE the one-time identity migration, so
+/// over an unparsable `defaults` block each of `reset --runs`, `reset --build-cache` and `reset
+/// --derived` fails naming the config without first migrating a legacy store: the migration's
+/// stream rename and the decision it records never happen. `reset --derived --force-live`, which
+/// reads no scratch root, then migrates that same store - the fixture does have history to move.
+#[test]
+fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration_writes() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "emit",
+            "DecisionMade",
+            r#"{"id":"legacy-decision","summary":"pre-mint history","governs":["src/legacy.rs"]}"#,
+        ],
+    );
+    assert!(ok, "seeding legacy history must succeed; stderr: {err}");
+    std::fs::write(rigger_file(root, "project.id"), "durablemint\n")
+        .expect("mint an identity distinct from the basename");
+    let _workdir = configure_unparsable_defaults(root);
+    let rows = row_count(root);
+    for mode in ["--runs", "--build-cache", "--derived"] {
+        let (out, err, ok) = run_rigger(root, &["reset", mode]);
+        assert!(
+            !ok,
+            "reset {mode} must fail on the unparsable config; stdout: {out:?}"
+        );
+        assert!(
+            err.contains("parse workflow") && err.contains("max_retries"),
+            "reset {mode} must name the unparsable config; stderr: {err:?}"
+        );
+        assert!(
+            !err.contains("migrated project identity"),
+            "reset {mode} must fail before the identity migration runs; stderr: {err:?}"
+        );
+        assert_eq!(
+            row_count(root),
+            rows,
+            "reset {mode} must record nothing before its precheck fails"
+        );
+    }
+    let (_out, err, ok) = run_rigger(root, &["reset", "--derived", "--force-live"]);
+    assert!(
+        ok && err.contains("migrated project identity") && err.contains("durablemint"),
+        "fixture: a mode that reads no scratch root migrates the legacy history; stderr: {err:?}"
+    );
+}
+
+/// `reset --build-cache` reads the scratch root its build caches live under FAIL-CLOSED, as the
+/// live-writer guard does: over a `defaults` block that cannot be parsed it exits non-zero naming
+/// the config and reclaims nothing - neither the cache under the configured workdir nor the one
+/// under the default scratch root a degraded read would have fallen back to.
+#[test]
+fn reset_build_cache_fails_closed_on_an_unparsable_defaults_block_and_reclaims_nothing() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let built = [
+        Path::new(&scratch_root)
+            .join("cargo-target")
+            .join("built.rlib"),
+        common::default_scratch_root(root)
+            .join("cargo-target")
+            .join("built.rlib"),
+    ];
+    for artifact in &built {
+        std::fs::create_dir_all(artifact.parent().unwrap()).expect("create a build cache");
+        std::fs::write(artifact, [0u8; 64]).expect("populate the build cache");
+    }
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        !ok,
+        "an unparsable defaults block must fail reset --build-cache; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("parse workflow") && err.contains("max_retries"),
+        "the failure must name the unparsable config; stderr: {err:?}"
+    );
+    assert!(
+        !out.contains("--build-cache:"),
+        "no reclaim may be reported; stdout: {out:?}"
+    );
+    for artifact in &built {
+        assert!(
+            artifact.exists(),
+            "{} must stand: a scratch root the command cannot resolve reclaims nothing",
+            artifact.display()
+        );
+    }
 }
 
 /// Run from a nested unit worktree, the guard still reads the marker the run stamped under the
@@ -913,20 +1033,31 @@ const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
            stages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
-/// Given a store whose `defaults.workdir` is relative, when a real `rigger step` at the repository
-/// root parks [`SPAWN`], then the liveness marker path it hands the worker is the ABSOLUTE path
-/// under `<root>/rel-scratch` - a relative one would land under whatever directory the worker
-/// runs in - and when the worker touches exactly that path, `reset --derived` run from a
-/// subdirectory reads it there and refuses naming the spawn: the path the run writes is the path
-/// the guard reads.
-#[test]
-fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_reads_from_a_subdirectory(
+/// The workflow a real `rigger step` parks [`SPAWN`] under, as [`RELATIVE_WORKDIR_WORKFLOW`] but
+/// with the scratch root placed by the `~/` `defaults.workdir` `~/tilde-scratch`.
+const TILDE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body:
+        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: \"~/tilde-scratch\"\n\
+           stages:\n  a:\n    agent: worker\n    on_pass: none\n",
+};
+
+/// Given `fixture` scaffolded in a fresh git project, when a real `rigger step` at its root (under
+/// `envs`) parks [`SPAWN`], then the liveness marker path it hands the worker is the one under
+/// `scratch_root(<git toplevel>)`, and when the worker touches exactly that path, `reset --derived`
+/// run from a subdirectory (under the same `envs`) reads it there and refuses naming the spawn:
+/// the path the run writes is the path the guard reads. `why` names the case.
+fn assert_the_guard_reads_the_marker_rigger_step_stamps(
+    fixture: &WorkflowFixture,
+    envs: &[(&str, &str)],
+    scratch_root: impl FnOnce(&str) -> String,
+    why: &str,
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &RELATIVE_WORKDIR_WORKFLOW);
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", "")]);
-    assert!(ok, "rigger step must park the spawn; stderr: {err}");
+    write_workflow_fixture(root, fixture);
+    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    assert!(ok, "{why}: rigger step must park the spawn; stderr: {err}");
     let step: serde_json::Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("rigger step prints one JSON line: {e}; got {out:?}"));
     let stamped = step["wave"]
@@ -938,26 +1069,55 @@ fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_r
     let run_id =
         rigger::run::current_run_id(&read_run_events(root)).expect("the step started a run");
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let expected =
-        rigger::liveness::marker_path(&format!("{toplevel}/rel-scratch"), &run_id, SPAWN)
-            .expect("a real spawn id resolves a marker path");
+    let expected = rigger::liveness::marker_path(&scratch_root(&toplevel), &run_id, SPAWN)
+        .expect("a real spawn id resolves a marker path");
     assert_eq!(
         Path::new(&stamped),
         expected,
-        "the marker path handed to the worker must be the absolute one under the relative \
-         workdir anchored on the repository root"
+        "{why}: the marker path handed to the worker must be the absolute one under the \
+         configured scratch root"
     );
 
     plant_marker(&expected, 0);
     assert_refused_naming_the_spawn(
-        counted(
-            root,
-            &subdirectory_of(root),
-            &["reset", "--derived"],
-            &[("RIGGER_TMPDIR", "")],
-        ),
+        counted(root, &subdirectory_of(root), &["reset", "--derived"], envs),
         0..300,
         "s ago, bound 300s)",
+    );
+}
+
+/// Given a store whose `defaults.workdir` is relative, when a real `rigger step` at the repository
+/// root parks [`SPAWN`], then the liveness marker path it hands the worker is the ABSOLUTE path
+/// under `<root>/rel-scratch` - a relative one would land under whatever directory the worker
+/// runs in - and when the worker touches exactly that path, `reset --derived` run from a
+/// subdirectory reads it there and refuses naming the spawn: the path the run writes is the path
+/// the guard reads.
+#[test]
+fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_reads_from_a_subdirectory(
+) {
+    assert_the_guard_reads_the_marker_rigger_step_stamps(
+        &RELATIVE_WORKDIR_WORKFLOW,
+        &[("RIGGER_TMPDIR", "")],
+        |toplevel| format!("{toplevel}/rel-scratch"),
+        "a relative workdir anchored on the repository root",
+    );
+}
+
+/// Given a store whose `defaults.workdir` is `~/tilde-scratch`, when a real `rigger step` parks
+/// [`SPAWN`] under the process `HOME`, then the marker path it hands the worker is under
+/// `$HOME/tilde-scratch` - the home the command runs under, never a literal `~` directory and
+/// never the repository - and `reset --derived` under the same `HOME` reads that marker and
+/// refuses naming the spawn: a `~/` scratch root never hides a live spawn from the guard.
+#[test]
+fn the_marker_rigger_step_stamps_under_a_tilde_workdir_is_the_one_the_guard_reads_under_the_same_home(
+) {
+    let home_dir = tempfile::tempdir().expect("create the HOME a ~/ workdir expands under");
+    let home = home_dir.path().to_str().unwrap();
+    assert_the_guard_reads_the_marker_rigger_step_stamps(
+        &TILDE_WORKDIR_WORKFLOW,
+        &[("RIGGER_TMPDIR", ""), ("HOME", home)],
+        |_| format!("{home}/tilde-scratch"),
+        "a ~/ workdir expanded under the process HOME",
     );
 }
 
