@@ -94,7 +94,8 @@ pub fn missing_target_message(target: &str) -> String {
 
 /// Cross-compile `crates/console-core` for `target` in release mode, `--locked`, into its
 /// own `target_dir` (never the caller's shared build cache/lock), with the caller's own
-/// `RUSTFLAGS` and rustc wrapper cleared so neither can leak into the nested compile. `cargo`
+/// `RUSTFLAGS` (plain and encoded) and rustc wrapper cleared so neither can leak into the
+/// nested compile. `cargo`
 /// is the resolved cargo binary (build scripts get this via the `CARGO` env var; a plain
 /// invocation passes `"cargo"`). Returns the produced `.wasm` artifact's path on success, or
 /// the nested command's failure as an `Err` (never a panic, so a caller - `build.rs` or a
@@ -125,7 +126,11 @@ pub fn build_wasm_artifact(
     // exact config file).
     .env("RUSTC_WRAPPER", "")
     .env("RUSTC_WORKSPACE_WRAPPER", "")
-    .env_remove("RUSTFLAGS");
+    .env_remove("RUSTFLAGS")
+    // Cargo sets this in every build script's environment to the OUTER host build's flags
+    // and a nested cargo reads it ahead of `RUSTFLAGS`, so a host-only flag (a linker
+    // choice such as `-fuse-ld=mold`) would otherwise reach the wasm link and fail it.
+    .env_remove("CARGO_ENCODED_RUSTFLAGS");
 
     // THE LEAK THIS CLOSES (found by running the real nested build, not reasoned about):
     // this function is called from INSIDE `rigger`'s own build script, a process Cargo
