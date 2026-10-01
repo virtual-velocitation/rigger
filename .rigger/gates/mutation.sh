@@ -1,8 +1,11 @@
 #!/bin/sh
-# The check-in mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run ONCE at the
-# `checkin` stage - after every implement unit has integrated - never per implementer round.
-# Wired as `mutation: { run: "sh .rigger/gates/mutation.sh" }` in .rigger/workflow.yml; `rigger
-# init` writes this same file into a consumer project (one home: src/cli/setup.rs includes it).
+# The check-in mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run ONCE by a
+# `checkin` stage that lists it - after every implement unit has integrated - never per
+# implementer round. Declared as `mutation: { run: "sh .rigger/gates/mutation.sh" }` in
+# .rigger/workflow.yml, where no stage runs it until issue #32 lands; the diff-base logic below
+# is what a re-wired `checkin` stage will use. `rigger init` writes this same file into a
+# consumer project (one home: src/cli/setup.rs includes it), whose scaffold `checkin` stage
+# lists a `mutation` gate.
 #
 # THE GATE ENVIRONMENT. `$MUTANTS` is the unit-keyed mutants root the conductor exports to
 # every gate command (`worktree::unit_mutants_sibling`) and reaps at unit terminus; this script
@@ -100,12 +103,12 @@
 # testcontainers at the operator's rootless podman when no DOCKER_HOST is set. A project
 # without that file sweeps exactly as before.
 #
-# THE BASELINE STAYS ON. The checkin stage lists `test` before `mutation`, but the conductor
-# runs every listed gate whatever the earlier ones returned and exports no record of their
-# verdicts to a gate command - so nothing here can confirm the mutated packages are green on
-# this tree. The baseline (cargo-mutants runs it over the mutated packages only: seconds, not
-# minutes) is that confirmation; only the by-name rerun, which follows it on the same tree,
-# skips its own.
+# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (the scaffold's
+# does) proves nothing to this gate: the conductor runs every listed gate whatever the earlier
+# ones returned and exports no record of their verdicts to a gate command - so nothing here can
+# confirm the mutated packages are green on this tree. The baseline (cargo-mutants runs it over
+# the mutated packages only: seconds, not minutes) is that confirmation; only the by-name
+# rerun, which follows it on the same tree, skips its own.
 #
 # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
 # the logic has changed"). The sweep leaves four facts under `mutation-anchor/`, a sibling of

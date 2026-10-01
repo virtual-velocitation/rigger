@@ -1,8 +1,10 @@
 //! Periphery (real-git) proof for the check-in `mutation` gate: the SHIPPED script
-//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` runs and `rigger init` writes
-//! into a consumer project - driven against fixture repositories with a stand-in `cargo` and a
-//! stand-in `systemd-run` on a fixture PATH (`tests/fixtures/mutation-gate-*.sh`, argv
-//! capture), so every launch decision is read back exactly and no real sweep ever runs.
+//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` declares as its `mutation` gate
+//! (no stage runs it until issue #32 lands; its diff-base logic is what a re-wired `checkin`
+//! stage will use) and `rigger init` writes into a consumer project - driven against fixture
+//! repositories with a stand-in `cargo` and a stand-in `systemd-run` on a fixture PATH
+//! (`tests/fixtures/mutation-gate-*.sh`, argv capture), so every launch decision is read back
+//! exactly and no real sweep ever runs.
 //!
 //! THE DIFF BASE (spec 91, adv-u91c2-mutation-gate-diff-base-collapses-to-empty). The gate
 //! diffs the whole spec against `$RIGGER_RUN_BASE` - the run branch's tip AT THE MOMENT the run
