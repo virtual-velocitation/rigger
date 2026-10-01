@@ -9,7 +9,8 @@
 # owns creating and wiping it each run. `$RIGGER_RUN_BASE` is the run branch's tip AT THE
 # MOMENT the run started (`RunStarted.base_tip`) - never a merge base with the run branch: the
 # checkin worktree branches off the run branch after every unit integrated, so a merge base
-# there is already HEAD and would diff nothing. A run with no recorded base refuses loud.
+# there is already HEAD and would diff nothing. A run with no base tip, or a base tip this
+# repository does not hold, refuses loud before anything runs.
 #
 # THE VERDICT. The gate fails on MISSED mutants only. A TIMEOUT is a detection (cargo-mutants
 # exits 3): hang-class mutants are caught only by bounded waits (on spec 89's check-in the same
@@ -107,25 +108,28 @@
 # skips its own.
 #
 # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
-# the logic has changed"). The sweep leaves three facts under `mutation-anchor/`, a sibling of
-# the unit roots under the scratch root (`${MUTANTS%/*}`): the tree it examined (`tip`), its
-# misses (`missed.txt`) and, per caught mutant, the test binary whose first failure caught it
-# (`caught.map`, read off the nextest FAIL line in each mutant's log). The anchor lives
-# OUTSIDE `$MUTANTS` because that root is reclaimed with the unit (2026-09-19: an escalation
-# reclaimed five hours of sweep state seconds after the gate wrote it). When the tip is an
-# ancestor of HEAD and past `$RIGGER_RUN_BASE` - it examined a commit of this spec, so it is
-# this spec's own anchor - the sweep covers (a) every mutant in the diff since it and (b) by
-# name, every earlier miss plus every caught mutant whose catching binary's
-# `tests/<binary>.rs` changed since the tip (a change under a nested tests/ directory re-runs
-# every mutant a tests/*.rs binary caught; the crate's own unit-test binaries cannot see
-# tests/ and keep their catches). The rerun's misses join the sweep's own missed.txt so one
-# file is the verdict. A solo-merging unit's post-merge re-sweep is therefore the empty merge
-# delta and passes in seconds. A mutant the main sweep already examined is not examined again
-# by name. No usable tip (a reclaimed unit, a fresh spec, the first sweep): the whole spec
-# diff against `$RIGGER_RUN_BASE`. A tip at or behind the run base is a fresh spec's: the
-# anchor lives under the project's scratch root, so on a run branch not rewritten between
-# specs the previous spec's last sweep is an ancestor of HEAD, and taking it would sweep every
-# change since it - operator commits included - and re-run that spec's misses, failing this
+# the logic has changed"). The sweep leaves four facts under `mutation-anchor/`, a sibling of
+# the unit roots under the scratch root (`${MUTANTS%/*}`): the `$RIGGER_RUN_BASE` it was given
+# (`base`), the tree it examined (`tip`), its misses (`missed.txt`) and, per caught mutant, the
+# test binary whose first failure caught it (`caught.map`, read off the nextest FAIL line in
+# each mutant's log). The anchor lives OUTSIDE `$MUTANTS` because that root is reclaimed with
+# the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the
+# gate wrote it). When the recorded base is this sweep's own `$RIGGER_RUN_BASE` - an earlier
+# sweep of this run, so of this spec - and HEAD holds the tip, the sweep covers (a) every
+# mutant in the diff since the tip and (b) by name, every earlier miss plus every caught
+# mutant whose catching binary's `tests/<binary>.rs` changed since the tip (a change under a
+# nested tests/ directory re-runs every mutant a tests/*.rs binary caught; the crate's own
+# unit-test binaries cannot see tests/ and keep their catches). The rerun's misses join the
+# sweep's own missed.txt so one file is the verdict. A solo-merging unit's post-merge re-sweep
+# is therefore the empty merge delta and passes in seconds. A mutant the main sweep already
+# examined is not examined again by name. Any other anchor narrows nothing, and the sweep is
+# the whole spec diff against `$RIGGER_RUN_BASE`: none at all (the first sweep, a reclaimed
+# scratch root), one that records another run's base (a previous spec's), one that records no
+# base, and one HEAD no longer holds (a rewritten attempt). Ownership is the recorded base,
+# never ancestry: the anchor lives under the project's scratch root, so HEAD routinely holds
+# a previous spec's last sweep tip - behind the run base on a run branch not rewritten between
+# specs, or past it when that spec's escalated check-in is landed by hand during this run - and
+# taking it would sweep only the changes since it and re-run that spec's misses, failing this
 # spec on survivors that are not its own.
 #
 # THE GATE OWNS ITS INSTRUMENT (2026-09-17: a remediation round excluded two survivors by name
@@ -134,11 +138,12 @@
 # a diff that does fails the gate before any sweep, naming the lines. A mutant no test can
 # distinguish is dead code to delete, never a name to exclude.
 #
-# THE STATE SURVIVES A FAILING SWEEP (2026-09-17). The new tree, misses and map are written to
-# `last.new` and swapped in only once both passes completed; a sweep that dies earlier leaves
-# the previous state in place. A by-name rerun whose names match no mutant is nothing to rerun,
-# not a failure. The map carries forward every earlier entry for a mutant this sweep did not
-# examine, so a catch recorded three sweeps ago still re-runs when its test changes.
+# THE STATE SURVIVES A FAILING SWEEP (2026-09-17). The new base, tree, misses and map are
+# written to `last.new` and swapped in only once both passes completed; a sweep that dies
+# earlier leaves the previous state in place. A by-name rerun whose names match no mutant is
+# nothing to rerun, not a failure. The map carries forward every earlier entry for a mutant
+# this sweep did not examine, so a catch recorded three sweeps ago still re-runs when its test
+# changes.
 #
 # THE RERUN EXITS WITH CARGO-MUTANTS' OWN CODE (2026-09-19: under xargs a one-miss rerun exited
 # 123 and broke the chain before the promotion). The names are loaded into the positional
@@ -159,6 +164,10 @@ test -n "$RIGGER_RUN_BASE" || {
     echo "mutation gate: RIGGER_RUN_BASE is unset - this run recorded no base tip, so there is no spec diff to sweep; refusing rather than sweeping an empty diff"
     exit 1
 }
+git rev-parse -q --verify "$RIGGER_RUN_BASE^{commit}" > /dev/null || {
+    echo "mutation gate: RIGGER_RUN_BASE $RIGGER_RUN_BASE names no commit in this repository, so there is no spec diff to sweep; refusing rather than sweeping any other diff"
+    exit 1
+}
 
 # The container runtime for the container-backed tests (see THE CONTAINER-BACKED TESTS RUN): a
 # missing snippet is skipped, one that fails to source fails the gate.
@@ -168,8 +177,8 @@ test ! -f "$container_env" || . "$container_env" || exit 1
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
-{ test -n "$anchor" && test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0 &&
-    test "$(git rev-list --count "$RIGGER_RUN_BASE".."$anchor" 2>/dev/null || echo 0)" != 0; } || anchor=""
+{ test -n "$anchor" && test "$(cat "$last/base" 2>/dev/null)" = "$RIGGER_RUN_BASE" &&
+    test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0; } || anchor=""
 
 rerun="$(if test -n "$anchor"; then
     cat "$last/missed.txt" 2>/dev/null
@@ -295,6 +304,7 @@ if test -s mutants.out/environment.tsv; then
     exit 1
 fi
 
+printf '%s\n' "$RIGGER_RUN_BASE" > "$MUTANTS/last.new/base" || exit 1
 git rev-parse HEAD > "$MUTANTS/last.new/tip" || exit 1
 cp mutants.out/missed.txt "$MUTANTS/last.new/missed.txt" 2>/dev/null || : > "$MUTANTS/last.new/missed.txt"
 for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do
