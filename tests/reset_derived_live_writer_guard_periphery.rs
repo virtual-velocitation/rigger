@@ -663,7 +663,7 @@ fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
 fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configured_workdir() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let (_workdir, scratch_root) = configure_unparsable_defaults(root);
     let o = reset_from_with_a_fresh_marker_under(root, root, "", &scratch_root);
     assert!(
         !o.ok,
@@ -728,9 +728,10 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
 // ---------------------------------------------------------------------------------------
 
 /// Configures `root`'s store with a `defaults` block that cannot be parsed - `workdir` beside a
-/// `max_retries` that is not a number - and returns the configured workdir.
-fn configure_unparsable_defaults(root: &Path) -> tempfile::TempDir {
-    configure_workdir(root, "  max_retries: three\n").0
+/// `max_retries` that is not a number - and returns the configured workdir and the scratch root a
+/// run resolves under it.
+fn configure_unparsable_defaults(root: &Path) -> (tempfile::TempDir, String) {
+    configure_workdir(root, "  max_retries: three\n")
 }
 
 /// Runs `rigger <args>` from `root` over a private cache home holding one scratch root keyed on
@@ -775,7 +776,7 @@ fn assert_sweeps_the_orphan_root(root: &Path, args: &[&str], why: &str) -> (Stri
 fn reset_scratch_orphans_sweeps_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     assert_sweeps_the_orphan_root(
         root,
         &["reset", "--scratch-orphans"],
@@ -807,7 +808,7 @@ fn reset_scratch_orphans_sweeps_over_a_store_whose_owning_root_has_no_utf8_path(
 fn reset_derived_force_live_compacts_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     assert_prunes(
         root,
         &["reset", "--derived", "--force-live"],
@@ -823,7 +824,7 @@ fn reset_derived_force_live_compacts_over_an_unparsable_defaults_block() {
 fn reset_scratch_orphans_composed_with_derived_sweeps_nothing_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let ((out, err, ok), orphan_stands) =
         reset_beside_an_orphan_root(root, &["reset", "--scratch-orphans", "--derived"]);
     assert!(
@@ -853,7 +854,7 @@ fn reset_scratch_orphans_with_derived_force_live_sweeps_and_compacts_over_an_unp
 ) {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let why = "a selection of modes that read no scratch root, over an unparsable defaults block";
     assert_compacted(
         assert_sweeps_the_orphan_root(
@@ -885,7 +886,7 @@ fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration
     assert!(ok, "seeding legacy history must succeed; stderr: {err}");
     std::fs::write(rigger_file(root, "project.id"), "durablemint\n")
         .expect("mint an identity distinct from the basename");
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let rows = row_count(root);
     for mode in ["--runs", "--build-cache", "--derived"] {
         let (out, err, ok) = run_rigger(root, &["reset", mode]);
@@ -922,7 +923,7 @@ fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration
 fn reset_build_cache_fails_closed_on_an_unparsable_defaults_block_and_reclaims_nothing() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let (_workdir, scratch_root) = configure_unparsable_defaults(root);
     let built = [
         Path::new(&scratch_root)
             .join(rigger::worktree::SHARED_BUILD_CACHE_NAME)

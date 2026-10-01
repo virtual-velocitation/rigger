@@ -3494,13 +3494,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1390,
-        "end_line": 1390
+        "start_line": 1391,
+        "end_line": 1391
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1497,
-        "end_line": 1497
+        "start_line": 1498,
+        "end_line": 1498
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -6834,13 +6834,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1719,
-        "end_line": 1729
+        "start_line": 1720,
+        "end_line": 1730
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1735,
-        "end_line": 1750
+        "start_line": 1736,
+        "end_line": 1751
       },
       {
         "file": "tests/reset_menu.rs",

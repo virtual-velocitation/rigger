@@ -2831,8 +2831,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/reset_derived_compaction_periphery.rs:2985-2985` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:3020-3020` `".rigger"`
 - `tests/reset_derived_live_writer_guard_periphery.rs:69-69` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1390-1390` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1497-1497` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1391-1391` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1498-1498` `".rigger"`
 - `tests/review_round_lenses_only_log_derived_resume_periphery.rs:144-144` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_no_adjudicator_residue_periphery.rs:93-93` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs:119-119` `"{repo_path}/.rigger-test-scratch"`
@@ -4439,8 +4439,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:26759-26779` `init_scaffolds_the_instructions_readme_and_names_it`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1719-1729` `reset_force_live_alone_is_refused_as_no_mode`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1735-1750` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1720-1730` `reset_force_live_alone_is_refused_as_no_mode`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1736-1751` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
 - `tests/reset_menu.rs:79-96` `bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable`
 - `tests/statusline_command_periphery.rs:90-100` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:137-147` `status_line_and_json_are_mutually_exclusive`
