@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::fixtures::with_kurrentdb;
+use common::fixtures::{wait_until_for, with_kurrentdb};
 use rigger::eventstore::kurrentdb::Store;
 use std::collections::BTreeSet;
 
@@ -33,6 +33,11 @@ fn thread_ids() -> BTreeSet<u64> {
 /// Opening a store adds exactly one thread to the process - its runtime's one worker, on a host
 /// of any core count - and dropping it takes that thread back. The connection string names the
 /// server by address, so the client resolves no name and starts no resolver thread of its own.
+///
+/// The drop side polls instead of reading once. Dropping the store joins its worker, and that
+/// join returns when the exiting thread wakes its joiner, a moment before the kernel removes the
+/// thread from `/proc/self/task`, so a correct store's worker can still be listed right after the
+/// drop. The poll gives it a second to leave; a worker that never leaves is still listed then.
 #[test]
 fn an_open_kurrentdb_store_adds_one_thread_and_its_drop_takes_it_back() {
     with_kurrentdb(|conn| {
@@ -51,6 +56,16 @@ fn an_open_kurrentdb_store_adds_one_thread_and_its_drop_takes_it_back() {
             std::thread::available_parallelism()
         );
         drop(store);
-        assert_eq!(thread_ids().difference(&before).count(), 0);
+        let mut left = BTreeSet::new();
+        // 40 reads 25 ms apart: a one-second deadline.
+        wait_until_for(40, || {
+            left = thread_ids().difference(&before).copied().collect();
+            left.is_empty()
+        });
+        assert_eq!(
+            left,
+            BTreeSet::new(),
+            "threads the dropped store added, still listed a second after the drop"
+        );
     });
 }
