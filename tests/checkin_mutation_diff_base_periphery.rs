@@ -655,6 +655,92 @@ fn a_run_base_naming_an_object_that_is_no_commit_fails_the_gate_before_anything_
 }
 
 #[test]
+fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later_runs() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    let [origin, middle, head] = three_commit_history(dir);
+    let scratch = tempfile::tempdir().unwrap();
+    let mutants = scratch.path().join("cargo-mutants-checkin");
+    // One sweep against `base` at the current HEAD, sharing one scratch root with every other
+    // sweep here, and the unit's own root reclaimed after it the way a reclaimed unit loses it,
+    // so the anchor under the scratch root is the only state one sweep hands the next.
+    let sweep = |base: &str| {
+        let run = run_gate_with(
+            dir,
+            Some(base),
+            FORTY_GIB_KB,
+            true,
+            &[("MUTANTS", mutants.to_str().unwrap())],
+        );
+        assert!(run.passed, "{}", run.output);
+        assert_eq!(
+            run.cargo.lines().collect::<Vec<_>>(),
+            vec![run.sweep_line()],
+            "an all-caught sweep leaves no miss, so nothing is re-run by name"
+        );
+        std::fs::remove_dir_all(&mutants).unwrap();
+        (unit_diff(dir), anchor_left(scratch.path()))
+    };
+    let diff_since = |from: &str| git_out(dir, &["diff", from, "--", "*.rs"]);
+
+    // A run that started from `origin` sweeps its spec at `middle`, then again at `head`.
+    git_ok(dir, &["checkout", "-q", &middle]);
+    let (first, anchor) = sweep(&origin);
+    assert_eq!(
+        (first.trim_end(), anchor),
+        (
+            diff_since(&origin).trim_end(),
+            (format!("{middle}\n"), String::new(), format!("{origin}\n"))
+        ),
+        "the run's first sweep is its whole spec diff, and it leaves its tree recording its base"
+    );
+    git_ok(dir, &["checkout", "-q", "-"]);
+    assert_ne!(
+        diff_since(&middle),
+        diff_since(&origin),
+        "fixture precondition: the diff since the first sweep is narrower than the spec diff"
+    );
+    let (second, anchor) = sweep(&origin);
+    assert_eq!(
+        (second.trim_end(), anchor),
+        (
+            diff_since(&middle).trim_end(),
+            (format!("{head}\n"), String::new(), format!("{origin}\n"))
+        ),
+        "the same run's next sweep reads back the base its first sweep wrote, so it covers only \
+         the changes since that sweep's tree"
+    );
+
+    // A later run recorded `middle` as its base before the earlier run's check-in tip `head`
+    // reached the run branch by hand; its own unit lands on top, so HEAD holds that tip.
+    // Committed alone: the earlier sweeps' outputs (unit.diff, mutants.out) stay untracked.
+    write(dir, "c.rs", "fn c() {}\n");
+    git_ok(dir, &["add", "c.rs"]);
+    git_ok(dir, &["commit", "-q", "-m", "the later run's unit lands"]);
+    let later_head = git_out(dir, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        diff_since(&head),
+        diff_since(&middle),
+        "fixture precondition: the diff since the earlier run's tip is narrower than the later \
+         run's spec diff"
+    );
+    let (later, anchor) = sweep(&middle);
+    assert_eq!(
+        (later.trim_end(), anchor),
+        (
+            diff_since(&middle).trim_end(),
+            (
+                format!("{later_head}\n"),
+                String::new(),
+                format!("{middle}\n")
+            )
+        ),
+        "the earlier run's anchor records another base, so the later run sweeps its whole spec \
+         diff and leaves its own tree recording its own base"
+    );
+}
+
+#[test]
 fn the_sweep_mutates_the_workspace_and_tests_only_the_touched_packages_plus_the_root() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
