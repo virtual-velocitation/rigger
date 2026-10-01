@@ -23261,24 +23261,31 @@ fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_9
     );
     assert_eq!(
         checkin.max_retries, 2,
-        "checkin overrides the run default with an ATTEMPT bound of 2 - the sweep, exactly \
-         one remediation round for the whole spec diff's mutants, the sweep again; a value \
-         of 1 escalates on the first miss (spec 91)"
+        "checkin overrides the run default with an ATTEMPT bound of 2 - the gates, exactly \
+         one remediation round for the whole spec diff, the gates again; a value of 1 \
+         escalates on the first red gate (spec 91)"
+    );
+    // The `mutation` gate stays declared (asserted below) but is unwired from check-in until
+    // issue #32 lands, so neither the gate list nor the check-in unit's criterion names it.
+    assert!(
+        !checkin.gates.iter().any(|g| g == "mutation"),
+        "checkin must not list the `mutation` gate until issue #32 lands, got: {:?}",
+        checkin.gates
     );
     assert!(
-        checkin.gates.iter().any(|g| g == "mutation"),
-        "checkin must list the `mutation` gate alongside the ordinary suite it \
-         re-verifies against the merged tree, got: {:?}",
-        checkin.gates
+        !checkin.coverage.contains("mutation"),
+        "checkin's coverage is its unit's criterion, so it must not claim a mutation sweep \
+         the stage no longer runs, got: {:?}",
+        checkin.coverage
     );
     assert_eq!(
         checkin.on_pass, "merge",
-        "checkin integrates the whole spec diff on a green mutation sweep, exactly like \
-         every other stage's on_pass: merge"
+        "checkin integrates the whole spec diff on a green gate suite, exactly like every \
+         other stage's on_pass: merge"
     );
     assert!(
         !checkin.agent.is_empty(),
-        "checkin must name a real agent to remediate a missed mutant"
+        "checkin must name a real agent to remediate a red gate"
     );
 
     let mutation_gate = cfg
