@@ -82,7 +82,10 @@ impl Drop for RunRegistration {
 /// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
 /// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
 /// through it, so the machine-global registry sees every invocation that starts or advances a run,
-/// not just the stepwise loop path.
+/// not just the stepwise loop path. Every one of them DRIVES the run while it lives, so the entry
+/// and each heartbeat re-stamp are written as [`rigger::registry::Writer::Driver`]: the
+/// driver-liveness stamp, which a courier's discovery refresh ([`refresh_registry_entry`]) never
+/// is.
 ///
 /// Returns a [`RunRegistration`] the CALLER MUST HOLD for the life of the run (`let _reg = ...;`):
 /// the initial entry is written here, synchronously, and the returned guard's background thread
@@ -104,6 +107,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, &root),
         heartbeat_ms: rigger::registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     // The initial, synchronous registration. On failure, degrade to an inert guard rather than
     // spawn a heartbeat thread that could only fail the same way.
@@ -786,7 +790,10 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // are in flight.
     ensure_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
-    let driver = ReplayDriver::new(&folding);
+    // Every spawn this step parks records the scratch root its marker is stamped under (spec
+    // 101), so where a worker's marker lives is read from the log, never from a reader's own
+    // environment.
+    let driver = ReplayDriver::new(&folding, scratch_root.as_deref().unwrap_or(""));
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -809,17 +816,21 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
     // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
     // and a bounded spawn's staleness watchdog around THIS path, never re-deriving a scratch
-    // root of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
-    // resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default) the sweep
-    // above reads and this run's id - so the worker-write path is byte-identical to every
-    // reader's path under ANY scratch config. Bounded or not, every spawn carries a marker: the
-    // marker is how the live-writer guard sees a worker, and the sweep never times out an
-    // unbounded one however stale its marker gets.
+    // root of its own. Resolved by the ONE marker-location rule every reader applies
+    // (`liveness::MarkerRoots`): under the scratch root the spawn's request recorded when this
+    // or an earlier step parked it (`RIGGER_TMPDIR` > `defaults.workdir` > the cache-home
+    // default, as that step resolved it), else under this step's own - so the worker-write path
+    // is byte-identical to every reader's path, whatever environment the reader or a later step
+    // runs under. Bounded or not, every spawn carries a marker: the marker is how the live-writer
+    // guard sees a worker, and the sweep never times out an unbounded one however stale its
+    // marker gets.
     if let Some(root) = &scratch_root {
+        let roots = rigger::liveness::MarkerRoots::of(&events, root).map_err(|e| e.to_string())?;
         for item in step.wave.iter_mut() {
             // A degenerate id (never a real spawn id rigger itself mints) yields no marker path
             // at all rather than a fabricated placeholder - the item simply carries no marker.
-            item.marker_path = rigger::liveness::marker_path(root, &wave_run_id, &item.id)
+            item.marker_path = roots
+                .marker_path(&wave_run_id, &item.id)
                 .map(|p| p.to_string_lossy().into_owned());
         }
     }
@@ -948,20 +959,22 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
     // halted.is_none()`) to also fire on a budget halt / escalation while still sparing a liveness
     // halt or a manual-review pause. Best-effort - never fails the step. `?` here can never
-    // actually err: all three sub-reads (`step_result`, `hung_spawns`, `ledger::project`) already
-    // succeeded above on this same `events` (the last inside `conductor::run`, which produced
-    // `rs`), so the predicate is pure recomputation over an in-memory slice.
+    // actually err: all three sub-reads (`step_result` and `hung_spawns`, both read through
+    // `liveness::unended_spawns`, and `ledger::project`) already succeeded above on this same
+    // `events` (the last inside `conductor::run`, which produced `rs`), so the predicate is pure
+    // recomputation over an in-memory slice.
     //
-    // The frontier+hung core is NECESSARY but not SUFFICIENT for run terminality: a manual-review
-    // PAUSE (`autonomy: manual` on a gated stage, §4.3) emits `ManualReview` and returns its unit
-    // pending WITHOUT ever parking an implementer spawn, so it leaves an EMPTY frontier and no hung
-    // spawn - the core reads terminal - yet the run is manual-review-pending, i.e. NOT converged
-    // and STILL ADVANCING (a human will approve+integrate it on a later step). That is exactly a
-    // run this rail must SPARE. The manual-review exclusion is FOLDED INTO the shared predicate
-    // (it projects the `manual_review` inbox from the scoped events), so both this terminal site
-    // and the drift early-return above spare a paused run without any per-caller guard to keep in
-    // sync. (A budget halt / escalation IS terminal per criterion 3 and leaves the inbox empty, so
-    // those still reclaim - only a non-terminal manual-review pause is excluded.)
+    // The unended-spawns core (the frontier and the hung) is NECESSARY but not SUFFICIENT for run
+    // terminality: a manual-review PAUSE (`autonomy: manual` on a gated stage, §4.3) emits
+    // `ManualReview` and returns its unit pending WITHOUT ever parking an implementer spawn, so it
+    // leaves an EMPTY frontier and no hung spawn - the core reads terminal - yet the run is
+    // manual-review-pending, i.e. NOT converged and STILL ADVANCING (a human will approve+integrate
+    // it on a later step). That is exactly a run this rail must SPARE. The manual-review exclusion
+    // is FOLDED INTO the shared predicate (it projects the `manual_review` inbox from the scoped
+    // events), so both this terminal site and the drift early-return above spare a paused run
+    // without any per-caller guard to keep in sync. (A budget halt / escalation IS terminal per
+    // criterion 3 and leaves the inbox empty, so those still reclaim - only a non-terminal
+    // manual-review pause is excluded.)
     if terminal_and_no_live_worker(&events)? {
         if let Some(root) = &scratch_root {
             reclaim_run_scratch(root);
@@ -1013,17 +1026,17 @@ fn merge_hung_attention(
 /// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
 /// frontier ALONE - first omitting the hung check, then the manual-review check).
 ///
-/// Three conditions, all required:
-/// - the pending frontier is EMPTY (`spawn::step_result(...).done`): every recorded spawn has a
-///   result, so no in-flight wave and no obviously-live worker; and
-/// - NO spawn is HUNG (`liveness::hung_spawns(...)` is empty): a liveness-fault result counts as
-///   "answered" (so it does NOT keep the frontier non-empty) yet leaves a worker that may still
-///   be alive and writing under the shared scratch - and which the operator may yet recover - so
-///   its presence must still block reclamation; and
+/// Two conditions, both required:
+/// - EVERY spawn has ENDED (`liveness::unended_spawns(...)` is empty, the one authority `reset
+///   --runs` closes on too): the pending frontier is empty - every recorded spawn has a result, so
+///   no in-flight wave and no obviously-live worker - and NO spawn is HUNG - a liveness-fault
+///   result answers the frontier yet leaves a worker that may still be alive and writing under
+///   the shared scratch, and which the operator may yet recover, so it still blocks reclamation;
+///   and
 /// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
 ///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
-///   WITHOUT parking any spawn, so it leaves an empty frontier and no hung spawn - the frontier+hung
-///   core alone reads terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
+///   WITHOUT parking any spawn, so it leaves no unended spawn - the spawn core alone reads
+///   terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
 ///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
 ///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
 ///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
@@ -1036,20 +1049,19 @@ fn merge_hung_attention(
 /// replayed; callers treat an `Err` as "not safe to reclaim" (never delete on uncertainty).
 fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
     let scoped = runscope::current_run(events);
-    let frontier_empty = spawn::step_result(scoped).map_err(|e| e.to_string())?.done;
-    let no_hung = rigger::liveness::hung_spawns(scoped)
+    let spawns_ended = rigger::liveness::unended_spawns(scoped)
         .map_err(|e| e.to_string())?
         .is_empty();
     // The manual-review inbox, projected from the SAME scoped slice - the single authority for
-    // which units still await a human. A non-terminal manual-review PAUSE leaves an empty frontier
-    // and no hung spawn (it parks no spawn), so the frontier+hung core alone reads terminal even
-    // though the run is still advancing. Folding the exclusion HERE - not at each caller - means
-    // both teardown sites inherit it structurally and the guard can never diverge between them.
+    // which units still await a human. A non-terminal manual-review PAUSE leaves no unended spawn
+    // (it parks no spawn), so the spawn core alone reads terminal even though the run is still
+    // advancing. Folding the exclusion HERE - not at each caller - means both teardown sites
+    // inherit it structurally and the guard can never diverge between them.
     let no_manual_review = ledger::project(scoped)
         .map_err(|e| e.to_string())?
         .manual_review
         .is_empty();
-    Ok(frontier_empty && no_hung && no_manual_review)
+    Ok(spawns_ended && no_manual_review)
 }
 
 /// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):
@@ -3902,7 +3914,7 @@ mod tests {
             ..Default::default()
         };
         let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
-        ReplayDriver::new(store).spawn(
+        ReplayDriver::new(store, "").spawn(
             &rigger::config::AgentDef::default(),
             "do it",
             &opts,

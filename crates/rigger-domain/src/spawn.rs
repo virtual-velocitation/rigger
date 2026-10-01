@@ -347,6 +347,36 @@ pub struct SpawnRequest {
     pub reviews: Vec<String>,
 }
 
+/// The [`TYPE_SPAWN_REQUESTED`] event-meta key, beside the run id's, carrying the scratch root
+/// `rigger step` stamps the spawn's liveness marker under (spec 101). Where a spawn's marker
+/// lives is log-carried state, never a reader's process state: every marker reader resolves it
+/// from this recorded root, so a reader whose own environment (`RIGGER_TMPDIR`,
+/// `XDG_CACHE_HOME`, `HOME`) resolves a different scratch root still finds a live worker's
+/// marker. A request recorded before the root was carried, or parked with no scratch root, has
+/// none, and a reader falls back to its own resolution for it.
+pub const META_MARKER_ROOT: &str = "marker_root";
+
+/// The scratch root each spawn's request recorded its liveness marker under
+/// ([`META_MARKER_ROOT`]), keyed by spawn id; a spawn whose request recorded none is absent. A
+/// re-parked id collapses to its last-written request, as in [`recorded`], and a request body
+/// with no readable id propagates its parse error, as there. Reads only each request's id, never
+/// its prompt.
+pub fn marker_roots(events: &[Event]) -> Result<BTreeMap<String, String>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct RequestId {
+        id: String,
+    }
+    let mut out = BTreeMap::new();
+    for e in spawn_requested_events(events) {
+        let id = serde_json::from_slice::<RequestId>(&e.data)?.id;
+        match e.meta.get(META_MARKER_ROOT) {
+            Some(root) => out.insert(id, root.clone()),
+            None => out.remove(&id),
+        };
+    }
+    Ok(out)
+}
+
 /// A spawn-protocol record that travels as the whole JSON body of ONE event type:
 /// [`SpawnRequest`] as [`TYPE_SPAWN_REQUESTED`], [`SpawnResult`] as [`TYPE_SPAWN_RESULT`].
 /// Implementing it is all a record needs to get its [`SpawnEvent`] conversions.
@@ -578,7 +608,8 @@ pub struct WaveItem {
     pub max_wall_clock: Option<u64>,
     /// The RESOLVED absolute path of this spawn's liveness marker (spec 10, unit 3), stamped
     /// by `rigger step` from the SINGLE authority [`crate::liveness::marker_path`] over the
-    /// step's own resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default)
+    /// scratch root the spawn's request recorded ([`META_MARKER_ROOT`]) - else the step's own
+    /// resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > the cache-home default) -
     /// and run id. Carrying it on the wire is what keeps the worker-write path IDENTICAL to
     /// the sweep-read path under ANY scratch config: the thin driver frames both the
     /// heartbeat `touch` and its staleness watchdog around THIS path and never re-derives a
@@ -736,6 +767,17 @@ pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serd
         }
     }
     Ok(found)
+}
+
+/// The real result that ENDED spawn `id`: its latest recorded result ([`result_of`]) when that is
+/// a real one - the worker's output, or an error a worker or the operator recorded - and `None`
+/// while the spawn has not ended: no result yet, or only the step's liveness fault
+/// ([`SpawnResult::is_liveness_fault`]). The fault is the sweep's diagnosis of a silent worker,
+/// never its end: the replay driver re-parks such a spawn and a real result recorded later
+/// supersedes the fault. THE one spelling of "a spawn has ended" - the replay driver's answer, the
+/// liveness rule and the dash's answered set all read it.
+pub fn ended_by(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
+    Ok(result_of(events, id)?.filter(|res| !res.is_liveness_fault()))
 }
 
 /// The outcome of one `rigger step`: the WAVE of spawns it newly parked, and whether
@@ -1267,6 +1309,44 @@ mod tests {
             "the later success supersedes the earlier failure"
         );
         assert_eq!(got.output, "recovered");
+    }
+
+    /// THE spawn-has-ended rule: a spawn has ended once its latest result is a real one - a
+    /// worker's output or a recorded error - and never on the step's liveness fault, which a
+    /// real result recorded later supersedes.
+    #[test]
+    fn a_spawn_ends_on_its_latest_real_result_never_on_a_liveness_fault() {
+        let id = "u/implementer#0";
+        let ok = || SpawnResult::ok(id, "done").to_event().unwrap();
+        let failed = || SpawnResult::failed(id, "worker gone").to_event().unwrap();
+        let fault = || {
+            SpawnResult::liveness_fault(id, "hung", "infra")
+                .to_event()
+                .unwrap()
+        };
+        let ended = |events: &[Event]| ended_by(events, id).unwrap().map(|res| res.error);
+        assert_eq!(ended(&[]), None, "no result: still in flight");
+        assert_eq!(ended(&[fault()]), None, "a liveness fault is no end");
+        assert_eq!(
+            ended(&[ok()]),
+            Some(String::new()),
+            "a worker's output ends it"
+        );
+        assert_eq!(
+            ended(&[fault(), failed()]),
+            Some("worker gone".to_string()),
+            "a real error recorded after the fault ends it"
+        );
+        assert_eq!(
+            ended(&[ok(), fault()]),
+            None,
+            "the latest result decides, as everywhere else"
+        );
+        assert_eq!(
+            ended_by(&[ok()], "u/implementer#1").unwrap(),
+            None,
+            "another spawn's result ends nothing"
+        );
     }
 
     #[test]

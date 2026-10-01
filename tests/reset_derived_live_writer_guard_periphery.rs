@@ -11,11 +11,12 @@
 //!
 //! THE GUARD READS LIVENESS (spec 101): a run is live when a `rigger step` holds the step lock,
 //! when an in-flight spawn's liveness marker is younger than that spawn's wall-clock bound, or
-//! when a registry heartbeat for this store is younger than the idle window. A spawn is in flight
-//! until a real result is recorded for it: the step's own liveness fault does not end it. Unit
-//! terminality is not a liveness signal: a run whose driver died leaves its units non-terminal
-//! forever, and that run - the one whose bloat most needs the compaction - must not need
-//! `--force-live` to get it.
+//! when a DRIVER registration for this store is younger than the idle window - every `rigger
+//! step`, `run` and `serve` registers as one, a courier's discovery refresh never does. A spawn is
+//! in flight until a real result is recorded for it: the step's own liveness fault does not end
+//! it. Unit terminality is not a liveness signal: a run whose driver died leaves its units
+//! non-terminal forever, and that run - the one whose bloat most needs the compaction - must not
+//! need `--force-live` to get it.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the
 //! criterion is an operator-facing refusal whose observable effects are the command's exit
@@ -49,6 +50,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::UNISOLATED_WORKER;
+use common::fixtures::registry_entries;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
@@ -661,7 +663,7 @@ fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
 fn reset_derived_fails_closed_on_an_unparsable_defaults_block_beside_a_configured_workdir() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let (_workdir, scratch_root) = configure_unparsable_defaults(root);
     let o = reset_from_with_a_fresh_marker_under(root, root, "", &scratch_root);
     assert!(
         !o.ok,
@@ -726,9 +728,10 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
 // ---------------------------------------------------------------------------------------
 
 /// Configures `root`'s store with a `defaults` block that cannot be parsed - `workdir` beside a
-/// `max_retries` that is not a number - and returns the configured workdir.
-fn configure_unparsable_defaults(root: &Path) -> tempfile::TempDir {
-    configure_workdir(root, "  max_retries: three\n").0
+/// `max_retries` that is not a number - and returns the configured workdir and the scratch root a
+/// run resolves under it.
+fn configure_unparsable_defaults(root: &Path) -> (tempfile::TempDir, String) {
+    configure_workdir(root, "  max_retries: three\n")
 }
 
 /// Runs `rigger <args>` from `root` over a private cache home holding one scratch root keyed on
@@ -773,7 +776,7 @@ fn assert_sweeps_the_orphan_root(root: &Path, args: &[&str], why: &str) -> (Stri
 fn reset_scratch_orphans_sweeps_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     assert_sweeps_the_orphan_root(
         root,
         &["reset", "--scratch-orphans"],
@@ -805,7 +808,7 @@ fn reset_scratch_orphans_sweeps_over_a_store_whose_owning_root_has_no_utf8_path(
 fn reset_derived_force_live_compacts_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     assert_prunes(
         root,
         &["reset", "--derived", "--force-live"],
@@ -821,7 +824,7 @@ fn reset_derived_force_live_compacts_over_an_unparsable_defaults_block() {
 fn reset_scratch_orphans_composed_with_derived_sweeps_nothing_over_an_unparsable_defaults_block() {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let ((out, err, ok), orphan_stands) =
         reset_beside_an_orphan_root(root, &["reset", "--scratch-orphans", "--derived"]);
     assert!(
@@ -851,7 +854,7 @@ fn reset_scratch_orphans_with_derived_force_live_sweeps_and_compacts_over_an_unp
 ) {
     let dir = temp_store_project();
     let root = dir.path();
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let why = "a selection of modes that read no scratch root, over an unparsable defaults block";
     assert_compacted(
         assert_sweeps_the_orphan_root(
@@ -883,7 +886,7 @@ fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration
     assert!(ok, "seeding legacy history must succeed; stderr: {err}");
     std::fs::write(rigger_file(root, "project.id"), "durablemint\n")
         .expect("mint an identity distinct from the basename");
-    let _workdir = configure_unparsable_defaults(root);
+    let (_workdir, _) = configure_unparsable_defaults(root);
     let rows = row_count(root);
     for mode in ["--runs", "--build-cache", "--derived"] {
         let (out, err, ok) = run_rigger(root, &["reset", mode]);
@@ -920,7 +923,7 @@ fn every_mode_reading_the_scratch_root_fails_on_it_before_the_identity_migration
 fn reset_build_cache_fails_closed_on_an_unparsable_defaults_block_and_reclaims_nothing() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
+    let (_workdir, scratch_root) = configure_unparsable_defaults(root);
     let built = [
         Path::new(&scratch_root)
             .join(rigger::worktree::SHARED_BUILD_CACHE_NAME)
@@ -1043,20 +1046,22 @@ const TILDE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
 };
 
 /// Given `fixture` scaffolded in a fresh git project, when a real `rigger step` at its root (under
-/// `envs`) parks [`SPAWN`], then the liveness marker path it hands the worker is the one under
-/// `scratch_root(<git toplevel>)`, and when the worker touches exactly that path, `reset --derived`
-/// run from a subdirectory (under the same `envs`) reads it there and refuses naming the spawn:
-/// the path the run writes is the path the guard reads. `why` names the case.
+/// `step_envs`) parks [`SPAWN`], then the liveness marker path it hands the worker is the one under
+/// `scratch_root(<git toplevel>)`, the spawn's request carries that root in the log, and when the
+/// worker touches exactly that path, `reset --derived` run from a subdirectory (under
+/// `reset_envs`) reads it there and refuses naming the spawn: the path the run writes is the path
+/// the guard reads. `why` names the case.
 fn assert_the_guard_reads_the_marker_rigger_step_stamps(
     fixture: &WorkflowFixture,
-    envs: &[(&str, &str)],
+    step_envs: &[(&str, &str)],
+    reset_envs: &[(&str, &str)],
     scratch_root: impl FnOnce(&str) -> String,
     why: &str,
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, fixture);
-    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    let (out, err, ok) = run_rigger_envs(root, &["step"], step_envs);
     assert!(ok, "{why}: rigger step must park the spawn; stderr: {err}");
     let step: serde_json::Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("rigger step prints one JSON line: {e}; got {out:?}"));
@@ -1066,10 +1071,11 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
         .and_then(|item| item["marker_path"].as_str())
         .unwrap_or_else(|| panic!("the wave must carry {SPAWN} with its marker path; got {out:?}"))
         .to_string();
-    let run_id =
-        rigger::run::current_run_id(&read_run_events(root)).expect("the step started a run");
+    let events = read_run_events(root);
+    let run_id = rigger::run::current_run_id(&events).expect("the step started a run");
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let expected = rigger::liveness::marker_path(&scratch_root(&toplevel), &run_id, SPAWN)
+    let scratch_root = scratch_root(&toplevel);
+    let expected = rigger::liveness::marker_path(&scratch_root, &run_id, SPAWN)
         .expect("a real spawn id resolves a marker path");
     assert_eq!(
         Path::new(&stamped),
@@ -1077,10 +1083,24 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
         "{why}: the marker path handed to the worker must be the absolute one under the \
          configured scratch root"
     );
+    let recorded = events
+        .iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_REQUESTED)
+        .find_map(|e| e.meta.get(rigger::spawn::META_MARKER_ROOT));
+    assert_eq!(
+        recorded,
+        Some(&scratch_root),
+        "{why}: the spawn's request must carry the scratch root its marker was stamped under"
+    );
 
     plant_marker(&expected, 0);
     assert_refused_naming_the_spawn(
-        counted(root, &subdirectory_of(root), &["reset", "--derived"], envs),
+        counted(
+            root,
+            &subdirectory_of(root),
+            &["reset", "--derived"],
+            reset_envs,
+        ),
         0..300,
         "s ago, bound 300s)",
     );
@@ -1095,11 +1115,32 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
 #[test]
 fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_reads_from_a_subdirectory(
 ) {
+    let envs = [("RIGGER_TMPDIR", "")];
     assert_the_guard_reads_the_marker_rigger_step_stamps(
         &RELATIVE_WORKDIR_WORKFLOW,
-        &[("RIGGER_TMPDIR", "")],
+        &envs,
+        &envs,
         |toplevel| format!("{toplevel}/rel-scratch"),
         "a relative workdir anchored on the repository root",
+    );
+}
+
+/// Given a real `rigger step` run under `RIGGER_TMPDIR=A` parks [`SPAWN`] and its worker touches
+/// the marker the wave names under A, when `reset --derived` runs from a shell that does not share
+/// the driver's environment (`RIGGER_TMPDIR` unset, so its own resolution names the configured
+/// `rel-scratch` instead), then it still reads that marker under A, the root the step recorded on
+/// the spawn's request, and refuses naming the spawn: where a spawn's marker lives is log-carried
+/// state, never the reading process's environment.
+#[test]
+fn the_guard_reads_the_marker_under_the_root_the_step_recorded_whatever_its_own_environment() {
+    let driver_tmpdir = tempfile::tempdir().expect("create the driver's RIGGER_TMPDIR");
+    let a = driver_tmpdir.path().to_str().unwrap();
+    assert_the_guard_reads_the_marker_rigger_step_stamps(
+        &RELATIVE_WORKDIR_WORKFLOW,
+        &[("RIGGER_TMPDIR", a)],
+        &[("RIGGER_TMPDIR", "")],
+        |_| a.to_string(),
+        "a reset whose own environment resolves a different scratch root",
     );
 }
 
@@ -1113,9 +1154,11 @@ fn the_marker_rigger_step_stamps_under_a_tilde_workdir_is_the_one_the_guard_read
 ) {
     let home_dir = tempfile::tempdir().expect("create the HOME a ~/ workdir expands under");
     let home = home_dir.path().to_str().unwrap();
+    let envs = [("RIGGER_TMPDIR", ""), ("HOME", home)];
     assert_the_guard_reads_the_marker_rigger_step_stamps(
         &TILDE_WORKDIR_WORKFLOW,
-        &[("RIGGER_TMPDIR", ""), ("HOME", home)],
+        &envs,
+        &envs,
         |_| format!("{home}/tilde-scratch"),
         "a ~/ workdir expanded under the process HOME",
     );
@@ -1128,10 +1171,9 @@ fn the_marker_rigger_step_stamps_under_a_tilde_workdir_is_the_one_the_guard_read
 /// Given a dead driver's run whose one in-flight spawn is UNBOUNDED, its worker having touched
 /// the liveness marker every host keeps for every spawn a day before it died: when the operator
 /// runs `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
-/// operator records that result as told, then the spawn no longer holds the run live and the one
-/// signal left is the registry heartbeat that `rigger result` courier itself just stamped for
-/// this store; and once that heartbeat is past the idle window the compaction runs - never
-/// needing `--force-live`.
+/// operator records that result as told, then the spawn no longer holds the run live, and the
+/// registry entry that `rigger result` courier itself just stamped for this store is discovery,
+/// never a driver, so the compaction runs at once - never needing `--force-live`.
 #[test]
 fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result() {
     let dir = temp_store_project();
@@ -1169,39 +1211,18 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
         "the operator records the spawn's result; stdout: {out} stderr: {err}"
     );
 
-    let (out, err, ok) = reset().said();
-    assert!(
-        !ok,
-        "the result courier's own registry heartbeat is inside the idle window; stdout: {out:?}"
-    );
-    assert!(
-        !err.contains(SPAWN),
-        "a spawn with a recorded result has ended and must not be named; stderr: {err:?}"
-    );
-    assert!(
-        err.contains(&format!(
-            "1 driver registration(s) for this project's store in the machine-global instance \
-             registry (spec 50) heartbeat within the last {}s",
-            idle_window_secs()
-        )),
-        "the one signal left is the heartbeat the courier stamped; stderr: {err:?}"
-    );
-
     let instances = registry::instances_dir(state_home.path());
     let stamped =
         registry::read_live_no_prune(&instances, registry::now_ms(), registry::DEFAULT_IDLE_MS);
     assert_eq!(
         stamped.len(),
         1,
-        "the courier stamped exactly one entry, this store's"
+        "the result courier stamped exactly one entry, this store's"
     );
-    for mut inst in stamped {
-        inst.heartbeat_ms = registry::now_ms() - registry::DEFAULT_IDLE_MS - 60_000;
-        registry::write(&instances, &inst).expect("age the courier's heartbeat");
-    }
     assert_compacted(
         reset().said(),
-        "with the result recorded and the heartbeat past the idle window nothing is live",
+        "with the result recorded nothing is live: the result courier's fresh registry stamp is \
+         discovery, never a driver",
     );
 }
 
@@ -1211,8 +1232,9 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
 
 /// Given the operator reads the binary's help or rigger's rendered skills, then each states the
 /// liveness definition this criterion owns - a held step lock, an in-flight spawn's marker inside
-/// its wall-clock bound, a registry heartbeat inside the idle window - and that a dead driver's
-/// run is not live; none still reads unit terminality or a bare unanswered spawn as live.
+/// its wall-clock bound, a driver registration's heartbeat inside the idle window - and that a
+/// dead driver's run is not live; none still reads unit terminality or a bare unanswered spawn as
+/// live.
 #[test]
 fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     let dir = temp_store_project();
@@ -1225,8 +1247,8 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     assert!(
         help.contains(
             "Refuses while the run is live (a held step lock, an in-flight spawn's marker inside \
-             its wall-clock bound, or a registry heartbeat inside the idle window), naming what is \
-             live (a dead driver's run is not)"
+             its wall-clock bound, or a driver registration's heartbeat inside the idle window), \
+             naming what is live (a dead driver's run is not)"
         ),
         "the --derived help must state the liveness definition; got {help:?}"
     );
@@ -1236,10 +1258,14 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     );
     assert!(
         help.contains(
-            "When no driver is alive and no spawn of the run awaits its result, it also closes \
-             the current run's units whose branch work is landed on rigger-run"
+            "When no driver is alive and every spawn of the run has ended on a real result, it \
+             also closes the current run's units whose branch work is landed on rigger-run"
+        ) && help.contains(
+            "a dead run's hung spawn (answered only by the step's liveness fault) keeps them open \
+             and is named with its remedy, `rigger result <id>`"
         ),
-        "the --runs help must state that the close waits for every spawn's result; got {help:?}"
+        "the --runs help must state that the close waits for every spawn to end on a real \
+         result, and names a hung one's remedy; got {help:?}"
     );
 
     let (out, err, ok) = run_rigger(root, &["docs"]);
@@ -1256,12 +1282,25 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     assert!(
         reset_store.contains(
             "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
-             liveness marker is younger than its wall-clock bound, no registration for the store \
-             has a heartbeat inside the idle window) and no spawn of the run awaits its result, \
-             it also closes the current run's units"
+             liveness marker is younger than its wall-clock bound, no driver registration for the \
+             store has a heartbeat inside the idle window) and every spawn of the run has ended \
+             on a real result, it also closes the current run's units"
+        ) && reset_store.contains(
+            "a dead run with a hung spawn stays open and the reset names it: record its real \
+             result with `rigger result <id>`, then rerun `rigger reset --runs`"
         ),
-        "the reset-store skill must state the liveness `--runs` closes a dead run on, and that \
-         the close waits for every spawn's result; got {reset_store:?}"
+        "the reset-store skill must state the liveness `--runs` closes a dead run on, that the \
+         close waits for every spawn to end on a real result, and a hung one's remedy; got \
+         {reset_store:?}"
+    );
+    assert!(
+        reset_store.contains(
+            "A `rigger step` registers as the run's driver just as `run` and `serve` do, so a \
+             hand-landed unit closes once the last step's stamp is older than the idle window; a \
+             courier's (`emit`, `result`, `progress`) discovery refresh never counts as a driver"
+        ),
+        "the reset-store skill must state which registrations count as a driver; got \
+         {reset_store:?}"
     );
     assert!(
         !reset_store.contains("no spawn awaits a result"),
@@ -1278,7 +1317,10 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
              driver died is not live: units it left non-terminal never block the compaction, a \
              spawn with no marker never does, and an in-flight spawn stops blocking once its \
              marker outlives the spawn's bound or a real result is recorded for it. An unbounded \
-             spawn's marker never outlives its bound, so record that spawn's result to end it."
+             spawn's marker never outlives its bound, so record that spawn's result to end it. \
+             Every `rigger step`, `run` and `serve` registers as the run's driver, so the last \
+             step's stamp counts as a live driver for the idle window; a courier's (`emit`, \
+             `result`, `progress`) discovery refresh of that registration never does."
         ),
         "the using-rigger skill must state the liveness `--derived` refuses on; got {using:?}"
     );
@@ -1506,6 +1548,32 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     assert!(
         err.contains("registration"),
         "the refusal must name the live driver registration; stderr: {err:?}"
+    );
+}
+
+/// A courier's registry refresh is discovery, never a driver: a real `rigger emit` against this
+/// store seconds before, into the same registry, leaves compaction unrefused.
+#[test]
+fn reset_derived_is_not_refused_by_a_couriers_registry_refresh() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let state = [("XDG_STATE_HOME", state_home.path().to_str().unwrap())];
+
+    let emit = ["emit", "DecisionMade", r#"{"id":"d1","summary":"s"}"#];
+    let (_out, err, ok) = run_rigger_envs(root, &emit, &state);
+    assert!(ok, "rigger emit must succeed; stderr: {err}");
+    assert_eq!(
+        registry_entries(state_home.path()).len(),
+        1,
+        "the courier refreshed this store's entry in the registry the guard reads"
+    );
+
+    assert_prunes(
+        root,
+        &["reset", "--derived"],
+        &state,
+        "a courier's discovery refresh must never read as a live driver",
     );
 }
 

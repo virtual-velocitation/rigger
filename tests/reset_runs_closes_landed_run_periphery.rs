@@ -2,16 +2,19 @@
 //! remaining work is already landed on the run branch.
 //!
 //! The problem: a run is done only when every unit folds to `UnitIntegrated`, and only the
-//! conductor mints that event (`rigger emit` refuses it). A unit the operator lands by hand -
-//! its branch merged onto `rigger-run` while no driver is alive - therefore never receives its
-//! terminal event, so `rigger status` reports the run as still working forever and every later
-//! verb treats it as the active run. `reset --runs` records the missing `UnitIntegrated` for
-//! exactly such a unit: its branch carries work of its own, that work is an ancestor of the run
-//! branch, no spawn of the run awaits its result (a relaunched driver resumes every such spawn,
-//! whatever its marker says), and nothing is driving the run - no `rigger step` holds the step
-//! lock, no in-flight spawn's liveness marker is younger than its wall-clock bound, and no
-//! registry heartbeat for the store is younger than the idle window (spec 101's liveness, the one
-//! both reset modes read).
+//! conductor mints that event (`rigger emit` refuses it). A unit the operator lands by hand - its
+//! branch merged onto `rigger-run` while no driver is alive - therefore never receives its terminal
+//! event, so `rigger status` reports the run as still working forever and every later verb treats
+//! it as the active run. `reset --runs` records the missing `UnitIntegrated` for exactly such a
+//! unit: its branch carries work of its own, that work is an ancestor of the run branch, every
+//! spawn of the run has ended on a real result (a relaunched driver resumes an unanswered spawn and
+//! re-parks one answered only by the step's liveness fault, whatever its marker says; a dead run's
+//! hung spawn is named with its `rigger result` remedy), and nothing is driving the run - no
+//! `rigger step` holds the step lock, no in-flight spawn's liveness marker is younger than its
+//! wall-clock bound, and no DRIVER registration for the store is younger than the idle window (spec
+//! 101's liveness, the one both reset modes read). A courier's (`emit`, `result`, `progress`)
+//! discovery refresh of the registry is not a driver's: the operator's own courier seconds before
+//! the reset never keeps a hand-landed unit open.
 //!
 //! These drive the COMPILED binary against a real git repo and `.rigger/events.db`, because the
 //! observable contract is the log the operator's next `rigger status` folds.
@@ -23,8 +26,10 @@ use common::cli::{
     read_run_events, real_result_body, rigger_file, run_rigger_envs, run_rigger_ok, seed_registry,
     seed_run_events,
 };
-use common::fixtures::{git_ok, git_ok_with_identity, git_out, temp_git_project_with_commit};
-use rigger::registry;
+use common::fixtures::{
+    git_ok, git_ok_with_identity, git_out, registry_entries, temp_git_project_with_commit,
+};
+use rigger::registry::{self, Writer};
 use std::path::Path;
 
 /// The run's history up to the hand landing: unit `a` integrated by the conductor, then the
@@ -93,8 +98,11 @@ struct Around {
     marker_secs_ago: Option<u64>,
     /// A `rigger step` holds the step lock for the whole reset.
     step_lock: bool,
-    /// This store's registry entry last heartbeat this many ms ago (`None`: no entry).
+    /// A DRIVER's registration for this store last heartbeat this many ms ago (`None`: no entry).
     heartbeat_ms_ago: Option<u64>,
+    /// The operator's own courier (`rigger emit`) re-stamps this store's registry entry seconds
+    /// before the reset, in the same registry the reset reads.
+    courier: bool,
 }
 
 /// No signal at all: nothing is driving the run. Each case sets the one signal it stands up over
@@ -103,15 +111,16 @@ const QUIET: Around = Around {
     marker_secs_ago: None,
     step_lock: false,
     heartbeat_ms_ago: None,
+    courier: false,
 };
 
 /// Seeds `events` into `root`, stands up the signals `around` names, runs `rigger reset --runs`,
-/// and returns the run events before and after the reset.
+/// and returns the run events before and after the reset, and what the reset printed.
 fn reset_runs_over(
     root: &Path,
     events: &[(&str, &str)],
     around: Around,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, String) {
     seed_run_events(root, events);
     let scratch = tempfile::tempdir().unwrap();
     let scratch_root = scratch.path().to_str().unwrap();
@@ -122,19 +131,51 @@ fn reset_runs_over(
         );
     }
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let seeded = around
-        .heartbeat_ms_ago
-        .map(|ago| seed_registry("proj", &toplevel, registry::now_ms() - ago).0);
-    let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
-    if let Some(home) = &seeded {
-        envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
+    let driver_heartbeat_ms = around.heartbeat_ms_ago.map(|ago| registry::now_ms() - ago);
+    let state = driver_heartbeat_ms
+        .map(|hb| seed_registry("proj", &toplevel, hb).0)
+        .unwrap_or_else(|| tempfile::tempdir().expect("a test-private XDG_STATE_HOME"));
+    let state_home = state.path().to_str().unwrap();
+    if around.courier {
+        courier_emits(root, state_home, driver_heartbeat_ms);
     }
+    let envs = [
+        ("RIGGER_TMPDIR", scratch_root),
+        ("XDG_STATE_HOME", state_home),
+    ];
     let before = run_log(root);
     let lock = around.step_lock.then(|| hold_step_lock(root));
-    let (_out, err, ok) = run_rigger_envs(root, &["reset", "--runs"], &envs);
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--runs"], &envs);
     drop(lock);
     assert!(ok, "rigger reset --runs must exit 0; stderr:\n{err}");
-    (before, run_log(root))
+    (before, run_log(root), out)
+}
+
+/// The operator's own courier seconds before the reset: `rigger emit` against `root`'s store
+/// re-stamps its one entry in the registry under `state_home`, the registry the reset then reads,
+/// as discovery, carrying forward the stamp of the driver that registered it
+/// (`driver_heartbeat_ms`, `None` when none did) and never erasing it.
+fn courier_emits(root: &Path, state_home: &str, driver_heartbeat_ms: Option<u64>) {
+    let emit = [
+        "emit",
+        "DecisionMade",
+        r#"{"id":"d-hand-landing","summary":"checkin landed by hand"}"#,
+    ];
+    let (_out, err, ok) = run_rigger_envs(root, &emit, &[("XDG_STATE_HOME", state_home)]);
+    assert!(ok, "rigger emit must succeed; stderr: {err}");
+    let entries = registry_entries(Path::new(state_home));
+    assert_eq!(
+        entries.len(),
+        1,
+        "the courier re-stamped this store's one entry in the registry the reset reads"
+    );
+    assert_eq!(
+        entries[0].1.writer,
+        Writer::Courier {
+            driver_heartbeat_ms
+        },
+        "the courier's re-stamp carries the registered driver's stamp forward"
+    );
 }
 
 /// Every event of `root`'s run stream, oldest first, as `<type> <body>`.
@@ -179,7 +220,7 @@ fn assert_checkin_closed(root: &Path, before: &[String], after: &[String]) {
 fn reset_runs_closes_a_dead_run_whose_checkin_is_landed_on_the_run_branch() {
     let dir = project(true, true);
     let root = dir.path();
-    let (before, after) = reset_runs_over(root, DEAD_RUN, QUIET);
+    let (before, after, _) = reset_runs_over(root, DEAD_RUN, QUIET);
     assert_checkin_closed(root, &before, &after);
     assert_eq!(
         run_rigger_ok(root, &["status", "--line"]).trim(),
@@ -187,47 +228,66 @@ fn reset_runs_closes_a_dead_run_whose_checkin_is_landed_on_the_run_branch() {
     );
 }
 
-/// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
-/// registration leaves behind: nothing is driving the run, so the landed unit is closed.
-#[test]
-fn reset_runs_closes_a_dead_run_whose_registry_heartbeat_outlived_the_idle_window() {
+/// Asserts `reset --runs` over [`DEAD_RUN`], with `around` standing, closes the landed
+/// `checkin` unit.
+fn assert_dead_run_closed(around: Around) {
     let dir = project(true, true);
     let root = dir.path();
-    let (before, after) = reset_runs_over(
-        root,
-        DEAD_RUN,
-        Around {
-            heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
-            ..QUIET
-        },
-    );
+    let (before, after, _) = reset_runs_over(root, DEAD_RUN, around);
     assert_checkin_closed(root, &before, &after);
 }
 
-/// The negative space of the rule: each case must leave the log exactly as it was.
+rigger::test_cases! {
+    /// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
+    /// registration leaves behind: nothing is driving the run, so the landed unit is closed.
+    reset_runs_closes_a_dead_run_whose_registry_heartbeat_outlived_the_idle_window:
+        assert_dead_run_closed(Around {
+            heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
+            ..QUIET
+        });
+    /// A courier's registry refresh is discovery, never a driver: the operator's `rigger emit`
+    /// seconds before the reset leaves the landed unit closable.
+    reset_runs_closes_a_landed_unit_seconds_after_a_courier_refreshed_the_registry:
+        assert_dead_run_closed(Around {
+            courier: true,
+            ..QUIET
+        });
+    /// The recorded shape: the driver died, the operator landed the unit by hand and ran a
+    /// courier, then reset - the dead driver's stamp stays dead under the courier's re-stamp.
+    reset_runs_closes_a_landed_unit_when_a_courier_follows_a_stale_driver_registration:
+        assert_dead_run_closed(Around {
+            heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
+            courier: true,
+            ..QUIET
+        });
+}
+
+/// The negative space of the rule: each case must leave the log exactly as it was. Returns what
+/// the reset printed.
 fn assert_left_open(
     commit_work: bool,
     land: bool,
     extra: &[(&str, &str)],
     around: Around,
     why: &str,
-) {
+) -> String {
     let dir = project(commit_work, land);
     let root = dir.path();
     let events: Vec<(&str, &str)> = DEAD_RUN.iter().chain(extra).copied().collect();
-    let (before, after) = reset_runs_over(root, &events, around);
+    let (before, after, out) = reset_runs_over(root, &events, around);
     assert_eq!(after, before, "{why}: the log must be untouched");
     assert_eq!(
         run_rigger_ok(root, &["status", "--line"]).trim(),
         "checkin . 1/2 units . working",
         "{why}: the run must stay open"
     );
+    out
 }
 
 rigger::test_cases! {
     /// A live driver (an in-flight spawn, answered only by the step's liveness fault, whose
     /// resumed worker touched its marker just now) owns the run: even a landed branch is not the
-    /// operator's to close. The fault answers the spawn, so the marker alone keeps the run open.
+    /// operator's to close.
     reset_runs_leaves_a_live_run_untouched_even_when_its_branch_is_landed: {
         let fault = liveness_fault_body(SPAWN_ID);
         assert_left_open(
@@ -265,6 +325,20 @@ rigger::test_cases! {
             },
             "a heartbeat inside the idle window",
         );
+    /// A driver registration inside the idle window owns the run even after a courier re-stamps
+    /// its entry: the courier carries the driver's stamp, so a landed branch stays open.
+    reset_runs_leaves_a_landed_unit_open_while_a_driver_registration_is_live_under_a_courier_refresh:
+        assert_left_open(
+            true,
+            true,
+            &[],
+            Around {
+                heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS - 60_000),
+                courier: true,
+                ..QUIET
+            },
+            "a live driver registration under a courier's refresh",
+        );
     /// Work that never reached the run branch is not landed.
     reset_runs_leaves_a_dead_run_open_while_its_work_is_not_on_the_run_branch: assert_left_open(
         true,
@@ -301,7 +375,7 @@ fn reset_runs_leaves_a_landed_run_open_while_a_spawn_awaits_its_result() {
             "an unanswered spawn whose marker outlived its bound",
         ),
     ] {
-        assert_left_open(
+        let out = assert_left_open(
             true,
             true,
             &[IN_FLIGHT_SPAWN],
@@ -310,6 +384,10 @@ fn reset_runs_leaves_a_landed_run_open_while_a_spawn_awaits_its_result() {
                 ..QUIET
             },
             why,
+        );
+        assert!(
+            !out.contains("left unit"),
+            "{why}: a spawn awaiting its result leaves the unit open silently; stdout: {out}"
         );
     }
 }
@@ -322,7 +400,7 @@ fn reset_runs_closes_a_dead_landed_run_whatever_a_prior_run_left_unanswered() {
     let dir = project(true, true);
     let root = dir.path();
     let events: Vec<(&str, &str)> = PRIOR_RUN.iter().chain(DEAD_RUN).copied().collect();
-    let (before, after) = reset_runs_over(root, &events, QUIET);
+    let (before, after, _) = reset_runs_over(root, &events, QUIET);
     assert_checkin_closed(root, &before, &after);
 }
 
@@ -345,7 +423,7 @@ fn reset_runs_leaves_a_landed_unit_open_while_another_units_spawn_awaits_its_res
             ),
         ])
         .collect();
-    let (before, after) = reset_runs_over(root, &events, QUIET);
+    let (before, after, _) = reset_runs_over(root, &events, QUIET);
     assert_eq!(
         after, before,
         "another unit's spawn awaiting its result keeps the landed unit open: the log must be \
@@ -410,10 +488,11 @@ rigger::test_cases! {
     /// The in-flight spawn's only result is the step's liveness fault, and a worker that resumed
     /// touched its marker a minute ago, inside its 300 s bound: the spawn is still in flight and
     /// drives the run, so even a landed branch stays open - the one live-spawn rule `reset
-    /// --derived` refuses on.
+    /// --derived` refuses on - and the reset never tells the operator to supersede the live
+    /// worker's result.
     reset_runs_leaves_a_landed_run_open_while_a_liveness_faulted_spawns_marker_is_inside_its_bound: {
         let fault = liveness_fault_body(SPAWN_ID);
-        assert_left_open(
+        let out = assert_left_open(
             true,
             true,
             &[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)],
@@ -423,12 +502,34 @@ rigger::test_cases! {
             },
             "a liveness-faulted spawn whose marker is inside its bound",
         );
+        assert!(
+            !out.contains("left unit"),
+            "a live run is left untouched and unnamed; stdout: {out}"
+        );
     };
-    /// The same fault with the marker a second past its bound: the worker is gone, nothing drives
-    /// the run, and the landed unit is closed.
-    reset_runs_closes_a_dead_run_whose_liveness_faulted_spawns_marker_outlived_its_bound: {
+    /// The same fault with the marker a second past its bound: the worker is gone and nothing
+    /// drives the run, yet the spawn has not ended - the step halts on it and a relaunched driver
+    /// re-parks it - so the landed unit stays open, and the reset names it, the hung spawn and the
+    /// `rigger result` that ends it.
+    reset_runs_leaves_a_dead_run_open_naming_its_hung_spawn_whose_marker_outlived_its_bound: {
         let fault = liveness_fault_body(SPAWN_ID);
-        closes_the_landed_checkin(&[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)], 301);
+        let out = assert_left_open(
+            true,
+            true,
+            &[IN_FLIGHT_SPAWN, ("SpawnResult", &fault)],
+            Around {
+                marker_secs_ago: Some(301),
+                ..QUIET
+            },
+            "a hung spawn",
+        );
+        assert!(
+            out.contains(r#"left unit "checkin" of run r1 open"#)
+                && out.contains(SPAWN_ID)
+                && out.contains("rigger result <id>"),
+            "the reset must name the unit it left open, its hung spawn and the remedy; stdout: \
+             {out}"
+        );
     };
     /// The fault, then a real result, with the marker touched just now: the real result ended
     /// the spawn whatever its marker says, so nothing drives the run and the landed unit is
@@ -448,7 +549,7 @@ fn closes_the_landed_checkin(extra: &[(&str, &str)], marker_secs_ago: u64) {
     let dir = project(true, true);
     let root = dir.path();
     let events: Vec<(&str, &str)> = DEAD_RUN.iter().chain(extra).copied().collect();
-    let (before, after) = reset_runs_over(
+    let (before, after, _) = reset_runs_over(
         root,
         &events,
         Around {
@@ -463,13 +564,14 @@ fn closes_the_landed_checkin(extra: &[(&str, &str)], marker_secs_ago: u64) {
 // The scratch root is read fail-closed
 // ---------------------------------------------------------------------------------------
 
-/// Given a landed run whose in-flight spawn - answered only by the step's liveness fault, so its
-/// marker alone keeps the run open - had its resumed worker touch that marker just now under the
-/// store's configured `defaults.workdir`, where a run stamps it, `reset --runs` reads it there and
-/// leaves the run open. When that `defaults` block turns unparsable (a `max_retries` that is not a
-/// number beside the same `workdir`), the scratch root is never degraded to the default root,
-/// where the marker would read as absent and the live worker's run would be closed out from under
-/// it: `reset --runs` exits non-zero naming the config, and the log is left exactly as it was.
+/// Given a landed run whose in-flight spawn - answered only by the step's liveness fault - had its
+/// resumed worker touch that marker just now under the store's configured `defaults.workdir`,
+/// where a run stamps it, `reset --runs` reads it there: the run is live, so it is left untouched
+/// and its spawn is never named for a superseding `rigger result`. When that `defaults` block
+/// turns unparsable (a `max_retries` that is not a number beside the same `workdir`), the scratch
+/// root is never degraded to the default root, where the marker would read as absent and the live
+/// worker's spawn would be named as hung: `reset --runs` exits non-zero naming the config, and the
+/// log is left exactly as it was.
 #[test]
 fn reset_runs_fails_closed_on_an_unparsable_defaults_block_and_closes_nothing() {
     let dir = project(true, true);
@@ -489,15 +591,16 @@ fn reset_runs_fails_closed_on_an_unparsable_defaults_block_and_closes_nothing() 
     let before = run_log(root);
     let reset = || run_rigger_envs(root, &["reset", "--runs"], &[("RIGGER_TMPDIR", "")]);
 
-    let (_out, err, ok) = reset();
+    let (out, err, ok) = reset();
     assert!(
         ok,
         "a parsable defaults block resolves the workdir's scratch root; stderr:\n{err}"
     );
-    assert_eq!(
-        run_log(root),
-        before,
-        "the fresh marker under the configured workdir keeps the landed run open"
+    assert_eq!(run_log(root), before, "the landed run is left open");
+    assert!(
+        !out.contains("left unit"),
+        "the fresh marker under the configured workdir is a live worker, never named as hung; \
+         stdout: {out}"
     );
 
     let workflow = rigger_file(root, "workflow.yml");

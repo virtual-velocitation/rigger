@@ -2175,23 +2175,19 @@ pub fn build_run_tree(
         .filter_map(|a| a.latest_activity.as_deref().map(|d| (a.id.as_str(), d)))
         .collect();
 
-    // Which recorded spawns have finished (answered by a result), and which finished with an
-    // error - so an agent leaf reads running / failed / done. Derived PER SPAWN from the typed
-    // authority `spawn::result_of` (the SAME last-write-wins the replay driver reads), never a
-    // second parallel fold over the raw event stream:
+    // Which recorded spawns have finished (ended by a real result), and which finished with an
+    // error - so an agent leaf reads running / failed / done. Derived PER SPAWN from the one
+    // spawn-has-ended rule `spawn::ended_by` (the SAME rule the replay driver answers by), never
+    // a second parallel fold over the raw event stream:
     //   * a hung-then-recovered agent whose LATEST result is a success reads `done`, not the
     //     stale fault (last-write-wins), and
-    //   * a step-synthesized LIVENESS fault is a re-park, not an answer - the replay driver
+    //   * a step-synthesized LIVENESS fault is a re-park, not an end - the replay driver
     //     treats a still-hung agent as RUNNING - so it counts as neither answered nor errored
     //     here (no false failure rolled up).
     let mut answered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut errored: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for id in spawns.keys() {
-        if let Some(res) = spawn::result_of(events, id)? {
-            if res.is_liveness_fault() {
-                // Re-parked by the driver: still running, awaiting a real result.
-                continue;
-            }
+        if let Some(res) = spawn::ended_by(events, id)? {
             answered.insert(id.clone());
             if res.is_error() {
                 errored.insert(id.clone());
@@ -3875,6 +3871,7 @@ mod tests {
                 path: format!("{root}/.rigger/events.db"),
             },
             heartbeat_ms: hb,
+            writer: crate::registry::Writer::Driver,
         }
     }
 
@@ -3893,6 +3890,7 @@ mod tests {
                 endpoint: "kurrentdb://db.example:2113".to_string(),
             },
             heartbeat_ms: 4_000,
+            writer: crate::registry::Writer::Driver,
         };
         // Registry order is unspecified; hand them in reverse of the expected sort.
         let insts = vec![

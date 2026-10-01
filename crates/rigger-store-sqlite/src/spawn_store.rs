@@ -24,6 +24,12 @@ use crate::spawn::{SpawnRequest, SpawnResult};
 /// metadata (a caller outside a run - e.g. the pure-fold tests). This is the single park
 /// authority.
 ///
+/// Beside the run id it stamps `marker_root`, the scratch root the parking step stamps the
+/// spawn's liveness marker under ([`crate::spawn::META_MARKER_ROOT`], spec 101), so every
+/// marker reader finds the marker where the log says it lives rather than where its own
+/// environment resolves. An empty `marker_root` (no scratch root - a repo-less or offline
+/// re-drive) stamps none.
+///
 /// This is exactly what a step does when it reaches an UNRECORDED spawn at the frontier: the
 /// request becomes a durable fact, so the next step process (and the thin driver draining the
 /// wave) sees the identical call, and the budget breaker counts spawns from the log rather
@@ -33,12 +39,16 @@ pub fn park_in_run(
     store: &dyn EventStore,
     req: &SpawnRequest,
     run_id: &str,
+    marker_root: &str,
 ) -> Result<Position, Error> {
     let mut ev = req
         .to_event()
         .map_err(|e| Error::Backend(format!("serialize spawn request {}: {e}", req.id)))?;
     if !run_id.is_empty() {
         ev = ev.with_meta(crate::run::META_RUN_ID, run_id);
+    }
+    if !marker_root.is_empty() {
+        ev = ev.with_meta(crate::spawn::META_MARKER_ROOT, marker_root);
     }
     one_position(store, &req.id, &ev)
 }
@@ -167,7 +177,7 @@ mod tests {
             ..crate::spawn::test_request("u", "implement", ROLE_IMPLEMENTER, 0, "do it")
         };
 
-        park_in_run(&store, &req, "").unwrap();
+        park_in_run(&store, &req, "", "").unwrap();
 
         // The parked request is a durable fact on the run stream and reads back
         // identically - the persistence the replay driver and budget breaker rely on.
@@ -177,6 +187,30 @@ mod tests {
         assert_eq!(recorded[&req.id], req);
         assert!(is_recorded(&events, &req.id));
         assert!(!is_recorded(&events, "u/implementer#1"));
+    }
+
+    /// A park records the scratch root its step stamps the spawn's marker under beside the run
+    /// id, and the root reads back by spawn id; an empty root records none (spec 101).
+    #[test]
+    fn parking_records_the_marker_root_beside_the_run_id_and_an_empty_one_records_none() {
+        let store = Store::open(":memory:").unwrap();
+        let rooted = crate::spawn::test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a");
+        let rootless = crate::spawn::test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b");
+        park_in_run(&store, &rooted, "r1", "/scratch/root").unwrap();
+        park_in_run(&store, &rootless, "r1", "").unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let meta = |i: usize, key: &str| events[i].meta.get(key).cloned();
+        assert_eq!(meta(0, crate::run::META_RUN_ID).as_deref(), Some("r1"));
+        assert_eq!(
+            meta(0, crate::spawn::META_MARKER_ROOT).as_deref(),
+            Some("/scratch/root")
+        );
+        assert_eq!(meta(1, crate::spawn::META_MARKER_ROOT), None);
+        assert_eq!(
+            crate::spawn::marker_roots(&events).unwrap(),
+            std::collections::BTreeMap::from([(rooted.id, "/scratch/root".to_string())])
+        );
     }
 
     #[test]
@@ -526,17 +560,19 @@ mod tests {
         // seam the thin driver actually drives every step.
         let store = Store::open(":memory:").unwrap();
         let old = crate::spawn::test_request("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
-        park_in_run(&store, &old, "").unwrap();
+        park_in_run(&store, &old, "", "").unwrap();
         record_result(&store, &SpawnResult::ok(&old.id, "planned")).unwrap();
         park_in_run(
             &store,
             &crate::spawn::test_request("b", "implement", ROLE_IMPLEMENTER, 0, "b"),
+            "",
             "",
         )
         .unwrap();
         park_in_run(
             &store,
             &crate::spawn::test_request("a", "implement", ROLE_IMPLEMENTER, 0, "a"),
+            "",
             "",
         )
         .unwrap();

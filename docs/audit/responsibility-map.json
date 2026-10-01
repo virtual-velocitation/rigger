@@ -2077,7 +2077,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4d402c1b5f68768e"
+    "content_hash": "30183b7f97de49e8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2101,7 +2101,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "83dda7a8389b5ac3"
+    "content_hash": "d97c46f92e696539"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2117,7 +2117,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "549efdfa1db3817c"
+    "content_hash": "c8e7f11d6052210c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3445,7 +3445,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3b8957ea7b1aea20"
+    "content_hash": "b986e3af691f17c8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3453,7 +3453,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fcd334bfd81dcf9c"
+    "content_hash": "1d4ecaac335acec0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3829,7 +3829,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2d98908f11907cb3"
+    "content_hash": "0213ee1c70b0912b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3837,7 +3837,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "de9944b4fc381f10"
+    "content_hash": "80bf4b2ea3ea25f4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3909,7 +3909,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "08f1f123dbf7790b"
+    "content_hash": "f0ce36cd13501dd7"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4245,7 +4245,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a9e9f024b095df1a"
+    "content_hash": "1624377bb7425e42"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4365,7 +4365,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "75f4e6f80f3d458d"
+    "content_hash": "afa086730090c5bf"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5021,7 +5021,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "44323b8bc40996f2"
+    "content_hash": "330da3fab61dbbae"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5029,7 +5029,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "43c831e7a0270900"
+    "content_hash": "c8973d29d16201f0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5037,7 +5037,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "40ee125afbabfc0e"
+    "content_hash": "d3e82d6258d555c2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5045,7 +5045,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "55b0c97cc4aa3195"
+    "content_hash": "66dad286b54b0811"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5053,7 +5053,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "05fc0b1101e00b03"
+    "content_hash": "3dea107c337a33ef"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6109,7 +6109,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "84fe009716f142d9"
+    "content_hash": "c86c694cc09286c1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6149,7 +6149,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3f9c380b9c8256ce"
+    "content_hash": "be6ba01fa66ad752"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6173,7 +6173,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3451b60ad6ba6ee5"
+    "content_hash": "d08120d4795cc5a5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6181,7 +6181,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "163bfd1d4c1eb97d"
+    "content_hash": "7efcb3f3ed1b9b5d"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6661,7 +6661,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "202c514355b19cb1"
+    "content_hash": "029ca4561b6b19f5"
   },
   {
     "file": "src/cli/mod.rs",
@@ -6877,7 +6877,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "fa5d9edb43d974fc"
+    "content_hash": "56d6ecf2bbac4035"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7029,7 +7029,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "283c22db446e98f8"
+    "content_hash": "e0ae5efd7a52ca29"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7109,7 +7109,7 @@
     "is_test": false,
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
-    "content_hash": "16278524d638193c"
+    "content_hash": "17d34a42f96a1760"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7141,7 +7141,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3a1cafda36107fb4"
+    "content_hash": "4c474a6187546553"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8829,7 +8829,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8deab46c036dd74e"
+    "content_hash": "e6a4bf2d4f1a1da8"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8973,7 +8973,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "25435f3de06fe843"
+    "content_hash": "10a9d4d66c650253"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9421,7 +9421,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6765d5c15c72ddad"
+    "content_hash": "d79a454bbdcce47b"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -9805,7 +9805,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "98f565c0accdb4cb"
+    "content_hash": "e0d003ed63cfcfd9"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -9813,7 +9813,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2152275994d065f5"
+    "content_hash": "42717e3dcc653731"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

@@ -34,6 +34,7 @@ use rigger::gate::{
 use rigger::grounder::Grounder;
 use rigger::instructions;
 use rigger::ledger::{self, RunState};
+use rigger::lockfile::HeldLock;
 use rigger::metrics::{self, Metrics};
 use rigger::playbooks::fnv1a_64;
 use rigger::run as runscope;
@@ -750,6 +751,11 @@ fn registry_store_identity(sel: &StoreSelection, root: &Path) -> rigger::registr
 /// starts OR advances a run now refreshes the heartbeat, not just the ones that hold a driver
 /// scope.
 ///
+/// The re-stamp is written as a [`rigger::registry::Writer::Courier`]: it refreshes DISCOVERY
+/// only and drives nothing. The registry's write carries forward the driver heartbeat the entry
+/// already holds, so a courier run by a live driver's own agent never erases that driver's
+/// stamp.
+///
 /// `loc` and `selection` are the SAME resolved [`StoreLocation`] / [`StoreSelection`] the caller
 /// already has in hand from [`require_store_dir`] - never re-resolved here, so a courier's
 /// registry entry is always keyed to the exact store its real work just wrote to. `loc.identity()`
@@ -797,6 +803,9 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, root),
         heartbeat_ms: rigger::registry::now_ms(),
+        writer: rigger::registry::Writer::Courier {
+            driver_heartbeat_ms: None,
+        },
     };
     if let Err(e) = rigger::registry::write(&dir, &inst) {
         eprintln!("rigger: instance registry refresh skipped ({e}); discovery is unaffected");
@@ -1635,9 +1644,10 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
 /// the conductor side and the driver prompt can never drift apart.
 const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 
-/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning the held
-/// [`File`](std::fs::File) as an RAII guard (the OS releases the flock when it drops or the
-/// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning it held as a
+/// [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile never keeps
+/// it held, and by the OS when the process dies, so a crashed step never wedges the run. A
+/// NON-blocking take: if another step already holds it, refuse fast
 /// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
 /// refusal backs off and retries, which keeps the run flowing without ever running two
 /// steps at once. See the call site for why concurrent steps corrupt the run.
@@ -1650,26 +1660,18 @@ const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 /// [`RIGGER_DIR`] here would probe the wrong (or nonexistent) `.rigger` under its own cwd and
 /// misread "not this repo's `.rigger`" as "the lock is held" - the false refusal a nested-worktree
 /// caller must never produce.
-fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-    use fs2::FileExt;
+fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::Error>> {
     let path = rigger_dir.join("step.lock");
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)?;
-    f.try_lock_exclusive()
-        .map_err(|_| -> Box<dyn std::error::Error> {
-            format!(
-                "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
+    HeldLock::try_take(&path)?.ok_or_else(|| {
+        format!(
+            "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
              concurrently: two steps would race the run-branch checkout and the unit \
              worktrees branched off HEAD, corrupting the run. \
              Wait for the running step to finish (or kill it) and retry.",
-                path.display()
-            )
-            .into()
-        })?;
-    Ok(f)
+            path.display()
+        )
+        .into()
+    })
 }
 
 /// The step-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
@@ -2472,7 +2474,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
         //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
-        let driver = ReplayDriver::new(&iso);
+        //    No worker ever touches a liveness marker here, so no marker root is recorded.
+        let driver = ReplayDriver::new(&iso, "");
         let deps = Deps {
             store: &iso,
             driver: &driver,
@@ -2791,20 +2794,28 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
 /// at all, exactly spec 83's own Problem statement ("the per-spawn liveness marker the sweep
 /// would consult is absent even while the agent is demonstrably alive"). An empty `repo` (no
 /// owning root resolved at all) degrades to no ages, mirroring every other repo-less reader.
+///
+/// That resolution is only the FALLBACK: a spawn whose request in `events` (the run's slice)
+/// recorded the scratch root its step stamped the marker under is read there
+/// ([`rigger::liveness::MarkerRoots`], spec 101), whatever this process's own environment
+/// resolves.
 fn liveness_ages_for_wave(
+    events: &[Event],
     repo: &str,
     workdir: &str,
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
-    rigger::liveness::marker_ages(&marker_root(repo, workdir), run_id, wave, now)
+    rigger::liveness::marker_ages(events, &marker_root(repo, workdir), run_id, wave, now)
 }
 
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
 /// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
 /// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
-/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares. Read-only: it
+/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares, as the
+/// fallback for a spawn whose request recorded no root of its own
+/// ([`rigger::liveness::MarkerRoots`]). Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
 /// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
 /// an empty root, which status and watch degrade to "no marker" and `rigger reset` refuses
@@ -2919,7 +2930,7 @@ fn watch_poll_over(
     let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
     let wave_liveness_ages =
-        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now);
+        liveness_ages_for_wave(&run_events, &loc.repo_root(), &workdir, &run_id, &wave, now);
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -10976,7 +10987,7 @@ mod tests {
     /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
     /// REFUSES (with the driver-recognizable busy token) instead of running - so the run
     /// advances one step at a time and two steps never race the shared run state. And the
-    /// refusal is not permanent: once the first releases, a later step acquires cleanly.
+    /// refusal is not permanent: once the first releases, a later step acquires at once.
     #[test]
     #[serial_test::serial(cwd)]
     fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
@@ -10997,29 +11008,22 @@ mod tests {
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
-        // Releasing the first frees the lock so a LATER step proceeds - the refusal is
-        // transient, not a wedge. Assert that eventual-acquire contract with a bounded
-        // backoff, not a single instantaneous try: in a saturated parallel test binary a
-        // concurrently spawned subprocess can momentarily inherit the just-released lock fd
-        // across its fork/exec window (before close-on-exec fires and drops it), so an
-        // immediate reacquire can still observe a spurious BUSY. That transient refusal is
-        // precisely what the driver is built to ride - back off on STEP_BUSY_TOKEN and retry -
-        // so the test models the same protocol rather than racing an exact instant.
+        // Releasing the first frees the lock AT ONCE, whatever copies of its descriptor stand:
+        // a child process forked by any thread of this process holds a copy of every descriptor
+        // until its exec closes the close-on-exec ones, so closing the step's own copy alone
+        // would leave the lock held through that window and a later step would be refused as
+        // busy. The copy below stands in for such a child's: the released lock is free for the
+        // very next step, with no retry.
+        let forked_copy = held.file().try_clone().unwrap();
         drop(held);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let _reacquired = loop {
-            match acquire_step_lock(Path::new(RIGGER_DIR)) {
-                Ok(f) => break f,
-                Err(e) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "after the first releases, a later step must acquire cleanly; still \
-                         refused at the backoff deadline (last refusal: {e})"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
-        };
+        let next = acquire_step_lock(Path::new(RIGGER_DIR));
+        drop(forked_copy);
+        assert!(
+            next.is_ok(),
+            "the released lock must be free at once, a forked copy of its descriptor \
+             notwithstanding: {:?}",
+            next.err()
+        );
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream
@@ -11575,7 +11579,7 @@ mod tests {
             ..Default::default()
         }];
         let now = touched_at + std::time::Duration::from_secs(5);
-        let ages = liveness_ages_for_wave(&loc.repo_root(), "", run_id, &wave, now);
+        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now);
 
         assert_eq!(
             ages.get(spawn_id).copied(),

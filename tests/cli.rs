@@ -20804,6 +20804,7 @@ fn write_instance(regdir: &std::path::Path, project: &str, root: &str, heartbeat
             path: format!("{root}/.rigger/events.db"),
         },
         heartbeat_ms,
+        writer: rigger::registry::Writer::Driver,
     };
     rigger::registry::write(regdir, &inst).expect("write a registry instance");
 }
@@ -21423,6 +21424,7 @@ fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projec
             path: format!("{other_root}/.rigger/events.db"),
         },
         heartbeat_ms: 0,
+        writer: rigger::registry::Writer::Driver,
     };
     rigger::registry::write(&regdir, &other_inst).expect("write the stale foreign entry");
     let other_entry_path = regdir.join(format!("{}.json", other_inst.id()));
@@ -21718,7 +21720,7 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     // Requested, no result, no marker at all - the classic silent halt.
     let mut named = common::spawn_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
     named.max_wall_clock = Some(300);
-    park_in_run(&store, &named, "").unwrap();
+    park_in_run(&store, &named, "", "").unwrap();
     assert!(
         spawn_is_halted(
             &read(&store),
@@ -21754,10 +21756,10 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     // read as halted either, even though it individually looks silent.
     let mut other = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 0, "task");
     other.max_wall_clock = Some(300);
-    park_in_run(&store, &other, "").unwrap();
+    park_in_run(&store, &other, "", "").unwrap();
     let mut sibling = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 1, "task");
     sibling.max_wall_clock = Some(300);
-    park_in_run(&store, &sibling, "").unwrap();
+    park_in_run(&store, &sibling, "", "").unwrap();
     let marker = marker_path(root, RUN_ID, &sibling.id).expect("a real spawn id always encodes");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
@@ -21809,6 +21811,7 @@ fn read_all_public_contract_holds_at_the_crate_boundary() {
             path: "/stale/root/.rigger/events.db".to_string(),
         },
         heartbeat_ms: 0,
+        writer: rigger::registry::Writer::Driver,
     };
     let stale_path = registry::write(&regdir, &stale).unwrap();
 
@@ -21830,6 +21833,7 @@ fn read_all_public_contract_holds_at_the_crate_boundary() {
             path: "/live/root/.rigger/events.db".to_string(),
         },
         heartbeat_ms: registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     registry::write(&regdir, &live).unwrap();
 
@@ -22115,6 +22119,7 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
                 .into_owned(),
         },
         heartbeat_ms: registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     let a_inst = entry(a_root);
     let b_inst = entry(b_root);
@@ -22297,6 +22302,7 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
                 .into_owned(),
         },
         heartbeat_ms: registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     registry::write(&regdir, &gamma_inst).unwrap();
     let gamma_id = gamma_inst.id();
@@ -22400,6 +22406,7 @@ fn dash_landing_filters_stale_instances_without_pruning_and_pins_the_wire_contra
                 .into_owned(),
         },
         heartbeat_ms: hb,
+        writer: rigger::registry::Writer::Driver,
     };
     // Live: heartbeat now. Stale: a full idle window plus a minute in the past, so `is_stale`
     // is unambiguously true regardless of the small drift between this stamp and the dash's read.
@@ -22534,6 +22541,7 @@ fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
             endpoint: "kurrentdb://localhost:2113".to_string(),
         },
         heartbeat_ms: registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     registry::write(&regdir, &inst).unwrap();
     let id = inst.id();
@@ -22625,6 +22633,7 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
             endpoint: "kurrentdb://localhost:2113".to_string(),
         },
         heartbeat_ms: registry::now_ms(),
+        writer: rigger::registry::Writer::Driver,
     };
     registry::write(&regdir, &inst).unwrap();
     let id = inst.id();

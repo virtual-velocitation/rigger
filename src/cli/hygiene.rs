@@ -15,18 +15,21 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// [`reset_modes`]'s existing refusal exactly as before this menu existed, so that refusal and
 /// its tests are untouched.
 ///
-/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, the scratch root,
-/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed) when a
-/// selected mode reads them ([`ResetModes::reads_env`]), and the backend requirement of every
-/// requested mode is settled BEFORE the first prune runs, so a composed invocation never starts
-/// work it is already known to be unable to finish - the shape that used to leave the graph pruned
-/// and the log untouched because the log's backend was refused second. A mode that reads none of
-/// that environment (`--scratch-orphans`, and `--derived --force-live`, whose override skips the
-/// live-writer guard entirely) never resolves it, so it is never failed by what it does not read.
-/// Each mode's own mutation is atomic (each is one transaction over one file), and the modes run
-/// in order: if a prune fails on a genuine IO or lock fault after an earlier one committed, the
-/// earlier prune HAS happened and is reported on stdout above the error. That is the honest
-/// statement of the composition, and it is deliberately not called all-or-nothing: two files
+/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, and the scratch root,
+/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed) BEFORE the
+/// first prune runs when a selected mode reads them ([`ResetModes::reads_env`]), so a composed
+/// invocation never starts work an environment it cannot resolve would stop. A mode that reads none
+/// of that environment (`--scratch-orphans`, and `--derived --force-live`, whose override skips the
+/// live-writer guard entirely) never resolves it, so selected without a mode that reads it, it is
+/// never failed by what it does not read. The `--derived` backend refusal is the one precheck that
+/// follows its sibling modes, by design: it is settled inside `--derived`'s own block, after
+/// `--runs`, `--build-cache` and `--scratch-orphans` have run, because a sibling mode with no
+/// backend dependency of its own is never dropped by it (spec 77, criterion 4) - so `reset --runs
+/// --derived` on a server-backed project prunes the graph, reports it, and then refuses the
+/// compaction. Each mode's own mutation is atomic (each is one transaction over one file), and the
+/// modes run in order: if a prune fails on a genuine IO or lock fault after an earlier one
+/// committed, the earlier prune HAS happened and is reported on stdout above the error. That is the
+/// honest statement of the composition, and it is deliberately not called all-or-nothing: two files
 /// cannot be committed together, and claiming otherwise would tell an operator not to look.
 pub(crate) fn cmd_reset(args: &[String]) -> Res {
     if args.is_empty() {
@@ -103,9 +106,15 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
-        if !modes.force_live {
-            refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
-        }
+        //
+        // The step lock the guard took is held until the compaction returns, so its verdict that
+        // no `rigger step` is running stays true while the log is rewritten: a step started
+        // meanwhile refuses on the held lock, and its courier retries once the reset is done.
+        let _step_lock = if modes.force_live {
+            None
+        } else {
+            refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
+        };
         reset_derived(&loc)?;
     }
     Ok(())
@@ -119,8 +128,10 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
 struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
-    /// The scratch root this store's runs write under ([`marker_root`]): the spawns' liveness
-    /// markers the guard reads, and the build caches `--build-cache` reclaims.
+    /// The scratch root this store's runs write under ([`marker_root`]), resolved from this
+    /// process's environment: the build caches `--build-cache` reclaims, and the root the guard
+    /// reads a spawn's liveness marker under only when the spawn's request recorded none of its
+    /// own ([`rigger::liveness::MarkerRoots`] - where a marker lives is log-carried, spec 101).
     scratch_root: String,
     /// The machine-global instance registry (spec 50); `None` in a homeless environment.
     registry_dir: Option<PathBuf>,
@@ -592,9 +603,11 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
 ///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process
 ///     alive.
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
-///     project's exact store whose heartbeat is younger than [`rigger::registry::DEFAULT_IDLE_MS`]:
-///     an in-process `rigger run`/`serve` (which never touches `step.lock`), or a driver between
-///     two of its `rigger step`s, elsewhere on this machine.
+///     project's exact store whose DRIVER heartbeat is younger than
+///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): an in-process
+///     `rigger run`/`serve` (which never touches `step.lock`), or a driver between two of its
+///     `rigger step`s (every step registers as the run's driver, so its last stamp counts for the
+///     idle window), elsewhere on this machine. A courier's discovery refresh is not one.
 ///
 /// Unit terminality is NOT a liveness signal, and neither is an in-flight spawn on its own,
 /// without a marker inside its bound: a run whose driver died leaves both behind forever, and
@@ -676,7 +689,8 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// Gather [`live_writer_reasons`]'s three facts and refuse `rigger reset --derived` (spec 71,
 /// criterion 2) when any applies. IMPURE (a lock probe, a store read, marker reads, an optional
 /// registry read) so the decision composition itself stays pure and unit-tested without any of
-/// the three.
+/// the three. When nothing is live it returns the step lock its probe took, still held, for the
+/// caller to hold until the compaction returns ([`LiveWriterProbe`]).
 ///
 /// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
 /// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: the
@@ -709,13 +723,14 @@ fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
     env: &ResetEnv,
-) -> Res {
+) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let reasons = live_writer_facts(loc, selection, env, &events)?.reasons();
+    let probe = live_writer_facts(loc, selection, env, &events)?;
+    let reasons = probe.facts.reasons();
     if reasons.is_empty() {
-        return Ok(());
+        return Ok(probe.step_lock);
     }
     Err(live_writer_refusal(&reasons).into())
 }
@@ -747,27 +762,40 @@ impl LiveWriterFacts {
     }
 }
 
-/// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading the current run's
-/// spawn markers under `env`'s scratch root and judging every signal at `env`'s one instant.
-/// IMPURE (a lock probe, marker reads and an optional registry read) so the decisions built on it
-/// stay pure and unit-tested.
+/// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
+/// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
+/// is running stays true while the caller acts on it: a step started meanwhile refuses with
+/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close or the compaction
+/// the caller makes under the probe.
+struct LiveWriterProbe {
+    facts: LiveWriterFacts,
+    /// The step lock this probe holds; `None` exactly when a `rigger step` already held it
+    /// (`facts.step_lock_held`).
+    step_lock: Option<HeldLock>,
+}
+
+/// Probe [`LiveWriterFacts`] over `events` (the whole run stream), reading each of the current
+/// run's spawn markers under the root its request recorded (`env`'s scratch root only for one that
+/// recorded none) and judging every signal at `env`'s one instant, and keep the step lock the
+/// probe took ([`LiveWriterProbe`]). IMPURE (a lock probe, marker reads and an optional registry
+/// read) so the decisions built on it stay pure and unit-tested.
 fn live_writer_facts(
     loc: &StoreLocation,
     selection: &StoreSelection,
     env: &ResetEnv,
     events: &[Event],
-) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
+) -> Result<LiveWriterProbe, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
     // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
     // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
-    // directory there. Acquiring (then immediately dropping) it proves nobody else holds it right
-    // now. A failure whose message names the busy token proves a step IS running; any OTHER
-    // failure (a permission fault, a read-only filesystem) is a real fault this command cannot
-    // silently misdiagnose as "held", so it propagates instead.
-    let step_lock_held = match acquire_step_lock(&loc.dir) {
-        Ok(_) => false,
-        Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => true,
+    // directory there. Acquiring it proves nobody else holds it, and the probe keeps holding it
+    // so that stays true while the reset acts. A failure whose message names the busy token
+    // proves a step IS running; any OTHER failure (a permission fault, a read-only filesystem) is
+    // a real fault this command cannot silently misdiagnose as "held", so it propagates instead.
+    let step_lock = match acquire_step_lock(&loc.dir) {
+        Ok(lock) => Some(lock),
+        Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => None,
         Err(e) => return Err(e),
     };
 
@@ -790,21 +818,40 @@ fn live_writer_facts(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             let expected = registry_store_identity(selection, &root);
-            // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign
-            // project's registry entry as a side effect of checking THIS store for live writers
-            // (spec 62 criterion 5 round 4 - see `read_live_no_prune`'s doc).
-            rigger::registry::read_live_no_prune(dir, env.now_ms, rigger::registry::DEFAULT_IDLE_MS)
-                .into_iter()
-                .filter(|inst| inst.store == expected)
-                .count()
+            live_driver_registrations(dir, &expected, env.now_ms)
         })
         .unwrap_or(0);
 
-    Ok(LiveWriterFacts {
-        step_lock_held,
-        live_spawns,
-        driver_registrations,
+    Ok(LiveWriterProbe {
+        facts: LiveWriterFacts {
+            step_lock_held: step_lock.is_none(),
+            live_spawns,
+            driver_registrations,
+        },
+        step_lock,
     })
+}
+
+/// How many entries in the machine-global registry at `dir` record a live DRIVER of the store
+/// `expected` as of `now_ms` ([`rigger::registry::Instance::driver_live`]). A courier's discovery
+/// re-stamp (`emit`, `result`, `progress`) is not one: it drives nothing, and counting it would
+/// read an operator's own courier, seconds before a reset, as the live driver that keeps the
+/// reset from closing a hand-landed unit. A courier entry still counts while it carries a fresh
+/// driver stamp, so a live driver's own agent never hides that driver.
+fn live_driver_registrations(
+    dir: &Path,
+    expected: &rigger::registry::StoreIdentity,
+    now_ms: u64,
+) -> usize {
+    // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign project's
+    // registry entry as a side effect of checking THIS store for live writers (spec 62
+    // criterion 5 round 4 - see `read_live_no_prune`'s doc).
+    rigger::registry::read_live_no_prune(dir, now_ms, rigger::registry::DEFAULT_IDLE_MS)
+        .into_iter()
+        .filter(|inst| {
+            inst.store == *expected && inst.driver_live(now_ms, rigger::registry::DEFAULT_IDLE_MS)
+        })
+        .count()
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -860,8 +907,11 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
     let boundary = superseded_edge_boundary(&events);
 
     let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
-    let facts = live_writer_facts(loc, selection, env, &events)?;
-    close_landed_units(loc, &store, &graph, &events, &facts)?;
+    // The probe's step lock is held until the close returns, so no `rigger step` starts against a
+    // run this reset is closing; the graph prune below takes no part in it.
+    let probe = live_writer_facts(loc, selection, env, &events)?;
+    close_landed_units(loc, &store, &graph, &events, &probe.facts)?;
+    std::mem::drop(probe);
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
     // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
@@ -894,17 +944,21 @@ pub(crate) fn pruned_line(stats: &PruneStats) -> String {
 }
 
 /// Close the current run's hand-landed units: when nothing drives the run
-/// ([`LiveWriterFacts::driver_dead`]) and no spawn of the run awaits its result, record the
-/// `UnitIntegrated` the conductor never minted for every unit whose branch work is landed on the
-/// run branch ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand
+/// ([`LiveWriterFacts::driver_dead`]) and every spawn of the run has ended on a real result
+/// ([`rigger::liveness::unended_spawns`], the one authority the run teardown reads too), record
+/// the `UnitIntegrated` the conductor never minted for every unit whose branch work is landed on
+/// the run branch ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand
 /// otherwise stays "working" forever, because only the conductor mints that event and `rigger
 /// emit` refuses it. Appends only - no event is deleted or rewritten - and a live run is never
 /// touched.
 ///
-/// A spawn that awaits its result stays in the step's wave ([`spawn::step_result`]) whatever its
-/// marker says, so a relaunched driver resumes it: closing its unit would hand that driver a
-/// spawn of an integrated unit. The wave is read before the liveness test, so a spawn event the
-/// log cannot decode fails the command rather than reading as "nothing awaits".
+/// A spawn that has not ended is resumed whatever its marker says: one with no result stays in
+/// the step's wave, and one answered only by the step's liveness fault is hung - the step halts on
+/// it and the replay driver re-parks it - so closing its unit would hand a relaunched driver a
+/// spawn of an integrated unit. A pending spawn leaves the landed units open silently; a hung one
+/// leaves them open naming each with the hung spawns and their remedy, a real result recorded
+/// with `rigger result`. The spawns are read before the liveness test, so a spawn event the log
+/// cannot decode fails the command rather than reading as "nothing awaits".
 fn close_landed_units(
     loc: &StoreLocation,
     store: &dyn EventStore,
@@ -913,8 +967,8 @@ fn close_landed_units(
     facts: &LiveWriterFacts,
 ) -> Res {
     let current = runscope::current_run(events);
-    let awaiting = !spawn::step_result(current)?.wave.is_empty();
-    if awaiting || !facts.driver_dead() {
+    let unended = rigger::liveness::unended_spawns(current)?;
+    if !unended.pending.is_empty() || !facts.driver_dead() {
         return Ok(());
     }
     let run = ledger::project(current)?;
@@ -923,6 +977,16 @@ fn close_landed_units(
         rigger::worktree::landed_branch_tip(&repo, branch, RUN_BRANCH)
     });
     let run_id = runscope::current_run_id(events).unwrap_or_default();
+    if !unended.hung.is_empty() {
+        let hung = rigger::liveness::halt_reason(&unended.hung);
+        for (unit, tip) in &landed {
+            println!(
+                "reset --runs: left unit {unit:?} of run {run_id} open although its branch tip \
+                 {tip} is landed on {RUN_BRANCH}: {hung}"
+            );
+        }
+        return Ok(());
+    }
     let closing = landed
         .iter()
         .map(|(unit, tip)| {
@@ -964,6 +1028,7 @@ fn landed_units(
 mod tests {
     use super::*;
     use crate::test_support::ev;
+    use rigger::registry::{Instance, StoreIdentity, Writer, DEFAULT_IDLE_MS};
 
     /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
     /// reuses the SINGLE run-attribution authority (`run_attribution` + `current_run_id`), so a
@@ -1682,6 +1747,112 @@ mod tests {
         assert!(!facts(true, vec![], 0).driver_dead());
         assert!(!facts(false, vec![live_spawn("a/implementer#0", 1, 300)], 0).driver_dead());
         assert!(!facts(false, vec![], 1).driver_dead());
+    }
+
+    // --- Driver liveness: only a driver's registration keeps the driver alive ---
+
+    /// Quiet [`LiveWriterFacts`] but for the driver registrations counted, as of `now_ms`, from a
+    /// registry holding one entry for this store written by `writer` at `heartbeat_ms`.
+    fn facts_over_one_registration(
+        writer: Writer,
+        heartbeat_ms: u64,
+        now_ms: u64,
+    ) -> LiveWriterFacts {
+        let state = tempfile::tempdir().unwrap();
+        let dir = rigger::registry::instances_dir(state.path());
+        let store = StoreIdentity::Local {
+            path: "/home/dev/proj/.rigger/events.db".to_string(),
+        };
+        let entry = Instance {
+            project: "proj".to_string(),
+            root: "/home/dev/proj".to_string(),
+            store: store.clone(),
+            heartbeat_ms,
+            writer,
+        };
+        rigger::registry::write(&dir, &entry).unwrap();
+        LiveWriterFacts {
+            step_lock_held: false,
+            live_spawns: Vec::new(),
+            driver_registrations: live_driver_registrations(&dir, &store, now_ms),
+        }
+    }
+
+    /// The run's driver reads dead exactly when `dead` over one registration by `writer` at
+    /// `heartbeat_ms`, judged at `now_ms` (`why`).
+    fn assert_driver_dead(writer: Writer, heartbeat_ms: u64, now_ms: u64, dead: bool, why: &str) {
+        let facts = facts_over_one_registration(writer, heartbeat_ms, now_ms);
+        assert_eq!(facts.driver_dead(), dead, "{why}");
+    }
+
+    rigger::test_cases! {
+        /// A courier's discovery refresh drives nothing: seconds old, it leaves the driver dead.
+        a_courier_only_registration_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: None },
+            1_000,
+            1_500,
+            true,
+            "a fresh courier-only entry is no live driver",
+        );
+        a_fresh_driver_registration_keeps_the_driver_alive: assert_driver_dead(
+            Writer::Driver,
+            1_000,
+            1_500,
+            false,
+            "a fresh driver entry is a live driver",
+        );
+        a_stale_driver_registration_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Driver,
+            0,
+            DEFAULT_IDLE_MS + 1,
+            true,
+            "a driver entry past the idle window is no live driver",
+        );
+        /// A courier run by a live driver's own agent re-stamps the entry but carries the
+        /// driver's stamp, so the driver stays alive.
+        a_courier_carrying_a_fresh_driver_stamp_keeps_the_driver_alive: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: Some(1_000) },
+            1_200,
+            1_500,
+            false,
+            "a courier entry carrying a fresh driver stamp is a live driver",
+        );
+        /// The recorded shape: a dead driver's stamp stays dead under a fresh courier re-stamp.
+        a_courier_carrying_a_stale_driver_stamp_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: Some(0) },
+            DEFAULT_IDLE_MS + 1,
+            DEFAULT_IDLE_MS + 1,
+            true,
+            "a fresh courier entry carrying a stale driver stamp is no live driver",
+        );
+    }
+
+    /// The step lock the live-writer probe takes is held for as long as the probe lives - through
+    /// the close and the compaction its caller runs under it - so a `rigger step` started
+    /// meanwhile refuses with the busy token its courier retries on, and never runs against the
+    /// prune; once the probe drops, the next step acquires the lock.
+    #[test]
+    fn the_live_writer_probe_holds_the_step_lock_until_it_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation { dir: rigger_dir };
+        let env = ResetEnv {
+            workdir: String::new(),
+            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
+            registry_dir: None,
+            now_ms: rigger::registry::now_ms(),
+        };
+
+        let probe = live_writer_facts(&loc, &StoreSelection::Sqlite, &env, &[]).unwrap();
+        let racing = acquire_step_lock(&loc.dir).map(drop);
+        drop(probe);
+        let err = racing.expect_err("a step started under the probe must refuse");
+        assert!(
+            err.to_string().contains(STEP_BUSY_TOKEN),
+            "the racing step's refusal carries the busy token its courier retries on: {err}"
+        );
+        acquire_step_lock(&loc.dir).expect("the next step acquires once the probe drops");
     }
 
     /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn

@@ -79,6 +79,9 @@ pub use rigger_process::holders;
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::reap;
+/// The one advisory lock-file guard every rigger lock is held through: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_store_sqlite::lockfile;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::progress_store;

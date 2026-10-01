@@ -192,32 +192,73 @@ pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<s
     scratch_subpath(scratch_root, MARKER_SUBDIR, run_id, spawn_id)
 }
 
+/// Where one run's spawns keep their liveness markers (spec 101): under the scratch root each
+/// spawn's request recorded ([`spawn::META_MARKER_ROOT`]), which `rigger step` stamps beside the
+/// run id when it parks the spawn, else under `fallback_root` - the reader's own resolution, for
+/// a request recorded before the root was carried. The ONE marker-location rule: the step's wave
+/// stamp, the sweep, the halted-spawn checkpoint, the reset guard and every marker-age surface
+/// resolve a spawn's marker through it, so none of them finds a live worker only when its own
+/// environment (`RIGGER_TMPDIR`, `XDG_CACHE_HOME`, `HOME`) happens to match the driver's.
+pub struct MarkerRoots<'a> {
+    recorded: std::collections::BTreeMap<String, String>,
+    fallback_root: &'a str,
+}
+
+impl<'a> MarkerRoots<'a> {
+    /// The marker roots the requests in `events` (one run's slice) recorded, falling back to
+    /// `fallback_root` for a request that recorded none. A request whose id cannot be read
+    /// propagates as an error, never as "no recorded root".
+    pub fn of(events: &[Event], fallback_root: &'a str) -> Result<Self, Error> {
+        Ok(MarkerRoots {
+            recorded: spawn::marker_roots(events).map_err(|e| Error::Backend(e.to_string()))?,
+            fallback_root,
+        })
+    }
+
+    /// The absolute marker path of `spawn_id`, filed under the run `run_id`: [`marker_path`]
+    /// under the root its request recorded, else under the fallback root. `None` where
+    /// [`marker_path`] refuses (an empty root, a degenerate id).
+    pub fn marker_path(&self, run_id: &str, spawn_id: &str) -> Option<std::path::PathBuf> {
+        let root = self
+            .recorded
+            .get(spawn_id)
+            .map_or(self.fallback_root, String::as_str);
+        marker_path(root, run_id, spawn_id)
+    }
+
+    /// When `spawn_id`'s liveness marker was last touched: its mtime, or `None` when the spawn
+    /// has no marker - absent, unreadable, or a path [`Self::marker_path`] refuses. The one marker
+    /// read every liveness reader in this module stats through.
+    fn touched_at(&self, run_id: &str, spawn_id: &str) -> Option<SystemTime> {
+        let path = self.marker_path(run_id, spawn_id)?;
+        std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    }
+}
+
 /// Each `wave` spawn's liveness-marker age in whole seconds since its last touch at `now`, keyed
 /// by spawn id - the ONE marker-age read every surface that presents agent liveness (`rigger
-/// status`, `rigger watch`, the dash, the `rigger_activity` MCP tool) calls. A spawn with no
-/// marker (absent, or a degenerate id [`marker_path`] refuses) is simply missing, and an empty
-/// `scratch_root` (a repo-less invocation) yields no ages at all.
+/// status`, `rigger watch`, the dash, the `rigger_activity` MCP tool) calls. Each marker is read
+/// where [`MarkerRoots`] says it lives: under the root its request in `events` (the run's slice)
+/// recorded, else under `scratch_root`. A spawn with no marker (absent, or a degenerate id
+/// [`marker_path`] refuses) is simply missing, and so is every spawn when `events` holds a request
+/// whose id cannot be read - a display read degrades, it never fails.
 pub fn marker_ages(
+    events: &[Event],
     scratch_root: &str,
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
+    let Ok(roots) = MarkerRoots::of(events, scratch_root) else {
+        return std::collections::BTreeMap::new();
+    };
     wave.iter()
         .filter_map(|w| {
-            let mtime = marker_touched_at(scratch_root, run_id, &w.id)?;
+            let mtime = roots.touched_at(run_id, &w.id)?;
             let age = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
             Some((w.id.clone(), age))
         })
         .collect()
-}
-
-/// When a spawn's liveness marker was last touched: its mtime, or `None` when the spawn has no
-/// marker - absent, unreadable, or a degenerate root or id [`marker_path`] refuses. The one
-/// marker read every liveness reader in this module stats through.
-fn marker_touched_at(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<SystemTime> {
-    let path = marker_path(scratch_root, run_id, spawn_id)?;
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// A spawn [`live_spawn`] found live: its id, how long ago its marker was last touched, and the
@@ -230,19 +271,10 @@ pub struct LiveSpawn {
     pub bound: Duration,
 }
 
-/// Whether the spawn `spawn_id` has ENDED: its latest recorded result is a real one - the
-/// worker's output, or an error a worker or operator recorded. The step's own liveness fault
-/// ([`SpawnResult::is_liveness_fault`]) is not an end: it is the sweep's diagnosis of a silent
-/// worker, the replay driver re-parks the spawn, and a real result recorded later supersedes it.
-fn has_ended(events: &[Event], spawn_id: &str) -> Result<bool, Error> {
-    Ok(spawn::result_of(events, spawn_id)
-        .map_err(|e| Error::Backend(e.to_string()))?
-        .is_some_and(|res| !res.is_liveness_fault()))
-}
-
 /// THE rule for whether a requested spawn is LIVE (spec 101, ruling adj-u101gl-live-spawn-rule),
 /// spelled here once for every liveness reader ([`live_spawns`], [`spawn_is_halted`]): the spawn
-/// has not [`has_ended`] - its latest result is absent or is the step's liveness fault - and its
+/// has not ended ([`spawn::ended_by`]) - its latest result is absent or is the step's liveness
+/// fault - and its
 /// liveness marker is not stale at `now` against the spawn's OWN `max_wall_clock` ([`is_stale`]).
 /// A spawn with no marker is not live: nothing proves a worker ever started it. An unbounded
 /// spawn's marker never goes stale, exactly as [`sweep`] never calls it hung. A real result ends
@@ -252,16 +284,20 @@ fn has_ended(events: &[Event], spawn_id: &str) -> Result<bool, Error> {
 /// its bound - the one case they can change the verdict of.
 fn live_spawn(
     events: &[Event],
-    scratch_root: &str,
+    roots: &MarkerRoots,
     run_id: &str,
     req: &spawn::SpawnRequest,
     now: SystemTime,
 ) -> Result<Option<LiveSpawn>, Error> {
-    let Some(touched) = marker_touched_at(scratch_root, run_id, &req.id) else {
+    let Some(touched) = roots.touched_at(run_id, &req.id) else {
         return Ok(None);
     };
     let bound = Duration::from_secs(req.max_wall_clock.unwrap_or(0));
-    if is_stale(now, touched, bound) || has_ended(events, &req.id)? {
+    if is_stale(now, touched, bound) {
+        return Ok(None);
+    }
+    let ended = spawn::ended_by(events, &req.id).map_err(|e| Error::Backend(e.to_string()))?;
+    if ended.is_some() {
         return Ok(None);
     }
     Ok(Some(LiveSpawn {
@@ -272,9 +308,10 @@ fn live_spawn(
 }
 
 /// Every spawn requested in `events` - the caller passes one run's slice, and `run_id` names the
-/// run its markers are filed under - that is [`live_spawn`] at `now`, in id order. A malformed
-/// request, or a malformed result wherever a marker inside its bound needs it read, propagates as
-/// an error, never as "nothing is live".
+/// run its markers are filed under - that is [`live_spawn`] at `now`, in id order, each marker
+/// read where [`MarkerRoots`] says it lives (`scratch_root` only for a request that recorded no
+/// root). A malformed request, or a malformed result wherever a marker inside its bound needs it
+/// read, propagates as an error, never as "nothing is live".
 pub fn live_spawns(
     events: &[Event],
     scratch_root: &str,
@@ -282,9 +319,10 @@ pub fn live_spawns(
     now: SystemTime,
 ) -> Result<Vec<LiveSpawn>, Error> {
     let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
+    let roots = MarkerRoots::of(events, scratch_root)?;
     let mut live = Vec::new();
     for req in requested.values() {
-        live.extend(live_spawn(events, scratch_root, run_id, req, now)?);
+        live.extend(live_spawn(events, &roots, run_id, req, now)?);
     }
     Ok(live)
 }
@@ -455,7 +493,8 @@ pub struct HungSpawn {
 
 /// The liveness SWEEP `rigger step` runs against the run stream (spec 10, unit 3): find
 /// every IN-FLIGHT spawn (a recorded request with no result yet) whose per-spawn liveness
-/// marker under `scratch_root` is STALE beyond its `max_wall_clock`, classify it through
+/// marker - read where [`MarkerRoots`] says it lives, under the root its request recorded or
+/// else `scratch_root` - is STALE beyond its `max_wall_clock`, classify it through
 /// the `taxonomy`, and record a no-attempt-charged liveness fault on its id (the existing
 /// [`SpawnResult`], recorded `--if-absent`, NEVER a new event type). Returns the spawns it
 /// freshly recorded a fault for.
@@ -474,6 +513,7 @@ pub fn sweep(
     now: SystemTime,
 ) -> Result<Vec<StaleSpawn>, Error> {
     let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
+    let roots = MarkerRoots::of(events, scratch_root)?;
     let mut in_flight = Vec::new();
     for req in requested.values() {
         // Only a spawn with a positive wall-clock bound is subject to a liveness timeout.
@@ -495,7 +535,7 @@ pub fn sweep(
         // (conservative - see the fn docs); only a present-but-stale marker is hung. A
         // degenerate id ([`marker_path`] returns `None`) is treated identically - the same
         // conservative no-op, never a fabricated path to stat.
-        let Some(last_seen) = marker_touched_at(scratch_root, run_id, &req.id) else {
+        let Some(last_seen) = roots.touched_at(run_id, &req.id) else {
             continue;
         };
         in_flight.push(InFlightSpawn {
@@ -521,7 +561,7 @@ pub fn sweep(
 ///
 /// 1. `named_spawn_id` itself carries a recorded [`crate::spawn::TYPE_SPAWN_REQUESTED`] -
 ///    a spawn that was never requested has nothing to have halted.
-/// 2. it has not [`has_ended`] - a liveness fault does not count (the sweep's own
+/// 2. it has not ended ([`spawn::ended_by`]) - a liveness fault does not count (the sweep's own
 ///    stale-marker classification is a diagnosis of the hang, not a genuine outcome, so the
 ///    SAME attempt is still presumed to resume against this tree).
 /// 3. no spawn belonging to the SAME `unit` (any role, any attempt, the named one included)
@@ -546,15 +586,21 @@ pub fn spawn_is_halted(
     now: SystemTime,
 ) -> Result<bool, Error> {
     let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
-    if !requested.contains_key(named_spawn_id) || has_ended(events, named_spawn_id)? {
+    if !requested.contains_key(named_spawn_id) {
         return Ok(false);
     }
+    let ended =
+        spawn::ended_by(events, named_spawn_id).map_err(|e| Error::Backend(e.to_string()))?;
+    if ended.is_some() {
+        return Ok(false);
+    }
+    let roots = MarkerRoots::of(events, scratch_root)?;
     for req in requested.values().filter(|req| req.unit == unit) {
         // A sibling with a real result has ended and is not live, whatever its marker's age
         // says: markers are never reclaimed, so marker freshness alone would let one finished
         // sibling mask the checkpoint for the rest of the unit's run (an unbounded sibling's
         // marker never goes stale) or until its own bound runs out.
-        if live_spawn(events, scratch_root, run_id, req, now)?.is_some() {
+        if live_spawn(events, &roots, run_id, req, now)?.is_some() {
             return Ok(false);
         }
     }
@@ -583,6 +629,37 @@ pub fn hung_spawns(events: &[Event]) -> Result<Vec<HungSpawn>, Error> {
         }
     }
     Ok(hung)
+}
+
+/// The spawns of a run that have not ENDED ([`spawn::ended_by`]): the PENDING frontier - every
+/// recorded request with no result yet, the wave a relaunched driver resumes - and the HUNG spawns
+/// ([`hung_spawns`]), answered only by the step's liveness fault, which the step halts on and the
+/// replay driver re-parks. THE one authority for "a spawn of the run may still advance": the run
+/// teardown reclaims nothing and `reset --runs` closes no landed unit while either set is
+/// non-empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnendedSpawns {
+    /// The ids of the spawns with no recorded result, ordered by id.
+    pub pending: Vec<String>,
+    /// The spawns whose latest result is the step's liveness fault, ordered by id.
+    pub hung: Vec<HungSpawn>,
+}
+
+impl UnendedSpawns {
+    /// True when every recorded spawn has ended on a real result.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.hung.is_empty()
+    }
+}
+
+/// The [`UnendedSpawns`] of `events`. Every recorded result is decoded, so an undecodable one
+/// fails rather than reading as "nothing awaits".
+pub fn unended_spawns(events: &[Event]) -> Result<UnendedSpawns, Error> {
+    let frontier = spawn::step_result(events).map_err(|e| Error::Backend(e.to_string()))?;
+    Ok(UnendedSpawns {
+        pending: frontier.wave.into_iter().map(|item| item.id).collect(),
+        hung: hung_spawns(events)?,
+    })
 }
 
 /// The step halt reason for a non-empty set of hung spawns (spec 10, unit 3). Surfaced on
@@ -1008,7 +1085,7 @@ mod tests {
     fn park_bounded_attempt(store: &Store, unit: &str, attempt: u32, secs: u64) -> SpawnRequest {
         let mut req = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, attempt, "task");
         req.max_wall_clock = Some(secs);
-        park_in_run(store, &req, "").unwrap();
+        park_in_run(store, &req, "", "").unwrap();
         req
     }
 
@@ -1112,7 +1189,7 @@ mod tests {
         // No max_wall_clock: unbounded, exempt from liveness timeouts (back-compat). Its
         // marker is planted "now" but the sweep runs far in the future - still not stale.
         let unbounded = crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
-        park_in_run(&store, &unbounded, "").unwrap();
+        park_in_run(&store, &unbounded, "", "").unwrap();
         plant_marker(root, &unbounded.id);
 
         let events = run_log(&store);
@@ -1143,6 +1220,39 @@ mod tests {
         assert!(
             hung_spawns(&run_log(&store)).unwrap().is_empty(),
             "a real result supersedes the liveness fault; the spawn is no longer hung"
+        );
+    }
+
+    /// A spawn with no result is pending and one answered only by the liveness fault is hung:
+    /// neither has ended, so the run still has unended spawns until each ends on a real result.
+    #[test]
+    fn unended_spawns_hold_the_pending_and_the_hung_until_each_ends_on_a_real_result() {
+        let store = Store::open(":memory:").unwrap();
+        let pending = park_bounded(&store, "p", 300);
+        let hung = park_bounded(&store, "h", 300);
+        spawn_store::record_result(
+            &store,
+            &SpawnResult::liveness_fault(&hung.id, "hung", "infra"),
+        )
+        .unwrap();
+        let unended = unended_spawns(&run_log(&store)).unwrap();
+        assert_eq!(unended.pending, vec![pending.id.clone()]);
+        assert_eq!(
+            unended
+                .hung
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![hung.id.as_str()]
+        );
+        assert!(!unended.is_empty());
+
+        for id in [&pending.id, &hung.id] {
+            spawn_store::record_result(&store, &SpawnResult::ok(id, "done")).unwrap();
+        }
+        assert!(
+            unended_spawns(&run_log(&store)).unwrap().is_empty(),
+            "every spawn ended on a real result"
         );
     }
 
@@ -1439,7 +1549,7 @@ mod tests {
         // still sits on disk.
         let mut unbounded = crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 1, "task");
         unbounded.max_wall_clock = None;
-        park_in_run(&store, &unbounded, "").unwrap();
+        park_in_run(&store, &unbounded, "", "").unwrap();
         plant_marker(root, &unbounded.id);
         spawn_store::record_result(&store, &SpawnResult::ok(&unbounded.id, "done long ago"))
             .unwrap();
@@ -1483,7 +1593,7 @@ mod tests {
     fn park(store: &Store, unit: &str, bound: Option<u64>) -> String {
         let mut req = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 0, "task");
         req.max_wall_clock = bound;
-        park_in_run(store, &req, "").unwrap();
+        park_in_run(store, &req, "", "").unwrap();
         req.id
     }
 
@@ -1502,7 +1612,10 @@ mod tests {
     /// Plants `id`'s marker under `root` for [`TEST_RUN`] and returns when it was touched.
     fn touched(root: &str, id: &str) -> SystemTime {
         plant_marker(root, id);
-        marker_touched_at(root, TEST_RUN, id).expect("the planted marker has an mtime")
+        MarkerRoots::of(&[], root)
+            .unwrap()
+            .touched_at(TEST_RUN, id)
+            .expect("the planted marker has an mtime")
     }
 
     /// [`live_spawns`] over the run `setup` records in a fresh store - it parks and answers the
@@ -1727,5 +1840,91 @@ mod tests {
     #[test]
     fn live_spawns_reads_no_result_for_a_spawn_with_no_marker() {
         assert_eq!(live_beside_a_malformed_result(false).unwrap(), Vec::new());
+    }
+
+    // --- MarkerRoots: where a spawn's marker lives is log-carried (spec 101) ---
+
+    /// Parks unit `unit`'s implementer spawn bounded at 300 s, recording `marker_root` as the
+    /// scratch root its step stamps the marker under (empty records none), and returns its id.
+    fn park_recording(store: &Store, unit: &str, marker_root: &str) -> String {
+        let mut req = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 0, "task");
+        req.max_wall_clock = Some(300);
+        park_in_run(store, &req, "", marker_root).unwrap();
+        req.id
+    }
+
+    /// Every marker reader finds a spawn's marker under the root its request recorded, whatever
+    /// root the reader itself resolved: the guard's live set, the marker-age surfaces, the
+    /// halted-spawn checkpoint and the sweep.
+    #[test]
+    fn every_marker_reader_reads_under_the_root_the_request_recorded() {
+        let recorded = tempfile::tempdir().unwrap();
+        let recorded_root = recorded.path().to_str().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let readers_root = elsewhere.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let a = park_recording(&store, "a", recorded_root);
+        let at = touched(recorded_root, &a);
+        let events = run_log(&store);
+
+        assert_eq!(
+            live_spawns(&events, readers_root, TEST_RUN, at).unwrap(),
+            vec![live(A, 0, 300)],
+            "the reset guard"
+        );
+        let wave = spawn::step_result(&events).unwrap().wave;
+        assert_eq!(
+            marker_ages(&events, readers_root, TEST_RUN, &wave, at).get(&a),
+            Some(&0),
+            "the marker-age surfaces"
+        );
+        assert!(
+            !spawn_is_halted(&events, readers_root, TEST_RUN, "a", &a, at).unwrap(),
+            "the halted-spawn checkpoint"
+        );
+        let past_bound = at + Duration::from_secs(301);
+        let stale = sweep(
+            &store,
+            &events,
+            readers_root,
+            TEST_RUN,
+            &Taxonomy::default(),
+            past_bound,
+        )
+        .unwrap();
+        assert_eq!(
+            stale.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            [a.as_str()],
+            "the sweep"
+        );
+    }
+
+    /// The reader's own root is only the fallback, for a request that recorded none (one parked
+    /// before the root was carried); a recorded root wins over it.
+    #[test]
+    fn marker_roots_fall_back_to_the_readers_root_only_for_a_request_that_recorded_none() {
+        let store = Store::open(":memory:").unwrap();
+        let a = park_recording(&store, "a", "/recorded");
+        let b = park_recording(&store, "b", "");
+        let roots = MarkerRoots::of(&run_log(&store), "/readers").unwrap();
+        assert_eq!(
+            roots.marker_path(TEST_RUN, &a),
+            marker_path("/recorded", TEST_RUN, &a)
+        );
+        assert_eq!(
+            roots.marker_path(TEST_RUN, &b),
+            marker_path("/readers", TEST_RUN, &b)
+        );
+    }
+
+    /// A request whose id cannot be read fails the resolution rather than reading as "no root
+    /// recorded".
+    #[test]
+    fn marker_roots_fail_on_a_request_with_no_readable_id() {
+        let events = [Event::new(spawn::TYPE_SPAWN_REQUESTED, b"{}".to_vec())];
+        assert!(matches!(
+            MarkerRoots::of(&events, "/readers"),
+            Err(Error::Backend(_))
+        ));
     }
 }

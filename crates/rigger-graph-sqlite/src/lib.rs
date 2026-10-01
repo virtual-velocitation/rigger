@@ -16,7 +16,7 @@ use rigger_domain::test_cases;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_root::{conductor, metrics};
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_store_sqlite::sqlite;
+use rigger_store_sqlite::{lockfile, sqlite};
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same files. They name the crate as `rigger::...`, which

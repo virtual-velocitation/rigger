@@ -236,13 +236,19 @@ pub fn mutation_scratch_root(cache_home: &Path) -> PathBuf {
 /// same wave) the moment it is appended.
 pub struct ReplayDriver<'a> {
     store: &'a dyn EventStore,
+    /// The scratch root the parking step stamps each spawn's liveness marker under, recorded
+    /// on every request it parks ([`crate::spawn::META_MARKER_ROOT`]); empty records none.
+    marker_root: &'a str,
 }
 
 impl<'a> ReplayDriver<'a> {
     /// Build a replay driver over `store` - the run's event log, the single source of
-    /// truth for whether a spawn is already recorded (replay) or not (park).
-    pub fn new(store: &'a dyn EventStore) -> ReplayDriver<'a> {
-        ReplayDriver { store }
+    /// truth for whether a spawn is already recorded (replay) or not (park) - that records
+    /// `marker_root`, the scratch root its step stamps liveness markers under, on each spawn
+    /// it parks (spec 101: where a spawn's marker lives is log-carried state). An empty
+    /// `marker_root` (a re-drive with no worker to touch a marker) records none.
+    pub fn new(store: &'a dyn EventStore, marker_root: &'a str) -> ReplayDriver<'a> {
+        ReplayDriver { store, marker_root }
     }
 }
 
@@ -316,20 +322,18 @@ impl AgentDriver for ReplayDriver<'_> {
         // fall through to RE-PARK it (idempotent, the request is already recorded), so the
         // unit unwinds cleanly like any parked spawn. A real worker result recorded later
         // (last-write-wins) is a genuine answer and supersedes it here.
-        if let Some(res) = spawn::result_of(events, &opts.id).map_err(|e| Error(e.to_string()))? {
-            if !res.is_liveness_fault() {
-                if res.is_error() {
-                    return Err(Error(res.error));
-                }
-                // Surface the RESOLVED model the worker reported through `rigger result
-                // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
-                // unit events.
-                let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
-                return Ok(AgentResult {
-                    output: res.output,
-                    resolved_model,
-                });
+        if let Some(res) = spawn::ended_by(events, &opts.id).map_err(|e| Error(e.to_string()))? {
+            if res.is_error() {
+                return Err(Error(res.error));
             }
+            // Surface the RESOLVED model the worker reported through `rigger result
+            // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
+            // unit events.
+            let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
+            return Ok(AgentResult {
+                output: res.output,
+                resolved_model,
+            });
         }
 
         // PARK an unrecorded spawn: persist the request so a courier can drain it and the
@@ -340,8 +344,9 @@ impl AgentDriver for ReplayDriver<'_> {
             let req = spawn_request(agent, prompt, opts);
             // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
             // conductor threaded the current run id onto `opts`, so the persisted
-            // `SpawnRequested` carries the same run-id metadata as the run's other events.
-            spawn_store::park_in_run(self.store, &req, &opts.run_id)
+            // `SpawnRequested` carries the same run-id metadata as the run's other events -
+            // and with the scratch root its liveness marker is stamped under (spec 101).
+            spawn_store::park_in_run(self.store, &req, &opts.run_id, self.marker_root)
                 .map_err(|e| Error(e.to_string()))?;
             // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
             // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
@@ -693,7 +698,7 @@ mod tests {
         // lands in a rigger-owned per-spawn location that `rigger result` reclaims on
         // completion, not an ad-hoc top-level target the reclaim can never find.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let scratch = tempfile::tempdir().unwrap();
         // The conductor assigns an isolated spawn a worktree `<scratch_root>/rigger-wt-<slug>`
         // (`unit_worktree_dir`); its parent is the run's scratch root.
@@ -739,7 +744,7 @@ mod tests {
         // `dir`), so there is no run scratch root to key a per-spawn dir on: parking must
         // still succeed and must not panic deriving a parent of the empty path.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let opts = SpawnOpts {
             run_id: "r1".into(),
             ..opts_for("u/implementer#0")
@@ -770,7 +775,7 @@ mod tests {
         };
         let parked_model = |attempt: u32, id: &str| -> String {
             let store = Store::open(":memory:").unwrap();
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let opts = SpawnOpts {
                 id: id.to_string(),
                 unit: "u".into(),
@@ -810,7 +815,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let got = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect("a recorded success is answered, not parked");
@@ -833,7 +838,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a recorded failure replays AS a failure");
@@ -858,7 +863,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a liveness fault re-parks (a clean unwind), never a charged error");
@@ -901,7 +906,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a liveness fault re-parks whatever class labels it, never a charge");
@@ -999,7 +1004,7 @@ mod tests {
     #[test]
     fn parks_an_unrecorded_spawn_and_signals_the_frontier() {
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
 
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
@@ -1024,7 +1029,7 @@ mod tests {
         // A step re-running the conductor over recorded history must append no duplicate
         // SpawnRequested for the same id (finding adv-park-not-idempotent).
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
 
         for _ in 0..3 {
             let err = driver
@@ -1047,7 +1052,7 @@ mod tests {
     #[test]
     fn recording_a_result_flips_a_parked_spawn_to_replayed() {
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
 
         // First: parked (no result yet).
         let first = driver.spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit);
@@ -1087,7 +1092,7 @@ mod tests {
 
         // The same-id adjudicator spawn in the new run PARKS (runs its new reviewer), it
         // does NOT replay run 1's stale "reject".
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let err = driver
             .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
             .expect_err("a prior run's result must not answer a fresh run's same-id spawn");
@@ -1129,7 +1134,7 @@ mod tests {
         // answered from the log every time; the unit reaches `verified` and, on_pass
         // being `none`, stays there without integrating).
         for _ in 0..3 {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1198,7 +1203,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -1286,7 +1291,7 @@ mod tests {
         // Driving conductor::run with the replay driver over an EMPTY log parks the
         // frontier and returns cleanly: the step's whole state is in the log.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let cfg = config_with(vec![stage("u", "worker")]);
         let deps = Deps {
             store: &store,
@@ -1321,7 +1326,7 @@ mod tests {
 
         // Step 1: park the implementer frontier.
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1346,7 +1351,7 @@ mod tests {
         // Step 2: the same conductor run REPLAYS the recorded implementer and advances
         // past it (through gates + the empty review) to `verified`.
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1383,7 +1388,7 @@ mod tests {
         // Two independent units (no dependency between them) are ready in the same wave;
         // both park their spawns in one step, so fan-out falls out of the structure.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let cfg = config_with(vec![stage("a", "worker"), stage("b", "worker")]);
         let deps = Deps {
             store: &store,
@@ -1431,13 +1436,13 @@ mod tests {
         crate::run_store::ensure_started(&store, &[]).unwrap();
         let prior =
             crate::spawn::test_request("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
-        spawn_store::park_in_run(&store, &prior, "").unwrap();
+        spawn_store::park_in_run(&store, &prior, "", "").unwrap();
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
 
         let mut cfg = config_with(vec![stage("u", "worker")]);
         cfg.workflow.defaults.budget = 1;
 
-        let driver = ReplayDriver::new(&store);
+        let driver = ReplayDriver::new(&store, "");
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -1488,7 +1493,7 @@ mod tests {
         cfg.workflow.defaults.budget = 1;
 
         for _ in 0..2 {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1549,7 +1554,7 @@ mod tests {
 
         // Step 1: the single unit's implementer parks (spending the whole budget of 1).
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1577,7 +1582,7 @@ mod tests {
         // recorded spawn must still REPLAY (it is free) and the unit must advance to
         // `verified` - the breaker must not abort this replay-only step.
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1648,7 +1653,7 @@ mod tests {
 
         // Step 1: the implementer parks, spending the whole budget of 1.
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1676,7 +1681,7 @@ mod tests {
         // Step 2: a fresh process whose folded count already equals the budget. The
         // implementer replays free to `verified`, then the review-tier lens is refused.
         {
-            let driver = ReplayDriver::new(&store);
+            let driver = ReplayDriver::new(&store, "");
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1757,7 +1762,7 @@ mod tests {
     /// Run one `rigger step`: a fresh ReplayDriver over `store`, driving `conductor::run`
     /// to its parked frontier (or its loud halt).
     fn replay_step(store: &Store, cfg: &Config) -> Result<(), Error> {
-        let driver = ReplayDriver::new(store);
+        let driver = ReplayDriver::new(store, "");
         let deps = Deps {
             store,
             driver: &driver,
@@ -1792,6 +1797,7 @@ mod tests {
         spawn_store::park_in_run(
             store,
             &crate::spawn::test_request(unit, unit, role, 0, prompt),
+            "",
             "",
         )
         .unwrap();

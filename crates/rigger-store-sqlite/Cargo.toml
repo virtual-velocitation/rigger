@@ -3,7 +3,7 @@ name = "rigger-store-sqlite"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's persistence adapters: the event-store backends (SQLite, KurrentDB), the one SQLite opener, the run/spawn/progress write halves and the machine-global instance registry."
+description = "Rigger's persistence adapters: the event-store backends (SQLite, KurrentDB), the one SQLite opener, the run/spawn/progress write halves, the machine-global instance registry and the one advisory lock-file guard."
 
 [lib]
 name = "rigger_store_sqlite"
