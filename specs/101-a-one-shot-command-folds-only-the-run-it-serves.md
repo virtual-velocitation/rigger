@@ -406,20 +406,24 @@ a fact, not only when it adds or moves one.
 non-terminal unit as a live writer; a run whose driver died leaves units non-terminal
 forever and the only way past is `--force-live`, so the run whose bloat most needs the
 compaction is the one that refuses it. A run is live when a step lock is held; when a spawn
-of the current run is live; or when a registry instance heartbeat is younger than
-`registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`). A spawn is live
+of the current run is live; or when a live DRIVER registration's heartbeat is younger than
+`registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`) - every `rigger
+step`, `run` and `serve` registers as the run's driver, while a courier's discovery refresh of
+the same entry carries the driver's stamp forward and is not itself liveness. A spawn is live
 when it was requested, its latest result is absent or a step-synthesized liveness fault, and
 its liveness marker is not stale against its own wall-clock bound: an unbounded spawn's marker
 is never stale, a spawn with no marker is not live, and a real result (ok, or a worker's or
 operator's `--error`) ends the spawn whatever its marker says. That predicate is spelled once,
-in `crates/rigger-driver/src/liveness.rs`, and both the step sweep's hung-spawn rule and the
-guard read it. Every spawn, bounded or not, carries a liveness marker under every host (the
-thin workflow driver and the in-process headless host alike), and the scratch root a step
-stamped that marker under is carried in the log on the spawn's request (a meta key beside the
-run id): every marker reader resolves the marker from that recorded root, falling back to its
-own resolution only for a request that predates it, so the guard sees a worker through its
-marker whatever environment it runs under and never through a courier's discovery refresh. Unit terminality is not a
-liveness signal. `--force-live` keeps its meaning (skip the check entirely).
+in `crates/rigger-driver/src/liveness.rs`, and both the step's halted-spawn checkpoint
+(`spawn_is_halted`) and the guard (`live_spawns`) read it; the step's hung-spawn sweep composes
+the same primitives (the marker read and the staleness test) with its own membership. Every
+spawn, bounded or not, carries a liveness marker under every host (the thin workflow driver
+and the in-process headless host alike), and the scratch root a step stamped that marker under
+is carried in the log on the spawn's request (a meta key beside the run id): every marker
+reader resolves the marker from that recorded root, falling back to its own resolution only
+for a request that predates it, so the guard sees a worker through its marker whatever
+environment it runs under and never through a courier's discovery refresh. Unit terminality is
+not a liveness signal. `--force-live` keeps its meaning (skip the check entirely).
 
 **CROSS-RUN COMMANDS ARE OUT OF SCOPE.** `rigger reset --runs`, `rigger stats`,
 `rigger replay` and `rigger canary` are cross-run by contract and keep their whole-stream
