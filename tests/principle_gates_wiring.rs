@@ -8,6 +8,7 @@ mod common;
 use common::cli::{run_rigger, temp_project};
 use common::git::{git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -476,23 +477,27 @@ const LABELLED_LISTING: &str = "ps -a --filter label=rigger.test --format {{.ID}
 /// Sources the shipped container runtime snippet as a gate does, with a podman socket where
 /// the snippet looks for one when `runtime`, and, when `cli`, a stand-in `podman` on PATH whose
 /// labelled test containers are `fresh` (5 s old) and `old` (an hour old); without `cli` the
-/// PATH holds no container CLI at all. `max_age` sets RIGGER_TEST_CONTAINER_MAX_AGE_S. The
-/// snippet must source cleanly; returns its output and one line per `podman` call.
+/// PATH holds no container CLI at all. `max_age` sets RIGGER_TEST_CONTAINER_MAX_AGE_S. Neither
+/// DOCKER_HOST nor the test runner's cap RIGGER_TEST_AS_BYTES reaches the snippet. The snippet
+/// must source cleanly; returns its output, one line per `podman` call, and the environment it
+/// leaves exported to the tests the gate runs next.
 fn source_container_snippet(
     runtime: bool,
     cli: bool,
     max_age: Option<&str>,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, BTreeMap<String, String>) {
     let work = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(work.path().join("podman")).unwrap();
     let _socket = runtime.then(|| {
         std::os::unix::net::UnixListener::bind(work.path().join("podman/podman.sock")).unwrap()
     });
     let log = work.path().join("podman.log");
+    let exported = work.path().join("exported.env");
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
-        .arg(". \"$0\"")
+        .arg(". \"$0\" && /usr/bin/env -0 > \"$1\"")
         .arg(repo_root().join(CONTAINER_SNIPPET))
+        .arg(&exported)
         .env(
             "PATH",
             stub_path(work.path(), "podman", cli.then_some("recording-podman.sh")),
@@ -500,7 +505,8 @@ fn source_container_snippet(
         .env("XDG_RUNTIME_DIR", work.path())
         .env("RECORDING_PODMAN_LOG", &log)
         .env("RECORDING_PODMAN_CONTAINERS", "fresh:5 old:3600")
-        .env_remove("DOCKER_HOST");
+        .env_remove("DOCKER_HOST")
+        .env_remove("RIGGER_TEST_AS_BYTES");
     match max_age {
         Some(age) => cmd.env("RIGGER_TEST_CONTAINER_MAX_AGE_S", age),
         None => cmd.env_remove("RIGGER_TEST_CONTAINER_MAX_AGE_S"),
@@ -512,21 +518,39 @@ fn source_container_snippet(
         .lines()
         .map(str::to_string)
         .collect();
-    (out, calls)
+    let exported = std::fs::read_to_string(&exported)
+        .unwrap()
+        .split('\0')
+        .filter_map(|var| var.split_once('='))
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+    (out, calls, exported)
+}
+
+/// Having found the podman socket, the snippet exports DOCKER_HOST at it and leaves the test
+/// runner's per-process address-space cap as the caller left it (unset here, so the runner's own
+/// default): the gate judges the container-backed tests under the same cap as a plain
+/// `cargo test` run with DOCKER_HOST already set, never under a raised one.
+#[test]
+fn the_container_snippet_exports_the_found_socket_and_leaves_the_test_runner_cap_alone() {
+    let (out, _, exported) = source_container_snippet(true, true, None);
+    let socket = format!("unix://{}/podman/podman.sock", exported["XDG_RUNTIME_DIR"]);
+    assert_eq!(exported.get("DOCKER_HOST"), Some(&socket), "{out}");
+    assert_eq!(exported.get("RIGGER_TEST_AS_BYTES"), None, "{out}");
 }
 
 /// Once it has found the runtime, the snippet removes the labelled test containers an earlier
 /// run left behind past the default max age of 600 s, and only those: a fresh one stays.
 #[test]
 fn the_container_snippet_removes_only_the_labelled_test_containers_past_their_age() {
-    let (out, calls) = source_container_snippet(true, true, None);
+    let (out, calls, _) = source_container_snippet(true, true, None);
     assert_eq!(calls, [LABELLED_LISTING, "rm -f old"], "{out}");
 }
 
 /// With RIGGER_TEST_CONTAINER_MAX_AGE_S=0 every labelled test container goes, the fresh one too.
 #[test]
 fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age() {
-    let (out, calls) = source_container_snippet(true, true, Some("0"));
+    let (out, calls, _) = source_container_snippet(true, true, Some("0"));
     assert_eq!(
         calls,
         [LABELLED_LISTING, "rm -f fresh", "rm -f old"],
@@ -537,7 +561,7 @@ fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age
 /// With no runtime found the snippet lists and removes nothing.
 #[test]
 fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
-    let (out, calls) = source_container_snippet(false, true, Some("0"));
+    let (out, calls, _) = source_container_snippet(false, true, Some("0"));
     assert!(calls.is_empty(), "{out}{calls:?}");
 }
 
@@ -545,6 +569,6 @@ fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
 /// a failed gate.
 #[test]
 fn the_container_snippet_goes_on_without_a_container_cli() {
-    let (out, _) = source_container_snippet(true, false, Some("0"));
+    let (out, _, _) = source_container_snippet(true, false, Some("0"));
     assert_eq!(out.lines().count(), 1, "{out}");
 }
