@@ -170,6 +170,7 @@ fn clear_recording_cargo_env() {
         "CARGO_FEATURE_STORE",
         "CARGO_FEATURE_TURBOVEC",
         "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
     ] {
@@ -266,7 +267,10 @@ fn build_wasm_artifact_scrubs_every_inherited_cargo_feature_env_var_before_spawn
 }
 
 /// `RUSTFLAGS` must never reach the nested command (an ambient value the outer build was
-/// configured with must not silently retarget console-core's own cross-compile), and the
+/// configured with must not silently retarget console-core's own cross-compile), nor must
+/// `CARGO_ENCODED_RUSTFLAGS`, which cargo sets in every build script's environment to the
+/// outer host's flags (a host linker flag such as `-fuse-ld=mold` breaks the wasm link) and
+/// which a nested cargo reads ahead of `RUSTFLAGS`; and the
 /// wrapper vars must be cleared to an EXPLICIT empty string (never merely absent) - the
 /// distinction `build_wasm_artifact`'s own doc comment calls out: a config-file-set
 /// `build.rustc-wrapper` is not undone by removing the env var, only by an explicit
@@ -276,6 +280,7 @@ fn build_wasm_artifact_clears_rustflags_and_empties_the_wrapper_vars() {
     let build = recorded_build(
         &[
             ("RUSTFLAGS", "-C target-cpu=native"),
+            ("CARGO_ENCODED_RUSTFLAGS", "-Clink-arg=-fuse-ld=mold"),
             ("RUSTC_WRAPPER", "sccache"),
             ("RUSTC_WORKSPACE_WRAPPER", "sccache"),
         ],
@@ -291,6 +296,13 @@ fn build_wasm_artifact_clears_rustflags_and_empties_the_wrapper_vars() {
     assert!(
         !recorded.lines().any(|l| l.starts_with("RUSTFLAGS=")),
         "RUSTFLAGS must be removed entirely from the nested invocation, not merely emptied: \
+         {recorded}"
+    );
+    assert!(
+        !recorded
+            .lines()
+            .any(|l| l.starts_with("CARGO_ENCODED_RUSTFLAGS=")),
+        "CARGO_ENCODED_RUSTFLAGS must be removed entirely from the nested invocation: \
          {recorded}"
     );
     assert!(
