@@ -618,6 +618,43 @@ fn a_run_base_naming_no_commit_here_fails_the_gate_and_never_narrows_to_the_anch
 }
 
 #[test]
+fn a_run_base_naming_an_object_that_is_no_commit_fails_the_gate_before_anything_runs() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    three_commit_history(dir);
+    for (kind, object) in [("tree", "HEAD^{tree}"), ("blob", "HEAD:a.rs")] {
+        let base = git_out(dir, &["rev-parse", object]);
+        assert_eq!(
+            git_out(dir, &["cat-file", "-t", &base]),
+            kind,
+            "fixture precondition: the run base names a {kind} this repository holds"
+        );
+        let run = run_gate(dir, Some(&base), FORTY_GIB_KB, true);
+        assert!(
+            !run.passed,
+            "{kind}: a run base that is no commit has no spec diff to sweep: {}",
+            run.output
+        );
+        assert!(
+            run.output.contains(&format!(
+                "mutation gate: RIGGER_RUN_BASE {base} names no commit in this repository"
+            )),
+            "{kind}: the refusal names the base it cannot take as a commit: {}",
+            run.output
+        );
+        assert!(
+            !dir.join("unit.diff").exists(),
+            "{kind}: the refusal comes before the gate takes any diff"
+        );
+        assert_eq!(
+            (run.cargo.as_str(), run.scope.as_str()),
+            ("", ""),
+            "{kind}: the gate launches nothing once the run base is refused"
+        );
+    }
+}
+
+#[test]
 fn the_sweep_mutates_the_workspace_and_tests_only_the_touched_packages_plus_the_root() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
