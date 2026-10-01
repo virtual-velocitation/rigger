@@ -344,12 +344,10 @@ fn three_commit_history(repo: &Path) -> [String; 3] {
     ]
 }
 
-/// The catch an earlier sweep recorded in `x.rs`: its mutant, then the test binary that failed
-/// on it first (`foo`), as one `caught.map` line.
-const FOO_CATCH: &str = "x.rs:1:4: replace x with ()\tfoo";
-
-/// The catch an earlier sweep recorded in `y.rs`, failed first by `bar`.
-const BAR_CATCH: &str = "y.rs:1:4: replace y with ()\tbar";
+/// The catch map an earlier sweep recorded, sorted as the gate writes it: per caught mutant, the
+/// test binary that failed on it first - `foo` for the one in `x.rs`, `bar` for the one in `y.rs`.
+const CAUGHT_BY_FOO_AND_BAR: &str =
+    "x.rs:1:4: replace x with ()\tfoo\ny.rs:1:4: replace y with ()\tbar\n";
 
 /// [`three_commit_history`], then the commit a run starts from here - `x.rs` and `y.rs` landing
 /// with `tests/foo.rs` and `tests/bar.rs`, the binaries that catch their mutants - then that
@@ -532,8 +530,8 @@ fn an_anchor_of_this_run_that_head_holds_is_this_specs_own_so_the_re_sweep_start
         git_out(dir, &["diff", &base, "--", "*.rs"]),
         "fixture precondition: the diff since the anchor is narrower than the spec diff"
     );
-    let caught = format!("{FOO_CATCH}\n{BAR_CATCH}\n");
-    let (run, _scratch) = run_gate_over_anchor(dir, &base, &anchor, Some(&base), &caught);
+    let (run, _scratch) =
+        run_gate_over_anchor(dir, &base, &anchor, Some(&base), CAUGHT_BY_FOO_AND_BAR);
     assert_swept(
         &run,
         Some(
@@ -565,7 +563,6 @@ fn a_catch_an_earlier_spec_recorded_is_re_run_by_name_when_this_spec_changes_its
         "c.rs\ntests/foo.rs",
         "fixture precondition: the spec diff rewrites tests/foo.rs and touches neither x.rs nor y.rs"
     );
-    let caught = format!("{FOO_CATCH}\n{BAR_CATCH}\n");
     // The record is not this run's, so it narrows nothing and its miss is not re-run; its catches
     // are the project's whichever run recorded them, so the one whose catching test this spec
     // changed is re-run by name on this spec's first sweep, bar's is not, and the map is carried
@@ -574,13 +571,14 @@ fn a_catch_an_earlier_spec_recorded_is_re_run_by_name_when_this_spec_changes_its
         ("the previous run's base", Some(origin.as_str())),
         ("no recorded base", None),
     ] {
-        let (run, scratch) = run_gate_over_anchor(dir, &base, &base, recorded_base, &caught);
+        let (run, scratch) =
+            run_gate_over_anchor(dir, &base, &base, recorded_base, CAUGHT_BY_FOO_AND_BAR);
         assert_narrowed_nothing(
             dir,
             &run,
             scratch.path(),
             &base,
-            &caught,
+            CAUGHT_BY_FOO_AND_BAR,
             Some("mutants --list --workspace -F x\\.rs(:[0-9]+:[0-9]+)?: replace x with \\(\\) "),
             case,
         );
