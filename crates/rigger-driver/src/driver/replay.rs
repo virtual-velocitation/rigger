@@ -322,20 +322,18 @@ impl AgentDriver for ReplayDriver<'_> {
         // fall through to RE-PARK it (idempotent, the request is already recorded), so the
         // unit unwinds cleanly like any parked spawn. A real worker result recorded later
         // (last-write-wins) is a genuine answer and supersedes it here.
-        if let Some(res) = spawn::result_of(events, &opts.id).map_err(|e| Error(e.to_string()))? {
-            if !res.is_liveness_fault() {
-                if res.is_error() {
-                    return Err(Error(res.error));
-                }
-                // Surface the RESOLVED model the worker reported through `rigger result
-                // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
-                // unit events.
-                let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
-                return Ok(AgentResult {
-                    output: res.output,
-                    resolved_model,
-                });
+        if let Some(res) = spawn::ended_by(events, &opts.id).map_err(|e| Error(e.to_string()))? {
+            if res.is_error() {
+                return Err(Error(res.error));
             }
+            // Surface the RESOLVED model the worker reported through `rigger result
+            // --meta` (spec 05 line 52), so the conductor can copy it onto this spawn's
+            // unit events.
+            let resolved_model = res.meta_str(crate::spawn::META_RESOLVED_MODEL);
+            return Ok(AgentResult {
+                output: res.output,
+                resolved_model,
+            });
         }
 
         // PARK an unrecorded spawn: persist the request so a courier can drain it and the

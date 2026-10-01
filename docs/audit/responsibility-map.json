@@ -9421,7 +9421,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6765d5c15c72ddad"
+    "content_hash": "d79a454bbdcce47b"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

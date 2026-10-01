@@ -769,6 +769,17 @@ pub fn result_of(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serd
     Ok(found)
 }
 
+/// The real result that ENDED spawn `id`: its latest recorded result ([`result_of`]) when that is
+/// a real one - the worker's output, or an error a worker or the operator recorded - and `None`
+/// while the spawn has not ended: no result yet, or only the step's liveness fault
+/// ([`SpawnResult::is_liveness_fault`]). The fault is the sweep's diagnosis of a silent worker,
+/// never its end: the replay driver re-parks such a spawn and a real result recorded later
+/// supersedes the fault. THE one spelling of "a spawn has ended" - the replay driver's answer, the
+/// liveness rule and the dash's answered set all read it.
+pub fn ended_by(events: &[Event], id: &str) -> Result<Option<SpawnResult>, serde_json::Error> {
+    Ok(result_of(events, id)?.filter(|res| !res.is_liveness_fault()))
+}
+
 /// The outcome of one `rigger step`: the WAVE of spawns it newly parked, and whether
 /// the run has reached a fixpoint.
 ///
@@ -1298,6 +1309,44 @@ mod tests {
             "the later success supersedes the earlier failure"
         );
         assert_eq!(got.output, "recovered");
+    }
+
+    /// THE spawn-has-ended rule: a spawn has ended once its latest result is a real one - a
+    /// worker's output or a recorded error - and never on the step's liveness fault, which a
+    /// real result recorded later supersedes.
+    #[test]
+    fn a_spawn_ends_on_its_latest_real_result_never_on_a_liveness_fault() {
+        let id = "u/implementer#0";
+        let ok = || SpawnResult::ok(id, "done").to_event().unwrap();
+        let failed = || SpawnResult::failed(id, "worker gone").to_event().unwrap();
+        let fault = || {
+            SpawnResult::liveness_fault(id, "hung", "infra")
+                .to_event()
+                .unwrap()
+        };
+        let ended = |events: &[Event]| ended_by(events, id).unwrap().map(|res| res.error);
+        assert_eq!(ended(&[]), None, "no result: still in flight");
+        assert_eq!(ended(&[fault()]), None, "a liveness fault is no end");
+        assert_eq!(
+            ended(&[ok()]),
+            Some(String::new()),
+            "a worker's output ends it"
+        );
+        assert_eq!(
+            ended(&[fault(), failed()]),
+            Some("worker gone".to_string()),
+            "a real error recorded after the fault ends it"
+        );
+        assert_eq!(
+            ended(&[ok(), fault()]),
+            None,
+            "the latest result decides, as everywhere else"
+        );
+        assert_eq!(
+            ended_by(&[ok()], "u/implementer#1").unwrap(),
+            None,
+            "another spawn's result ends nothing"
+        );
     }
 
     #[test]

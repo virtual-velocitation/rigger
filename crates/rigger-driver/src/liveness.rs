@@ -271,19 +271,10 @@ pub struct LiveSpawn {
     pub bound: Duration,
 }
 
-/// Whether the spawn `spawn_id` has ENDED: its latest recorded result is a real one - the
-/// worker's output, or an error a worker or operator recorded. The step's own liveness fault
-/// ([`SpawnResult::is_liveness_fault`]) is not an end: it is the sweep's diagnosis of a silent
-/// worker, the replay driver re-parks the spawn, and a real result recorded later supersedes it.
-fn has_ended(events: &[Event], spawn_id: &str) -> Result<bool, Error> {
-    Ok(spawn::result_of(events, spawn_id)
-        .map_err(|e| Error::Backend(e.to_string()))?
-        .is_some_and(|res| !res.is_liveness_fault()))
-}
-
 /// THE rule for whether a requested spawn is LIVE (spec 101, ruling adj-u101gl-live-spawn-rule),
 /// spelled here once for every liveness reader ([`live_spawns`], [`spawn_is_halted`]): the spawn
-/// has not [`has_ended`] - its latest result is absent or is the step's liveness fault - and its
+/// has not ended ([`spawn::ended_by`]) - its latest result is absent or is the step's liveness
+/// fault - and its
 /// liveness marker is not stale at `now` against the spawn's OWN `max_wall_clock` ([`is_stale`]).
 /// A spawn with no marker is not live: nothing proves a worker ever started it. An unbounded
 /// spawn's marker never goes stale, exactly as [`sweep`] never calls it hung. A real result ends
@@ -302,7 +293,11 @@ fn live_spawn(
         return Ok(None);
     };
     let bound = Duration::from_secs(req.max_wall_clock.unwrap_or(0));
-    if is_stale(now, touched, bound) || has_ended(events, &req.id)? {
+    if is_stale(now, touched, bound) {
+        return Ok(None);
+    }
+    let ended = spawn::ended_by(events, &req.id).map_err(|e| Error::Backend(e.to_string()))?;
+    if ended.is_some() {
         return Ok(None);
     }
     Ok(Some(LiveSpawn {
@@ -566,7 +561,7 @@ pub fn sweep(
 ///
 /// 1. `named_spawn_id` itself carries a recorded [`crate::spawn::TYPE_SPAWN_REQUESTED`] -
 ///    a spawn that was never requested has nothing to have halted.
-/// 2. it has not [`has_ended`] - a liveness fault does not count (the sweep's own
+/// 2. it has not ended ([`spawn::ended_by`]) - a liveness fault does not count (the sweep's own
 ///    stale-marker classification is a diagnosis of the hang, not a genuine outcome, so the
 ///    SAME attempt is still presumed to resume against this tree).
 /// 3. no spawn belonging to the SAME `unit` (any role, any attempt, the named one included)
@@ -591,7 +586,12 @@ pub fn spawn_is_halted(
     now: SystemTime,
 ) -> Result<bool, Error> {
     let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
-    if !requested.contains_key(named_spawn_id) || has_ended(events, named_spawn_id)? {
+    if !requested.contains_key(named_spawn_id) {
+        return Ok(false);
+    }
+    let ended =
+        spawn::ended_by(events, named_spawn_id).map_err(|e| Error::Backend(e.to_string()))?;
+    if ended.is_some() {
         return Ok(false);
     }
     let roots = MarkerRoots::of(events, scratch_root)?;
