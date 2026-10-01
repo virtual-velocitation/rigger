@@ -41268,6 +41268,80 @@ mod tests {
         );
     }
 
+    /// The verdict the plan-critique adjudicator renders on round 0 in the gap 61 critique
+    /// fixtures: a rule 7 ownership reject the next round must judge the revision against.
+    const OWNERSHIP_REJECT: &str =
+        r#"{"verdict":"reject","issues":["gap61: u-a and u-b both own the widget renderer"]}"#;
+
+    /// A plan-critique driver whose planner proposes [`widget_split`] on every spawn and whose
+    /// adjudicator rejects round 0 with [`OWNERSHIP_REJECT`] and approves round 1. With
+    /// `park_replan` the re-plan that reject drives parks, so the step ends before round 1.
+    fn reject_then_approve_critique(park_replan: bool) -> Stub {
+        let replan = spawn_id("plan", ROLE_REPLAN, 1);
+        Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+            ]),
+            output_by_spawn_id: HashMap::from([
+                (
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 0),
+                    OWNERSHIP_REJECT.to_string(),
+                ),
+                (
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            park_spawn_ids: park_replan.then_some(replan).into_iter().collect(),
+            ..Stub::new()
+        }
+    }
+
+    #[test]
+    fn a_plan_critique_round_re_entered_in_a_later_process_opens_with_the_logged_reject() {
+        // Gap 61 for the plan-critique gate: a reject feeds its reasoning to the planner AND to
+        // the next critique round, whose prompt opens with it so the reviewers judge the
+        // revised DAG against what was wrong before. When that round runs in a LATER process
+        // than the reject (its re-plan parked across a `rigger step`, or an operator resumed
+        // the escalated gate), the reasoning reaches it only through the log - the review
+        // reason the reject's UnitFailed carries - and the round must open exactly as the
+        // in-process retry round does.
+        let in_process = reject_then_approve_critique(false);
+        critique_step(&Store::open(":memory:").unwrap(), &in_process);
+        let rounds = in_process.prompts_for("judge");
+        assert_eq!(
+            rounds.len(),
+            2,
+            "premise: the in-process gate rejects round 0 and approves round 1"
+        );
+        let retry_round = &rounds[1];
+        assert!(
+            retry_round.starts_with(&format!(
+                "A prior plan-critique REJECTED this decomposition:\n{OWNERSHIP_REJECT}\n\n"
+            )),
+            "premise: the in-process retry round opens with the reject; got:\n{retry_round}"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        let rs = critique_step(&st, &reject_then_approve_critique(true));
+        let gate = &rs.units["plan-critique"];
+        assert_eq!(
+            (gate.status, gate.attempts, gate.review_reason.as_str()),
+            (ledger::Status::Failed, 1, OWNERSHIP_REJECT),
+            "premise: the first step logs the reject and ends on the parked re-plan"
+        );
+        let re_entering = reject_then_approve_critique(false);
+        critique_step(&st, &re_entering);
+        assert_eq!(
+            re_entering.prompts_for("judge").first(),
+            Some(retry_round),
+            "the round re-entered in a later process must open with the logged reject, exactly \
+             as the in-process retry round does"
+        );
+    }
+
     #[test]
     fn an_approved_gate_releases_planner_proposed_units_not_only_baselines() {
         // The release direction of the same hold (spec 10, done-when 1: an approve
