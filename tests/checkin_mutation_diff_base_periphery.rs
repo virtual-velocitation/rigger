@@ -37,9 +37,10 @@
 //! run branch merged after this run started), one that records no base, one HEAD no longer holds
 //! or whose tip names no object here: the gate sweeps the whole spec diff and re-runs none of its
 //! misses. Its catch map is read whichever run wrote it: every catch whose catching test changed
-//! since the owned tip, else since the run base, is re-run by name. Every entry for a mutant this
-//! sweep did not examine is carried forward, whichever run recorded it; a re-run catch is
-//! re-recorded, and dropped when it now survives. A run base git cannot resolve fails the gate
+//! since the owned tip, else since the run base, is re-run by name. Only the entries of mutants
+//! this sweep did not examine are carried forward, whichever run recorded them; a mutant it
+//! examined again - in its own diff or re-run by name - is re-recorded by the binary that caught
+//! it this time, and dropped when it now survives. A run base git cannot resolve fails the gate
 //! before anything runs.
 //!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
@@ -399,6 +400,18 @@ fn run_gate_over_anchor(
     recorded_base: Option<&str>,
     caught: &str,
 ) -> (GateRun, tempfile::TempDir) {
+    run_gate_over_anchor_with(repo, base, tip, recorded_base, caught, &[])
+}
+
+/// [`run_gate_over_anchor`] with extra environment for the fixture tools.
+fn run_gate_over_anchor_with(
+    repo: &Path,
+    base: &str,
+    tip: &str,
+    recorded_base: Option<&str>,
+    caught: &str,
+    env: &[(&str, &str)],
+) -> (GateRun, tempfile::TempDir) {
     let scratch = tempfile::tempdir().unwrap();
     write(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
     write(
@@ -415,13 +428,11 @@ fn run_gate_over_anchor(
         );
     }
     let mutants = scratch.path().join("cargo-mutants-checkin");
-    let run = run_gate_with(
-        repo,
-        Some(base),
-        FORTY_GIB_KB,
-        true,
-        &[("MUTANTS", mutants.to_str().unwrap())],
-    );
+    let env: Vec<(&str, &str)> = [("MUTANTS", mutants.to_str().unwrap())]
+        .into_iter()
+        .chain(env.iter().copied())
+        .collect();
+    let run = run_gate_with(repo, Some(base), FORTY_GIB_KB, true, &env);
     (run, scratch)
 }
 
@@ -618,6 +629,61 @@ fn an_earlier_specs_catch_counts_test_changes_from_the_run_base_wherever_its_tip
             case,
         );
     }
+}
+
+#[test]
+fn a_mapped_mutant_the_sweep_examines_again_is_re_recorded_once_never_kept_stale_beside_it() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // A previous spec's record maps x.rs's mutant to foo and y.rs's to bar. This spec's sweep
+    // examines x.rs's mutant again and its tests catch it, failing first in bar this time; y.rs's
+    // it does not examine.
+    let [origin, base, _head] = three_commit_history(dir);
+    let (run, scratch) = run_gate_over_anchor_with(
+        dir,
+        &base,
+        &base,
+        Some(&origin),
+        CAUGHT_BY_FOO_AND_BAR,
+        &[("RIGGER_FIXTURE_CAUGHT", "x.rs:1:4: replace x with ()\tbar")],
+    );
+    assert_narrowed_nothing(
+        dir,
+        &run,
+        scratch.path(),
+        &base,
+        "x.rs:1:4: replace x with ()\tbar\ny.rs:1:4: replace y with ()\tbar\n",
+        None,
+        "only the entry of a mutant this sweep did not examine (y.rs's) is carried; the one it \
+         examined again (x.rs's) is re-recorded once, by the binary that caught it this time, and \
+         never kept stale beside it",
+    );
+}
+
+#[test]
+fn a_miss_and_a_catch_re_run_by_name_are_listed_once_each_in_name_order() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // This run's last sweep examined the foo rewrite and left its miss in a.rs; its map holds a
+    // catch in a.rs by bar, whose test changed since. The catch's name sorts before the miss's,
+    // though the gate reads the misses first.
+    let [_origin, base, anchor, _head] = catch_history(dir);
+    let caught = "a.rs:1:10: replace a with Default::default()\tbar\n";
+    assert!(
+        caught < ANCHOR_MISS,
+        "fixture precondition: the catch's name sorts before the miss's"
+    );
+    let (run, _scratch) = run_gate_over_anchor(dir, &base, &anchor, Some(&base), caught);
+    assert_swept(
+        &run,
+        Some(
+            "mutants --list --workspace \
+             -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with Default::default\\(\\) \
+             -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) ",
+        ),
+        "the miss and the catch re-run by name reach one listing, once each and in name order, \
+         whichever source named them first",
+    );
 }
 
 #[test]
