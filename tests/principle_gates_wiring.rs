@@ -184,23 +184,8 @@ fn the_audit_gate_fails_red_assertions_with_its_own_diagnostic() {
     assert!(out.contains("error[audit]:"), "{out}");
 }
 
-/// A fixture repository whose `rigger-run` branch holds one committed source file with a
-/// trailing test module, checked out on a fresh unit branch.
-fn unit_branch_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path();
-    init_repo(repo);
-    std::fs::create_dir_all(repo.join("src")).unwrap();
-    std::fs::write(
-        repo.join("src/lib.rs"),
-        "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n",
-    )
-    .unwrap();
-    git_commit_all(repo, "base");
-    git_ok(repo, &["branch", "rigger-run"]);
-    git_ok(repo, &["checkout", "-q", "-b", "unit"]);
-    dir
-}
+/// The fixture's committed source file: one function and a trailing test module.
+const LIB: &str = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
 
 /// Write `content` to `rel` in `repo` and commit it as `msg`.
 fn commit_file(repo: &Path, rel: &str, content: &str, msg: &str) {
@@ -208,6 +193,26 @@ fn commit_file(repo: &Path, rel: &str, content: &str, msg: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();
     git_commit_all(repo, msg);
+}
+
+/// A fixture repository whose `rigger-run` branch holds `lib` as its one committed source file,
+/// checked out on a unit branch that `commits` (each `(path, content, message)`, in order) build
+/// on it. Returns the repository and each commit's short sha.
+fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    init_repo(repo);
+    commit_file(repo, "src/lib.rs", lib, "base");
+    git_ok(repo, &["branch", "rigger-run"]);
+    git_ok(repo, &["checkout", "-q", "-b", "unit"]);
+    let shas = commits
+        .iter()
+        .map(|(rel, content, msg)| {
+            commit_file(repo, rel, content, msg);
+            git_out(repo, &["rev-parse", "--short", "HEAD"])
+        })
+        .collect();
+    (dir, shas)
 }
 
 /// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
@@ -232,25 +237,50 @@ const LIB_WITH_G: &str = "pub fn f() -> u8 {\n    1\n}\n\npub fn g() -> u8 {\n  
 /// A fixture test file, committed on its own as the red half.
 const TEST_FILE: &str = "#[test]\nfn g_is_two() {}\n";
 
-/// The gate passes a unit branch that `commits` (each `(path, content, message)`, in order)
-/// build on the fixture base.
-fn red_before_green_passes(commits: &[(&str, &str, &str)]) {
-    let dir = unit_branch_repo();
-    for (rel, content, msg) in commits {
-        commit_file(dir.path(), rel, content, msg);
-    }
+/// A column-0 `#[cfg(test)]` on an import, heading a file: it opens no test module.
+const TEST_IMPORT: &str = "#[cfg(test)]\nuse some::thing;\n\n";
+
+/// A column-0 `#[cfg(test)]` on a module whose body lives in another file, heading a file: it
+/// opens no test module in this one.
+const TEST_MODULE_DECLARATION: &str = "#[cfg(test)]\nmod fixtures;\n\n";
+
+/// `lib` with its test's assertion reworded: an edit inside the trailing test module.
+fn with_an_edited_test(lib: &str) -> String {
+    lib.replace(
+        "assert_eq!(super::f(), 1);",
+        "assert_eq!(super::f(), 1, \"f\");",
+    )
+}
+
+/// The gate passes a unit branch that `commits` build on the fixture base `lib`.
+fn red_before_green_passes(lib: &str, commits: &[(&str, &str, &str)]) {
+    let (dir, _) = unit_branch_repo(lib, commits);
     let (passed, out) = run_red_before_green(dir.path());
     assert!(passed, "{out}");
 }
 
+/// The gate fails a unit branch that `commits` build on the fixture base `lib`, naming the
+/// commit at index `offender` as the first source commit no test commit precedes.
+fn red_before_green_fails_naming(lib: &str, commits: &[(&str, &str, &str)], offender: usize) {
+    let (dir, shas) = unit_branch_repo(lib, commits);
+    let (passed, out) = run_red_before_green(dir.path());
+    assert!(!passed, "the gate passed a test-less source commit: {out}");
+    assert!(
+        out.contains("error[red-before-green]")
+            && out.contains(&shas[offender])
+            && out.contains(commits[offender].2),
+        "the failure must name the offending commit: {out}"
+    );
+}
+
 rigger::test_cases! {
     /// A test commit, then the source commit it drives.
-    red_before_green_passes_a_test_commit_before_the_source_commit: red_before_green_passes(&[
+    red_before_green_passes_a_test_commit_before_the_source_commit: red_before_green_passes(LIB, &[
         ("tests/g.rs", TEST_FILE, "red"),
         ("src/lib.rs", LIB_WITH_G, "green"),
     ]);
     /// One commit whose source change adds its own `#[test]`.
-    red_before_green_passes_one_commit_that_carries_its_own_test: red_before_green_passes(&[(
+    red_before_green_passes_one_commit_that_carries_its_own_test: red_before_green_passes(LIB, &[(
         "src/lib.rs",
         &LIB_WITH_G.replace(
             "        assert_eq!(super::f(), 1);\n    }\n",
@@ -261,33 +291,78 @@ rigger::test_cases! {
     )]);
     /// One commit whose source change also edits a test inside the trailing test module.
     red_before_green_counts_an_edit_inside_the_trailing_test_module_as_a_test:
-        red_before_green_passes(&[(
+        red_before_green_passes(LIB, &[(
             "src/lib.rs",
-            &LIB_WITH_G.replace("assert_eq!(super::f(), 1);", "assert_eq!(super::f(), 1, \"f\");"),
+            &with_an_edited_test(LIB_WITH_G),
             "code with a changed test",
         )]);
+    /// The same edit in a file whose first column-0 `#[cfg(test)]` gates an import: the test
+    /// module still starts at the `#[cfg(test)]` that opens `mod tests`.
+    red_before_green_counts_an_edit_inside_the_test_module_below_a_cfg_test_import:
+        red_before_green_passes(&format!("{TEST_IMPORT}{LIB}"), &[(
+            "src/lib.rs",
+            &with_an_edited_test(&format!("{TEST_IMPORT}{LIB_WITH_G}")),
+            "code with a changed test",
+        )]);
+    /// One commit whose code change adds a `#[test]` function outside any test module.
+    red_before_green_counts_a_test_added_outside_any_test_module:
+        red_before_green_passes(&format!("{TEST_IMPORT}{LIB}"), &[(
+            "src/lib.rs",
+            &format!(
+                "{TEST_IMPORT}{}",
+                LIB_WITH_G.replace(
+                    "    2\n}\n",
+                    "    2\n}\n\n#[test]\nfn g_is_two() {\n    assert_eq!(g(), 2);\n}\n",
+                )
+            ),
+            "code with a test beside it",
+        )]);
+    /// One commit whose code change adds the file's first test module. Its async test carries
+    /// no `#[test]`, so only the added module marks the commit as a test.
+    red_before_green_counts_a_test_module_the_commit_adds:
+        red_before_green_passes(&format!("{TEST_IMPORT}pub fn f() -> u8 {{\n    1\n}}\n"), &[(
+            "src/lib.rs",
+            &format!(
+                "{TEST_IMPORT}{}",
+                LIB_WITH_G.replace("#[test]\n    fn", "#[tokio::test]\n    async fn")
+            ),
+            "code with a new test module",
+        )]);
     /// A branch that never touches source.
-    red_before_green_passes_a_branch_with_no_source_commit: red_before_green_passes(&[(
+    red_before_green_passes_a_branch_with_no_source_commit: red_before_green_passes(LIB, &[(
         "docs/note.md",
         "a note\n",
         "docs only",
     )]);
-}
-
-#[test]
-fn red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it() {
-    let dir = unit_branch_repo();
-    commit_file(dir.path(), "src/lib.rs", LIB_WITH_G, "green first");
-    let sha = git_out(dir.path(), &["rev-parse", "--short", "HEAD"]);
-    commit_file(dir.path(), "tests/g.rs", TEST_FILE, "red after");
-    let (passed, out) = run_red_before_green(dir.path());
-    assert!(!passed, "{out}");
-    assert!(
-        out.contains("error[red-before-green]")
-            && out.contains(&sha)
-            && out.contains("green first"),
-        "the failure must name the offending commit: {out}"
-    );
+    /// A source commit, then the test commit that should have preceded it.
+    red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it:
+        red_before_green_fails_naming(LIB, &[
+            ("src/lib.rs", LIB_WITH_G, "green first"),
+            ("tests/g.rs", TEST_FILE, "red after"),
+        ], 0);
+    /// A test-less code edit in a file whose first column-0 `#[cfg(test)]` gates an import: the
+    /// edit sits below that line, yet outside the test module.
+    red_before_green_fails_a_code_edit_below_a_cfg_test_import:
+        red_before_green_fails_naming(&format!("{TEST_IMPORT}{LIB}"), &[(
+            "src/lib.rs",
+            &format!("{TEST_IMPORT}{LIB_WITH_G}"),
+            "code below a test import",
+        )], 0);
+    /// The same edit below a column-0 `#[cfg(test)]` on a bodiless `mod fixtures;` declaration.
+    red_before_green_fails_a_code_edit_below_a_cfg_test_module_declaration:
+        red_before_green_fails_naming(&format!("{TEST_MODULE_DECLARATION}{LIB}"), &[(
+            "src/lib.rs",
+            &format!("{TEST_MODULE_DECLARATION}{LIB_WITH_G}"),
+            "code below a test module declaration",
+        )], 0);
+    /// A test-less code edit that also adds a `#[cfg(test)]` import: an added `#[cfg(test)]`
+    /// that opens no test module is not a test.
+    red_before_green_fails_a_code_edit_that_adds_a_cfg_test_import:
+        red_before_green_fails_naming(LIB, &[(
+            "src/lib.rs",
+            &format!("{TEST_IMPORT}{LIB_WITH_G}"),
+            "code with a test import",
+        )], 0);
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,
