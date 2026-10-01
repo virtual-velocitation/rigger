@@ -2577,11 +2577,11 @@ pub fn scratch_root_path_with(
         // `Path::join` keeps an absolute root as given, and an empty repo leaves a relative one
         // as given.
         Some(root) => std::path::Path::new(repo)
-            .join(expand_home(root.to_string()))
+            .join(expand_home(root.to_string(), home.as_deref()))
             .to_string_lossy()
             .into_owned(),
         None => expand_home(
-            cache_scratch_root_from(repo, xdg, home)
+            cache_scratch_root_from(repo, xdg, home.clone())
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     format!(
@@ -2589,15 +2589,19 @@ pub fn scratch_root_path_with(
                         if repo.is_empty() { "." } else { repo }
                     )
                 }),
+            home.as_deref(),
         ),
     }
 }
 
-/// `path` with a leading `~/` expanded to `$HOME`, or as given when it has none or `HOME` is
-/// unset.
-fn expand_home(path: String) -> String {
-    match (path.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+/// `path` with a leading `~/` expanded to `home` (the caller's `HOME`), or as given when it has
+/// none or `home` is absent or not UTF-8.
+fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
+    match (
+        path.strip_prefix("~/"),
+        home.and_then(std::ffi::OsStr::to_str),
+    ) {
+        (Some(rest), Some(home)) => format!("{home}/{rest}"),
         _ => path,
     }
 }
