@@ -16,10 +16,13 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// its tests are untouched.
 ///
 /// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, the scratch root,
-/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed), and the
-/// backend requirement of every requested mode is settled BEFORE the first prune runs, so a composed
-/// invocation never starts work it is already known to be unable to finish - the shape that used
-/// to leave the graph pruned and the log untouched because the log's backend was refused second.
+/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed) when a
+/// selected mode reads them ([`ResetModes::reads_env`]), and the backend requirement of every
+/// requested mode is settled BEFORE the first prune runs, so a composed invocation never starts
+/// work it is already known to be unable to finish - the shape that used to leave the graph pruned
+/// and the log untouched because the log's backend was refused second. A mode that reads none of
+/// that environment (`--scratch-orphans`, and `--derived --force-live`, whose override skips the
+/// live-writer guard entirely) never resolves it, so it is never failed by what it does not read.
 /// Each mode's own mutation is atomic (each is one transaction over one file), and the modes run
 /// in order: if a prune fails on a genuine IO or lock fault after an earlier one committed, the
 /// earlier prune HAS happened and is reported on stdout above the error. That is the honest
@@ -37,7 +40,12 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     let modes = reset_modes(args)?;
 
     let (loc, selection) = require_store_dir()?;
-    let env = ResetEnv::resolve(&loc)?;
+    // Resolved here, before the identity migration and the first prune, when a selected mode
+    // reads it; every reading mode below then takes this one resolution.
+    let mut env = None;
+    if modes.reads_env() {
+        ResetEnv::resolved(&mut env, &loc)?;
+    }
     // Before ANY prune reads a stream name: run the one-time spec-09 identity migration, exactly
     // as `run` / `step` / `workflow` / `playbooks` do before they open their store. Both prunes
     // address this project's history BY ITS CURRENT IDENTITY, and a store bloated enough to need
@@ -50,7 +58,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         migrate_identity_at(&loc)?;
     }
     if modes.runs {
-        reset_runs(&loc, &selection, &env)?;
+        reset_runs(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
     }
     if modes.build_cache {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
@@ -65,7 +73,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // dependency of its own (spec 77 c4 review history: the identical composition defect an
         // earlier attempt at this feature was caught for, reproduced independently before this
         // fix landed).
-        reset_build_cache(&env)?;
+        reset_build_cache(ResetEnv::resolved(&mut env, &loc)?)?;
     }
     if modes.scratch_orphans {
         reset_scratch_orphans()?;
@@ -96,7 +104,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
         if !modes.force_live {
-            refuse_derived_reset_if_live(&loc, &selection, &env)?;
+            refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
         }
         reset_derived(&loc)?;
     }
@@ -104,9 +112,10 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
 }
 
 /// What `rigger reset`'s modes read from outside the store: resolved ONCE by [`cmd_reset`], the
-/// composition root, and handed to the live-writer probe (`--derived` and `--runs`) and to
-/// `--build-cache`'s shared-cache reclaim, so the probe reads no configuration, environment or
-/// clock of its own and judges every signal at one instant under one scratch root.
+/// composition root, when a selected mode reads it ([`ResetModes::reads_env`]), and handed to the
+/// live-writer probe (`--derived` without `--force-live`, and `--runs`) and to `--build-cache`'s
+/// shared-cache reclaim, so the probe reads no configuration, environment or clock of its own and
+/// judges every signal at one instant under one scratch root.
 struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
@@ -144,6 +153,19 @@ impl ResetEnv {
             registry_dir: rigger::registry::default_dir(),
             now_ms: rigger::registry::now_ms(),
         })
+    }
+
+    /// The env in `slot`, [`Self::resolve`]d into it by the first read and returned as stored by
+    /// every later one, so one command resolves it at most once and only once a mode reads it.
+    fn resolved<'s>(
+        slot: &'s mut Option<Self>,
+        loc: &StoreLocation,
+    ) -> Result<&'s Self, Box<dyn std::error::Error>> {
+        let env = match slot.take() {
+            Some(env) => env,
+            None => Self::resolve(loc)?,
+        };
+        Ok(slot.insert(env))
     }
 }
 
@@ -263,6 +285,15 @@ struct ResetModes {
     /// `--runs`/`--derived` still falls through the "at least one mode" refusal below exactly as
     /// before this flag existed.
     force_live: bool,
+}
+
+impl ResetModes {
+    /// Whether a selected mode reads [`ResetEnv`]: `--runs` and `--build-cache` always, and
+    /// `--derived` unless `--force-live` skips its live-writer guard. `--scratch-orphans` reads
+    /// none of it.
+    fn reads_env(&self) -> bool {
+        self.runs || self.build_cache || (self.derived && !self.force_live)
+    }
 }
 
 /// Parse `rigger reset`'s flags: any combination of the named modes, in any order, each at most
