@@ -74,7 +74,9 @@ fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<Gener
                     host_port: Some(String::new()),
                 }]),
             )]));
-        });
+        })
+        // The test gate's container snippet removes a labelled container a signal left behind.
+        .with_labels([TEST_CONTAINER_LABEL]);
     let container = match rt.block_on(image.start()) {
         Ok(c) => c,
         Err(e) => {
