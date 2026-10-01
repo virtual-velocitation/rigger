@@ -13,14 +13,9 @@
 # implementer can close because the one test that could catch them never runs.
 #
 # WHAT. Only when DOCKER_HOST is unset and the user's podman socket exists: DOCKER_HOST points
-# at that socket, and the test runner's per-process address-space cap (RIGGER_TEST_AS_BYTES in
-# .cargo/pidns-runner.sh, 4 GiB by default) rises to 16 GiB unless the caller already set one -
-# under 4 GiB the contract fails to spawn its threads (EAGAIN, measured 2026-09-29). The cap is
-# spelled in bytes: prlimit reads "16G" as 16 bytes, and no test binary would start at all. The
-# raised cap holds for every test process the gate runs; the mutation sweep stays bounded as a
-# whole by its own memory scope. testcontainers for Rust starts no reaper container, so nothing
-# else needs setting: a test removes its container when it drops it. A DOCKER_HOST already set
-# (a docker host the caller configured) leaves everything as it is.
+# at that socket. testcontainers for Rust starts no reaper container, so nothing else needs
+# setting: a test removes its container when it drops it. A DOCKER_HOST already set (a docker
+# host the caller configured) leaves everything as it is.
 #
 # LEFTOVERS. A test removes its container when it drops it, but only inside its async runtime: a
 # test binary that aborts, or a panic that drops the container outside the runtime, leaves the
@@ -38,8 +33,7 @@
 podman_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}/podman/podman.sock"
 if test -z "${DOCKER_HOST:-}" && test -S "$podman_socket"; then
     DOCKER_HOST="unix://$podman_socket"
-    RIGGER_TEST_AS_BYTES="${RIGGER_TEST_AS_BYTES:-17179869184}"
-    export DOCKER_HOST RIGGER_TEST_AS_BYTES
+    export DOCKER_HOST
     container_cli=podman
     command -v podman >/dev/null 2>&1 || container_cli=docker
     if ! command -v "$container_cli" >/dev/null 2>&1; then

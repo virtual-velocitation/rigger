@@ -96,12 +96,8 @@
 # THE CONTAINER-BACKED TESTS RUN (2026-09-29). A test that needs a container runtime skips and
 # passes where it reaches none, so every mutant only it can catch - each one in the KurrentDB
 # adapter - would read as missed. The gate sources `container-env.sh` beside it, which points
-# testcontainers at the operator's rootless podman when no DOCKER_HOST is set and then lifts
-# the runner's per-process address-space cap from 4 GiB to 16 GiB (under 4 GiB the KurrentDB
-# contract cannot spawn its threads; that file carries the why). A runaway mutant's test
-# processes can then each grow further before failing their own allocation: the sweep's scope
-# above is what bounds them. A project without that file (`rigger init` writes this script
-# alone) sweeps exactly as before.
+# testcontainers at the operator's rootless podman when no DOCKER_HOST is set. A project
+# without that file sweeps exactly as before.
 #
 # THE BASELINE STAYS ON. The checkin stage lists `test` before `mutation`, but the conductor
 # runs every listed gate whatever the earlier ones returned and exports no record of their
