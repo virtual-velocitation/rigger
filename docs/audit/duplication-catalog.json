@@ -4254,7 +4254,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d8db45435fa3",
+    "id": "dup-0b65674d0c1c",
     "classification": "semantic",
     "sites": [
       {
@@ -4408,6 +4408,11 @@
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
+        "file": "tests/kurrentdb_store_threads.rs",
+        "name": "\"/proc/self/task\"",
+        "content_hash": "76b81d47301fccfa"
+      },
+      {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",
         "name": "\"cat /proc/self/limits\"",
         "content_hash": "0a68549443b7c66d"
@@ -4514,7 +4519,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 51 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 52 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

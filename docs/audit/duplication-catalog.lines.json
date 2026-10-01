@@ -99,8 +99,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
-        "start_line": 320,
-        "end_line": 322
+        "start_line": 329,
+        "end_line": 331
       },
       {
         "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
@@ -904,23 +904,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 146,
-        "end_line": 146
+        "start_line": 147,
+        "end_line": 147
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 216,
-        "end_line": 216
+        "start_line": 217,
+        "end_line": 217
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 426,
-        "end_line": 426
+        "start_line": 427,
+        "end_line": 427
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 492,
-        "end_line": 492
+        "start_line": 496,
+        "end_line": 496
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -3269,58 +3269,58 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 43,
-        "end_line": 43
+        "start_line": 44,
+        "end_line": 44
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 94,
-        "end_line": 94
+        "start_line": 95,
+        "end_line": 95
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 106,
-        "end_line": 106
+        "start_line": 107,
+        "end_line": 107
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 215,
-        "end_line": 215
+        "start_line": 216,
+        "end_line": 216
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 316,
-        "end_line": 316
+        "start_line": 317,
+        "end_line": 317
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 326,
-        "end_line": 326
+        "start_line": 327,
+        "end_line": 327
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 338,
-        "end_line": 338
+        "start_line": 339,
+        "end_line": 339
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 345,
-        "end_line": 345
+        "start_line": 346,
+        "end_line": 346
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 375,
-        "end_line": 375
+        "start_line": 376,
+        "end_line": 376
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 385,
-        "end_line": 385
+        "start_line": 386,
+        "end_line": 386
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 462,
-        "end_line": 462
+        "start_line": 463,
+        "end_line": 463
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -4110,7 +4110,7 @@
     ]
   },
   {
-    "id": "dup-d8db45435fa3",
+    "id": "dup-0b65674d0c1c",
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
@@ -4261,6 +4261,11 @@
         "file": "tests/duplication_catalog_contract_periphery.rs",
         "start_line": 101,
         "end_line": 101
+      },
+      {
+        "file": "tests/kurrentdb_store_threads.rs",
+        "start_line": 21,
+        "end_line": 21
       },
       {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",
@@ -6159,8 +6164,8 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs",
-        "start_line": 560,
-        "end_line": 567
+        "start_line": 569,
+        "end_line": 576
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
