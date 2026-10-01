@@ -1241,6 +1241,27 @@ mod tests {
         panic!("KurrentDB never became ready");
     }
 
+    /// A store's address space does not grow with the host's core count. Every thread a process
+    /// holds costs a stack and an allocator arena of address space, so a runtime with one worker
+    /// per core (tokio's default) outgrows the test runner's per-process cap on a many-core host
+    /// before a single event is appended; a store's runtime runs exactly one worker.
+    #[test]
+    fn a_store_runtime_runs_one_worker_whatever_the_core_count() {
+        let rt = store_runtime().expect("a store runtime");
+        assert_eq!(rt.metrics().num_workers(), 1);
+    }
+
+    /// The container fixture's runtime adds no worker thread either: it only starts and removes
+    /// the server, so it runs on the thread that blocks on it, whatever the core count.
+    #[test]
+    fn the_container_fixture_runtime_runs_on_the_calling_thread() {
+        let rt = crate::test_support::container_runtime();
+        assert_eq!(
+            rt.handle().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::CurrentThread
+        );
+    }
+
     // Runs the backend-agnostic contract suite against a real KurrentDB in a
     // container. Skips if no container runtime is available.
     #[test]
