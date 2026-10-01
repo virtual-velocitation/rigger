@@ -1140,7 +1140,7 @@ impl PriorFailure {
     /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
     /// `attempts` used: this failure's gate evidence and review reason ride on it, so the
     /// next attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
-    /// re-enters the unit.
+    /// re-enters the unit. The one body every `UnitFailed` writes, whichever path failed.
     fn failed_body(&self, unit: &str, attempts: u32, cause: &str) -> Value {
         json!({
             "id": unit,
@@ -3177,8 +3177,10 @@ impl RunCtx<'_> {
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3 (the cause wire): a compensation revert is a
-                // LATER unit's review proving this one wrong - a deferred reject.
-                json!({"id": comp.target, "attempts": attempts, "cause": CAUSE_REJECT}),
+                // LATER unit's review proving this one wrong - a deferred reject. It
+                // carries no gate evidence or review reason of its own: the
+                // contradiction rides as metadata, which a resume recovers it from.
+                PriorFailure::default().failed_body(&comp.target, attempts, CAUSE_REJECT),
                 &[
                     (META_COMPENSATED, &compensated),
                     (META_CONTRADICTION, contradiction),
@@ -4848,15 +4850,17 @@ impl RunCtx<'_> {
                     w.ensure_present()?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
+                let cause = gate_failure_cause(&full.evidence);
+                let failure = PriorFailure {
+                    gate_evidence: full.evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
-                    // plain gate failure - name the gate.
-                    json!({
-                        "id": st.name,
-                        "attempts": attempts + 1,
-                        "cause": gate_failure_cause(&full.evidence),
-                    }),
+                    // plain gate failure - name the gate. Its evidence rides along (gap 61),
+                    // so the later process that re-enters the unit prompts it from the log.
+                    failure.failed_body(&st.name, attempts + 1, &cause),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -4866,7 +4870,7 @@ impl RunCtx<'_> {
             // so this resumed merge carries a real approval.
             let integration =
                 self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
-            if integration.blocked.is_some() {
+            if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
                 // reviewed, and the two auto-merged into a broken tree). The merge was rolled
@@ -4884,15 +4888,17 @@ impl RunCtx<'_> {
                     w.ensure_present()?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
+                let failure = PriorFailure {
+                    gate_evidence: evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: a resumed merge whose post-merge re-gate
-                    // went red is a merge conflict, not a plain gate failure.
-                    json!({
-                        "id": st.name,
-                        "attempts": attempts + 1,
-                        "cause": CAUSE_INTEGRATE_CONFLICT,
-                    }),
+                    // went red is a merge conflict, not a plain gate failure. The
+                    // merge-break evidence rides along (gap 61), so the later process
+                    // that re-enters the unit prompts it from the log.
+                    failure.failed_body(&st.name, attempts + 1, CAUSE_INTEGRATE_CONFLICT),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -5865,7 +5871,7 @@ impl RunCtx<'_> {
                 lane,
                 IntegrationApproval::approved(),
             )?;
-            if integration.blocked.is_some() {
+            if let Some(evidence) = integration.blocked {
                 // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
                 // so this candidate cannot land this step. CAPTURE the merge-break evidence as
                 // UnitFailed (mirroring the single-lane path) so the signal is not lost and the
@@ -5886,12 +5892,17 @@ impl RunCtx<'_> {
                 // same candidate below.
                 candidates[i].wt.ensure_present()?;
                 let failed_sha = worktree::head_sha_of(&dir);
+                let failure = PriorFailure {
+                    gate_evidence: evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: this site fires ONLY on a post-merge block
                     // (a pre-merge gate/review loss is a silent `continue` two lines
-                    // above, never a UnitFailed) - always a merge conflict.
-                    json!({"id": st.name, "attempts": lane + 1, "cause": CAUSE_INTEGRATE_CONFLICT}),
+                    // above, never a UnitFailed) - always a merge conflict. The
+                    // merge-break evidence rides along (gap 61).
+                    failure.failed_body(&st.name, lane + 1, CAUSE_INTEGRATE_CONFLICT),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 continue;
@@ -6360,14 +6371,28 @@ impl RunCtx<'_> {
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
-            let cause = match &gate_result {
-                Some(g) => gate_failure_cause(&g.evidence),
-                None => CAUSE_REJECT.to_string(),
+            // The failure's specifics ride along (gap 61): the failing gates' evidence, or
+            // the adjudicator's rejection reasoning.
+            let (cause, failure) = match gate_result {
+                Some(g) => (
+                    gate_failure_cause(&g.evidence),
+                    PriorFailure {
+                        gate_evidence: g.evidence,
+                        ..Default::default()
+                    },
+                ),
+                None => (
+                    CAUSE_REJECT.to_string(),
+                    PriorFailure {
+                        review_reason: reason.clone(),
+                        ..Default::default()
+                    },
+                ),
             };
             self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": st.name, "attempts": attempts, "cause": cause}),
+                failure.failed_body(&st.name, attempts, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
                 // pairs with a later approve on the SAME sha for the flip-flop fold.
                 &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
@@ -7382,12 +7407,17 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
+            let failure = PriorFailure {
+                review_reason: reason.clone(),
+                ..Default::default()
+            };
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
-                // own - every reject here is the adjudicator's.
-                json!({"id": gate_name, "attempts": attempts, "cause": CAUSE_REJECT}),
+                // own - every reject here is the adjudicator's, and its reasoning rides
+                // along (gap 61).
+                failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if reason.trim().is_empty() {
