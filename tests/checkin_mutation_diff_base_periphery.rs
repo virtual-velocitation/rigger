@@ -252,21 +252,11 @@ fn the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base() {
 fn mutation_gate_diffs_against_rigger_run_base_capturing_the_whole_spec_diff() {
     let repo = tempfile::tempdir().unwrap();
     let dir = repo.path();
-    git_ok(dir, &["init", "-q"]);
-    git_ok(dir, &["config", "user.email", "t@example.com"]);
-    git_ok(dir, &["config", "user.name", "t"]);
-    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-    git_commit_all(dir, "origin");
-
-    // The run branch anchors HERE - RIGGER_RUN_BASE is stamped from this exact tip.
-    git_ok(dir, &["checkout", "-q", "-b", "rigger-run"]);
-    let base_tip = git_out(dir, &["rev-parse", "HEAD"]);
-
-    // Two implement units land on rigger-run BEFORE the checkin stage's worktree exists.
-    std::fs::write(dir.join("a.rs"), "fn a() { 1; }\n").unwrap();
-    git_commit_all(dir, "unit one lands");
-    std::fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
-    git_commit_all(dir, "unit two lands");
+    // The run branch anchors at `origin` - RIGGER_RUN_BASE is stamped from that exact tip - and
+    // two implement units (the a.rs change, then b.rs) land on it BEFORE the checkin stage's
+    // worktree exists.
+    let [base_tip, _unit_one, _unit_two] = three_commit_history(dir);
+    git_ok(dir, &["branch", "rigger-run"]);
 
     // The checkin stage's OWN worktree branches off rigger-run's tip after both landed.
     git_ok(dir, &["checkout", "-q", "-b", "checkin-worktree"]);
