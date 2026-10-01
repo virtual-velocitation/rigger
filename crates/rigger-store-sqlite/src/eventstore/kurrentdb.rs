@@ -89,10 +89,7 @@ impl Store {
         // The connection string is the adapter's ENTIRE topology input; it reaches the client
         // verbatim through `client_settings`, which injects no topology of its own (§48).
         let settings = Self::client_settings(conn_string)?;
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| Error::Backend(format!("kurrentdb: runtime: {e}")))?;
+        let rt = store_runtime().map_err(|e| Error::Backend(format!("kurrentdb: runtime: {e}")))?;
         // The client spawns background tasks on creation, so it must be built
         // inside the runtime context.
         let client = {
@@ -125,6 +122,14 @@ impl Store {
             )))
         })
     }
+}
+
+/// The runtime a [`Store`] drives its client on: the client's background tasks run on its
+/// workers, and every port call blocks on it from the caller's own thread.
+fn store_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
 }
 
 /// Map the server's authoritative `CurrentRevision` (from a conflict payload)

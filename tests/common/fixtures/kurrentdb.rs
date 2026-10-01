@@ -19,7 +19,7 @@ const KURRENTDB_PORT: u16 = 2113;
 /// container running - and re-raise a panic `body` raised, so a failed assertion still fails the
 /// test. When no container runtime is reachable `body` never runs and the test passes as skipped.
 pub fn with_kurrentdb(body: impl FnOnce(&str)) {
-    let rt = tokio::runtime::Runtime::new().expect("a runtime to drive the container");
+    let rt = container_runtime();
     let Some((container, conn)) = start_kurrentdb(&rt) else {
         return; // no container runtime: gracefully skipped
     };
@@ -28,6 +28,11 @@ pub fn with_kurrentdb(body: impl FnOnce(&str)) {
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+}
+
+/// The runtime [`with_kurrentdb`] starts and removes its server's container on.
+pub fn container_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Runtime::new().expect("a runtime to drive the container")
 }
 
 /// Boot a single-node, insecure, in-memory KurrentDB and return it with a connection string
