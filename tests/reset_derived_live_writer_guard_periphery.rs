@@ -720,6 +720,121 @@ fn reset_refuses_a_store_whose_owning_root_has_no_utf8_path_and_opens_nothing() 
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Only a mode that reads the scratch root resolves it
+// ---------------------------------------------------------------------------------------
+
+/// Configures `root`'s store with a `defaults` block that cannot be parsed - `workdir` beside a
+/// `max_retries` that is not a number - and returns the configured workdir.
+fn configure_unparsable_defaults(root: &Path) -> tempfile::TempDir {
+    configure_workdir(root, "  max_retries: three\n").0
+}
+
+/// Runs `rigger <args>` from `root` over a private cache home holding one scratch root keyed on
+/// a checkout that no longer exists - exactly what `reset --scratch-orphans` reclaims - and
+/// returns the invocation's `(stdout, stderr, success)` with whether that root still stands.
+fn reset_beside_an_orphan_root(root: &Path, args: &[&str]) -> ((String, String, bool), bool) {
+    let cache = tempfile::tempdir().expect("create the private cache home");
+    let gone = cache.path().join("deleted-checkout");
+    let orphan = cache
+        .path()
+        .join("rigger")
+        .join(rigger::liveness::marker_filename(gone.to_str().unwrap()).unwrap());
+    std::fs::create_dir_all(&orphan).expect("plant the orphan scratch root");
+    let said = run_rigger_envs(
+        root,
+        args,
+        &[("XDG_CACHE_HOME", cache.path().to_str().unwrap())],
+    );
+    (said, orphan.exists())
+}
+
+/// `reset --scratch-orphans` from `root` exits 0, reports its sweep and reclaims the orphan
+/// root, `why` naming the case.
+fn assert_sweeps_the_orphan_root(root: &Path, why: &str) {
+    let ((out, err, ok), orphan_stands) =
+        reset_beside_an_orphan_root(root, &["reset", "--scratch-orphans"]);
+    assert!(
+        ok,
+        "{why}: reset --scratch-orphans must succeed; stderr: {err:?}"
+    );
+    assert!(
+        out.contains("--scratch-orphans: reclaimed 1 scratch root(s) whose repo no longer exists"),
+        "{why}: reset --scratch-orphans must report its sweep; stdout: {out:?}"
+    );
+    assert!(
+        !orphan_stands,
+        "{why}: the orphan scratch root must be reclaimed"
+    );
+}
+
+/// `reset --scratch-orphans` reads no configuration, so a `defaults` block the live-writer guard
+/// fails closed on never stops its sweep.
+#[test]
+fn reset_scratch_orphans_sweeps_over_an_unparsable_defaults_block() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let _workdir = configure_unparsable_defaults(root);
+    assert_sweeps_the_orphan_root(root, "an unparsable defaults block");
+}
+
+/// `reset --scratch-orphans` reads no scratch root, so a store whose owning root has no UTF-8
+/// path - which resolves none - never stops its sweep with the refusal the reading modes give.
+#[cfg(unix)]
+#[test]
+fn reset_scratch_orphans_sweeps_over_a_store_whose_owning_root_has_no_utf8_path() {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = tempfile::tempdir().expect("create the parent of the non-UTF-8 root");
+    let root = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"owning-\xff-root"));
+    seed_store(&root);
+    assert_sweeps_the_orphan_root(&root, "a non-UTF-8 owning root");
+}
+
+/// `--force-live` skips the live-writer guard entirely, its scratch-root read included, so over a
+/// `defaults` block the guard could not parse `reset --derived --force-live` still compacts.
+#[test]
+fn reset_derived_force_live_compacts_over_an_unparsable_defaults_block() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let _workdir = configure_unparsable_defaults(root);
+    assert_prunes(
+        root,
+        &["reset", "--derived", "--force-live"],
+        &[],
+        "--force-live must skip the guard's scratch-root read",
+    );
+}
+
+/// A composed invocation that includes a mode reading the scratch root resolves it before the
+/// first prune: `reset --scratch-orphans --derived` over an unparsable `defaults` block fails
+/// naming the config, and the sweep it lists first never runs.
+#[test]
+fn reset_scratch_orphans_composed_with_derived_sweeps_nothing_over_an_unparsable_defaults_block() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let _workdir = configure_unparsable_defaults(root);
+    let ((out, err, ok), orphan_stands) =
+        reset_beside_an_orphan_root(root, &["reset", "--scratch-orphans", "--derived"]);
+    assert!(
+        !ok,
+        "the guard's unresolvable scratch root must fail the command; stdout: {out:?}"
+    );
+    assert!(
+        err.contains("parse workflow") && err.contains("max_retries"),
+        "the failure must name the unparsable config; stderr: {err:?}"
+    );
+    assert!(
+        !out.contains("--scratch-orphans:"),
+        "the sweep must not run before the failing precheck; stdout: {out:?}"
+    );
+    assert!(
+        orphan_stands,
+        "the orphan scratch root must stand: no prune runs before the precheck fails"
+    );
+}
+
 /// Run from a nested unit worktree, the guard still reads the marker the run stamped under the
 /// store OWNER's scratch root, never one derived from the process cwd.
 #[test]
