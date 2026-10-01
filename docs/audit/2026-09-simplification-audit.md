@@ -1678,8 +1678,8 @@ mandatory sweep: Command::new call sites - 87 site(s), collected mechanically re
 - `src/cli/validate.rs:1728-1728` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2063-2063` `Command::new`
-- `tests/checkin_mutation_diff_base_periphery.rs:65-65` `Command::new`
-- `tests/checkin_mutation_diff_base_periphery.rs:157-157` `Command::new`
+- `tests/checkin_mutation_diff_base_periphery.rs:68-68` `Command::new`
+- `tests/checkin_mutation_diff_base_periphery.rs:160-160` `Command::new`
 - `tests/claude_code_stream_periphery.rs:990-990` `Command::new`
 - `tests/cli.rs:1462-1462` `Command::new`
 - `tests/cli.rs:5236-5236` `Command::new`
@@ -2441,7 +2441,7 @@ project identity so one backend can hold many projects without their data mixing
          Surfaces the document fails to name: {missing:#?}"`
 - `tests/canary_model_drift_periphery.rs:62-62` `".rigger"`
 - `tests/change_path_revert_periphery.rs:82-82` `".rigger"`
-- `tests/checkin_mutation_diff_base_periphery.rs:52-52` `".rigger"`
+- `tests/checkin_mutation_diff_base_periphery.rs:55-55` `".rigger"`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:58-58` `"{repo_path}/.rigger-test-scratch"`
 - `tests/cli.rs:101-101` `".rigger"`
 - `tests/cli.rs:105-105` `".rigger"`

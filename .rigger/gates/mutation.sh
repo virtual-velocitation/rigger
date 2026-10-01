@@ -114,23 +114,27 @@
 # test binary whose first failure caught it (`caught.map`, read off the nextest FAIL line in
 # each mutant's log). The anchor lives OUTSIDE `$MUTANTS` because that root is reclaimed with
 # the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the
-# gate wrote it). When the recorded base is this sweep's own `$RIGGER_RUN_BASE` - an earlier
-# sweep of this run, so of this spec - and HEAD holds the tip, the sweep covers (a) every
-# mutant in the diff since the tip and (b) by name, every earlier miss plus every caught
-# mutant whose catching binary's `tests/<binary>.rs` changed since the tip (a change under a
+# gate wrote it). Narrowing and misses are the run's own: when the recorded base is this
+# sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - and HEAD
+# holds the tip, the sweep covers every mutant in the diff since the tip and re-runs every
+# earlier miss by name. Any other anchor narrows nothing and re-runs none of its misses, and the
+# sweep is the whole spec diff against `$RIGGER_RUN_BASE`: none at all (the first sweep, a
+# reclaimed scratch root), one that records another run's base (a previous spec's), one that
+# records no base, and one HEAD no longer holds (a rewritten attempt, or a tip pruned from the
+# repository). Ownership is the recorded base, never ancestry: the anchor lives under the
+# project's scratch root, so HEAD routinely holds a previous spec's last sweep tip - behind the
+# run base on a run branch not rewritten between specs, or past it when that spec's escalated
+# check-in is landed by hand during this run - and taking it would sweep only the changes since
+# it and re-run that spec's misses, failing this spec on survivors that are not its own.
+# Catches are the project's knowledge, whichever run recorded them: the sweep also re-runs by
+# name every caught mutant in the map whose catching binary's `tests/<binary>.rs` changed since
+# one point - the owned tip, else `$RIGGER_RUN_BASE` - so a spec that rewrites the test catching
+# an earlier spec's mutant examines that mutant again on its first sweep (a change under a
 # nested tests/ directory re-runs every mutant a tests/*.rs binary caught; the crate's own
-# unit-test binaries cannot see tests/ and keep their catches). The rerun's misses join the
-# sweep's own missed.txt so one file is the verdict. A solo-merging unit's post-merge re-sweep
-# is therefore the empty merge delta and passes in seconds. A mutant the main sweep already
-# examined is not examined again by name. Any other anchor narrows nothing, and the sweep is
-# the whole spec diff against `$RIGGER_RUN_BASE`: none at all (the first sweep, a reclaimed
-# scratch root), one that records another run's base (a previous spec's), one that records no
-# base, and one HEAD no longer holds (a rewritten attempt). Ownership is the recorded base,
-# never ancestry: the anchor lives under the project's scratch root, so HEAD routinely holds
-# a previous spec's last sweep tip - behind the run base on a run branch not rewritten between
-# specs, or past it when that spec's escalated check-in is landed by hand during this run - and
-# taking it would sweep only the changes since it and re-run that spec's misses, failing this
-# spec on survivors that are not its own.
+# unit-test binaries cannot see tests/ and keep their catches). That same point is the base of
+# the diff the sweep covers. The rerun's misses join the sweep's own missed.txt so one file is
+# the verdict. A solo-merging unit's post-merge re-sweep is therefore the empty merge delta and
+# passes in seconds. A mutant the main sweep already examined is not examined again by name.
 #
 # THE GATE OWNS ITS INSTRUMENT (2026-09-17: a remediation round excluded two survivors by name
 # with an equivalence argument that was wrong for one). The unit diff since `$RIGGER_RUN_BASE`
@@ -142,8 +146,8 @@
 # written to `last.new` and swapped in only once both passes completed; a sweep that dies
 # earlier leaves the previous state in place. A by-name rerun whose names match no mutant is
 # nothing to rerun, not a failure. The map carries forward every earlier entry for a mutant
-# this sweep did not examine, so a catch recorded three sweeps ago still re-runs when its test
-# changes.
+# this sweep did not examine, whichever run recorded it, so a catch recorded three sweeps ago -
+# by this spec or an earlier one - still re-runs when this spec changes its catching test.
 #
 # THE RERUN EXITS WITH CARGO-MUTANTS' OWN CODE (2026-09-19: under xargs a one-miss rerun exited
 # 123 and broke the chain before the promotion). The names are loaded into the positional
@@ -179,18 +183,15 @@ last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
 { test -n "$anchor" && test "$(cat "$last/base" 2>/dev/null)" = "$RIGGER_RUN_BASE" &&
     test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0; } || anchor=""
+since="${anchor:-$RIGGER_RUN_BASE}"
 
-rerun="$(if test -n "$anchor"; then
-    cat "$last/missed.txt" 2>/dev/null
-    changed="$(git diff --name-only "$anchor" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)"
+rerun="$({
+    test -z "$anchor" || cat "$last/missed.txt" 2>/dev/null
+    changed="$(git diff --name-only "$since" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)"
     test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set && $2 != "rigger" && $2 != "bin/rigger") { print $1 }' "$last/caught.map" 2>/dev/null
-fi | sort -u)"
+} | sort -u)"
 
-if test -n "$anchor"; then
-    git diff "$anchor" -- '*.rs' > unit.diff || exit 1
-else
-    git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff || exit 1
-fi
+git diff "$since" -- '*.rs' > unit.diff || exit 1
 
 if { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_BASE" -- '*.rs'; } | grep -E '^\+.*(exclude_re|examine_re|exclude_globs|examine_globs|mutants::skip)'; then
     echo "mutation gate: the unit narrows the sweep itself (an exclusion in .cargo/mutants.toml or a mutants::skip in the code); the gate owns its instrument - remove it and pin the mutant with a test or delete the code it mutates"
