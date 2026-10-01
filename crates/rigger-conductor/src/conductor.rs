@@ -3037,6 +3037,18 @@ impl RunCtx<'_> {
     /// content-blind exact-key replay - and repeated compensation accumulates toward the
     /// escalation bound.
     fn effective_attempts(&self, unit: &str) -> u32 {
+        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
+        self.counted_attempts(unit).max(gate_high_water)
+    }
+
+    /// The attempt `unit`'s own counter stands at in this process: the run-start folded
+    /// [`prior_attempts`](RunCtx::prior_attempts) count, advanced by any compensation this
+    /// process drained ([`compensation_attempts`](RunCtx::compensation_attempts)) - the first
+    /// two of [`effective_attempts`](RunCtx::effective_attempts)'s sources, without its gate
+    /// high-water. A speculation group keys each lane's gates by its LANE, so for a speculating
+    /// unit that high-water counts sibling candidates, never remediation attempts: this is the
+    /// attempt a group re-enters at.
+    fn counted_attempts(&self, unit: &str) -> u32 {
         let prior = self.prior_attempts.get(unit).copied().unwrap_or(0);
         let bumped = self
             .compensation_attempts
@@ -3045,8 +3057,7 @@ impl RunCtx<'_> {
             .get(unit)
             .copied()
             .unwrap_or(0);
-        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
-        prior.max(bumped).max(gate_high_water)
+        prior.max(bumped)
     }
 
     /// The prior failure `unit` re-enters its lifecycle at attempt `attempts` with when
@@ -5624,6 +5635,15 @@ impl RunCtx<'_> {
         // resolved wrapper/cache/incremental vars, since none of them depend on `lane`.
         let build_env = self.build_env()?;
 
+        // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
+        // operator's `rigger resume-unit` grant re-enters every lane) starts from the failure
+        // the log recorded - a lane's post-merge block - so every lane's prompt carries the
+        // block a single-lane retry would. All K lanes are spawned before any is judged, so a
+        // group has no in-process retry to thread a failure into; the log is its only source.
+        // Read at the group's counted attempts, so a compensation re-entry, which advanced past
+        // that failure, is never handed it.
+        let logged = self.logged_prior_failure(&st.name, self.counted_attempts(&st.name));
+
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
         // always finds the pre-created candidate worktree the conductor owns - a lane's
@@ -5645,11 +5665,7 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt = self.build_prompt_with_failure(
-                st,
-                &PriorFailure::default(),
-                GroundingSlice::Implement,
-            )?;
+            let prompt = self.build_prompt_with_failure(st, &logged, GroundingSlice::Implement)?;
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
