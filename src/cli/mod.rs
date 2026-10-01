@@ -2480,7 +2480,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         // 4. Re-drive the candidate config over the isolated store. Repo-less and grounder-less
         //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
-        let driver = ReplayDriver::new(&iso);
+        //    No worker ever touches a liveness marker here, so no marker root is recorded.
+        let driver = ReplayDriver::new(&iso, "");
         let deps = Deps {
             store: &iso,
             driver: &driver,
@@ -2799,20 +2800,28 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
 /// at all, exactly spec 83's own Problem statement ("the per-spawn liveness marker the sweep
 /// would consult is absent even while the agent is demonstrably alive"). An empty `repo` (no
 /// owning root resolved at all) degrades to no ages, mirroring every other repo-less reader.
+///
+/// That resolution is only the FALLBACK: a spawn whose request in `events` (the run's slice)
+/// recorded the scratch root its step stamped the marker under is read there
+/// ([`rigger::liveness::MarkerRoots`], spec 101), whatever this process's own environment
+/// resolves.
 fn liveness_ages_for_wave(
+    events: &[Event],
     repo: &str,
     workdir: &str,
     run_id: &str,
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
-    rigger::liveness::marker_ages(&marker_root(repo, workdir), run_id, wave, now)
+    rigger::liveness::marker_ages(events, &marker_root(repo, workdir), run_id, wave, now)
 }
 
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
 /// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
 /// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
-/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares. Read-only: it
+/// reader outside `rigger step` (status, watch, the `reset` liveness probe) shares, as the
+/// fallback for a spawn whose request recorded no root of its own
+/// ([`rigger::liveness::MarkerRoots`]). Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
 /// orphan-root reclaim that creating one does. An empty `repo` (no owning root resolved) yields
 /// an empty root, which status and watch degrade to "no marker" and `rigger reset` refuses
@@ -2927,7 +2936,7 @@ fn watch_poll_over(
     let (workdir, _max_retries) = scratch_defaults(loc);
     let wave = spawn::step_result(&run_events)?.wave;
     let wave_liveness_ages =
-        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now);
+        liveness_ages_for_wave(&run_events, &loc.repo_root(), &workdir, &run_id, &wave, now);
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -11583,7 +11592,7 @@ mod tests {
             ..Default::default()
         }];
         let now = touched_at + std::time::Duration::from_secs(5);
-        let ages = liveness_ages_for_wave(&loc.repo_root(), "", run_id, &wave, now);
+        let ages = liveness_ages_for_wave(&[], &loc.repo_root(), "", run_id, &wave, now);
 
         assert_eq!(
             ages.get(spawn_id).copied(),

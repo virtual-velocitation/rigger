@@ -1045,20 +1045,22 @@ const TILDE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
 };
 
 /// Given `fixture` scaffolded in a fresh git project, when a real `rigger step` at its root (under
-/// `envs`) parks [`SPAWN`], then the liveness marker path it hands the worker is the one under
-/// `scratch_root(<git toplevel>)`, and when the worker touches exactly that path, `reset --derived`
-/// run from a subdirectory (under the same `envs`) reads it there and refuses naming the spawn:
-/// the path the run writes is the path the guard reads. `why` names the case.
+/// `step_envs`) parks [`SPAWN`], then the liveness marker path it hands the worker is the one under
+/// `scratch_root(<git toplevel>)`, the spawn's request carries that root in the log, and when the
+/// worker touches exactly that path, `reset --derived` run from a subdirectory (under
+/// `reset_envs`) reads it there and refuses naming the spawn: the path the run writes is the path
+/// the guard reads. `why` names the case.
 fn assert_the_guard_reads_the_marker_rigger_step_stamps(
     fixture: &WorkflowFixture,
-    envs: &[(&str, &str)],
+    step_envs: &[(&str, &str)],
+    reset_envs: &[(&str, &str)],
     scratch_root: impl FnOnce(&str) -> String,
     why: &str,
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, fixture);
-    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
+    let (out, err, ok) = run_rigger_envs(root, &["step"], step_envs);
     assert!(ok, "{why}: rigger step must park the spawn; stderr: {err}");
     let step: serde_json::Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("rigger step prints one JSON line: {e}; got {out:?}"));
@@ -1068,10 +1070,11 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
         .and_then(|item| item["marker_path"].as_str())
         .unwrap_or_else(|| panic!("the wave must carry {SPAWN} with its marker path; got {out:?}"))
         .to_string();
-    let run_id =
-        rigger::run::current_run_id(&read_run_events(root)).expect("the step started a run");
+    let events = read_run_events(root);
+    let run_id = rigger::run::current_run_id(&events).expect("the step started a run");
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let expected = rigger::liveness::marker_path(&scratch_root(&toplevel), &run_id, SPAWN)
+    let scratch_root = scratch_root(&toplevel);
+    let expected = rigger::liveness::marker_path(&scratch_root, &run_id, SPAWN)
         .expect("a real spawn id resolves a marker path");
     assert_eq!(
         Path::new(&stamped),
@@ -1079,10 +1082,24 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
         "{why}: the marker path handed to the worker must be the absolute one under the \
          configured scratch root"
     );
+    let recorded = events
+        .iter()
+        .filter(|e| e.type_ == rigger::spawn::TYPE_SPAWN_REQUESTED)
+        .find_map(|e| e.meta.get(rigger::spawn::META_MARKER_ROOT));
+    assert_eq!(
+        recorded,
+        Some(&scratch_root),
+        "{why}: the spawn's request must carry the scratch root its marker was stamped under"
+    );
 
     plant_marker(&expected, 0);
     assert_refused_naming_the_spawn(
-        counted(root, &subdirectory_of(root), &["reset", "--derived"], envs),
+        counted(
+            root,
+            &subdirectory_of(root),
+            &["reset", "--derived"],
+            reset_envs,
+        ),
         0..300,
         "s ago, bound 300s)",
     );
@@ -1097,11 +1114,32 @@ fn assert_the_guard_reads_the_marker_rigger_step_stamps(
 #[test]
 fn the_marker_rigger_step_stamps_under_a_relative_workdir_is_the_one_the_guard_reads_from_a_subdirectory(
 ) {
+    let envs = [("RIGGER_TMPDIR", "")];
     assert_the_guard_reads_the_marker_rigger_step_stamps(
         &RELATIVE_WORKDIR_WORKFLOW,
-        &[("RIGGER_TMPDIR", "")],
+        &envs,
+        &envs,
         |toplevel| format!("{toplevel}/rel-scratch"),
         "a relative workdir anchored on the repository root",
+    );
+}
+
+/// Given a real `rigger step` run under `RIGGER_TMPDIR=A` parks [`SPAWN`] and its worker touches
+/// the marker the wave names under A, when `reset --derived` runs from a shell that does not share
+/// the driver's environment (`RIGGER_TMPDIR` unset, so its own resolution names the configured
+/// `rel-scratch` instead), then it still reads that marker under A, the root the step recorded on
+/// the spawn's request, and refuses naming the spawn: where a spawn's marker lives is log-carried
+/// state, never the reading process's environment.
+#[test]
+fn the_guard_reads_the_marker_under_the_root_the_step_recorded_whatever_its_own_environment() {
+    let driver_tmpdir = tempfile::tempdir().expect("create the driver's RIGGER_TMPDIR");
+    let a = driver_tmpdir.path().to_str().unwrap();
+    assert_the_guard_reads_the_marker_rigger_step_stamps(
+        &RELATIVE_WORKDIR_WORKFLOW,
+        &[("RIGGER_TMPDIR", a)],
+        &[("RIGGER_TMPDIR", "")],
+        |_| a.to_string(),
+        "a reset whose own environment resolves a different scratch root",
     );
 }
 
@@ -1115,9 +1153,11 @@ fn the_marker_rigger_step_stamps_under_a_tilde_workdir_is_the_one_the_guard_read
 ) {
     let home_dir = tempfile::tempdir().expect("create the HOME a ~/ workdir expands under");
     let home = home_dir.path().to_str().unwrap();
+    let envs = [("RIGGER_TMPDIR", ""), ("HOME", home)];
     assert_the_guard_reads_the_marker_rigger_step_stamps(
         &TILDE_WORKDIR_WORKFLOW,
-        &[("RIGGER_TMPDIR", ""), ("HOME", home)],
+        &envs,
+        &envs,
         |_| format!("{home}/tilde-scratch"),
         "a ~/ workdir expanded under the process HOME",
     );

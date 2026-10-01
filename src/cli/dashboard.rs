@@ -590,8 +590,9 @@ fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Ev
 
 /// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
 /// `events` (the current run's slice), read HERE in Rust so the dash PRESENTS it (spec 14) -
-/// the same stat the retired probe did, done by rigger rather than a spawned agent. Empty
-/// when there is no scratch root (a repo-less invocation).
+/// the same stat the retired probe did, done by rigger rather than a spawned agent. Each marker
+/// is read under the root its request recorded, `scratch_root` only for one that recorded none
+/// (spec 101); a spawn found under neither has no age.
 fn dash_read_liveness(
     events: &[Event],
     scratch_root: &str,
@@ -601,6 +602,7 @@ fn dash_read_liveness(
         return std::collections::HashMap::new();
     };
     rigger::liveness::marker_ages(
+        events,
         scratch_root,
         run_id,
         &step.wave,

@@ -21720,7 +21720,7 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     // Requested, no result, no marker at all - the classic silent halt.
     let mut named = common::spawn_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
     named.max_wall_clock = Some(300);
-    park_in_run(&store, &named, "").unwrap();
+    park_in_run(&store, &named, "", "").unwrap();
     assert!(
         spawn_is_halted(
             &read(&store),
@@ -21756,10 +21756,10 @@ fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
     // read as halted either, even though it individually looks silent.
     let mut other = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 0, "task");
     other.max_wall_clock = Some(300);
-    park_in_run(&store, &other, "").unwrap();
+    park_in_run(&store, &other, "", "").unwrap();
     let mut sibling = common::spawn_request("v", "v", ROLE_IMPLEMENTER, 1, "task");
     sibling.max_wall_clock = Some(300);
-    park_in_run(&store, &sibling, "").unwrap();
+    park_in_run(&store, &sibling, "", "").unwrap();
     let marker = marker_path(root, RUN_ID, &sibling.id).expect("a real spawn id always encodes");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();

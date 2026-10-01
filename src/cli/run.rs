@@ -790,7 +790,10 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // are in flight.
     ensure_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
-    let driver = ReplayDriver::new(&folding);
+    // Every spawn this step parks records the scratch root its marker is stamped under (spec
+    // 101), so where a worker's marker lives is read from the log, never from a reader's own
+    // environment.
+    let driver = ReplayDriver::new(&folding, scratch_root.as_deref().unwrap_or(""));
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -813,17 +816,21 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
     // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
     // and a bounded spawn's staleness watchdog around THIS path, never re-deriving a scratch
-    // root of its own. Derived from the SINGLE authority `liveness::marker_path` over the same
-    // resolved scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > repo default) the sweep
-    // above reads and this run's id - so the worker-write path is byte-identical to every
-    // reader's path under ANY scratch config. Bounded or not, every spawn carries a marker: the
-    // marker is how the live-writer guard sees a worker, and the sweep never times out an
-    // unbounded one however stale its marker gets.
+    // root of its own. Resolved by the ONE marker-location rule every reader applies
+    // (`liveness::MarkerRoots`): under the scratch root the spawn's request recorded when this
+    // or an earlier step parked it (`RIGGER_TMPDIR` > `defaults.workdir` > the cache-home
+    // default, as that step resolved it), else under this step's own - so the worker-write path
+    // is byte-identical to every reader's path, whatever environment the reader or a later step
+    // runs under. Bounded or not, every spawn carries a marker: the marker is how the live-writer
+    // guard sees a worker, and the sweep never times out an unbounded one however stale its
+    // marker gets.
     if let Some(root) = &scratch_root {
+        let roots = rigger::liveness::MarkerRoots::of(&events, root).map_err(|e| e.to_string())?;
         for item in step.wave.iter_mut() {
             // A degenerate id (never a real spawn id rigger itself mints) yields no marker path
             // at all rather than a fabricated placeholder - the item simply carries no marker.
-            item.marker_path = rigger::liveness::marker_path(root, &wave_run_id, &item.id)
+            item.marker_path = roots
+                .marker_path(&wave_run_id, &item.id)
                 .map(|p| p.to_string_lossy().into_owned());
         }
     }
@@ -3906,7 +3913,7 @@ mod tests {
             ..Default::default()
         };
         let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
-        ReplayDriver::new(store).spawn(
+        ReplayDriver::new(store, "").spawn(
             &rigger::config::AgentDef::default(),
             "do it",
             &opts,

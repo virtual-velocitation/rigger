@@ -119,8 +119,10 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
 struct ResetEnv {
     /// The store's configured `defaults.workdir` (empty when unset).
     workdir: String,
-    /// The scratch root this store's runs write under ([`marker_root`]): the spawns' liveness
-    /// markers the guard reads, and the build caches `--build-cache` reclaims.
+    /// The scratch root this store's runs write under ([`marker_root`]), resolved from this
+    /// process's environment: the build caches `--build-cache` reclaims, and the root the guard
+    /// reads a spawn's liveness marker under only when the spawn's request recorded none of its
+    /// own ([`rigger::liveness::MarkerRoots`] - where a marker lives is log-carried, spec 101).
     scratch_root: String,
     /// The machine-global instance registry (spec 50); `None` in a homeless environment.
     registry_dir: Option<PathBuf>,
@@ -749,8 +751,9 @@ impl LiveWriterFacts {
     }
 }
 
-/// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading the current run's
-/// spawn markers under `env`'s scratch root and judging every signal at `env`'s one instant.
+/// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading each of the current
+/// run's spawn markers under the root its request recorded (`env`'s scratch root only for one that
+/// recorded none) and judging every signal at `env`'s one instant.
 /// IMPURE (a lock probe, marker reads and an optional registry read) so the decisions built on it
 /// stay pure and unit-tested.
 fn live_writer_facts(

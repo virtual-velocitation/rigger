@@ -296,7 +296,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
     let liveness_ages: std::collections::HashMap<String, u64> =
-        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now)
+        liveness_ages_for_wave(run_events, &loc.repo_root(), &workdir, &run_id, &wave, now)
             .into_iter()
             .collect();
 

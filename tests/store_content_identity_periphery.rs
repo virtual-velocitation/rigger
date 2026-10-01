@@ -543,7 +543,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
     let request = common::spawn_request("u1", "build", "impl", 0, "do the thing");
     let silent = PortDouble::new(vec![None]);
 
-    let err = rigger::spawn_store::park_in_run(&silent, &request, "run-1")
+    let err = rigger::spawn_store::park_in_run(&silent, &request, "run-1", "")
         .expect_err("a parked spawn nobody can locate has not been parked");
     let message = err.to_string();
     assert!(

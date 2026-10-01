@@ -4656,10 +4656,10 @@ impl RunCtx<'_> {
     /// genuinely halted right now, per [`liveness::spawn_is_halted`] - requested, carrying
     /// no real result, and no spawn of `unit` still touching a marker inside its own
     /// wall-clock bound. Reads the log fresh (the same pattern this file's other
-    /// resume-time reads already use, e.g. [`Self::resume_phase`]) and derives the SAME
-    /// scratch root every other `Worktree::create`/reclaim call site in this file computes,
-    /// so a re-derivation can never diverge from where the driver-framed worker actually
-    /// touches its marker.
+    /// resume-time reads already use, e.g. [`Self::resume_phase`]); each marker is read under
+    /// the root its request recorded ([`liveness::MarkerRoots`], spec 101), and the scratch
+    /// root every other `Worktree::create`/reclaim call site in this file computes is only the
+    /// fallback for a request that recorded none.
     fn halted_spawn_checkpoint_permitted(
         &self,
         unit: &str,
@@ -14066,6 +14066,7 @@ mod tests {
             &store,
             &crate::spawn::test_request("u-halt", "u-halt", ROLE_IMPLEMENTER, 0, "task"),
             "",
+            "",
         )
         .unwrap();
         let driver = Stub::new();
@@ -14203,6 +14204,7 @@ mod tests {
             store,
             &crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, attempt, "task"),
             "",
+            "",
         )
         .unwrap();
     }
@@ -14258,7 +14260,7 @@ mod tests {
         // RIGHT NOW - still well inside its wall-clock bound.
         let mut live = crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 1, "task");
         live.max_wall_clock = Some(3600);
-        spawn_store::park_in_run(&store, &live, "").unwrap();
+        spawn_store::park_in_run(&store, &live, "", "").unwrap();
         let marker = liveness::marker_path(&scratch, &run_id, &live.id)
             .expect("a non-degenerate spawn id always encodes");
         std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
@@ -22619,7 +22621,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = degenerate_reviewer_cfg();
         let replay_step = |store: &Store| {
-            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let driver = crate::driver::replay::ReplayDriver::new(store, "");
             let deps = Deps {
                 store,
                 driver: &driver,
@@ -22738,7 +22740,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cfg = degenerate_reviewer_cfg();
         let replay_step = |store: &Store| -> Result<(), Error> {
-            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let driver = crate::driver::replay::ReplayDriver::new(store, "");
             let deps = Deps {
                 store,
                 driver: &driver,
@@ -24795,7 +24797,7 @@ mod tests {
             s.on_pass = "none".into();
         }
         let store = Store::open(":memory:").unwrap();
-        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let driver = crate::driver::replay::ReplayDriver::new(&store, "");
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
@@ -24832,7 +24834,7 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let replay_step = |store: &Store| {
-            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let driver = crate::driver::replay::ReplayDriver::new(store, "");
             let deps = Deps {
                 store,
                 driver: &driver,
@@ -25432,7 +25434,7 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let replay_step = |store: &Store| {
-            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let driver = crate::driver::replay::ReplayDriver::new(store, "");
             let deps = Deps {
                 store,
                 driver: &driver,
@@ -27798,7 +27800,7 @@ mod tests {
     /// One stepwise `rigger step`-shaped call of `cfg` over `st`: a FRESH process each call (a
     /// new `ReplayDriver`/`Deps`, a real resume boundary).
     fn replay_step(cfg: &Config, st: &Store) -> RunState {
-        let driver = crate::driver::replay::ReplayDriver::new(st);
+        let driver = crate::driver::replay::ReplayDriver::new(st, "");
         let deps = stub_deps(st, &driver, Vec::new());
         run_isolated(cfg, &deps).unwrap()
     }
@@ -28256,6 +28258,7 @@ mod tests {
             spawn_store::park_in_run(
                 &st,
                 &crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 0, "p"),
+                "",
                 "",
             )
             .unwrap();
@@ -32068,7 +32071,7 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
         let store = ReadCountingStore::new(&inner);
-        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let driver = crate::driver::replay::ReplayDriver::new(&store, "");
         let rs = run_isolated(&Config::default(), &stub_deps(&store, &driver, Vec::new()))
             .expect("the step runs");
         assert!(rs.units.is_empty(), "the current run holds no unit");
@@ -32114,7 +32117,7 @@ mod tests {
             .collect();
         let step = |why: &str| {
             let store = ReadCountingStore::new(&inner);
-            let driver = crate::driver::replay::ReplayDriver::new(&store);
+            let driver = crate::driver::replay::ReplayDriver::new(&store, "");
             let rs =
                 run_isolated(&cfg, &stub_deps(&store, &driver, Vec::new())).expect("the step runs");
             let reads: Vec<CountedRead> =
@@ -32173,7 +32176,7 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let fixture = seed_one_shot_fixture(&inner, STREAM, &[]);
         let store = ReadCountingStore::new(&inner);
-        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let driver = crate::driver::replay::ReplayDriver::new(&store, "");
         let deps = Deps {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
@@ -32312,7 +32315,7 @@ mod tests {
         let step = |store: &dyn EventStore, ingests: bool| -> Vec<CountedRead> {
             let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let counted = ReadCountingStore::new(store);
-            let driver = crate::driver::replay::ReplayDriver::new(&counted);
+            let driver = crate::driver::replay::ReplayDriver::new(&counted, "");
             let deps = Deps {
                 repo: root_str.clone(),
                 graph: ingests.then_some(&graph as &dyn Projection),
@@ -32447,7 +32450,7 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let driver = crate::driver::replay::ReplayDriver::new(&store);
+        let driver = crate::driver::replay::ReplayDriver::new(&store, "");
         let deps = Deps {
             repo: root_str,
             graph: Some(&graph),
@@ -38315,7 +38318,7 @@ mod tests {
         .unwrap();
         let runner = RecordingRunner::new(&[]);
         for _ in 0..2 {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 gates: &runner,
                 ..stub_deps(&st, &driver, Vec::new())
@@ -38468,7 +38471,7 @@ mod tests {
         // STEP 1: the implementer is NOT recorded, so it PARKS. The unit never reaches
         // its gates, and the run has not converged.
         {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,
@@ -38516,7 +38519,7 @@ mod tests {
         // STEP 2: the implementer replays, the unit reaches `verified`, and the run
         // converges - so NOW the deferred gate runs, once, against the settled tree.
         {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,
@@ -38547,7 +38550,7 @@ mod tests {
         // STEP 3: re-stepping the completed run replays the recorded verdict - it never
         // re-runs the command nor duplicates the verdict.
         {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,
@@ -38860,7 +38863,7 @@ mod tests {
         // replayed, its (whole-tree) command never re-run.
         let runner = RecordingRunner::new(&["deferred"]);
         let rs = {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,
@@ -38897,7 +38900,7 @@ mod tests {
 
         // Re-stepping does not append a second DeferredGateFailed (it is keyed).
         {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,
@@ -38968,7 +38971,7 @@ mod tests {
 
         // Three consecutive replay steps over the SAME recorded rejecting verdict.
         for _ in 0..3 {
-            let driver = ReplayDriver::new(&st);
+            let driver = ReplayDriver::new(&st, "");
             let deps = Deps {
                 store: &st,
                 driver: &driver,

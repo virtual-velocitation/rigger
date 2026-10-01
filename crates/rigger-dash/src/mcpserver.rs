@@ -724,17 +724,15 @@ impl<'a> Server<'a> {
         };
 
         let now = SystemTime::now();
-        let mut liveness_ages: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        if !self.scratch_root.is_empty() {
-            let frontier = crate::spawn::step_result(run_events)
-                .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
-                .wave;
-            liveness_ages =
-                crate::liveness::marker_ages(&self.scratch_root, &run_id, &frontier, now)
-                    .into_iter()
-                    .collect();
-        }
+        // Each marker is read under the root its request recorded (spec 101), so a server
+        // started with no scratch root of its own still reads a stamped spawn's age.
+        let frontier = crate::spawn::step_result(run_events)
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
+            .wave;
+        let liveness_ages: std::collections::HashMap<String, u64> =
+            crate::liveness::marker_ages(run_events, &self.scratch_root, &run_id, &frontier, now)
+                .into_iter()
+                .collect();
 
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;

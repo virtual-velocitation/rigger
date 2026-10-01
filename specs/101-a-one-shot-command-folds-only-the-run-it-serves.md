@@ -414,8 +414,11 @@ is never stale, a spawn with no marker is not live, and a real result (ok, or a 
 operator's `--error`) ends the spawn whatever its marker says. That predicate is spelled once,
 in `crates/rigger-driver/src/liveness.rs`, and both the step sweep's hung-spawn rule and the
 guard read it. Every spawn, bounded or not, carries a liveness marker under every host (the
-thin workflow driver and the in-process headless host alike), so the guard sees a worker
-through its marker and never through a courier's discovery refresh. Unit terminality is not a
+thin workflow driver and the in-process headless host alike), and the scratch root a step
+stamped that marker under is carried in the log on the spawn's request (a meta key beside the
+run id): every marker reader resolves the marker from that recorded root, falling back to its
+own resolution only for a request that predates it, so the guard sees a worker through its
+marker whatever environment it runs under and never through a courier's discovery refresh. Unit terminality is not a
 liveness signal. `--force-live` keeps its meaning (skip the check entirely).
 
 **CROSS-RUN COMMANDS ARE OUT OF SCOPE.** `rigger reset --runs`, `rigger stats`,
