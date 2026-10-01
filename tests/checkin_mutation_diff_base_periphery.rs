@@ -349,11 +349,11 @@ fn three_commit_history(repo: &Path) -> [String; 3] {
 const CAUGHT_BY_FOO_AND_BAR: &str =
     "x.rs:1:4: replace x with ()\tfoo\ny.rs:1:4: replace y with ()\tbar\n";
 
-/// [`three_commit_history`], then the commit a run starts from here - `x.rs` and `y.rs` landing
-/// with `tests/foo.rs` and `tests/bar.rs`, the binaries that catch their mutants - then that
-/// run's rewrite of `tests/foo.rs` beside its own `c.rs`, then its rewrite of `tests/bar.rs`
-/// beside its `d.rs`. Returns the history's first commit, the run base, the foo rewrite and the
-/// bar rewrite (HEAD).
+/// [`three_commit_history`], then `x.rs` and `y.rs` landing with `tests/foo.rs` and
+/// `tests/bar.rs`, the binaries that catch their mutants, then a rewrite of `tests/foo.rs` beside
+/// `c.rs`, then a rewrite of `tests/bar.rs` beside `d.rs`. Returns the history's first commit,
+/// the landing, the foo rewrite and the bar rewrite (HEAD); each arm says which one its run
+/// starts from.
 fn catch_history(repo: &Path) -> [String; 4] {
     let [origin, _, _] = three_commit_history(repo);
     [
@@ -374,7 +374,7 @@ fn catch_history(repo: &Path) -> [String; 4] {
                 ("tests/foo.rs", "#[test]\nfn foo() {\n    x();\n}\n"),
                 ("c.rs", "fn c() {}\n"),
             ],
-            "this spec rewrites tests/foo.rs",
+            "tests/foo.rs is rewritten",
         ),
         commit_files(
             repo,
@@ -382,7 +382,7 @@ fn catch_history(repo: &Path) -> [String; 4] {
                 ("tests/bar.rs", "#[test]\nfn bar() {\n    y();\n}\n"),
                 ("d.rs", "fn d() {}\n"),
             ],
-            "this spec rewrites tests/bar.rs",
+            "tests/bar.rs is rewritten",
         ),
     ]
 }
@@ -580,6 +580,47 @@ fn a_catch_an_earlier_spec_recorded_is_re_run_by_name_when_this_spec_changes_its
             &base,
             CAUGHT_BY_FOO_AND_BAR,
             Some("mutants --list --workspace -F x\\.rs(:[0-9]+:[0-9]+)?: replace x with \\(\\) "),
+            case,
+        );
+    }
+}
+
+#[test]
+fn an_earlier_specs_catch_counts_test_changes_from_the_run_base_wherever_its_tip_sits() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // A previous spec's run started from `origin`, and its last sweep examined the tree where x.rs
+    // and y.rs landed with their tests, recording a catch by foo and one by bar. tests/foo.rs was
+    // rewritten after that sweep, and this run started from the foo rewrite; this spec rewrites
+    // tests/bar.rs beside its d.rs.
+    let [origin, landed, base, _head] = catch_history(dir);
+    assert_eq!(
+        (
+            git_out(dir, &["diff", "--name-only", &landed, &base, "--", "tests"]),
+            git_out(dir, &["diff", "--name-only", &base, "--", "tests"]),
+            git_answer(dir, &["cat-file", "-t", UNKNOWN_SHA]),
+        ),
+        ("tests/foo.rs".to_string(), "tests/bar.rs".to_string(), None),
+        "fixture precondition: tests/foo.rs changed between the record's tip and the run base, \
+         this spec changes tests/bar.rs alone, and a pruned tip names no object here"
+    );
+    // The record is not this run's, so a catch's test change counts from the run base, never from
+    // the record's tip. Wherever that tip sits, behind the run base or pruned from the repository,
+    // the catch whose test this spec changed (bar's) is re-run by name, and the one whose test
+    // changed only before this run started (foo's) is not.
+    for (case, tip) in [
+        ("a tip behind the run base", landed.as_str()),
+        ("a pruned tip", UNKNOWN_SHA),
+    ] {
+        let (run, scratch) =
+            run_gate_over_anchor(dir, &base, tip, Some(&origin), CAUGHT_BY_FOO_AND_BAR);
+        assert_narrowed_nothing(
+            dir,
+            &run,
+            scratch.path(),
+            &base,
+            CAUGHT_BY_FOO_AND_BAR,
+            Some("mutants --list --workspace -F y\\.rs(:[0-9]+:[0-9]+)?: replace y with \\(\\) "),
             case,
         );
     }
