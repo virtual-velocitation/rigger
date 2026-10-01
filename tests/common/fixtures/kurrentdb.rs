@@ -30,9 +30,15 @@ pub fn with_kurrentdb(body: impl FnOnce(&str)) {
     }
 }
 
-/// The runtime [`with_kurrentdb`] starts and removes its server's container on.
+/// The runtime [`with_kurrentdb`] starts and removes its server's container on. It runs on the
+/// thread that blocks on it and spawns no worker of its own, whatever the core count: it has
+/// nothing to do between the start and the removal, and every thread a test process holds
+/// costs a stack and an allocator arena of address space under the runner's cap.
 pub fn container_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Runtime::new().expect("a runtime to drive the container")
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime to drive the container")
 }
 
 /// Boot a single-node, insecure, in-memory KurrentDB and return it with a connection string

@@ -124,10 +124,14 @@ impl Store {
     }
 }
 
-/// The runtime a [`Store`] drives its client on: the client's background tasks run on its
-/// workers, and every port call blocks on it from the caller's own thread.
+/// The runtime a [`Store`] drives its client on: every port call blocks on it from the caller's
+/// own thread, and the client's background tasks run on its one worker, which keeps them moving
+/// between calls - a subscription's thread reaches the server through them. One worker, never
+/// tokio's default of one per core: each thread costs a stack and an allocator arena of address
+/// space, so a per-core runtime alone outgrows a capped process on a many-core host.
 fn store_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
 }
