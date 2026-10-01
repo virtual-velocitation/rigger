@@ -3450,7 +3450,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/config.rs:1461-1463` `is_word_byte`
+- `crates/rigger-domain/src/config.rs:1466-1468` `is_word_byte`
 - `tests/no_os_kill_audit.rs:59-61` `is_word_char`
 - `tests/simplification_audit.rs:204-206` `is_ident_char`
 

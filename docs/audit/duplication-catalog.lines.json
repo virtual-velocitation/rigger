@@ -4709,8 +4709,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
-        "start_line": 1461,
-        "end_line": 1463
+        "start_line": 1466,
+        "end_line": 1468
       },
       {
         "file": "tests/no_os_kill_audit.rs",

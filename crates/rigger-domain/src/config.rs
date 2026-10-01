@@ -576,15 +576,20 @@ pub struct Defaults {
     /// the wave un-partitioned.
     #[serde(default)]
     pub partition: String,
-    /// Where the run's transient scratch (unit/review worktrees) lives. Empty (the
-    /// default) resolves to `<repo>/.rigger/tmp` - the REPO's partition, which on the
-    /// common small-root/large-home layout is the big one, and same-filesystem with
-    /// the checkout so worktree adds are cheap. A leading `~/` expands to $HOME. A
-    /// relative path resolves against the repository root. The
-    /// `RIGGER_TMPDIR` environment variable overrides this for machine-local
-    /// placement without touching versioned config. Never the OS temp dir: a 5G
-    /// cargo target per worktree on a 69G root partition is how a run fills the OS
-    /// disk (design-intent Gap 14).
+    /// Where the run's transient scratch (unit/review worktrees, liveness markers, the shared
+    /// build cache) lives. The scratch root is the first of these that applies:
+    /// 1. the `RIGGER_TMPDIR` environment variable when set and not blank - machine-local
+    ///    placement without touching versioned config;
+    /// 2. this field when not blank (empty is the default) - versioned placement;
+    /// 3. the cache home, `<XDG_CACHE_HOME, else $HOME/.cache>/rigger/<encoded repo path>`,
+    ///    outside the checkout so scratch never nests inside the store tree;
+    /// 4. `<repo>/.rigger/tmp`, only when there is no repository or no home to key the cache
+    ///    home on.
+    ///
+    /// On the first two rungs a leading `~/` expands to $HOME and a path still relative after
+    /// that resolves against the repository root, never the caller's directory. Never the OS
+    /// temp dir: a 5G cargo target per worktree on a 69G root partition is how a run fills the
+    /// OS disk (design-intent Gap 14).
     #[serde(default)]
     pub workdir: String,
     /// The declarative failure taxonomy (spec 10, unit 2): an ordered list of rules,
