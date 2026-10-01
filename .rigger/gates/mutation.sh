@@ -117,14 +117,17 @@
 # test binary whose first failure caught it (`caught.map`, read off the nextest FAIL line in
 # each mutant's log). The anchor lives OUTSIDE `$MUTANTS` because that root is reclaimed with
 # the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the
-# gate wrote it). Narrowing and misses are the run's own: when the recorded base is this
-# sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - and HEAD
-# holds the tip, the sweep covers every mutant in the diff since the tip and re-runs every
-# earlier miss by name. Any other anchor narrows nothing and re-runs none of its misses, and the
-# sweep is the whole spec diff against `$RIGGER_RUN_BASE`: none at all (the first sweep, a
-# reclaimed scratch root), one that records another run's base (a previous spec's), one that
-# records no base, and one HEAD no longer holds (a rewritten attempt, or a tip pruned from the
-# repository). Ownership is the recorded base, never ancestry: the anchor lives under the
+# gate wrote it). Misses are the run's own, and the recorded base alone says whose: when it is
+# this sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - the
+# sweep re-runs every earlier miss by name. Narrowing needs one more fact, HEAD holding the tip:
+# then the sweep covers every mutant in the diff since the tip. An anchor of this run whose tip
+# HEAD no longer holds (a rewritten attempt, or a tip pruned from the repository) narrows
+# nothing and its misses are still re-run: a miss outside the spec diff would otherwise leave
+# all gate state, and the same tree would fail and then pass. Any other anchor narrows nothing
+# and re-runs none of its misses, and the sweep is the whole spec diff against
+# `$RIGGER_RUN_BASE`: none at all (the first sweep, a reclaimed scratch root), one that records
+# another run's base (a previous spec's), and one that records no base. Ownership is the
+# recorded base, never ancestry: the anchor lives under the
 # project's scratch root, so HEAD routinely holds a previous spec's last sweep tip - behind the
 # run base on a run branch not rewritten between specs, or past it when that spec's escalated
 # check-in is landed by hand during this run - and taking it would sweep only the changes since
@@ -184,12 +187,16 @@ test ! -f "$container_env" || . "$container_env" || exit 1
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
-{ test -n "$anchor" && test "$(cat "$last/base" 2>/dev/null)" = "$RIGGER_RUN_BASE" &&
+# The recorded base alone owns the misses; HEAD holding the tip governs narrowing alone (see
+# INCREMENTAL RE-SWEEPS).
+owned="$(cat "$last/base" 2>/dev/null)"
+test "$owned" = "$RIGGER_RUN_BASE" || owned=""
+{ test -n "$owned" && test -n "$anchor" &&
     test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0; } || anchor=""
 since="${anchor:-$RIGGER_RUN_BASE}"
 
 rerun="$({
-    test -z "$anchor" || cat "$last/missed.txt" 2>/dev/null
+    test -z "$owned" || cat "$last/missed.txt" 2>/dev/null
     changed="$(git diff --name-only "$since" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)"
     test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set && $2 != "rigger" && $2 != "bin/rigger") { print $1 }' "$last/caught.map" 2>/dev/null
 } | sort -u)"
