@@ -30,13 +30,15 @@
 //! fails the gate by name as an environment failure.
 //!
 //! THE ANCHOR IS THIS SPEC'S OWN; ITS CATCHES ARE THE PROJECT'S. The incremental anchor a sweep
-//! leaves under the scratch root records the `$RIGGER_RUN_BASE` that sweep was given, and it
-//! narrows the next sweep to the diff since its tip, re-running its misses by name, only when that
-//! recorded base is this run's and HEAD holds the tip. Any other anchor narrows nothing - a
-//! previous spec's, whether its tip is behind, at or past the run base (an escalated check-in the
-//! run branch merged after this run started), one that records no base, one HEAD no longer holds
-//! or whose tip names no object here: the gate sweeps the whole spec diff and re-runs none of its
-//! misses. Its catch map is read whichever run wrote it: every catch whose catching test changed
+//! leaves under the scratch root records the `$RIGGER_RUN_BASE` that sweep was given. That
+//! recorded base alone owns its misses: when it is this run's, the next sweep re-runs them by
+//! name wherever the anchor's tip sits. HEAD holding the tip governs narrowing alone: an anchor of
+//! this run whose tip HEAD holds narrows the next sweep to the diff since that tip, and one HEAD
+//! no longer holds (a rewritten attempt) or whose tip names no object here narrows nothing while
+//! its misses are still re-run, so a rewrite never erases a miss outside the spec diff. Any other
+//! anchor narrows nothing and re-runs none of its misses - a previous spec's, whether its tip is
+//! behind, at or past the run base (an escalated check-in the run branch merged after this run
+//! started), and one that records no base: the gate sweeps the whole spec diff. Its catch map is read whichever run wrote it: every catch whose catching test changed
 //! since the owned tip, else since the run base, is re-run by name. Only the entries of mutants
 //! this sweep did not examine are carried forward, whichever run recorded them; a mutant it
 //! examined again - in its own diff or re-run by name - is re-recorded by the binary that caught
@@ -725,13 +727,22 @@ fn an_anchor_of_this_run_that_head_does_not_hold_narrows_nothing() {
         "fixture precondition: a pruned anchor's tip names no object in this repository"
     );
     // An anchor HEAD does not hold narrows nothing, even one recording RIGGER_RUN_BASE - a
-    // rewritten attempt's, or one whose tip was pruned - and its misses are not re-run by name.
+    // rewritten attempt's, or one whose tip was pruned - but it records this run's base, so its
+    // misses are this spec's own and are re-run by name.
     for (case, tip) in [
         ("a rewritten attempt", rewritten.as_str()),
         ("a pruned tip", UNKNOWN_SHA),
     ] {
         let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, tip, Some(&origin), "");
-        assert_narrowed_nothing(repo.path(), &run, scratch.path(), &origin, "", None, case);
+        assert_narrowed_nothing(
+            repo.path(),
+            &run,
+            scratch.path(),
+            &origin,
+            "",
+            Some("mutants --list --workspace -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) "),
+            case,
+        );
     }
 }
 
