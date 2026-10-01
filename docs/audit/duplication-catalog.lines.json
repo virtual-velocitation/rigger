@@ -904,23 +904,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 147,
-        "end_line": 147
+        "start_line": 148,
+        "end_line": 148
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 214,
-        "end_line": 214
+        "start_line": 215,
+        "end_line": 215
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 494,
-        "end_line": 494
+        "start_line": 495,
+        "end_line": 495
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 563,
-        "end_line": 563
+        "start_line": 572,
+        "end_line": 572
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -3294,58 +3294,58 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 44,
-        "end_line": 44
+        "start_line": 45,
+        "end_line": 45
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 95,
-        "end_line": 95
+        "start_line": 96,
+        "end_line": 96
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 107,
-        "end_line": 107
+        "start_line": 108,
+        "end_line": 108
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 213,
-        "end_line": 213
+        "start_line": 214,
+        "end_line": 214
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 384,
-        "end_line": 384
+        "start_line": 385,
+        "end_line": 385
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 394,
-        "end_line": 394
+        "start_line": 395,
+        "end_line": 395
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 406,
-        "end_line": 406
+        "start_line": 407,
+        "end_line": 407
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 413,
-        "end_line": 413
+        "start_line": 414,
+        "end_line": 414
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 443,
-        "end_line": 443
+        "start_line": 444,
+        "end_line": 444
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 453,
-        "end_line": 453
+        "start_line": 454,
+        "end_line": 454
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 530,
-        "end_line": 530
+        "start_line": 531,
+        "end_line": 531
       },
       {
         "file": "tests/projections_stay_local.rs",

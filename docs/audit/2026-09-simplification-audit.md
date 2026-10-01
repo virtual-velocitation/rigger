@@ -1737,10 +1737,10 @@ mandatory sweep: Command::new call sites - 87 site(s), collected mechanically re
 - `tests/no_os_kill_test_helper_periphery.rs:29-29` `Command::new`
 - `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:59-59` `Command::new`
-- `tests/principle_gates_wiring.rs:147-147` `Command::new`
-- `tests/principle_gates_wiring.rs:214-214` `Command::new`
-- `tests/principle_gates_wiring.rs:494-494` `Command::new`
-- `tests/principle_gates_wiring.rs:563-563` `Command::new`
+- `tests/principle_gates_wiring.rs:148-148` `Command::new`
+- `tests/principle_gates_wiring.rs:215-215` `Command::new`
+- `tests/principle_gates_wiring.rs:495-495` `Command::new`
+- `tests/principle_gates_wiring.rs:572-572` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/reset_build_cache_periphery.rs:242-242` `Command::new`
 - `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
@@ -2790,18 +2790,18 @@ project identity so one backend can hold many projects without their data mixing
          .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \
          it - proving the sibling test's failure is specifically the base-guard's new scope, \
          not a defect in this file's own mechanics"`
-- `tests/principle_gates_wiring.rs:44-44` `"sh .rigger/gates/red-before-green.sh"`
-- `tests/principle_gates_wiring.rs:95-95` `".rigger/workflow.yml: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:107-107` `"the scaffolded .rigger/: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:213-213` `".rigger/gates/red-before-green.sh"`
-- `tests/principle_gates_wiring.rs:384-384` `".rigger/agents"`
-- `tests/principle_gates_wiring.rs:394-394` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:406-406` `"sh .rigger/gates/mutation.sh"`
-- `tests/principle_gates_wiring.rs:413-413` `".rigger/gates/{file}"`
-- `tests/principle_gates_wiring.rs:443-443` `".rigger/gates/container-env.sh"`
-- `tests/principle_gates_wiring.rs:453-453` `"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
+- `tests/principle_gates_wiring.rs:45-45` `"sh .rigger/gates/red-before-green.sh"`
+- `tests/principle_gates_wiring.rs:96-96` `".rigger/workflow.yml: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:108-108` `"the scaffolded .rigger/: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:214-214` `".rigger/gates/red-before-green.sh"`
+- `tests/principle_gates_wiring.rs:385-385` `".rigger/agents"`
+- `tests/principle_gates_wiring.rs:395-395` `".rigger/agents: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:407-407` `"sh .rigger/gates/mutation.sh"`
+- `tests/principle_gates_wiring.rs:414-414` `".rigger/gates/{file}"`
+- `tests/principle_gates_wiring.rs:444-444` `".rigger/gates/container-env.sh"`
+- `tests/principle_gates_wiring.rs:454-454` `"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
          exit 1; fi; cargo test --workspace"`
-- `tests/principle_gates_wiring.rs:530-530` `".rigger/gates"`
+- `tests/principle_gates_wiring.rs:531-531` `".rigger/gates"`
 - `tests/projections_stay_local.rs:90-90` `"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:97-97` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
@@ -4992,7 +4992,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7788 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7796 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13943-13965` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:18124-18177` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
