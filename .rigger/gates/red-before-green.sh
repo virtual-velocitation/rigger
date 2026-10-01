@@ -2,8 +2,12 @@
 # The red-before-green gate (TDD, workspace split step 0): on a unit branch, the first commit
 # that touches source (`src/` or `crates/<name>/src/`) must be preceded by, or itself be, a
 # commit that adds or changes a test. A test is a file under a `tests` directory or named
-# `tests.rs`, or a hunk in a Rust source file that adds a `#[test]`/`#[cfg(test)]` item or
-# lands inside the file's trailing `#[cfg(test)]` module.
+# `tests.rs`, or a hunk in a Rust source file that adds a `#[test]` item or reaches the file's
+# test module. That module runs from the first column-0 `#[cfg(test)]` whose next
+# non-attribute, non-comment, non-blank line opens a `mod` body (`mod`, `pub mod` or
+# `pub(crate) mod` with its `{`) to the end of the file; a `#[cfg(test)]` on a `use`, `const`,
+# `fn`, `impl`, `static` or a bodiless `mod name;` opens none, and a file without one has no
+# test hunk by position.
 #
 # Usage: sh .rigger/gates/red-before-green.sh [run-branch]   (default: rigger-run, then
 # origin/main). The unit's commits are those since its merge base with the run branch, oldest
@@ -30,16 +34,22 @@ is_source_path() {
     return 1
 }
 
-# Whether commit $1 changes a test inside the Rust source file $2: an added test attribute, or
-# a hunk that starts at or below the first column-0 `#[cfg(test)]` of the committed file.
+# Whether commit $1 changes a test inside the Rust source file $2: an added `#[test]`, or a
+# hunk whose last line in the committed file is at or below the line its test module (see the
+# header) starts on.
 has_test_hunk() {
-    tests_from=$(git show "$1:$2" 2>/dev/null | awk '/^#\[cfg\(test\)\]/ { print NR; exit }')
+    tests_from=$(git show "$1:$2" 2>/dev/null | awk '
+        /^#\[cfg\(test\)\]/ { at = NR; next }
+        !at || /^[ \t]*(#\[|\/\/|$)/ { next }
+        /^(pub(\([a-z]+\))? )?mod [^;]*[{]/ { print at; exit }
+        { at = 0 }')
     git show -U0 --format= "$1" -- "$2" | awk -v from="${tests_from:-0}" '
-        /^\+[^+]/ && /#\[(test|cfg\(test\)|cfg\(all\(test)/ { found = 1 }
+        /^\+[^+]/ && /#\[test/ { found = 1 }
         /^@@/ {
-            split($3, plus, ",")
+            n = split($3, plus, ",")
             start = substr(plus[1], 2) + 0
-            if (from > 0 && start >= from) found = 1
+            last = (n > 1 && plus[2] > 1) ? start + plus[2] - 1 : start
+            if (from > 0 && last >= from) found = 1
         }
         END { exit found ? 0 : 1 }'
 }
