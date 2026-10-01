@@ -783,31 +783,22 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
             true,
             &[("MUTANTS", mutants.to_str().unwrap())],
         );
-        assert_swept(
-            &run,
-            None,
-            "an all-caught sweep leaves no miss, so nothing is re-run by name",
-        );
         std::fs::remove_dir_all(&mutants).unwrap();
-        (unit_diff(dir), anchor_left(scratch.path()))
+        run
     };
     let diff_since = |from: &str| git_out(dir, &["diff", from, "--", "*.rs"]);
 
     // A run that started from `origin` sweeps its spec at `middle`, then again at `head`.
     git_ok(dir, &["checkout", "-q", &middle]);
-    let (first, anchor) = sweep(&origin);
-    assert_eq!(
-        (first.trim_end(), anchor),
-        (
-            diff_since(&origin).trim_end(),
-            (
-                format!("{middle}\n"),
-                String::new(),
-                format!("{origin}\n"),
-                String::new()
-            )
-        ),
-        "the run's first sweep is its whole spec diff, and it leaves its tree recording its base"
+    let run = sweep(&origin);
+    assert_narrowed_nothing(
+        dir,
+        &run,
+        scratch.path(),
+        &origin,
+        "",
+        None,
+        "the run's first sweep is its whole spec diff, and it leaves its tree recording its base",
     );
     git_ok(dir, &["checkout", "-q", "-"]);
     assert_ne!(
@@ -815,9 +806,14 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
         diff_since(&origin),
         "fixture precondition: the diff since the first sweep is narrower than the spec diff"
     );
-    let (second, anchor) = sweep(&origin);
+    let run = sweep(&origin);
+    assert_swept(
+        &run,
+        None,
+        "an all-caught sweep leaves no miss, so nothing is re-run by name",
+    );
     assert_eq!(
-        (second.trim_end(), anchor),
+        (unit_diff(dir).trim_end(), anchor_left(scratch.path())),
         (
             diff_since(&middle).trim_end(),
             (
@@ -837,27 +833,22 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
     write(dir, "c.rs", "fn c() {}\n");
     git_ok(dir, &["add", "c.rs"]);
     git_ok(dir, &["commit", "-q", "-m", "the later run's unit lands"]);
-    let later_head = git_out(dir, &["rev-parse", "HEAD"]);
     assert_ne!(
         diff_since(&head),
         diff_since(&middle),
         "fixture precondition: the diff since the earlier run's tip is narrower than the later \
          run's spec diff"
     );
-    let (later, anchor) = sweep(&middle);
-    assert_eq!(
-        (later.trim_end(), anchor),
-        (
-            diff_since(&middle).trim_end(),
-            (
-                format!("{later_head}\n"),
-                String::new(),
-                format!("{middle}\n"),
-                String::new()
-            )
-        ),
+    let run = sweep(&middle);
+    assert_narrowed_nothing(
+        dir,
+        &run,
+        scratch.path(),
+        &middle,
+        "",
+        None,
         "the earlier run's anchor records another base, so the later run sweeps its whole spec \
-         diff and leaves its own tree recording its own base"
+         diff and leaves its own tree recording its own base",
     );
 }
 
