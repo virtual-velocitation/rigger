@@ -5070,15 +5070,53 @@ mod tests {
         );
     }
 
-    /// A `~/` root expands under `$HOME` and is never anchored on the repository.
-    #[test]
-    fn scratch_root_path_with_expands_a_tilde_root_under_home_and_never_anchors_it() {
-        if let Ok(home) = std::env::var("HOME") {
+    crate::test_cases! {
+        /// A `~/` root expands under the home the caller hands in and is never anchored on the
+        /// repository.
+        scratch_root_path_with_expands_a_tilde_root_under_the_given_home_and_never_anchors_it:
             assert_eq!(
-                operator_root("/home/dev/acme", "~/scratch", None),
-                format!("{home}/scratch")
+                scratch_root_path_with(
+                    "/home/dev/acme",
+                    "~/scratch",
+                    None,
+                    None,
+                    Some(std::ffi::OsString::from("/home/dev")),
+                ),
+                "/home/dev/scratch"
             );
-        }
+        /// With no home handed in, a `~/` root is left as given.
+        scratch_root_path_with_leaves_a_tilde_root_as_given_without_a_home: assert_eq!(
+            scratch_root_path_with("", "~/scratch", None, None, None),
+            "~/scratch"
+        );
+        /// A home that is not UTF-8 leaves a `~/` root as given.
+        #[cfg(unix)]
+        scratch_root_path_with_leaves_a_tilde_root_as_given_under_a_non_utf8_home: assert_eq!(
+            scratch_root_path_with(
+                "",
+                "~/scratch",
+                None,
+                None,
+                Some(<std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(
+                    b"/home/\xff".to_vec()
+                )),
+            ),
+            "~/scratch"
+        );
+        /// The default cache-home rung expands a `~/` cache home under the same given home.
+        scratch_root_path_with_expands_a_tilde_cache_home_under_the_given_home: assert_eq!(
+            scratch_root_path_with(
+                "/home/dev/acme",
+                "",
+                None,
+                Some(std::ffi::OsString::from("~/xdg")),
+                Some(std::ffi::OsString::from("/home/dev")),
+            ),
+            format!(
+                "/home/dev/xdg/rigger/{}",
+                marker_filename("/home/dev/acme").unwrap()
+            )
+        );
     }
 
     // ---- cache_scratch_root_from: PURE, so every case is driven with explicit params,
