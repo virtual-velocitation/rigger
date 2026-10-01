@@ -1759,6 +1759,28 @@ mod tests {
         );
     }
 
+    /// Exactly the selections with a mode that reads [`ResetEnv`] resolve it: `--runs` and
+    /// `--build-cache` always, `--derived` unless `--force-live` skips its live-writer guard, and
+    /// never `--scratch-orphans`, alone or beside a `--force-live` that has nothing to skip.
+    #[test]
+    fn reset_modes_read_env_exactly_for_runs_build_cache_and_a_guarded_derived() {
+        let reads = |args: &[&str]| reset_modes_of(args, &args.join(" ")).reads_env();
+        assert_eq!(
+            [
+                reads(&["--runs"]),
+                reads(&["--build-cache"]),
+                reads(&["--derived"]),
+                reads(&["--runs", "--force-live"]),
+                reads(&["--scratch-orphans", "--derived"]),
+                reads(&["--build-cache", "--derived", "--force-live"]),
+                reads(&["--derived", "--force-live"]),
+                reads(&["--scratch-orphans"]),
+                reads(&["--scratch-orphans", "--force-live"]),
+            ],
+            [true, true, true, true, true, true, false, false, false]
+        );
+    }
+
     /// spec 77 criterion 5 (BOUNDED SHARED CACHE): `--build-cache` is a mode exactly like
     /// `--runs`/`--derived` - parses alone, composes with either sibling, is rejected on
     /// a duplicate, and (matching every other mode) never implied on its own from a bare
