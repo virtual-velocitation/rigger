@@ -34,6 +34,7 @@ core = [
     "rigger-driver/core",
     "rigger-grounder/core",
     "rigger-config-files/core",
+    "rigger-graph-sqlite/core",
 ]
 symbols = ["rigger-grounder/symbols"]
 
@@ -60,7 +61,8 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"
-# The tests project the run's events through the SQLite projector.
+# The tests project the run's events through the SQLite projector. `core` above forwards to it, so
+# this crate's core-lane tests build it in the same lane as every other dependency.
 rigger-graph-sqlite = { path = "../rigger-graph-sqlite", default-features = false }
 
 [lints]

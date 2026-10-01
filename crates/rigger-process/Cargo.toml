@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
 store = []
-core = []
+core = ["rigger-domain/core"]
 
 # The native-only adapter dependencies, target-gated exactly as in the root manifest: the
 # `wasm32` core lane never builds them.
@@ -28,7 +28,8 @@ fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
-# The parameterised-test macro the moved unit tests expand.
+# The parameterised-test macro the moved unit tests expand. `core` above forwards to it, so this
+# crate's core-lane tests build it in the same lane as every other dependency.
 rigger-domain = { path = "../rigger-domain", default-features = false }
 
 [lints]
