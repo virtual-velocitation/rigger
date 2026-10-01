@@ -263,9 +263,9 @@ jobs:
 
   # The KurrentDB EventStore adapter is compiled into every build now (spec 47: its
   # build-time feature flag is retired), so this job carries no `--features kurrentdb`.
-  # The adapter and its tests live in crates/rigger-store-sqlite, which the build-test
-  # lanes' root-package `cargo test` never runs, so this job lints and tests that crate
-  # alone: the adapter's unit tests and its contract test, which spins up a real
+  # The adapter and its tests live in crates/rigger-store-sqlite. The build-test lanes'
+  # `cargo test --workspace` runs them too; this job lints and tests that crate alone, on
+  # its lightest features: the adapter's unit tests and its contract test, which spins up a real
   # KurrentDB via testcontainers (the runner's Docker, found at its default socket) and
   # runs the same suite the SQLite store passes (proxy fidelity).
   kurrentdb:
