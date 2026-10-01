@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use testcontainers::bollard::models::PortBinding;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError};
 
 /// The server's gRPC port inside its container.
 const KURRENTDB_PORT: u16 = 2113;
@@ -19,6 +19,21 @@ const KURRENTDB_PORT: u16 = 2113;
 /// is removed by the next gate run. The snippet spells the key in shell, and
 /// `tests/principle_gates_wiring.rs` pins that spelling to this constant.
 pub const TEST_CONTAINER_LABEL: (&str, &str) = ("rigger.test", "true");
+
+/// What a failed container start means for the test that asked for the server.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartFailure {
+    /// The test passes as skipped, its body never run.
+    Skip,
+    /// The test fails with the start's error.
+    Fail,
+}
+
+/// What [`start_kurrentdb`] does with a container start that failed, given the DOCKER_HOST the
+/// test process sees. Every failed start skips, whatever failed.
+pub fn start_failure(_docker_host: Option<&str>, _error: &TestcontainersError) -> StartFailure {
+    StartFailure::Skip
+}
 
 /// Run `body` against a throwaway KurrentDB server ([`start_kurrentdb`]), handed its connection
 /// string, then remove the server's container whatever `body` did - on the runtime that started
