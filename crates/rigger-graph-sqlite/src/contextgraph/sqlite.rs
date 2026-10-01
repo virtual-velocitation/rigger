@@ -245,20 +245,35 @@ pub const REBUILD_IN_PROGRESS: &str =
 /// the zero-byte `<path>.lock` beside the graph file - a file no rebuild removes, and one SQLite
 /// never opens, so no connection's own locks ride on it. Only its holder ever has a shadow open,
 /// so a shadow is removed only when no other connection holds it. The lock is released when this
-/// is dropped, and by the OS when its process ends however it ends, so an interrupted rebuild
-/// leaves no stale lock.
+/// is dropped - explicitly, never by closing its descriptor alone (see its `Drop`) - and by the OS
+/// when its process ends however it ends, so an interrupted rebuild leaves no stale lock.
 #[derive(Debug)]
 pub struct RebuildLock {
     /// The graph file the rebuild is of.
     path: String,
     /// The locked `<path>.lock`, held open for as long as the lock is.
-    _locked: std::fs::File,
+    locked: std::fs::File,
 }
 
 impl RebuildLock {
     /// The graph file this lock excludes other rebuilds of.
     pub fn path(&self) -> &str {
         &self.path
+    }
+}
+
+impl Drop for RebuildLock {
+    /// Release the lock explicitly ([`std::fs::File::unlock`]) before the lock file's descriptor
+    /// closes. The OS lock ([`std::fs::File::try_lock`], `flock`) belongs to the lock file's OPEN
+    /// FILE DESCRIPTION, not to this descriptor, so closing this descriptor releases it only once
+    /// no other descriptor shares that description - and a child process forked by any thread of
+    /// this process holds a copy of every descriptor from its fork until its exec closes the
+    /// close-on-exec ones. Closing alone inside that window would leave the lock held by the
+    /// child's copy, and the next lock would be refused as a rebuild in progress. Unlocking
+    /// releases the description's lock whatever copies of it stand. A failed unlock is ignored:
+    /// closing the descriptor, and the process ending, still release the lock.
+    fn drop(&mut self) {
+        let _ = self.locked.unlock();
     }
 }
 
@@ -1260,7 +1275,7 @@ fn take_rebuild_lock(path: &str) -> Result<Option<RebuildLock>, Error> {
     match file.try_lock() {
         Ok(()) => Ok(Some(RebuildLock {
             path: path.to_string(),
-            _locked: file,
+            locked: file,
         })),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(e)) => Err(Error(failed_at(&lock, e))),
@@ -5536,6 +5551,29 @@ mod tests {
             ),
             "the second holder is refused with the one text and leaves only the lock file, which \
              is free once dropped and stands"
+        );
+    }
+
+    /// A dropped rebuild lock is free even while another descriptor still shares its lock file's
+    /// open description - the copy a child process forked by any thread of this process holds
+    /// until it execs, modelled here by a dup of the holder's descriptor: the next lock is taken,
+    /// never refused as if a rebuild were still in progress.
+    #[test]
+    fn a_dropped_rebuild_lock_is_free_while_a_dup_of_its_descriptor_stays_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let held = Projector::lock_rebuild(path).unwrap();
+        let forked_copy = held.locked.try_clone().unwrap();
+        drop(held);
+        let next = Projector::lock_rebuild(path)
+            .map(drop)
+            .map_err(|e| e.to_string());
+        drop(forked_copy);
+        assert_eq!(
+            next,
+            Ok(()),
+            "the dropped lock is released, whatever other descriptor shares its description"
         );
     }
 
