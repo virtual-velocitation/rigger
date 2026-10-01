@@ -81,6 +81,18 @@ pub struct Unit {
     /// cause-less prior event (additive, serde-defaulted) - readers default an empty
     /// cause to `"unknown"`, never this projection.
     pub cause: String,
+    /// The most recent `UnitFailed`'s gate evidence: the compact PASS/FAIL evidence of each
+    /// gate that failed that attempt, as `<gate>: <evidence>`. With [`Unit::review_reason`]
+    /// it is what the next attempt's prior-failure block is built from, carried in the log so
+    /// a unit re-entering in a later process (an operator's `rigger resume-unit`, or any
+    /// step that picks up a mid-remediation unit) is prompted with the failure it must fix.
+    /// Raw passthrough like `cause`; empty when that failure was no gate's.
+    pub gate_evidence: Vec<String>,
+    /// The most recent `UnitFailed`'s review reason: the adjudicator's rejection reasoning
+    /// (its raw output) when review rejected that attempt, or the conductor's own refusal of
+    /// a plan-stage commit. Raw passthrough like `cause`; empty when that failure was no
+    /// rejection.
+    pub review_reason: String,
     /// Spec 88, criterion 3 (ESCALATION RESUMES): the per-unit remediation ceiling an
     /// operator's `rigger resume-unit` grant raised past a prior escalation - the
     /// folded attempt count AT the moment of the LATEST `UnitResumed` fold, plus its
@@ -415,6 +427,12 @@ struct UnitFailed {
     /// erroring.
     #[serde(default)]
     cause: String,
+    /// The failure's specifics (gap 61), additive and serde-defaulted like `cause`, so an
+    /// event that predates them decodes with neither.
+    #[serde(default)]
+    gate_evidence: Vec<String>,
+    #[serde(default)]
+    review_reason: String,
 }
 #[derive(Deserialize)]
 struct UnitEscalated {
@@ -462,6 +480,8 @@ impl RunState {
             attempts: 0,
             commit: String::new(),
             cause: String::new(),
+            gate_evidence: Vec::new(),
+            review_reason: String::new(),
             resume_bound: 0,
             resumed: None,
         })
@@ -505,6 +525,8 @@ impl RunState {
                 u.status = Status::Failed;
                 u.attempts = p.attempts;
                 u.cause = p.cause;
+                u.gate_evidence = p.gate_evidence;
+                u.review_reason = p.review_reason;
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;

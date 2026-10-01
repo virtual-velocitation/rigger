@@ -1104,7 +1104,7 @@ impl IntegrationApproval {
 
 /// The specifics of a unit's previous failed attempt, threaded into the next
 /// attempt's prompt (spec 02, targeted remediation). Empty on the first attempt.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PriorFailure {
     /// The compact PASS/FAIL evidence of each gate that failed last attempt.
     gate_evidence: Vec<String>,
@@ -1123,6 +1123,34 @@ struct PriorFailure {
 }
 
 impl PriorFailure {
+    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence and review
+    /// reason, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
+    /// stage in a LATER process than the one that saw the failure - an operator's `rigger
+    /// resume-unit` grant, or any step that picks up a mid-remediation unit - is prompted from
+    /// these, so its block is the one the in-process retry built from the same facts.
+    fn logged(u: &ledger::Unit) -> PriorFailure {
+        PriorFailure {
+            gate_evidence: u.gate_evidence.clone(),
+            review_reason: u.review_reason.clone(),
+            contradiction: String::new(),
+            halted_commit: String::new(),
+        }
+    }
+
+    /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
+    /// `attempts` used: this failure's gate evidence and review reason ride on it, so the
+    /// next attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
+    /// re-enters the unit.
+    fn failed_body(&self, unit: &str, attempts: u32, cause: &str) -> Value {
+        json!({
+            "id": unit,
+            "attempts": attempts,
+            "cause": cause,
+            "gate_evidence": self.gate_evidence,
+            "review_reason": self.review_reason,
+        })
+    }
+
     fn is_empty(&self) -> bool {
         self.gate_evidence.is_empty()
             && self.review_reason.trim().is_empty()
@@ -1756,6 +1784,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| u.resume_bound > 0)
         .map(|u| (u.id.clone(), u.resume_bound))
         .collect();
+    // Gap 61: each unit's latest failure specifics from the SAME fold, so a unit this
+    // process re-enters is prompted with the failure the log recorded, not a blank.
+    let prior_failure: HashMap<String, PriorFailure> = prior
+        .units
+        .values()
+        .map(|u| (u.id.clone(), PriorFailure::logged(u)))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -1774,6 +1809,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_status,
         prior_attempts,
         prior_resume_bound,
+        prior_failure,
         replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
@@ -2516,6 +2552,11 @@ struct RunCtx<'a> {
     /// never zero (the bug a bare status revert without this override would produce,
     /// since the global bound is already spent) and never unbounded.
     prior_resume_bound: HashMap<String, u32>,
+    /// Each unit's latest failed attempt's specifics from the prior log (gap 61), read off
+    /// the fold by [`PriorFailure::logged`] - a run-start snapshot of the SAME fold
+    /// `prior_attempts` is. [`logged_prior_failure`](RunCtx::logged_prior_failure) is the
+    /// sole reader.
+    prior_failure: HashMap<String, PriorFailure>,
     /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
     /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
     /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
@@ -2733,6 +2774,7 @@ impl<'a> RunCtx<'a> {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
@@ -3005,6 +3047,19 @@ impl RunCtx<'_> {
             .unwrap_or(0);
         let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
         prior.max(bumped).max(gate_high_water)
+    }
+
+    /// The prior failure `unit` re-enters its lifecycle at attempt `attempts` with when
+    /// this process never saw that failure (gap 61): the log's latest `UnitFailed`
+    /// specifics when that failure is the one this attempt retries - the attempt count it
+    /// folded is exactly `attempts` - else none. A unit re-entered PAST it (a compensation
+    /// re-entry, which starts one past its high-water attempt) is never handed an earlier
+    /// attempt's failure; its contradiction carries it instead.
+    fn logged_prior_failure(&self, unit: &str, attempts: u32) -> PriorFailure {
+        match self.prior_failure.get(unit) {
+            Some(failure) if self.prior_attempts.get(unit) == Some(&attempts) => failure.clone(),
+            _ => PriorFailure::default(),
+        }
     }
 
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
@@ -4870,8 +4925,11 @@ impl RunCtx<'_> {
         let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
-        // is unchanged.
-        let mut prior = PriorFailure::default();
+        // is unchanged. A unit re-entering at the attempt its logged failure left it
+        // at (gap 61: a `rigger resume-unit` grant, or a step picking up a
+        // mid-remediation unit) starts from that failure, read back from the log, so
+        // its prompt carries the block an in-process retry would.
+        let mut prior = self.logged_prior_failure(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
         }
@@ -5424,8 +5482,10 @@ impl RunCtx<'_> {
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: `cause` was set above, at the branch that
                 // actually failed this attempt (spawn crash / gate / merge-block /
-                // review reject) - never inferred here from the shared evidence.
-                json!({"id": st.name, "attempts": attempts, "cause": cause}),
+                // review reject) - never inferred here from the shared evidence. The
+                // failure's specifics ride along (gap 61), so a later process re-entering
+                // the unit prompts it from the log.
+                next.failed_body(&st.name, attempts, &cause),
                 &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
@@ -23160,6 +23220,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
@@ -29109,6 +29170,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
