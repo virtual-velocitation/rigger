@@ -631,6 +631,37 @@ pub fn hung_spawns(events: &[Event]) -> Result<Vec<HungSpawn>, Error> {
     Ok(hung)
 }
 
+/// The spawns of a run that have not ENDED ([`spawn::ended_by`]): the PENDING frontier - every
+/// recorded request with no result yet, the wave a relaunched driver resumes - and the HUNG spawns
+/// ([`hung_spawns`]), answered only by the step's liveness fault, which the step halts on and the
+/// replay driver re-parks. THE one authority for "a spawn of the run may still advance": the run
+/// teardown reclaims nothing and `reset --runs` closes no landed unit while either set is
+/// non-empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnendedSpawns {
+    /// The ids of the spawns with no recorded result, ordered by id.
+    pub pending: Vec<String>,
+    /// The spawns whose latest result is the step's liveness fault, ordered by id.
+    pub hung: Vec<HungSpawn>,
+}
+
+impl UnendedSpawns {
+    /// True when every recorded spawn has ended on a real result.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.hung.is_empty()
+    }
+}
+
+/// The [`UnendedSpawns`] of `events`. Every recorded result is decoded, so an undecodable one
+/// fails rather than reading as "nothing awaits".
+pub fn unended_spawns(events: &[Event]) -> Result<UnendedSpawns, Error> {
+    let frontier = spawn::step_result(events).map_err(|e| Error::Backend(e.to_string()))?;
+    Ok(UnendedSpawns {
+        pending: frontier.wave.into_iter().map(|item| item.id).collect(),
+        hung: hung_spawns(events)?,
+    })
+}
+
 /// The step halt reason for a non-empty set of hung spawns (spec 10, unit 3). Surfaced on
 /// the `Step`'s `halted` channel so the driver stops LOUDLY - a hung agent halts the wave
 /// VISIBLY rather than stalling it invisibly - naming each hung spawn and the recovery.
@@ -1189,6 +1220,39 @@ mod tests {
         assert!(
             hung_spawns(&run_log(&store)).unwrap().is_empty(),
             "a real result supersedes the liveness fault; the spawn is no longer hung"
+        );
+    }
+
+    /// A spawn with no result is pending and one answered only by the liveness fault is hung:
+    /// neither has ended, so the run still has unended spawns until each ends on a real result.
+    #[test]
+    fn unended_spawns_hold_the_pending_and_the_hung_until_each_ends_on_a_real_result() {
+        let store = Store::open(":memory:").unwrap();
+        let pending = park_bounded(&store, "p", 300);
+        let hung = park_bounded(&store, "h", 300);
+        spawn_store::record_result(
+            &store,
+            &SpawnResult::liveness_fault(&hung.id, "hung", "infra"),
+        )
+        .unwrap();
+        let unended = unended_spawns(&run_log(&store)).unwrap();
+        assert_eq!(unended.pending, vec![pending.id.clone()]);
+        assert_eq!(
+            unended
+                .hung
+                .iter()
+                .map(|h| h.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![hung.id.as_str()]
+        );
+        assert!(!unended.is_empty());
+
+        for id in [&pending.id, &hung.id] {
+            spawn_store::record_result(&store, &SpawnResult::ok(id, "done")).unwrap();
+        }
+        assert!(
+            unended_spawns(&run_log(&store)).unwrap().is_empty(),
+            "every spawn ended on a real result"
         );
     }
 

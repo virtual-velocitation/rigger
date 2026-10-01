@@ -959,20 +959,22 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
     // halted.is_none()`) to also fire on a budget halt / escalation while still sparing a liveness
     // halt or a manual-review pause. Best-effort - never fails the step. `?` here can never
-    // actually err: all three sub-reads (`step_result`, `hung_spawns`, `ledger::project`) already
-    // succeeded above on this same `events` (the last inside `conductor::run`, which produced
-    // `rs`), so the predicate is pure recomputation over an in-memory slice.
+    // actually err: all three sub-reads (`step_result` and `hung_spawns`, both read through
+    // `liveness::unended_spawns`, and `ledger::project`) already succeeded above on this same
+    // `events` (the last inside `conductor::run`, which produced `rs`), so the predicate is pure
+    // recomputation over an in-memory slice.
     //
-    // The frontier+hung core is NECESSARY but not SUFFICIENT for run terminality: a manual-review
-    // PAUSE (`autonomy: manual` on a gated stage, §4.3) emits `ManualReview` and returns its unit
-    // pending WITHOUT ever parking an implementer spawn, so it leaves an EMPTY frontier and no hung
-    // spawn - the core reads terminal - yet the run is manual-review-pending, i.e. NOT converged
-    // and STILL ADVANCING (a human will approve+integrate it on a later step). That is exactly a
-    // run this rail must SPARE. The manual-review exclusion is FOLDED INTO the shared predicate
-    // (it projects the `manual_review` inbox from the scoped events), so both this terminal site
-    // and the drift early-return above spare a paused run without any per-caller guard to keep in
-    // sync. (A budget halt / escalation IS terminal per criterion 3 and leaves the inbox empty, so
-    // those still reclaim - only a non-terminal manual-review pause is excluded.)
+    // The unended-spawns core (the frontier and the hung) is NECESSARY but not SUFFICIENT for run
+    // terminality: a manual-review PAUSE (`autonomy: manual` on a gated stage, §4.3) emits
+    // `ManualReview` and returns its unit pending WITHOUT ever parking an implementer spawn, so it
+    // leaves an EMPTY frontier and no hung spawn - the core reads terminal - yet the run is
+    // manual-review-pending, i.e. NOT converged and STILL ADVANCING (a human will approve+integrate
+    // it on a later step). That is exactly a run this rail must SPARE. The manual-review exclusion
+    // is FOLDED INTO the shared predicate (it projects the `manual_review` inbox from the scoped
+    // events), so both this terminal site and the drift early-return above spare a paused run
+    // without any per-caller guard to keep in sync. (A budget halt / escalation IS terminal per
+    // criterion 3 and leaves the inbox empty, so those still reclaim - only a non-terminal
+    // manual-review pause is excluded.)
     if terminal_and_no_live_worker(&events)? {
         if let Some(root) = &scratch_root {
             reclaim_run_scratch(root);
@@ -1024,17 +1026,17 @@ fn merge_hung_attention(
 /// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
 /// frontier ALONE - first omitting the hung check, then the manual-review check).
 ///
-/// Three conditions, all required:
-/// - the pending frontier is EMPTY (`spawn::step_result(...).done`): every recorded spawn has a
-///   result, so no in-flight wave and no obviously-live worker; and
-/// - NO spawn is HUNG (`liveness::hung_spawns(...)` is empty): a liveness-fault result counts as
-///   "answered" (so it does NOT keep the frontier non-empty) yet leaves a worker that may still
-///   be alive and writing under the shared scratch - and which the operator may yet recover - so
-///   its presence must still block reclamation; and
+/// Two conditions, both required:
+/// - EVERY spawn has ENDED (`liveness::unended_spawns(...)` is empty, the one authority `reset
+///   --runs` closes on too): the pending frontier is empty - every recorded spawn has a result, so
+///   no in-flight wave and no obviously-live worker - and NO spawn is HUNG - a liveness-fault
+///   result answers the frontier yet leaves a worker that may still be alive and writing under
+///   the shared scratch, and which the operator may yet recover, so it still blocks reclamation;
+///   and
 /// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
 ///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
-///   WITHOUT parking any spawn, so it leaves an empty frontier and no hung spawn - the frontier+hung
-///   core alone reads terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
+///   WITHOUT parking any spawn, so it leaves no unended spawn - the spawn core alone reads
+///   terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
 ///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
 ///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
 ///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
@@ -1047,20 +1049,19 @@ fn merge_hung_attention(
 /// replayed; callers treat an `Err` as "not safe to reclaim" (never delete on uncertainty).
 fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
     let scoped = runscope::current_run(events);
-    let frontier_empty = spawn::step_result(scoped).map_err(|e| e.to_string())?.done;
-    let no_hung = rigger::liveness::hung_spawns(scoped)
+    let spawns_ended = rigger::liveness::unended_spawns(scoped)
         .map_err(|e| e.to_string())?
         .is_empty();
     // The manual-review inbox, projected from the SAME scoped slice - the single authority for
-    // which units still await a human. A non-terminal manual-review PAUSE leaves an empty frontier
-    // and no hung spawn (it parks no spawn), so the frontier+hung core alone reads terminal even
-    // though the run is still advancing. Folding the exclusion HERE - not at each caller - means
-    // both teardown sites inherit it structurally and the guard can never diverge between them.
+    // which units still await a human. A non-terminal manual-review PAUSE leaves no unended spawn
+    // (it parks no spawn), so the spawn core alone reads terminal even though the run is still
+    // advancing. Folding the exclusion HERE - not at each caller - means both teardown sites
+    // inherit it structurally and the guard can never diverge between them.
     let no_manual_review = ledger::project(scoped)
         .map_err(|e| e.to_string())?
         .manual_review
         .is_empty();
-    Ok(frontier_empty && no_hung && no_manual_review)
+    Ok(spawns_ended && no_manual_review)
 }
 
 /// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):

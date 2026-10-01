@@ -1423,7 +1423,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-202 clusters (1369 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+202 clusters (1370 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1670,10 +1670,10 @@ mandatory sweep: Command::new call sites - 87 site(s), collected mechanically re
 - `src/cli/mod.rs:9698-9698` `Command::new`
 - `src/cli/mod.rs:11383-11383` `Command::new`
 - `src/cli/mod.rs:11417-11417` `Command::new`
-- `src/cli/run.rs:3120-3120` `Command::new`
-- `src/cli/run.rs:3153-3153` `Command::new`
-- `src/cli/run.rs:3197-3197` `Command::new`
-- `src/cli/run.rs:3266-3266` `Command::new`
+- `src/cli/run.rs:3121-3121` `Command::new`
+- `src/cli/run.rs:3154-3154` `Command::new`
+- `src/cli/run.rs:3198-3198` `Command::new`
+- `src/cli/run.rs:3267-3267` `Command::new`
 - `src/cli/validate.rs:1449-1449` `Command::new`
 - `src/cli/validate.rs:1728-1728` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -1832,19 +1832,19 @@ mandatory sweep: .rigger-path string literals - 562 site(s), collected mechanica
          Read this before running `rigger reset` or touching any store file by hand."`
 - `crates/rigger-domain/src/docs.rs:679-679` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
-- `crates/rigger-domain/src/docs.rs:746-746` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
+- `crates/rigger-domain/src/docs.rs:749-749` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:756-756` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:759-759` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:780-780` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:783-783` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
@@ -1895,8 +1895,8 @@ mandatory sweep: .rigger-path string literals - 562 site(s), collected mechanica
 - `crates/rigger-worktree-git/src/worktree.rs:6693-6693` `"{base}..rigger-run"`
 - `crates/rigger-worktree-git/src/worktree.rs:6727-6727` `".rigger"`
 - `src/cli/hygiene.rs:625-625` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1618-1618` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1747-1747` `"/home/dev/proj/.rigger/events.db"`
+- `src/cli/hygiene.rs:1632-1632` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:1761-1761` `"/home/dev/proj/.rigger/events.db"`
 - `src/cli/mod.rs:595-595` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -2351,11 +2351,14 @@ event. reset itself does write the log once, on a store\n                       
 still under the legacy basename namespace: the one-time\n                              \
 identity migration renames those streams and records one\n                              \
 DecisionMade before either mode prunes. When no driver is\n                              \
-alive and no spawn of the run awaits its result, it also\n                              \
-closes the current run's units whose branch work is landed\n                              \
-on rigger-run, appending the UnitIntegrated a hand landing\n                              \
-never recorded. It removes a stale\n                              \
-graph.db.pruned, the pruned copy a rebuild's stopped swap\n                              \
+alive and every spawn of the run has ended on a real\n                              \
+result, it also closes the current run's units whose\n                              \
+branch work is landed on rigger-run, appending the\n                              \
+UnitIntegrated a hand landing never recorded; a dead run's\n                              \
+hung spawn (answered only by the step's liveness fault)\n                              \
+keeps them open and is named with its remedy,\n                              \
+`rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
+the pruned copy a rebuild's stopped swap\n                              \
 left, unless a rebuild in progress holds graph.db.lock\n  \
 rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
 generation of the derived index, at the latest event per\n                              \
@@ -2828,8 +2831,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/reset_derived_compaction_periphery.rs:2985-2985` `".rigger"`
 - `tests/reset_derived_compaction_periphery.rs:3020-3020` `".rigger"`
 - `tests/reset_derived_live_writer_guard_periphery.rs:69-69` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1382-1382` `".rigger"`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1489-1489` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1390-1390` `".rigger"`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1497-1497` `".rigger"`
 - `tests/review_round_lenses_only_log_derived_resume_periphery.rs:144-144` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_no_adjudicator_residue_periphery.rs:93-93` `"{repo_path}/.rigger-test-scratch"`
 - `tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs:119-119` `"{repo_path}/.rigger-test-scratch"`
@@ -3133,8 +3136,8 @@ mandatory sweep: /proc-path string literals - 51 site(s), collected mechanically
 - `crates/rigger-process/src/reap.rs:234-234` `"/proc/{pid}/status"`
 - `crates/rigger-process/src/reap.rs:294-294` `"/proc"`
 - `crates/rigger-process/src/reap.rs:371-371` `"/proc/{}/cwd"`
-- `src/cli/run.rs:3258-3258` `"/proc"`
-- `src/cli/run.rs:3362-3362` `"/proc"`
+- `src/cli/run.rs:3259-3259` `"/proc"`
+- `src/cli/run.rs:3363-3363` `"/proc"`
 - `tests/cli.rs:20089-20089` `"/proc"`
 - `tests/cli.rs:24363-24363` `"/proc"`
 - `tests/cli.rs:24471-24471` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -3421,14 +3424,15 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/ingest.rs:45-47` `is_derived_index_type`
 - `tests/simplification_audit.rs:2423-2425` `is_keyword`
 
-#### `dup-350b699ef042` (near, 3 sites)
+#### `dup-53e62db783ac` (near, 4 sites)
 
-Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/failure.rs, src/cli/mod.rs)`
+Proposed home: `a new shared module (sites span 4 files: crates/rigger-domain/src/config.rs, crates/rigger-domain/src/failure.rs, crates/rigger-driver/src/liveness.rs, src/cli/mod.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/config.rs:375-377` `is_empty`
 - `crates/rigger-domain/src/failure.rs:168-170` `is_any`
+- `crates/rigger-driver/src/liveness.rs:650-652` `is_empty`
 - `src/cli/mod.rs:3167-3172` `is_empty`
 
 #### `dup-5f6fcac3a66f` (exact, 2 sites)
@@ -3474,10 +3478,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:738-766` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:771-798` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:803-837` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:966-1016` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:741-769` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:774-801` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:806-840` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:969-1019` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3485,8 +3489,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:844-879` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1025-1074` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:847-882` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1028-1077` `render_diagnose_churn_skill`
 
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 
@@ -3672,7 +3676,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:2203-2205` `heading_level_rejects_more_than_six_hashes`
-- `crates/rigger-driver/src/liveness.rs:804-819` `marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op`
+- `crates/rigger-driver/src/liveness.rs:835-850` `marker_filename_is_none_only_for_a_truly_empty_input_so_a_join_can_never_be_a_no_op`
 
 #### `dup-d340e212490f` (exact, 2 sites)
 
@@ -3737,7 +3741,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/driver/replay.rs:545-553` `spawn_scratch_path_is_none_rather_than_relative_for_an_empty_scratch_root`
-- `crates/rigger-driver/src/liveness.rs:930-938` `marker_path_is_none_rather_than_relative_for_an_empty_scratch_root`
+- `crates/rigger-driver/src/liveness.rs:961-969` `marker_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 
 #### `dup-8c5011c59ed1` (near, 2 sites)
 
@@ -3772,7 +3776,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/liveness.rs:847-861` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
+- `crates/rigger-driver/src/liveness.rs:878-892` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
 - `src/cli/setup.rs:1825-1839` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-932054f9660d` (near, 2 sites)
@@ -4243,8 +4247,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1925-1945` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:1999-2020` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1939-1959` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:2013-2034` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
 
@@ -4326,7 +4330,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/setup.rs, src/m
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/setup.rs:276-283` `print_scaffold_pointer`
-- `src/main.rs:369-371` `usage`
+- `src/main.rs:372-374` `usage`
 
 #### `dup-dc79af9af1c6` (near, 2 sites)
 
@@ -4435,8 +4439,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:26759-26779` `init_scaffolds_the_instructions_readme_and_names_it`
 - `tests/reset_build_cache_periphery.rs:103-129` `reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything`
 - `tests/reset_build_cache_periphery.rs:167-177` `reset_build_cache_flag_is_registered_and_rejects_a_duplicate`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1711-1721` `reset_force_live_alone_is_refused_as_no_mode`
-- `tests/reset_derived_live_writer_guard_periphery.rs:1727-1742` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1719-1729` `reset_force_live_alone_is_refused_as_no_mode`
+- `tests/reset_derived_live_writer_guard_periphery.rs:1735-1750` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
 - `tests/reset_menu.rs:79-96` `bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable`
 - `tests/statusline_command_periphery.rs:90-100` `status_line_on_a_clean_run`
 - `tests/statusline_command_periphery.rs:137-147` `status_line_and_json_are_mutually_exclusive`
@@ -4973,7 +4977,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7745 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7748 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13813-13835` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17920-17973` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -4981,7 +4985,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-conductor/src/conductor.rs:33136-33166` `a_budget_refused_standalone_review_spawn_keeps_its_worktree` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-config-files/src/config_store.rs:2377-2398` `validate_rejects_a_named_wrapper_with_an_uncreatable_cache_dir` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/canary.rs:285-319` `latest_run_scopes_to_the_last_batch_marker` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-domain/src/config.rs:375-377` `is_empty` - caught: `dup-350b699ef042`
+- `crates/rigger-domain/src/config.rs:375-377` `is_empty` - caught: `dup-53e62db783ac`
 - `crates/rigger-domain/src/contextgraph/query.rs:2056-2060` `assert_sole_member_is_w` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/metrics.rs:1417-1424` `model_id_base` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:1953-1960` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -4991,7 +4995,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-worktree-git/src/worktree.rs:1720-1744` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4257-4283` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:8153-8163` `parse_run_args_reads_rebase_definition` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `src/cli/run.rs:1969-1987` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `src/cli/run.rs:1970-1988` `start_run_dashboard` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/cli.rs:10322-10346` `workflow_accepts_a_spec_and_a_base_flag` - no duplicate found by reading
 - `tests/cli.rs:18765-18848` `setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger` - duplicate found by reading and closed: it re-rolled `fresh_committed_skill`, `committed_skill` and `commit_a_code_change` inline; it now calls them, with the commit half split out as `commit_staged`
 - `tests/cli.rs:25797-25814` `guard_write_exits_the_blocking_code_on_every_transport_failure` - duplicate found by reading and closed: it and `guard_write_without_a_root_fails_loudly_rather_than_allowing_everything` re-rolled `run_hook_verb`'s piped-stdin spawn; all three now call `pipe_into_rigger`, the blocking checks through `assert_blocks`

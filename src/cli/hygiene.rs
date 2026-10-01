@@ -941,17 +941,21 @@ pub(crate) fn pruned_line(stats: &PruneStats) -> String {
 }
 
 /// Close the current run's hand-landed units: when nothing drives the run
-/// ([`LiveWriterFacts::driver_dead`]) and no spawn of the run awaits its result, record the
-/// `UnitIntegrated` the conductor never minted for every unit whose branch work is landed on the
-/// run branch ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand
+/// ([`LiveWriterFacts::driver_dead`]) and every spawn of the run has ended on a real result
+/// ([`rigger::liveness::unended_spawns`], the one authority the run teardown reads too), record
+/// the `UnitIntegrated` the conductor never minted for every unit whose branch work is landed on
+/// the run branch ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand
 /// otherwise stays "working" forever, because only the conductor mints that event and `rigger
 /// emit` refuses it. Appends only - no event is deleted or rewritten - and a live run is never
 /// touched.
 ///
-/// A spawn that awaits its result stays in the step's wave ([`spawn::step_result`]) whatever its
-/// marker says, so a relaunched driver resumes it: closing its unit would hand that driver a
-/// spawn of an integrated unit. The wave is read before the liveness test, so a spawn event the
-/// log cannot decode fails the command rather than reading as "nothing awaits".
+/// A spawn that has not ended is resumed whatever its marker says: one with no result stays in
+/// the step's wave, and one answered only by the step's liveness fault is hung - the step halts on
+/// it and the replay driver re-parks it - so closing its unit would hand a relaunched driver a
+/// spawn of an integrated unit. A pending spawn leaves the landed units open silently; a hung one
+/// leaves them open naming each with the hung spawns and their remedy, a real result recorded
+/// with `rigger result`. The spawns are read before the liveness test, so a spawn event the log
+/// cannot decode fails the command rather than reading as "nothing awaits".
 fn close_landed_units(
     loc: &StoreLocation,
     store: &dyn EventStore,
@@ -960,8 +964,8 @@ fn close_landed_units(
     facts: &LiveWriterFacts,
 ) -> Res {
     let current = runscope::current_run(events);
-    let awaiting = !spawn::step_result(current)?.wave.is_empty();
-    if awaiting || !facts.driver_dead() {
+    let unended = rigger::liveness::unended_spawns(current)?;
+    if !unended.pending.is_empty() || !facts.driver_dead() {
         return Ok(());
     }
     let run = ledger::project(current)?;
@@ -970,6 +974,16 @@ fn close_landed_units(
         rigger::worktree::landed_branch_tip(&repo, branch, RUN_BRANCH)
     });
     let run_id = runscope::current_run_id(events).unwrap_or_default();
+    if !unended.hung.is_empty() {
+        let hung = rigger::liveness::halt_reason(&unended.hung);
+        for (unit, tip) in &landed {
+            println!(
+                "reset --runs: left unit {unit:?} of run {run_id} open although its branch tip \
+                 {tip} is landed on {RUN_BRANCH}: {hung}"
+            );
+        }
+        return Ok(());
+    }
     let closing = landed
         .iter()
         .map(|(unit, tip)| {

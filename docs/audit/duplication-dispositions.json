@@ -510,9 +510,9 @@
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
   {
-    "id": "dup-350b699ef042",
+    "id": "dup-53e62db783ac",
     "disposition": "not-a-duplicate",
-    "reason": "`is_empty`/`is_any` report emptiness of three different types (a config section, a failure filter, a CLI selection) over their own fields."
+    "reason": "`is_empty`/`is_any` report emptiness of four different types (a config section, a failure filter, a CLI selection, a run's unended spawns) over their own fields."
   },
   {
     "id": "dup-619325cc4dc0",

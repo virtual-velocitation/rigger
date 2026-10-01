@@ -1257,10 +1257,14 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     );
     assert!(
         help.contains(
-            "When no driver is alive and no spawn of the run awaits its result, it also closes \
-             the current run's units whose branch work is landed on rigger-run"
+            "When no driver is alive and every spawn of the run has ended on a real result, it \
+             also closes the current run's units whose branch work is landed on rigger-run"
+        ) && help.contains(
+            "a dead run's hung spawn (answered only by the step's liveness fault) keeps them open \
+             and is named with its remedy, `rigger result <id>`"
         ),
-        "the --runs help must state that the close waits for every spawn's result; got {help:?}"
+        "the --runs help must state that the close waits for every spawn to end on a real \
+         result, and names a hung one's remedy; got {help:?}"
     );
 
     let (out, err, ok) = run_rigger(root, &["docs"]);
@@ -1278,11 +1282,15 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
         reset_store.contains(
             "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
              liveness marker is younger than its wall-clock bound, no driver registration for the \
-             store has a heartbeat inside the idle window) and no spawn of the run awaits its \
-             result, it also closes the current run's units"
+             store has a heartbeat inside the idle window) and every spawn of the run has ended \
+             on a real result, it also closes the current run's units"
+        ) && reset_store.contains(
+            "a dead run with a hung spawn stays open and the reset names it: record its real \
+             result with `rigger result <id>`, then rerun `rigger reset --runs`"
         ),
-        "the reset-store skill must state the liveness `--runs` closes a dead run on, and that \
-         the close waits for every spawn's result; got {reset_store:?}"
+        "the reset-store skill must state the liveness `--runs` closes a dead run on, that the \
+         close waits for every spawn to end on a real result, and a hung one's remedy; got \
+         {reset_store:?}"
     );
     assert!(
         reset_store.contains(

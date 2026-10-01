@@ -697,13 +697,16 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              file); rerun it any time, especially before a large run. When no driver is alive \
              (no `rigger step` holds the lock, no in-flight spawn's liveness marker is younger \
              than its wall-clock bound, no driver registration for the store has a heartbeat \
-             inside the idle window) and no spawn of the run awaits its result, it also closes \
-             the current run's units whose branch work is already landed on `rigger-run`: a unit \
-             landed by hand gets the `UnitIntegrated` only the conductor mints, so `rigger \
-             status` stops reporting the finished run as working. It only appends; a live run is \
-             left untouched. A `rigger step` registers as the run's driver just as `run` and \
-             `serve` do, so a hand-landed unit closes once the last step's stamp is older than \
-             the idle window; a courier's (`emit`, `result`, `progress`) discovery refresh never \
+             inside the idle window) and every spawn of the run has ended on a real result, it \
+             also closes the current run's units whose branch work is already landed on \
+             `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the conductor \
+             mints, so `rigger status` stops reporting the finished run as working. It only \
+             appends; a live run is left untouched. A spawn answered only by the step's liveness \
+             fault has not ended - the step halts on it and a relaunched driver re-parks it - so \
+             a dead run with a hung spawn stays open and the reset names it: record its real \
+             result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
+             step` registers as the run's driver just as `run` and `serve` do, so a hand-landed \
+             unit closes once the last step's stamp is older than the idle window; a courier's (`emit`, `result`, `progress`) discovery refresh never \
              counts as a driver, so your own courier just before the reset never holds it back.",
             "- `rigger reset --derived` compacts `events.db`: it keeps only each file's latest \
              generation of the derived index, at the latest event per replay key, deletes the \

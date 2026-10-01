@@ -639,23 +639,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3120,
-        "end_line": 3120
+        "start_line": 3121,
+        "end_line": 3121
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3153,
-        "end_line": 3153
+        "start_line": 3154,
+        "end_line": 3154
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3197,
-        "end_line": 3197
+        "start_line": 3198,
+        "end_line": 3198
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3266,
-        "end_line": 3266
+        "start_line": 3267,
+        "end_line": 3267
       },
       {
         "file": "src/cli/validate.rs",
@@ -1104,18 +1104,18 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 746,
-        "end_line": 746
+        "start_line": 749,
+        "end_line": 749
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 756,
-        "end_line": 756
+        "start_line": 759,
+        "end_line": 759
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 780,
-        "end_line": 780
+        "start_line": 783,
+        "end_line": 783
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1334,13 +1334,13 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1618,
-        "end_line": 1618
+        "start_line": 1632,
+        "end_line": 1632
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1747,
-        "end_line": 1747
+        "start_line": 1761,
+        "end_line": 1761
       },
       {
         "file": "src/cli/mod.rs",
@@ -3494,13 +3494,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1382,
-        "end_line": 1382
+        "start_line": 1390,
+        "end_line": 1390
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1489,
-        "end_line": 1489
+        "start_line": 1497,
+        "end_line": 1497
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -4209,13 +4209,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3258,
-        "end_line": 3258
+        "start_line": 3259,
+        "end_line": 3259
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3362,
-        "end_line": 3362
+        "start_line": 3363,
+        "end_line": 3363
       },
       {
         "file": "tests/cli.rs",
@@ -4665,7 +4665,7 @@
     ]
   },
   {
-    "id": "dup-350b699ef042",
+    "id": "dup-53e62db783ac",
     "sites": [
       {
         "file": "crates/rigger-domain/src/config.rs",
@@ -4676,6 +4676,11 @@
         "file": "crates/rigger-domain/src/failure.rs",
         "start_line": 168,
         "end_line": 170
+      },
+      {
+        "file": "crates/rigger-driver/src/liveness.rs",
+        "start_line": 650,
+        "end_line": 652
       },
       {
         "file": "src/cli/mod.rs",
@@ -4754,23 +4759,23 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 738,
-        "end_line": 766
+        "start_line": 741,
+        "end_line": 769
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 771,
-        "end_line": 798
+        "start_line": 774,
+        "end_line": 801
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 803,
-        "end_line": 837
+        "start_line": 806,
+        "end_line": 840
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 966,
-        "end_line": 1016
+        "start_line": 969,
+        "end_line": 1019
       }
     ]
   },
@@ -4779,13 +4784,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 844,
-        "end_line": 879
+        "start_line": 847,
+        "end_line": 882
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1025,
-        "end_line": 1074
+        "start_line": 1028,
+        "end_line": 1077
       }
     ]
   },
@@ -5144,8 +5149,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 804,
-        "end_line": 819
+        "start_line": 835,
+        "end_line": 850
       }
     ]
   },
@@ -5259,8 +5264,8 @@
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 930,
-        "end_line": 938
+        "start_line": 961,
+        "end_line": 969
       }
     ]
   },
@@ -5314,8 +5319,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/liveness.rs",
-        "start_line": 847,
-        "end_line": 861
+        "start_line": 878,
+        "end_line": 892
       },
       {
         "file": "src/cli/setup.rs",
@@ -6379,13 +6384,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1925,
-        "end_line": 1945
+        "start_line": 1939,
+        "end_line": 1959
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1999,
-        "end_line": 2020
+        "start_line": 2013,
+        "end_line": 2034
       }
     ]
   },
@@ -6524,8 +6529,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 369,
-        "end_line": 371
+        "start_line": 372,
+        "end_line": 374
       }
     ]
   },
@@ -6829,13 +6834,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1711,
-        "end_line": 1721
+        "start_line": 1719,
+        "end_line": 1729
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 1727,
-        "end_line": 1742
+        "start_line": 1735,
+        "end_line": 1750
       },
       {
         "file": "tests/reset_menu.rs",
