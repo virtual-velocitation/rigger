@@ -3413,7 +3413,7 @@ impl RunCtx<'_> {
     /// when it was first parked (it is already folded into `base_spawns`), so it is
     /// admitted WITHOUT counting again and can NEVER be refused - the already-paid work
     /// must be free to replay and integrate on a resume. A genuinely NEW spawn is
-    /// reserved with a `fetch_update` on `spawns` (seeded to `base_spawns`): the
+    /// reserved with a `try_update` on `spawns` (seeded to `base_spawns`): the
     /// check-and-increment is atomic, so concurrent lenses in one wide wave never
     /// overshoot, and the cap counts the run's WHOLE spawn history, not just this
     /// process's. A zero budget means unlimited - every spawn is admitted (new spawns
@@ -3429,7 +3429,7 @@ impl RunCtx<'_> {
         }
         let admitted = self
             .spawns
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 if n < budget {
                     Some(n + 1)
                 } else {
