@@ -25854,18 +25854,33 @@ mod tests {
         // single-lane emits, no longer dropped by the bare `continue` arm.
         // spec 69, criterion 3 (the cause wire): the speculation candidate's merge-break
         // UnitFailed is stamped "integrate-conflict".
-        let speculation_failed = events
+        let at_block = events
             .iter()
-            .find(|e| {
+            .position(|e| {
                 e.type_ == ledger::TYPE_UNIT_FAILED
                     && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
             })
             .expect("the blocked candidate emits a UnitFailed");
-        let speculation_failed_v: Value = serde_json::from_slice(&speculation_failed.data).unwrap();
+        let speculation_failed_v: Value = serde_json::from_slice(&events[at_block].data).unwrap();
         assert_eq!(
             speculation_failed_v["cause"],
             json!("integrate-conflict"),
             "a speculation candidate's post-merge block must be 'integrate-conflict': {speculation_failed_v:?}"
+        );
+        // Gap 61: the merge-break evidence rides on that UnitFailed, so the unit folded at the
+        // block carries the post-merge gate's evidence (and no review reason - the adjudicator
+        // approved), exactly as a single-lane block records it.
+        let at_block_fold = ledger::project(&events[..=at_block]).unwrap();
+        let blocked = &at_block_fold.units["s"];
+        assert!(
+            blocked.gate_evidence.len() == 1
+                && blocked.gate_evidence[0].contains("merge introduced duplicate MARK"),
+            "the unit folded at the block must carry the post-merge gate's evidence: {:?}",
+            blocked.gate_evidence
+        );
+        assert_eq!(
+            blocked.review_reason, "",
+            "an approved candidate's post-merge block carries no review reason"
         );
         assert!(
             events.iter().any(|e| {
@@ -30961,13 +30976,49 @@ mod tests {
         );
     }
 
+    /// Gap 61 for a resumed-reviewed unit `s` whose integrate door failed in the window `rs`
+    /// folds, with `marker` in its failing gate's output: the folded failure carries that
+    /// gate's evidence and no review reason (the review approved; the gate alone failed),
+    /// and a fresh process re-entering `s` (`deps` driving `driver` again) opens its
+    /// implementer prompt with the prior-failure block built from exactly that evidence.
+    fn assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+        rs: &RunState,
+        marker: &str,
+        cfg: &Config,
+        deps: &Deps,
+        driver: &Stub,
+    ) {
+        let failed = &rs.units["s"];
+        assert!(
+            failed.gate_evidence.len() == 1 && failed.gate_evidence[0].contains(marker),
+            "the folded failure must carry the failing gate's evidence: {:?}",
+            failed.gate_evidence
+        );
+        assert_eq!(
+            failed.review_reason, "",
+            "an approved unit's gate failure carries no review reason"
+        );
+        run_isolated(cfg, deps).unwrap();
+        let block = format!(
+            "{PREAMBLE}Your previous attempt failed these gates: {}\n\n",
+            failed.gate_evidence[0]
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.first().is_some_and(|p| p.starts_with(&block)),
+            "the re-entry in a fresh process must open with exactly the logged failure's \
+             block:\n{block}\ngot: {prompts:?}"
+        );
+    }
+
     #[test]
     fn a_resumed_reviewed_unit_whose_exhaustive_gate_fails_records_a_gate_cause() {
         // spec 69, criterion 3 (the cause wire): the SAME `ResumePhase::Reviewed`
         // exhaustive re-assert this file's sibling test exercises (a prior window
         // recorded an approved `reviewed` but the merge was interrupted), except the
         // gate genuinely fails on resume. The UnitFailed this records must name the
-        // failing gate - it is a plain gate failure, not a merge conflict.
+        // failing gate - it is a plain gate failure, not a merge conflict - and carry
+        // the gate's evidence, which the next process's re-entry is prompted with (gap 61).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
@@ -31000,7 +31051,10 @@ mod tests {
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
         cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("bad".into(), gate_def("exit 1"));
+        cfg.workflow.gates.insert(
+            "bad".into(),
+            gate_def("echo 'EXHAUSTIVE-RED on resume'; exit 1"),
+        );
         cfg.workflow.stages.insert(
             "s".into(),
             Stage {
@@ -31023,7 +31077,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run_isolated(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The FIRST UnitFailed for "s" is the resumed exhaustive re-assert failing on
         // this exact gate - read the raw event rather than the folded final cause, since
@@ -31042,6 +31096,17 @@ mod tests {
             json!("gate:bad"),
             "a resumed-reviewed exhaustive gate failure must name the failing gate: {v:?}"
         );
+        assert!(
+            !driver.spawned("worker"),
+            "premise: the resumed window fails at the integrate door with no implementer spawn"
+        );
+        assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+            &rs,
+            "EXHAUSTIVE-RED on resume",
+            &cfg,
+            &deps,
+            &driver,
+        );
     }
 
     #[test]
@@ -31052,7 +31117,8 @@ mod tests {
         // by the time this resume merges it, the base already carries a batch-mate's
         // (here: seeded directly, deterministically) change that combines into a broken
         // tree. The post-merge block is a MERGE conflict, not a plain gate failure -
-        // its UnitFailed must be stamped "integrate-conflict".
+        // its UnitFailed must be stamped "integrate-conflict" and carry the post-merge
+        // gate's evidence, which the next process's re-entry is prompted with (gap 61).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -31141,12 +31207,14 @@ mod tests {
             },
         );
 
-        let driver = Stub::new();
+        // The panel answers substantively, so the fresh process re-entering `s` below runs
+        // its whole lifecycle; this window spawns none of it (the premise just after).
+        let driver = approving_panel_stub(&["lens"]);
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run_isolated(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
@@ -31167,6 +31235,13 @@ mod tests {
             json!("integrate-conflict"),
             "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
              plain gate cause: {v:?}"
+        );
+        assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+            &rs,
+            "merge introduced duplicate MARK",
+            &cfg,
+            &deps,
+            &driver,
         );
     }
 
@@ -39170,6 +39245,16 @@ mod tests {
             rs.units["rev"].cause, "reject",
             "a standalone fan-out review reject must be stamped 'reject'"
         );
+        // Gap 61: the reject's reasoning (the adjudicator's raw output) rides on the
+        // UnitFailed like every other failure's specifics; it ran no gate, so no evidence.
+        assert_eq!(
+            (
+                rs.units["rev"].review_reason.as_str(),
+                rs.units["rev"].gate_evidence.len()
+            ),
+            ("{\"verdict\":\"reject\"}", 0),
+            "a standalone fan-out review reject must log its review reason and no gate evidence"
+        );
     }
 
     #[test]
@@ -39181,7 +39266,9 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("exit 1"));
+        cfg.workflow
+            .gates
+            .insert("g".into(), gate_def("echo 'STANDALONE-GATE-RED'; exit 1"));
         cfg.workflow.stages.insert(
             "rev".into(),
             Stage {
@@ -39215,6 +39302,20 @@ mod tests {
             rs.units["rev"].cause, "gate:g",
             "an approved-but-gate-failing standalone review stage must name the failing \
              gate, not the generic 'reject' a review verdict rejection carries"
+        );
+        // Gap 61: the failing gate's evidence rides on the UnitFailed; the adjudicator
+        // approved, so there is no review reason to log.
+        let failed = &rs.units["rev"];
+        assert!(
+            failed.gate_evidence.len() == 1
+                && failed.gate_evidence[0].contains("STANDALONE-GATE-RED"),
+            "an approved-but-gate-failing standalone review stage must log the gate's \
+             evidence: {:?}",
+            failed.gate_evidence
+        );
+        assert_eq!(
+            failed.review_reason, "",
+            "an approved review's gate failure carries no review reason"
         );
     }
 
@@ -40930,6 +41031,17 @@ mod tests {
         assert_eq!(
             rs1.units["plan-critique"].cause, "reject",
             "a plan-critique gate reject must be stamped 'reject'"
+        );
+        // Gap 61: the reject's reasoning (the adjudicator's raw output) rides on the
+        // UnitFailed like every other failure's specifics; the gate runs no gates, so no
+        // evidence.
+        assert_eq!(
+            (
+                rs1.units["plan-critique"].review_reason.as_str(),
+                rs1.units["plan-critique"].gate_evidence.len()
+            ),
+            ("{\"verdict\":\"reject\"}", 0),
+            "a plan-critique gate reject must log its review reason and no gate evidence"
         );
         assert_eq!(
             occurrences(&d1.calls, "worker"),
