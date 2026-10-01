@@ -7328,7 +7328,12 @@ impl RunCtx<'_> {
             )],
         )?;
         let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
-        let mut prior_reason = String::new();
+        // Gap 61: a round entered in a LATER process than the reject it retries (its re-plan
+        // parked across a step) opens with that reject read back from the log, exactly as the
+        // in-process retry round below does.
+        let mut prior_reason = self
+            .logged_prior_failure(&gate_name, attempts)
+            .review_reason;
         loop {
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
             // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
@@ -41304,10 +41309,9 @@ mod tests {
         // Gap 61 for the plan-critique gate: a reject feeds its reasoning to the planner AND to
         // the next critique round, whose prompt opens with it so the reviewers judge the
         // revised DAG against what was wrong before. When that round runs in a LATER process
-        // than the reject (its re-plan parked across a `rigger step`, or an operator resumed
-        // the escalated gate), the reasoning reaches it only through the log - the review
-        // reason the reject's UnitFailed carries - and the round must open exactly as the
-        // in-process retry round does.
+        // than the reject (its re-plan parked across a `rigger step`), the reasoning reaches it
+        // only through the log - the review reason the reject's UnitFailed carries - and the
+        // round must open exactly as the in-process retry round does.
         let in_process = reject_then_approve_critique(false);
         critique_step(&Store::open(":memory:").unwrap(), &in_process);
         let rounds = in_process.prompts_for("judge");
