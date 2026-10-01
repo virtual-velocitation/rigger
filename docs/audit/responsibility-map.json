@@ -6877,7 +6877,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "fa5d9edb43d974fc"
+    "content_hash": "56d6ecf2bbac4035"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8829,7 +8829,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8deab46c036dd74e"
+    "content_hash": "e6a4bf2d4f1a1da8"
   },
   {
     "file": "src/cli/mod.rs",

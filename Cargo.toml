@@ -165,13 +165,11 @@ uuid = { version = "1", features = ["v4"] }
 # never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
 # adding it direct at that version is a no-op for dependency resolution.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
-# (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
-# invariant. A step checks out the run branch and branches unit worktrees off HEAD, then
-# integrates units and appends events; two steps running at once would race that shared
-# checkout/HEAD and interleave their integrations, corrupting the run. `fs2` releases the
-# lock when the file drops OR the process dies (even on kill), so a crashed step never
-# leaves a stale lock wedging the run.
+# Cross-process advisory file lock (`flock` under the hood) on the shared build cache's guard
+# file: `reclaim_shared_build_cache` takes it exclusively, without waiting, so `reset
+# --build-cache` never renames the cache away under a build holding its shared lock. The
+# lock is released explicitly once the rename lands, or by the process ending however it
+# ends. (`rigger step`'s serialization lock is the store crate's `lockfile::HeldLock`.)
 fs2 = "0.4"
 # The KurrentDB EventStore adapter (the trait's server-backed implementation) is part of
 # the product, compiled into every NATIVE build: the shared-store capability (many rigger

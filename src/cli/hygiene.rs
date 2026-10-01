@@ -103,9 +103,15 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
-        if !modes.force_live {
-            refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
-        }
+        //
+        // The step lock the guard took is held until the compaction returns, so its verdict that
+        // no `rigger step` is running stays true while the log is rewritten: a step started
+        // meanwhile refuses on the held lock, and its courier retries once the reset is done.
+        let _step_lock = if modes.force_live {
+            None
+        } else {
+            refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
+        };
         reset_derived(&loc)?;
     }
     Ok(())
@@ -680,7 +686,8 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 /// Gather [`live_writer_reasons`]'s three facts and refuse `rigger reset --derived` (spec 71,
 /// criterion 2) when any applies. IMPURE (a lock probe, a store read, marker reads, an optional
 /// registry read) so the decision composition itself stays pure and unit-tested without any of
-/// the three.
+/// the three. When nothing is live it returns the step lock its probe took, still held, for the
+/// caller to hold until the compaction returns ([`LiveWriterProbe`]).
 ///
 /// The registry directory, the marker root and the instant are INJECTED through `env` (mirrors
 /// [`dash_resolve_attach`]'s existing DI shape) rather than read ambiently in here: the
@@ -713,13 +720,14 @@ fn refuse_derived_reset_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
     env: &ResetEnv,
-) -> Res {
+) -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let reasons = live_writer_facts(loc, selection, env, &events)?.reasons();
+    let probe = live_writer_facts(loc, selection, env, &events)?;
+    let reasons = probe.facts.reasons();
     if reasons.is_empty() {
-        return Ok(());
+        return Ok(probe.step_lock);
     }
     Err(live_writer_refusal(&reasons).into())
 }
@@ -751,28 +759,40 @@ impl LiveWriterFacts {
     }
 }
 
-/// Gather [`LiveWriterFacts`] over `events` (the whole run stream), reading each of the current
+/// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
+/// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
+/// is running stays true while the caller acts on it: a step started meanwhile refuses with
+/// [`STEP_BUSY_TOKEN`] and its courier retries, never running against the close or the compaction
+/// the caller makes under the probe.
+struct LiveWriterProbe {
+    facts: LiveWriterFacts,
+    /// The step lock this probe holds; `None` exactly when a `rigger step` already held it
+    /// (`facts.step_lock_held`).
+    step_lock: Option<HeldLock>,
+}
+
+/// Probe [`LiveWriterFacts`] over `events` (the whole run stream), reading each of the current
 /// run's spawn markers under the root its request recorded (`env`'s scratch root only for one that
-/// recorded none) and judging every signal at `env`'s one instant.
-/// IMPURE (a lock probe, marker reads and an optional registry read) so the decisions built on it
-/// stay pure and unit-tested.
+/// recorded none) and judging every signal at `env`'s one instant, and keep the step lock the
+/// probe took ([`LiveWriterProbe`]). IMPURE (a lock probe, marker reads and an optional registry
+/// read) so the decisions built on it stay pure and unit-tested.
 fn live_writer_facts(
     loc: &StoreLocation,
     selection: &StoreSelection,
     env: &ResetEnv,
     events: &[Event],
-) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
+) -> Result<LiveWriterProbe, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
     // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
     // cwd-relative probe would open a `.rigger/step.lock` under the WRONG (or nonexistent)
-    // directory there. Acquiring (then immediately dropping) it proves nobody else holds it right
-    // now. A failure whose message names the busy token proves a step IS running; any OTHER
-    // failure (a permission fault, a read-only filesystem) is a real fault this command cannot
-    // silently misdiagnose as "held", so it propagates instead.
-    let step_lock_held = match acquire_step_lock(&loc.dir) {
-        Ok(_) => false,
-        Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => true,
+    // directory there. Acquiring it proves nobody else holds it, and the probe keeps holding it
+    // so that stays true while the reset acts. A failure whose message names the busy token
+    // proves a step IS running; any OTHER failure (a permission fault, a read-only filesystem) is
+    // a real fault this command cannot silently misdiagnose as "held", so it propagates instead.
+    let step_lock = match acquire_step_lock(&loc.dir) {
+        Ok(lock) => Some(lock),
+        Err(e) if e.to_string().contains(STEP_BUSY_TOKEN) => None,
         Err(e) => return Err(e),
     };
 
@@ -799,10 +819,13 @@ fn live_writer_facts(
         })
         .unwrap_or(0);
 
-    Ok(LiveWriterFacts {
-        step_lock_held,
-        live_spawns,
-        driver_registrations,
+    Ok(LiveWriterProbe {
+        facts: LiveWriterFacts {
+            step_lock_held: step_lock.is_none(),
+            live_spawns,
+            driver_registrations,
+        },
+        step_lock,
     })
 }
 
@@ -881,8 +904,11 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
     let boundary = superseded_edge_boundary(&events);
 
     let graph = open_graph(&graph_db, &loc.identity(), "reset --runs")?;
-    let facts = live_writer_facts(loc, selection, env, &events)?;
-    close_landed_units(loc, &store, &graph, &events, &facts)?;
+    // The probe's step lock is held until the close returns, so no `rigger step` starts against a
+    // run this reset is closing; the graph prune below takes no part in it.
+    let probe = live_writer_facts(loc, selection, env, &events)?;
+    close_landed_units(loc, &store, &graph, &events, &probe.facts)?;
+    std::mem::drop(probe);
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
     // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
@@ -1782,6 +1808,34 @@ mod tests {
             true,
             "a fresh courier entry carrying a stale driver stamp is no live driver",
         );
+    }
+
+    /// The step lock the live-writer probe takes is held for as long as the probe lives - through
+    /// the close and the compaction its caller runs under it - so a `rigger step` started
+    /// meanwhile refuses with the busy token its courier retries on, and never runs against the
+    /// prune; once the probe drops, the next step acquires the lock.
+    #[test]
+    fn the_live_writer_probe_holds_the_step_lock_until_it_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation { dir: rigger_dir };
+        let env = ResetEnv {
+            workdir: String::new(),
+            scratch_root: dir.path().join("scratch").to_string_lossy().into_owned(),
+            registry_dir: None,
+            now_ms: rigger::registry::now_ms(),
+        };
+
+        let probe = live_writer_facts(&loc, &StoreSelection::Sqlite, &env, &[]).unwrap();
+        let racing = acquire_step_lock(&loc.dir).map(drop);
+        drop(probe);
+        let err = racing.expect_err("a step started under the probe must refuse");
+        assert!(
+            err.to_string().contains(STEP_BUSY_TOKEN),
+            "the racing step's refusal carries the busy token its courier retries on: {err}"
+        );
+        acquire_step_lock(&loc.dir).expect("the next step acquires once the probe drops");
     }
 
     /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn

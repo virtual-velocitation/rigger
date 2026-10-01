@@ -34,6 +34,7 @@ use rigger::gate::{
 use rigger::grounder::Grounder;
 use rigger::instructions;
 use rigger::ledger::{self, RunState};
+use rigger::lockfile::HeldLock;
 use rigger::metrics::{self, Metrics};
 use rigger::playbooks::fnv1a_64;
 use rigger::run as runscope;
@@ -1643,9 +1644,10 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
 /// the conductor side and the driver prompt can never drift apart.
 const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 
-/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning the held
-/// [`File`](std::fs::File) as an RAII guard (the OS releases the flock when it drops or the
-/// process dies). A NON-blocking `try_lock`: if another step already holds it, refuse fast
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger step`, returning it held as a
+/// [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile never keeps
+/// it held, and by the OS when the process dies, so a crashed step never wedges the run. A
+/// NON-blocking take: if another step already holds it, refuse fast
 /// and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking - a driver whose courier gets the
 /// refusal backs off and retries, which keeps the run flowing without ever running two
 /// steps at once. See the call site for why concurrent steps corrupt the run.
@@ -1658,26 +1660,18 @@ const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
 /// [`RIGGER_DIR`] here would probe the wrong (or nonexistent) `.rigger` under its own cwd and
 /// misread "not this repo's `.rigger`" as "the lock is held" - the false refusal a nested-worktree
 /// caller must never produce.
-fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::error::Error>> {
-    use fs2::FileExt;
+fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::Error>> {
     let path = rigger_dir.join("step.lock");
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&path)?;
-    f.try_lock_exclusive()
-        .map_err(|_| -> Box<dyn std::error::Error> {
-            format!(
-                "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
+    HeldLock::try_take(&path)?.ok_or_else(|| {
+        format!(
+            "rigger step: {STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run \
              concurrently: two steps would race the run-branch checkout and the unit \
              worktrees branched off HEAD, corrupting the run. \
              Wait for the running step to finish (or kill it) and retry.",
-                path.display()
-            )
-            .into()
-        })?;
-    Ok(f)
+            path.display()
+        )
+        .into()
+    })
 }
 
 /// The step-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
@@ -10993,7 +10987,7 @@ mod tests {
     /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
     /// REFUSES (with the driver-recognizable busy token) instead of running - so the run
     /// advances one step at a time and two steps never race the shared run state. And the
-    /// refusal is not permanent: once the first releases, a later step acquires cleanly.
+    /// refusal is not permanent: once the first releases, a later step acquires at once.
     #[test]
     #[serial_test::serial(cwd)]
     fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
@@ -11014,29 +11008,22 @@ mod tests {
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
-        // Releasing the first frees the lock so a LATER step proceeds - the refusal is
-        // transient, not a wedge. Assert that eventual-acquire contract with a bounded
-        // backoff, not a single instantaneous try: in a saturated parallel test binary a
-        // concurrently spawned subprocess can momentarily inherit the just-released lock fd
-        // across its fork/exec window (before close-on-exec fires and drops it), so an
-        // immediate reacquire can still observe a spurious BUSY. That transient refusal is
-        // precisely what the driver is built to ride - back off on STEP_BUSY_TOKEN and retry -
-        // so the test models the same protocol rather than racing an exact instant.
+        // Releasing the first frees the lock AT ONCE, whatever copies of its descriptor stand:
+        // a child process forked by any thread of this process holds a copy of every descriptor
+        // until its exec closes the close-on-exec ones, so closing the step's own copy alone
+        // would leave the lock held through that window and a later step would be refused as
+        // busy. The copy below stands in for such a child's: the released lock is free for the
+        // very next step, with no retry.
+        let forked_copy = held.file().try_clone().unwrap();
         drop(held);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let _reacquired = loop {
-            match acquire_step_lock(Path::new(RIGGER_DIR)) {
-                Ok(f) => break f,
-                Err(e) => {
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "after the first releases, a later step must acquire cleanly; still \
-                         refused at the backoff deadline (last refusal: {e})"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
-        };
+        let next = acquire_step_lock(Path::new(RIGGER_DIR));
+        drop(forked_copy);
+        assert!(
+            next.is_ok(),
+            "the released lock must be free at once, a forked copy of its descriptor \
+             notwithstanding: {:?}",
+            next.err()
+        );
     }
 
     /// The no-runs message single-sourced for both the absent-db and empty-stream

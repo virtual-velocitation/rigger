@@ -5,6 +5,9 @@
 //! re-exports every module under its historical path.
 
 pub mod eventstore;
+/// The one advisory lock-file guard every rigger lock is held through: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod lockfile;
 /// The write half of `progress` (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod progress_store;
