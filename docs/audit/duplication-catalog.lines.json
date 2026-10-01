@@ -1329,18 +1329,18 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 625,
-        "end_line": 625
+        "start_line": 628,
+        "end_line": 628
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1632,
-        "end_line": 1632
+        "start_line": 1635,
+        "end_line": 1635
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1761,
-        "end_line": 1761
+        "start_line": 1764,
+        "end_line": 1764
       },
       {
         "file": "src/cli/mod.rs",
@@ -5844,13 +5844,13 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 236,
-        "end_line": 242
+        "start_line": 239,
+        "end_line": 245
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 936,
-        "end_line": 941
+        "start_line": 939,
+        "end_line": 944
       }
     ]
   },
@@ -6384,13 +6384,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1939,
-        "end_line": 1959
+        "start_line": 1942,
+        "end_line": 1962
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2013,
-        "end_line": 2034
+        "start_line": 2016,
+        "end_line": 2037
       }
     ]
   },

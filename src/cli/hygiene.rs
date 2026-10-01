@@ -15,18 +15,21 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// [`reset_modes`]'s existing refusal exactly as before this menu existed, so that refusal and
 /// its tests are untouched.
 ///
-/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, the scratch root,
-/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed) when a
-/// selected mode reads them ([`ResetModes::reads_env`]), and the backend requirement of every
-/// requested mode is settled BEFORE the first prune runs, so a composed invocation never starts
-/// work it is already known to be unable to finish - the shape that used to leave the graph pruned
-/// and the log untouched because the log's backend was refused second. A mode that reads none of
-/// that environment (`--scratch-orphans`, and `--derived --force-live`, whose override skips the
-/// live-writer guard entirely) never resolves it, so it is never failed by what it does not read.
-/// Each mode's own mutation is atomic (each is one transaction over one file), and the modes run
-/// in order: if a prune fails on a genuine IO or lock fault after an earlier one committed, the
-/// earlier prune HAS happened and is reported on stdout above the error. That is the honest
-/// statement of the composition, and it is deliberately not called all-or-nothing: two files
+/// PRECHECKS FIRST, and exactly what they promise. The flags are parsed, and the scratch root,
+/// registry and instant the modes read are resolved once ([`ResetEnv`], fail-closed) BEFORE the
+/// first prune runs when a selected mode reads them ([`ResetModes::reads_env`]), so a composed
+/// invocation never starts work an environment it cannot resolve would stop. A mode that reads none
+/// of that environment (`--scratch-orphans`, and `--derived --force-live`, whose override skips the
+/// live-writer guard entirely) never resolves it, so selected without a mode that reads it, it is
+/// never failed by what it does not read. The `--derived` backend refusal is the one precheck that
+/// follows its sibling modes, by design: it is settled inside `--derived`'s own block, after
+/// `--runs`, `--build-cache` and `--scratch-orphans` have run, because a sibling mode with no
+/// backend dependency of its own is never dropped by it (spec 77, criterion 4) - so `reset --runs
+/// --derived` on a server-backed project prunes the graph, reports it, and then refuses the
+/// compaction. Each mode's own mutation is atomic (each is one transaction over one file), and the
+/// modes run in order: if a prune fails on a genuine IO or lock fault after an earlier one
+/// committed, the earlier prune HAS happened and is reported on stdout above the error. That is the
+/// honest statement of the composition, and it is deliberately not called all-or-nothing: two files
 /// cannot be committed together, and claiming otherwise would tell an operator not to look.
 pub(crate) fn cmd_reset(args: &[String]) -> Res {
     if args.is_empty() {
