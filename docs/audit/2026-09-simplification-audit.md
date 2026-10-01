@@ -1678,8 +1678,8 @@ mandatory sweep: Command::new call sites - 87 site(s), collected mechanically re
 - `src/cli/validate.rs:1728-1728` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2063-2063` `Command::new`
-- `tests/checkin_mutation_diff_base_periphery.rs:68-68` `Command::new`
-- `tests/checkin_mutation_diff_base_periphery.rs:160-160` `Command::new`
+- `tests/checkin_mutation_diff_base_periphery.rs:70-70` `Command::new`
+- `tests/checkin_mutation_diff_base_periphery.rs:162-162` `Command::new`
 - `tests/claude_code_stream_periphery.rs:990-990` `Command::new`
 - `tests/cli.rs:1462-1462` `Command::new`
 - `tests/cli.rs:5236-5236` `Command::new`
@@ -1724,9 +1724,9 @@ mandatory sweep: Command::new call sites - 87 site(s), collected mechanically re
 - `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:59-59` `Command::new`
 - `tests/principle_gates_wiring.rs:147-147` `Command::new`
-- `tests/principle_gates_wiring.rs:222-222` `Command::new`
-- `tests/principle_gates_wiring.rs:502-502` `Command::new`
-- `tests/principle_gates_wiring.rs:571-571` `Command::new`
+- `tests/principle_gates_wiring.rs:214-214` `Command::new`
+- `tests/principle_gates_wiring.rs:494-494` `Command::new`
+- `tests/principle_gates_wiring.rs:563-563` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/reset_build_cache_periphery.rs:242-242` `Command::new`
 - `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
@@ -2441,7 +2441,7 @@ project identity so one backend can hold many projects without their data mixing
          Surfaces the document fails to name: {missing:#?}"`
 - `tests/canary_model_drift_periphery.rs:62-62` `".rigger"`
 - `tests/change_path_revert_periphery.rs:82-82` `".rigger"`
-- `tests/checkin_mutation_diff_base_periphery.rs:55-55` `".rigger"`
+- `tests/checkin_mutation_diff_base_periphery.rs:57-57` `".rigger"`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:58-58` `"{repo_path}/.rigger-test-scratch"`
 - `tests/cli.rs:101-101` `".rigger"`
 - `tests/cli.rs:105-105` `".rigger"`
@@ -2779,15 +2779,15 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:44-44` `"sh .rigger/gates/red-before-green.sh"`
 - `tests/principle_gates_wiring.rs:95-95` `".rigger/workflow.yml: {missing:#?}"`
 - `tests/principle_gates_wiring.rs:107-107` `"the scaffolded .rigger/: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:221-221` `".rigger/gates/red-before-green.sh"`
-- `tests/principle_gates_wiring.rs:392-392` `".rigger/agents"`
-- `tests/principle_gates_wiring.rs:402-402` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:414-414` `"sh .rigger/gates/mutation.sh"`
-- `tests/principle_gates_wiring.rs:421-421` `".rigger/gates/{file}"`
-- `tests/principle_gates_wiring.rs:451-451` `".rigger/gates/container-env.sh"`
-- `tests/principle_gates_wiring.rs:461-461` `"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
+- `tests/principle_gates_wiring.rs:213-213` `".rigger/gates/red-before-green.sh"`
+- `tests/principle_gates_wiring.rs:384-384` `".rigger/agents"`
+- `tests/principle_gates_wiring.rs:394-394` `".rigger/agents: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:406-406` `"sh .rigger/gates/mutation.sh"`
+- `tests/principle_gates_wiring.rs:413-413` `".rigger/gates/{file}"`
+- `tests/principle_gates_wiring.rs:443-443` `".rigger/gates/container-env.sh"`
+- `tests/principle_gates_wiring.rs:453-453` `"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
          exit 1; fi; cargo test --workspace"`
-- `tests/principle_gates_wiring.rs:538-538` `".rigger/gates"`
+- `tests/principle_gates_wiring.rs:530-530` `".rigger/gates"`
 - `tests/projections_stay_local.rs:90-90` `"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
          (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"`
 - `tests/projections_stay_local.rs:97-97` `"the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
@@ -4978,7 +4978,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7773 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7772 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:13813-13835` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:17920-17973` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
