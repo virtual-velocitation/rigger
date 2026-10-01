@@ -27,6 +27,11 @@
 //! phase was (cargo-mutants files a signal-ended compiler as unviable and exits 0 either way)
 //! fails the gate by name as an environment failure.
 //!
+//! THE ANCHOR IS THIS SPEC'S OWN. The incremental anchor a sweep leaves under the scratch root
+//! narrows the next sweep to the diff since it only when it examined a commit of this spec - a
+//! tip past `$RIGGER_RUN_BASE`. A tip at or behind the run base is a previous spec's sweep: the
+//! gate sweeps the whole spec diff and re-runs none of that spec's misses.
+//!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
 
@@ -310,6 +315,124 @@ fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping
         run.cargo.is_empty(),
         "a refused gate launches no sweep: {}",
         run.cargo
+    );
+}
+
+/// Three commits on one line - `origin`, a change to `a.rs`, then a new `b.rs` - returned in
+/// that order: the history every anchor case below picks its run base and its anchor from.
+fn three_commit_history(repo: &Path) -> [String; 3] {
+    init_repo(repo);
+    write(repo, "a.rs", "fn a() {}\n");
+    git_commit_all(repo, "origin");
+    let origin = git_out(repo, &["rev-parse", "HEAD"]);
+    write(repo, "a.rs", "fn a() { 1; }\n");
+    git_commit_all(repo, "a.rs changes");
+    let middle = git_out(repo, &["rev-parse", "HEAD"]);
+    write(repo, "b.rs", "fn b() {}\n");
+    git_commit_all(repo, "b.rs lands");
+    let head = git_out(repo, &["rev-parse", "HEAD"]);
+    [origin, middle, head]
+}
+
+/// The mutant an earlier sweep left unclosed in its anchor.
+const ANCHOR_MISS: &str = "a.rs:1:11: replace a with ()";
+
+/// Run the shipped gate in `repo` against `base`, with the incremental anchor an earlier sweep
+/// left under the scratch root: `tip` is the tree it examined and [`ANCHOR_MISS`] its one miss.
+/// Returns the run and the scratch root, so a test reads back the anchor this sweep left.
+fn run_gate_over_anchor(repo: &Path, base: &str, tip: &str) -> (GateRun, tempfile::TempDir) {
+    let scratch = tempfile::tempdir().unwrap();
+    write(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
+    write(
+        scratch.path(),
+        "mutation-anchor/missed.txt",
+        &format!("{ANCHOR_MISS}\n"),
+    );
+    let mutants = scratch.path().join("cargo-mutants-checkin");
+    let run = run_gate_with(
+        repo,
+        Some(base),
+        FORTY_GIB_KB,
+        true,
+        &[("MUTANTS", mutants.to_str().unwrap())],
+    );
+    (run, scratch)
+}
+
+#[test]
+fn an_anchor_at_or_behind_the_run_base_is_a_previous_specs_so_the_whole_spec_diff_is_swept() {
+    let repo = tempfile::tempdir().unwrap();
+    let [origin, base, head] = three_commit_history(repo.path());
+    let spec_diff = git_out(repo.path(), &["diff", &base, "--", "*.rs"]);
+    assert_eq!(
+        spec_diff
+            .lines()
+            .filter(|l| l.starts_with("+++ "))
+            .collect::<Vec<_>>(),
+        vec!["+++ b/b.rs"],
+        "fixture precondition: the spec diff is b.rs alone, and a.rs's change predates the run"
+    );
+    // `origin`: a previous spec's sweep, older than the run base. `base`: a previous spec's
+    // sweep of exactly the tree this run started from.
+    for (case, tip) in [("older", &origin), ("equal", &base)] {
+        let (run, scratch) = run_gate_over_anchor(repo.path(), &base, tip);
+        assert!(run.passed, "{case}: {}", run.output);
+        let produced = std::fs::read_to_string(repo.path().join("unit.diff"))
+            .expect("unit.diff must be written");
+        assert_eq!(
+            produced.trim_end(),
+            spec_diff.trim_end(),
+            "{case}: an anchor at or behind RIGGER_RUN_BASE examined no commit of this spec, so \
+             the sweep is the whole spec diff - never every change since a previous spec's sweep"
+        );
+        assert_eq!(
+            run.cargo.lines().collect::<Vec<_>>(),
+            vec![run.sweep_line()],
+            "{case}: a previous spec's misses are not this spec's - the one sweep of unit.diff \
+             runs and no by-name rerun is even listed"
+        );
+        let anchor = scratch.path().join("mutation-anchor");
+        assert_eq!(
+            (
+                std::fs::read_to_string(anchor.join("tip")).unwrap(),
+                std::fs::read_to_string(anchor.join("missed.txt")).unwrap(),
+            ),
+            (format!("{head}\n"), String::new()),
+            "{case}: the anchor this sweep leaves is this spec's own tree with this sweep's misses"
+        );
+    }
+}
+
+#[test]
+fn an_anchor_past_the_run_base_is_this_specs_own_so_the_re_sweep_starts_from_it() {
+    let repo = tempfile::tempdir().unwrap();
+    let [origin, anchor, _head] = three_commit_history(repo.path());
+    let since_anchor = git_out(repo.path(), &["diff", &anchor, "--", "*.rs"]);
+    assert_ne!(
+        since_anchor,
+        git_out(repo.path(), &["diff", &origin, "--", "*.rs"]),
+        "fixture precondition: the diff since the anchor is narrower than the spec diff"
+    );
+    let (run, _scratch) = run_gate_over_anchor(repo.path(), &origin, &anchor);
+    assert!(run.passed, "{}", run.output);
+    let produced =
+        std::fs::read_to_string(repo.path().join("unit.diff")).expect("unit.diff must be written");
+    assert_eq!(
+        produced.trim_end(),
+        since_anchor.trim_end(),
+        "an anchor past RIGGER_RUN_BASE is this spec's own earlier sweep, so the re-sweep covers \
+         the diff since it"
+    );
+    let cargo = run.cargo.lines().collect::<Vec<_>>();
+    assert_eq!(
+        cargo.len(),
+        2,
+        "the sweep, then the listing that resolves the earlier miss by name: {}",
+        run.cargo
+    );
+    assert_eq!(
+        cargo[1], "mutants --list --workspace -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) ",
+        "this spec's own earlier miss is re-run by name"
     );
 }
 
