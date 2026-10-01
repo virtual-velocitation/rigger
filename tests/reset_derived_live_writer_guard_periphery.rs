@@ -923,10 +923,10 @@ fn reset_build_cache_fails_closed_on_an_unparsable_defaults_block_and_reclaims_n
     let (_workdir, scratch_root) = configure_workdir(root, "  max_retries: three\n");
     let built = [
         Path::new(&scratch_root)
-            .join("cargo-target")
+            .join(rigger::worktree::SHARED_BUILD_CACHE_NAME)
             .join("built.rlib"),
         common::default_scratch_root(root)
-            .join("cargo-target")
+            .join(rigger::worktree::SHARED_BUILD_CACHE_NAME)
             .join("built.rlib"),
     ];
     for artifact in &built {
