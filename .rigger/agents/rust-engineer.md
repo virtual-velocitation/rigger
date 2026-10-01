@@ -44,7 +44,9 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
   every process the operator owns - and that has destroyed the operator's
   desktop session repeatedly (spec 78).
-- Checkin-stage survivor closing (spec 91). When you are spawned for the
+- Checkin-stage survivor closing (spec 91). The `mutation` gate is declared
+  but unwired from the `checkin` stage until issue #32 lands; while it is
+  unwired no sweep runs and this step does not apply. When you are spawned for the
   `checkin` stage - after every unit from the `implement` fan-out has
   integrated and its `mutation` gate has already swept the whole spec diff
   once - read `mutants.out/outcomes.json` (never stdout). A missed
