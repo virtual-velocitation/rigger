@@ -1104,7 +1104,7 @@ impl IntegrationApproval {
 
 /// The specifics of a unit's previous failed attempt, threaded into the next
 /// attempt's prompt (spec 02, targeted remediation). Empty on the first attempt.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PriorFailure {
     /// The compact PASS/FAIL evidence of each gate that failed last attempt.
     gate_evidence: Vec<String>,
@@ -1123,6 +1123,34 @@ struct PriorFailure {
 }
 
 impl PriorFailure {
+    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence and review
+    /// reason, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
+    /// stage in a LATER process than the one that saw the failure - an operator's `rigger
+    /// resume-unit` grant, or any step that picks up a mid-remediation unit - is prompted from
+    /// these, so its block is the one the in-process retry built from the same facts.
+    fn logged(u: &ledger::Unit) -> PriorFailure {
+        PriorFailure {
+            gate_evidence: u.gate_evidence.clone(),
+            review_reason: u.review_reason.clone(),
+            contradiction: String::new(),
+            halted_commit: String::new(),
+        }
+    }
+
+    /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
+    /// `attempts` used: this failure's gate evidence and review reason ride on it, so the
+    /// next attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
+    /// re-enters the unit. The one body every `UnitFailed` writes, whichever path failed.
+    fn failed_body(&self, unit: &str, attempts: u32, cause: &str) -> Value {
+        json!({
+            "id": unit,
+            "attempts": attempts,
+            "cause": cause,
+            "gate_evidence": self.gate_evidence,
+            "review_reason": self.review_reason,
+        })
+    }
+
     fn is_empty(&self) -> bool {
         self.gate_evidence.is_empty()
             && self.review_reason.trim().is_empty()
@@ -1756,6 +1784,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| u.resume_bound > 0)
         .map(|u| (u.id.clone(), u.resume_bound))
         .collect();
+    // Gap 61: each unit's latest failure specifics from the SAME fold, so a unit this
+    // process re-enters is prompted with the failure the log recorded, not a blank.
+    let prior_failure: HashMap<String, PriorFailure> = prior
+        .units
+        .values()
+        .map(|u| (u.id.clone(), PriorFailure::logged(u)))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -1774,6 +1809,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_status,
         prior_attempts,
         prior_resume_bound,
+        prior_failure,
         replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
@@ -2516,6 +2552,11 @@ struct RunCtx<'a> {
     /// never zero (the bug a bare status revert without this override would produce,
     /// since the global bound is already spent) and never unbounded.
     prior_resume_bound: HashMap<String, u32>,
+    /// Each unit's latest failed attempt's specifics from the prior log (gap 61), read off
+    /// the fold by [`PriorFailure::logged`] - a run-start snapshot of the SAME fold
+    /// `prior_attempts` is. [`logged_prior_failure`](RunCtx::logged_prior_failure) is the
+    /// sole reader.
+    prior_failure: HashMap<String, PriorFailure>,
     /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
     /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
     /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
@@ -2733,6 +2774,7 @@ impl<'a> RunCtx<'a> {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
@@ -2995,6 +3037,18 @@ impl RunCtx<'_> {
     /// content-blind exact-key replay - and repeated compensation accumulates toward the
     /// escalation bound.
     fn effective_attempts(&self, unit: &str) -> u32 {
+        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
+        self.counted_attempts(unit).max(gate_high_water)
+    }
+
+    /// The attempt `unit`'s own counter stands at in this process: the run-start folded
+    /// [`prior_attempts`](RunCtx::prior_attempts) count, advanced by any compensation this
+    /// process drained ([`compensation_attempts`](RunCtx::compensation_attempts)) - the first
+    /// two of [`effective_attempts`](RunCtx::effective_attempts)'s sources, without its gate
+    /// high-water. A speculation group keys each lane's gates by its LANE, so for a speculating
+    /// unit that high-water counts sibling candidates, never remediation attempts: this is the
+    /// attempt a group re-enters at.
+    fn counted_attempts(&self, unit: &str) -> u32 {
         let prior = self.prior_attempts.get(unit).copied().unwrap_or(0);
         let bumped = self
             .compensation_attempts
@@ -3003,8 +3057,20 @@ impl RunCtx<'_> {
             .get(unit)
             .copied()
             .unwrap_or(0);
-        let gate_high_water = self.gate_verdict_high_water(unit).unwrap_or(0);
-        prior.max(bumped).max(gate_high_water)
+        prior.max(bumped)
+    }
+
+    /// The prior failure `unit` re-enters its lifecycle at attempt `attempts` with when
+    /// this process never saw that failure (gap 61): the log's latest `UnitFailed`
+    /// specifics when that failure is the one this attempt retries - the attempt count it
+    /// folded is exactly `attempts` - else none. A unit re-entered PAST it (a compensation
+    /// re-entry, which starts one past its high-water attempt) is never handed an earlier
+    /// attempt's failure; its contradiction carries it instead.
+    fn logged_prior_failure(&self, unit: &str, attempts: u32) -> PriorFailure {
+        match self.prior_failure.get(unit) {
+            Some(failure) if self.prior_attempts.get(unit) == Some(&attempts) => failure.clone(),
+            _ => PriorFailure::default(),
+        }
     }
 
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
@@ -3122,8 +3188,10 @@ impl RunCtx<'_> {
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3 (the cause wire): a compensation revert is a
-                // LATER unit's review proving this one wrong - a deferred reject.
-                json!({"id": comp.target, "attempts": attempts, "cause": CAUSE_REJECT}),
+                // LATER unit's review proving this one wrong - a deferred reject. It
+                // carries no gate evidence or review reason of its own: the
+                // contradiction rides as metadata, which a resume recovers it from.
+                PriorFailure::default().failed_body(&comp.target, attempts, CAUSE_REJECT),
                 &[
                     (META_COMPENSATED, &compensated),
                     (META_CONTRADICTION, contradiction),
@@ -4793,15 +4861,17 @@ impl RunCtx<'_> {
                     w.ensure_present()?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
+                let cause = gate_failure_cause(&full.evidence);
+                let failure = PriorFailure {
+                    gate_evidence: full.evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
-                    // plain gate failure - name the gate.
-                    json!({
-                        "id": st.name,
-                        "attempts": attempts + 1,
-                        "cause": gate_failure_cause(&full.evidence),
-                    }),
+                    // plain gate failure - name the gate. Its evidence rides along (gap 61),
+                    // so the later process that re-enters the unit prompts it from the log.
+                    failure.failed_body(&st.name, attempts + 1, &cause),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -4811,7 +4881,7 @@ impl RunCtx<'_> {
             // so this resumed merge carries a real approval.
             let integration =
                 self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
-            if integration.blocked.is_some() {
+            if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
                 // reviewed, and the two auto-merged into a broken tree). The merge was rolled
@@ -4829,15 +4899,17 @@ impl RunCtx<'_> {
                     w.ensure_present()?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
+                let failure = PriorFailure {
+                    gate_evidence: evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: a resumed merge whose post-merge re-gate
-                    // went red is a merge conflict, not a plain gate failure.
-                    json!({
-                        "id": st.name,
-                        "attempts": attempts + 1,
-                        "cause": CAUSE_INTEGRATE_CONFLICT,
-                    }),
+                    // went red is a merge conflict, not a plain gate failure. The
+                    // merge-break evidence rides along (gap 61), so the later process
+                    // that re-enters the unit prompts it from the log.
+                    failure.failed_body(&st.name, attempts + 1, CAUSE_INTEGRATE_CONFLICT),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -4870,8 +4942,11 @@ impl RunCtx<'_> {
         let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
-        // is unchanged.
-        let mut prior = PriorFailure::default();
+        // is unchanged. A unit re-entering at the attempt its logged failure left it
+        // at (gap 61: a `rigger resume-unit` grant, or a step picking up a
+        // mid-remediation unit) starts from that failure, read back from the log, so
+        // its prompt carries the block an in-process retry would.
+        let mut prior = self.logged_prior_failure(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
         }
@@ -5424,8 +5499,10 @@ impl RunCtx<'_> {
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: `cause` was set above, at the branch that
                 // actually failed this attempt (spawn crash / gate / merge-block /
-                // review reject) - never inferred here from the shared evidence.
-                json!({"id": st.name, "attempts": attempts, "cause": cause}),
+                // review reject) - never inferred here from the shared evidence. The
+                // failure's specifics ride along (gap 61), so a later process re-entering
+                // the unit prompts it from the log.
+                next.failed_body(&st.name, attempts, &cause),
                 &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
@@ -5558,6 +5635,15 @@ impl RunCtx<'_> {
         // resolved wrapper/cache/incremental vars, since none of them depend on `lane`.
         let build_env = self.build_env()?;
 
+        // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
+        // operator's `rigger resume-unit` grant re-enters every lane) starts from the failure
+        // the log recorded - a lane's post-merge block - so every lane's prompt carries the
+        // block a single-lane retry would. All K lanes are spawned before any is judged, so a
+        // group has no in-process retry to thread a failure into; the log is its only source.
+        // Read at the group's counted attempts, so a compensation re-entry, which advanced past
+        // that failure, is never handed it.
+        let logged = self.logged_prior_failure(&st.name, self.counted_attempts(&st.name));
+
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
         // always finds the pre-created candidate worktree the conductor owns - a lane's
@@ -5579,11 +5665,7 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt = self.build_prompt_with_failure(
-                st,
-                &PriorFailure::default(),
-                GroundingSlice::Implement,
-            )?;
+            let prompt = self.build_prompt_with_failure(st, &logged, GroundingSlice::Implement)?;
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
@@ -5805,7 +5887,7 @@ impl RunCtx<'_> {
                 lane,
                 IntegrationApproval::approved(),
             )?;
-            if integration.blocked.is_some() {
+            if let Some(evidence) = integration.blocked {
                 // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
                 // so this candidate cannot land this step. CAPTURE the merge-break evidence as
                 // UnitFailed (mirroring the single-lane path) so the signal is not lost and the
@@ -5826,12 +5908,17 @@ impl RunCtx<'_> {
                 // same candidate below.
                 candidates[i].wt.ensure_present()?;
                 let failed_sha = worktree::head_sha_of(&dir);
+                let failure = PriorFailure {
+                    gate_evidence: evidence,
+                    ..Default::default()
+                };
                 self.emit_meta(
                     ledger::TYPE_UNIT_FAILED,
                     // spec 69, criterion 3: this site fires ONLY on a post-merge block
                     // (a pre-merge gate/review loss is a silent `continue` two lines
-                    // above, never a UnitFailed) - always a merge conflict.
-                    json!({"id": st.name, "attempts": lane + 1, "cause": CAUSE_INTEGRATE_CONFLICT}),
+                    // above, never a UnitFailed) - always a merge conflict. The
+                    // merge-break evidence rides along (gap 61).
+                    failure.failed_body(&st.name, lane + 1, CAUSE_INTEGRATE_CONFLICT),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 continue;
@@ -6300,14 +6387,28 @@ impl RunCtx<'_> {
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
-            let cause = match &gate_result {
-                Some(g) => gate_failure_cause(&g.evidence),
-                None => CAUSE_REJECT.to_string(),
+            // The failure's specifics ride along (gap 61): the failing gates' evidence, or
+            // the adjudicator's rejection reasoning.
+            let (cause, failure) = match gate_result {
+                Some(g) => (
+                    gate_failure_cause(&g.evidence),
+                    PriorFailure {
+                        gate_evidence: g.evidence,
+                        ..Default::default()
+                    },
+                ),
+                None => (
+                    CAUSE_REJECT.to_string(),
+                    PriorFailure {
+                        review_reason: reason.clone(),
+                        ..Default::default()
+                    },
+                ),
             };
             self.emit_keyed_meta(
                 &format!("{}/failed#{failed_attempt}", st.name),
                 ledger::TYPE_UNIT_FAILED,
-                json!({"id": st.name, "attempts": attempts, "cause": cause}),
+                failure.failed_body(&st.name, attempts, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
                 // pairs with a later approve on the SAME sha for the flip-flop fold.
                 &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
@@ -7227,7 +7328,12 @@ impl RunCtx<'_> {
             )],
         )?;
         let mut attempts = self.prior_attempts.get(&gate_name).copied().unwrap_or(0);
-        let mut prior_reason = String::new();
+        // Gap 61: a round entered in a LATER process than the reject it retries (its re-plan
+        // parked across a step) opens with that reject read back from the log, exactly as the
+        // in-process retry round below does.
+        let mut prior_reason = self
+            .logged_prior_failure(&gate_name, attempts)
+            .review_reason;
         loop {
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
             // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
@@ -7322,12 +7428,17 @@ impl RunCtx<'_> {
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
+            let failure = PriorFailure {
+                review_reason: reason.clone(),
+                ..Default::default()
+            };
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
-                // own - every reject here is the adjudicator's.
-                json!({"id": gate_name, "attempts": attempts, "cause": CAUSE_REJECT}),
+                // own - every reject here is the adjudicator's, and its reasoning rides
+                // along (gap 61).
+                failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
             )?;
             if rem.decision == safety::Decision::Escalate {
                 let why = if reason.trim().is_empty() {
@@ -13130,6 +13241,25 @@ mod tests {
                 .collect()
         }
 
+        /// Append to `store`'s run stream the `UnitResumed` an operator's `rigger resume-unit
+        /// <unit> --attempts <attempts_granted>` writes (spec 88, criterion 3).
+        pub(super) fn grant_resume(store: &Store, unit: &str, attempts_granted: u32) {
+            let resumed = Event::new(
+                ledger::TYPE_UNIT_RESUMED,
+                serde_json::to_vec(
+                    &json!({"unit": unit, "attempts_granted": attempts_granted, "by": "operator"}),
+                )
+                .unwrap(),
+            );
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&resumed),
+                )
+                .unwrap();
+        }
+
         /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
         /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
         /// mention.
@@ -14364,6 +14494,11 @@ mod tests {
         );
     }
 
+    /// The generic preamble `PriorFailure::block` opens a gate, review or contradiction failure
+    /// with, spelled out literally so the tests pin the exact words the next attempt reads.
+    const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
+                             these - do not start over:\n";
+
     #[test]
     fn prior_failure_block_adds_the_generic_preamble_for_review_reject_or_contradiction_alone() {
         // Kills two missed mutants sharing one preamble condition (block()'s
@@ -14377,8 +14512,6 @@ mod tests {
         // review_reason or contradiction only asserts the PER-FIELD line pushed
         // further down (unconditional, outside this compound condition), never
         // the generic preamble the condition actually guards.
-        const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
-                                 these - do not start over:\n";
         let review_only = PriorFailure {
             review_reason: "REJECT_REASON_x".into(),
             ..Default::default()
@@ -14399,6 +14532,77 @@ mod tests {
              failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
             contradiction_only.block()
         );
+    }
+
+    #[test]
+    fn a_resumed_unit_re_enters_with_the_prior_failure_block_its_retry_carried() {
+        // Gap 61: a unit an operator resumes after an escalation re-enters the implementer
+        // stage in a LATER process, so the failure it must fix reaches it only through the
+        // log (UnitFailed{cause} -> UnitEscalated -> UnitResumed). Its prompt must open with
+        // the same prior-failure block the ordinary in-process retry carried - never a
+        // fresh-unit prompt that leaves the implementer to rediscover the ruling - for a
+        // review reject and a gate failure alike. Each unit fails the same way on every
+        // attempt, so the retry's prompt and the resumed prompt are byte-identical when both
+        // blocks are built right.
+        let verdict = r#"{"verdict":"reject","issues":["gap61: the REQUIRED fix"]}"#;
+        let mut red_gate = per_unit_panel_cfg(Some(2));
+        red_gate
+            .workflow
+            .gates
+            .insert("ok".into(), gate_def("false"));
+        for (cfg, driver, cause) in [
+            (
+                per_unit_panel_cfg(Some(2)),
+                Stub::answering(verdict),
+                CAUSE_REJECT,
+            ),
+            (red_gate, Stub::new(), "gate:ok"),
+        ] {
+            let prompts = prompts_around_a_resume(&cfg, &driver, cause);
+            assert!(
+                prompts[1].starts_with(PREAMBLE),
+                "premise: the ordinary retry after a {cause} failure opens with the \
+                 prior-failure block; got:\n{}",
+                prompts[1]
+            );
+            assert!(
+                prompts[2].starts_with(PREAMBLE),
+                "the resumed re-entry after a {cause} escalation must open with the \
+                 prior-failure preamble; got:\n{}",
+                prompts[2]
+            );
+            assert_eq!(
+                prompts[2], prompts[1],
+                "the resumed re-entry after a {cause} escalation must carry the SAME \
+                 prior-failure block the retry carried, rebuilt from the logged failure"
+            );
+        }
+    }
+
+    /// The worker's prompts around an operator's one-attempt `rigger resume-unit` grant (gap
+    /// 61): `cfg`'s `implement` unit fails both attempts of a first process window and
+    /// escalates with `cause` at the bound of 2, then a second window - a fresh process that
+    /// knows the failure only from the log - re-enters it at attempt 2. Returns attempt 0's
+    /// prompt, the ordinary in-process retry's, and the resumed re-entry's.
+    fn prompts_around_a_resume(cfg: &Config, driver: &Stub, cause: &str) -> Vec<String> {
+        let st = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&st, driver, Vec::new());
+        let rs = run_isolated(cfg, &deps).unwrap();
+        let unit = &rs.units["implement"];
+        assert_eq!(
+            (unit.status, unit.attempts, unit.cause.as_str()),
+            (ledger::Status::Escalated, 2, cause),
+            "premise: the first window escalates after two attempts"
+        );
+        grant_resume(&st, "implement", 1);
+        run_isolated(cfg, &deps).unwrap();
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            3,
+            "premise: two first-window attempts plus the one granted attempt; prompts: {prompts:?}"
+        );
+        prompts
     }
 
     #[test]
@@ -23067,6 +23271,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
@@ -25700,18 +25905,33 @@ mod tests {
         // single-lane emits, no longer dropped by the bare `continue` arm.
         // spec 69, criterion 3 (the cause wire): the speculation candidate's merge-break
         // UnitFailed is stamped "integrate-conflict".
-        let speculation_failed = events
+        let at_block = events
             .iter()
-            .find(|e| {
+            .position(|e| {
                 e.type_ == ledger::TYPE_UNIT_FAILED
                     && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
             })
             .expect("the blocked candidate emits a UnitFailed");
-        let speculation_failed_v: Value = serde_json::from_slice(&speculation_failed.data).unwrap();
+        let speculation_failed_v: Value = serde_json::from_slice(&events[at_block].data).unwrap();
         assert_eq!(
             speculation_failed_v["cause"],
             json!("integrate-conflict"),
             "a speculation candidate's post-merge block must be 'integrate-conflict': {speculation_failed_v:?}"
+        );
+        // Gap 61: the merge-break evidence rides on that UnitFailed, so the unit folded at the
+        // block carries the post-merge gate's evidence (and no review reason - the adjudicator
+        // approved), exactly as a single-lane block records it.
+        let at_block_fold = ledger::project(&events[..=at_block]).unwrap();
+        let blocked = &at_block_fold.units["s"];
+        assert!(
+            blocked.gate_evidence.len() == 1
+                && blocked.gate_evidence[0].contains("merge introduced duplicate MARK"),
+            "the unit folded at the block must carry the post-merge gate's evidence: {:?}",
+            blocked.gate_evidence
+        );
+        assert_eq!(
+            blocked.review_reason, "",
+            "an approved candidate's post-merge block carries no review reason"
         );
         assert!(
             events.iter().any(|e| {
@@ -25759,6 +25979,157 @@ mod tests {
         assert!(
             has_key("s/green#1") && has_key("s/verified#1") && has_key("s/reviewed#1"),
             "the winning lane 1's deferred green/verified/reviewed land once it INTEGRATES"
+        );
+    }
+
+    /// The gate evidence a prior window logged when lane 0 of the speculating unit `s` merged
+    /// and broke the merged tree's gate (gap 61).
+    const LANE_0_MERGE_BREAK: &str = "ok: FAIL - lane 0's merge broke the merged tree";
+
+    /// The `UnitFailed` `run_speculation` records for that post-merge block on lane 0 of `s`,
+    /// written through the one body builder every failure path writes.
+    fn lane_0_merge_break() -> Event {
+        let blocked = PriorFailure {
+            gate_evidence: vec![LANE_0_MERGE_BREAK.into()],
+            ..Default::default()
+        };
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&blocked.failed_body("s", 1, CAUSE_INTEGRATE_CONFLICT)).unwrap(),
+        )
+    }
+
+    /// A driver under which every speculation lane writes a file and every reviewer approves.
+    fn approving_speculation_stub() -> Stub {
+        Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        }
+    }
+
+    #[test]
+    fn a_resumed_speculating_unit_re_enters_every_lane_with_its_logged_post_merge_block() {
+        // Gap 61 for a speculation group: in a prior window lane 0's merge broke the merged
+        // tree's gate (the UnitFailed `run_speculation` records, its evidence riding along),
+        // lanes 1 and 2 then ran their own gates and lost, and the unit escalated. An
+        // operator's `rigger resume-unit` re-enters the group in a fresh process that knows
+        // that failure only from the log. A group has no in-process retry lane - all K lanes
+        // are spawned before any is judged, and a group with no winner escalates - so every
+        // re-entered lane must open with the block an in-process retry builds from the same
+        // evidence. Lanes 1 and 2's gate verdicts sit at attempts past the logged failure's,
+        // but they are sibling candidates, never remediation attempts that moved past it.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let mut prior = vec![lane_0_merge_break()];
+        prior.extend((1..3).map(|lane| {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({
+                    "gate": "ok", "pass": true, "flaky": false, "evidence": ""
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, gate_key(GateKey::Verdict, "s", lane, "ok"))
+        }));
+        prior.push(Event::new(
+            ledger::TYPE_UNIT_ESCALATED,
+            serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+        ));
+        seed_events_in_run(&store, &[], &prior);
+        grant_resume(&store, "s", 1);
+
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&spec_cfg(3), &deps).unwrap();
+
+        let block =
+            format!("{PREAMBLE}Your previous attempt failed these gates: {LANE_0_MERGE_BREAK}\n\n");
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            3,
+            "premise: the resumed group re-spawns its three lanes; prompts: {prompts:?}"
+        );
+        for (lane, prompt) in prompts.iter().enumerate() {
+            assert!(
+                prompt.starts_with(&block),
+                "lane {lane} of the re-entered group must open with the logged post-merge \
+                 block:\n{block}\ngot:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compensated_speculating_unit_never_re_enters_with_an_earlier_lanes_logged_block() {
+        // The compensation guard (gap 61) for a speculation group: lane 0's merge broke in a
+        // prior window (its UnitFailed logged the evidence), a later lane won and integrated
+        // at C, and a later unit's review queued a compensation naming `s` before the window
+        // died. The resume drains it - reverting C and re-entering the group one attempt past
+        // that logged failure, which the winning lane had already moved past - so no
+        // re-entered lane is ever prompted with it.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("s.rs"), "fn s_condemned() {}\n").unwrap();
+        for args in [
+            &["add", "s.rs"][..],
+            &["commit", "-q", "-m", "s integrates"][..],
+        ] {
+            run_git(&repo_path, args);
+        }
+        let commit_c = trimmed_stdout(&run_git(&repo_path, &["rev-parse", "HEAD"]));
+        let store = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &store,
+            &[],
+            &[
+                lane_0_merge_break(),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}))
+                        .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "s")
+                .with_meta(
+                    META_CONTRADICTION,
+                    r#"{"verdict":"approve","compensate":"s"}"#,
+                ),
+            ],
+        );
+
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&spec_cfg(2), &deps).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && e.meta.get(META_COMPENSATED).map(String::as_str) == Some(commit_c.as_str())
+            }),
+            "premise: the resume drains the queued compensation, reverting s's commit C"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            2,
+            "premise: the compensated group re-spawns both lanes; prompts: {prompts:?}"
+        );
+        assert!(
+            prompts.iter().all(|p| !p.contains(LANE_0_MERGE_BREAK)),
+            "a compensation re-entry is never prompted with an earlier lane's logged failure; \
+             prompts:\n{prompts:?}"
         );
     }
 
@@ -27245,19 +27616,7 @@ mod tests {
 
         // The operator grants 2 more attempts, exactly `rigger resume-unit
         // implement --attempts 2` would append.
-        let resumed = crate::eventstore::Event::new(
-            ledger::TYPE_UNIT_RESUMED,
-            serde_json::to_vec(
-                &json!({"unit": "implement", "attempts_granted": 2, "by": "operator"}),
-            )
-            .unwrap(),
-        );
-        st.append(
-            STREAM,
-            crate::eventstore::ExpectedRevision::Any,
-            std::slice::from_ref(&resumed),
-        )
-        .unwrap();
+        grant_resume(&st, "implement", 2);
 
         // Second window (a fresh `rigger step`/`rigger run` resume): the unit must
         // re-enter remediation and get EXACTLY 2 more attempts (4 total) before it
@@ -29028,6 +29387,7 @@ mod tests {
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
+            prior_failure: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
@@ -30818,13 +31178,49 @@ mod tests {
         );
     }
 
+    /// Gap 61 for a resumed-reviewed unit `s` whose integrate door failed in the window `rs`
+    /// folds, with `marker` in its failing gate's output: the folded failure carries that
+    /// gate's evidence and no review reason (the review approved; the gate alone failed),
+    /// and a fresh process re-entering `s` (`deps` driving `driver` again) opens its
+    /// implementer prompt with the prior-failure block built from exactly that evidence.
+    fn assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+        rs: &RunState,
+        marker: &str,
+        cfg: &Config,
+        deps: &Deps,
+        driver: &Stub,
+    ) {
+        let failed = &rs.units["s"];
+        assert!(
+            failed.gate_evidence.len() == 1 && failed.gate_evidence[0].contains(marker),
+            "the folded failure must carry the failing gate's evidence: {:?}",
+            failed.gate_evidence
+        );
+        assert_eq!(
+            failed.review_reason, "",
+            "an approved unit's gate failure carries no review reason"
+        );
+        run_isolated(cfg, deps).unwrap();
+        let block = format!(
+            "{PREAMBLE}Your previous attempt failed these gates: {}\n\n",
+            failed.gate_evidence[0]
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.first().is_some_and(|p| p.starts_with(&block)),
+            "the re-entry in a fresh process must open with exactly the logged failure's \
+             block:\n{block}\ngot: {prompts:?}"
+        );
+    }
+
     #[test]
     fn a_resumed_reviewed_unit_whose_exhaustive_gate_fails_records_a_gate_cause() {
         // spec 69, criterion 3 (the cause wire): the SAME `ResumePhase::Reviewed`
         // exhaustive re-assert this file's sibling test exercises (a prior window
         // recorded an approved `reviewed` but the merge was interrupted), except the
         // gate genuinely fails on resume. The UnitFailed this records must name the
-        // failing gate - it is a plain gate failure, not a merge conflict.
+        // failing gate - it is a plain gate failure, not a merge conflict - and carry
+        // the gate's evidence, which the next process's re-entry is prompted with (gap 61).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
@@ -30857,7 +31253,10 @@ mod tests {
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
         cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("bad".into(), gate_def("exit 1"));
+        cfg.workflow.gates.insert(
+            "bad".into(),
+            gate_def("echo 'EXHAUSTIVE-RED on resume'; exit 1"),
+        );
         cfg.workflow.stages.insert(
             "s".into(),
             Stage {
@@ -30880,7 +31279,7 @@ mod tests {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run_isolated(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         // The FIRST UnitFailed for "s" is the resumed exhaustive re-assert failing on
         // this exact gate - read the raw event rather than the folded final cause, since
@@ -30899,6 +31298,17 @@ mod tests {
             json!("gate:bad"),
             "a resumed-reviewed exhaustive gate failure must name the failing gate: {v:?}"
         );
+        assert!(
+            !driver.spawned("worker"),
+            "premise: the resumed window fails at the integrate door with no implementer spawn"
+        );
+        assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+            &rs,
+            "EXHAUSTIVE-RED on resume",
+            &cfg,
+            &deps,
+            &driver,
+        );
     }
 
     #[test]
@@ -30909,7 +31319,8 @@ mod tests {
         // by the time this resume merges it, the base already carries a batch-mate's
         // (here: seeded directly, deterministically) change that combines into a broken
         // tree. The post-merge block is a MERGE conflict, not a plain gate failure -
-        // its UnitFailed must be stamped "integrate-conflict".
+        // its UnitFailed must be stamped "integrate-conflict" and carry the post-merge
+        // gate's evidence, which the next process's re-entry is prompted with (gap 61).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -30998,12 +31409,14 @@ mod tests {
             },
         );
 
-        let driver = Stub::new();
+        // The panel answers substantively, so the fresh process re-entering `s` below runs
+        // its whole lifecycle; this window spawns none of it (the premise just after).
+        let driver = approving_panel_stub(&["lens"]);
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        run_isolated(&cfg, &deps).unwrap();
+        let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert!(
             !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
@@ -31024,6 +31437,13 @@ mod tests {
             json!("integrate-conflict"),
             "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
              plain gate cause: {v:?}"
+        );
+        assert_a_fresh_process_re_enters_s_with_its_logged_gate_evidence(
+            &rs,
+            "merge introduced duplicate MARK",
+            &cfg,
+            &deps,
+            &driver,
         );
     }
 
@@ -36965,11 +37385,25 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         // Seed the crash state: unit-a integrated at commit C, a durable compensation-queued
         // mark naming unit-a, and NO drained UnitFailed - the trigger fired, the drain did not.
+        // Before it integrated, unit-a's first attempt was rejected, so its latest UnitFailed
+        // still carries that earlier attempt's reject (gap 61's logged failure) - which the
+        // compensation re-entry, one attempt past it, must never be prompted with.
         let contradiction = r#"{"verdict":"approve","compensate":"unit-a"}"#;
+        let earlier_reject = "EARLIER-ATTEMPT-REJECT: already fixed before unit-a integrated";
         seed_events_in_run(
             &store,
             &[],
             &[
+                Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({
+                        "id": "unit-a",
+                        "attempts": 1,
+                        "cause": CAUSE_REJECT,
+                        "review_reason": earlier_reject,
+                    }))
+                    .unwrap(),
+                ),
                 Event::new(
                     ledger::TYPE_UNIT_INTEGRATED,
                     serde_json::to_vec(&json!({"id": "unit-a", "commit": commit_c})).unwrap(),
@@ -37033,6 +37467,11 @@ mod tests {
                 .first()
                 .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
             "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
+        );
+        assert!(
+            prompts.iter().all(|p| !p.contains(earlier_reject)),
+            "a compensation re-entry is never prompted with an EARLIER attempt's logged \
+             failure; prompts:\n{prompts:?}"
         );
     }
 
@@ -39008,6 +39447,16 @@ mod tests {
             rs.units["rev"].cause, "reject",
             "a standalone fan-out review reject must be stamped 'reject'"
         );
+        // Gap 61: the reject's reasoning (the adjudicator's raw output) rides on the
+        // UnitFailed like every other failure's specifics; it ran no gate, so no evidence.
+        assert_eq!(
+            (
+                rs.units["rev"].review_reason.as_str(),
+                rs.units["rev"].gate_evidence.len()
+            ),
+            ("{\"verdict\":\"reject\"}", 0),
+            "a standalone fan-out review reject must log its review reason and no gate evidence"
+        );
     }
 
     #[test]
@@ -39019,7 +39468,9 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("exit 1"));
+        cfg.workflow
+            .gates
+            .insert("g".into(), gate_def("echo 'STANDALONE-GATE-RED'; exit 1"));
         cfg.workflow.stages.insert(
             "rev".into(),
             Stage {
@@ -39053,6 +39504,20 @@ mod tests {
             rs.units["rev"].cause, "gate:g",
             "an approved-but-gate-failing standalone review stage must name the failing \
              gate, not the generic 'reject' a review verdict rejection carries"
+        );
+        // Gap 61: the failing gate's evidence rides on the UnitFailed; the adjudicator
+        // approved, so there is no review reason to log.
+        let failed = &rs.units["rev"];
+        assert!(
+            failed.gate_evidence.len() == 1
+                && failed.gate_evidence[0].contains("STANDALONE-GATE-RED"),
+            "an approved-but-gate-failing standalone review stage must log the gate's \
+             evidence: {:?}",
+            failed.gate_evidence
+        );
+        assert_eq!(
+            failed.review_reason, "",
+            "an approved review's gate failure carries no review reason"
         );
     }
 
@@ -40769,6 +41234,17 @@ mod tests {
             rs1.units["plan-critique"].cause, "reject",
             "a plan-critique gate reject must be stamped 'reject'"
         );
+        // Gap 61: the reject's reasoning (the adjudicator's raw output) rides on the
+        // UnitFailed like every other failure's specifics; the gate runs no gates, so no
+        // evidence.
+        assert_eq!(
+            (
+                rs1.units["plan-critique"].review_reason.as_str(),
+                rs1.units["plan-critique"].gate_evidence.len()
+            ),
+            ("{\"verdict\":\"reject\"}", 0),
+            "a plan-critique gate reject must log its review reason and no gate evidence"
+        );
         assert_eq!(
             occurrences(&d1.calls, "worker"),
             0,
@@ -40794,6 +41270,79 @@ mod tests {
             0,
             "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
             d2.calls.lock().unwrap()
+        );
+    }
+
+    /// The verdict the plan-critique adjudicator renders on round 0 in the gap 61 critique
+    /// fixtures: a rule 7 ownership reject the next round must judge the revision against.
+    const OWNERSHIP_REJECT: &str =
+        r#"{"verdict":"reject","issues":["gap61: u-a and u-b both own the widget renderer"]}"#;
+
+    /// A plan-critique driver whose planner proposes [`widget_split`] on every spawn and whose
+    /// adjudicator rejects round 0 with [`OWNERSHIP_REJECT`] and approves round 1. With
+    /// `park_replan` the re-plan that reject drives parks, so the step ends before round 1.
+    fn reject_then_approve_critique(park_replan: bool) -> Stub {
+        let replan = spawn_id("plan", ROLE_REPLAN, 1);
+        Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+            ]),
+            output_by_spawn_id: HashMap::from([
+                (
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 0),
+                    OWNERSHIP_REJECT.to_string(),
+                ),
+                (
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            park_spawn_ids: park_replan.then_some(replan).into_iter().collect(),
+            ..Stub::new()
+        }
+    }
+
+    #[test]
+    fn a_plan_critique_round_re_entered_in_a_later_process_opens_with_the_logged_reject() {
+        // Gap 61 for the plan-critique gate: a reject feeds its reasoning to the planner AND to
+        // the next critique round, whose prompt opens with it so the reviewers judge the
+        // revised DAG against what was wrong before. When that round runs in a LATER process
+        // than the reject (its re-plan parked across a `rigger step`), the reasoning reaches it
+        // only through the log - the review reason the reject's UnitFailed carries - and the
+        // round must open exactly as the in-process retry round does.
+        let in_process = reject_then_approve_critique(false);
+        critique_step(&Store::open(":memory:").unwrap(), &in_process);
+        let rounds = in_process.prompts_for("judge");
+        assert_eq!(
+            rounds.len(),
+            2,
+            "premise: the in-process gate rejects round 0 and approves round 1"
+        );
+        let retry_round = &rounds[1];
+        assert!(
+            retry_round.starts_with(&format!(
+                "A prior plan-critique REJECTED this decomposition:\n{OWNERSHIP_REJECT}\n\n"
+            )),
+            "premise: the in-process retry round opens with the reject; got:\n{retry_round}"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        let rs = critique_step(&st, &reject_then_approve_critique(true));
+        let gate = &rs.units["plan-critique"];
+        assert_eq!(
+            (gate.status, gate.attempts, gate.review_reason.as_str()),
+            (ledger::Status::Failed, 1, OWNERSHIP_REJECT),
+            "premise: the first step logs the reject and ends on the parked re-plan"
+        );
+        let re_entering = reject_then_approve_critique(false);
+        critique_step(&st, &re_entering);
+        assert_eq!(
+            re_entering.prompts_for("judge").first(),
+            Some(retry_round),
+            "the round re-entered in a later process must open with the logged reject, exactly \
+             as the in-process retry round does"
         );
     }
 
