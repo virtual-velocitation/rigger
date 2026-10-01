@@ -35,8 +35,10 @@
 //! run branch merged after this run started), one that records no base, one HEAD no longer holds
 //! or whose tip names no object here: the gate sweeps the whole spec diff and re-runs none of its
 //! misses. Its catch map is read whichever run wrote it: every catch whose catching test changed
-//! since the owned tip, else since the run base, is re-run by name, and the map is carried forward
-//! whole. A run base git cannot resolve fails the gate before anything runs.
+//! since the owned tip, else since the run base, is re-run by name. Every entry for a mutant this
+//! sweep did not examine is carried forward, whichever run recorded it; a re-run catch is
+//! re-recorded, and dropped when it now survives. A run base git cannot resolve fails the gate
+//! before anything runs.
 //!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
