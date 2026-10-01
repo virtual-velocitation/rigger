@@ -13130,6 +13130,25 @@ mod tests {
                 .collect()
         }
 
+        /// Append to `store`'s run stream the `UnitResumed` an operator's `rigger resume-unit
+        /// <unit> --attempts <attempts_granted>` writes (spec 88, criterion 3).
+        pub(super) fn grant_resume(store: &Store, unit: &str, attempts_granted: u32) {
+            let resumed = Event::new(
+                ledger::TYPE_UNIT_RESUMED,
+                serde_json::to_vec(
+                    &json!({"unit": unit, "attempts_granted": attempts_granted, "by": "operator"}),
+                )
+                .unwrap(),
+            );
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&resumed),
+                )
+                .unwrap();
+        }
+
         /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
         /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
         /// mention.
@@ -14364,6 +14383,11 @@ mod tests {
         );
     }
 
+    /// The generic preamble `PriorFailure::block` opens a gate, review or contradiction failure
+    /// with, spelled out literally so the tests pin the exact words the next attempt reads.
+    const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
+                             these - do not start over:\n";
+
     #[test]
     fn prior_failure_block_adds_the_generic_preamble_for_review_reject_or_contradiction_alone() {
         // Kills two missed mutants sharing one preamble condition (block()'s
@@ -14377,8 +14401,6 @@ mod tests {
         // review_reason or contradiction only asserts the PER-FIELD line pushed
         // further down (unconditional, outside this compound condition), never
         // the generic preamble the condition actually guards.
-        const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
-                                 these - do not start over:\n";
         let review_only = PriorFailure {
             review_reason: "REJECT_REASON_x".into(),
             ..Default::default()
@@ -14399,6 +14421,77 @@ mod tests {
              failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
             contradiction_only.block()
         );
+    }
+
+    #[test]
+    fn a_resumed_unit_re_enters_with_the_prior_failure_block_its_retry_carried() {
+        // Gap 61: a unit an operator resumes after an escalation re-enters the implementer
+        // stage in a LATER process, so the failure it must fix reaches it only through the
+        // log (UnitFailed{cause} -> UnitEscalated -> UnitResumed). Its prompt must open with
+        // the same prior-failure block the ordinary in-process retry carried - never a
+        // fresh-unit prompt that leaves the implementer to rediscover the ruling - for a
+        // review reject and a gate failure alike. Each unit fails the same way on every
+        // attempt, so the retry's prompt and the resumed prompt are byte-identical when both
+        // blocks are built right.
+        let verdict = r#"{"verdict":"reject","issues":["gap61: the REQUIRED fix"]}"#;
+        let mut red_gate = per_unit_panel_cfg(Some(2));
+        red_gate
+            .workflow
+            .gates
+            .insert("ok".into(), gate_def("false"));
+        for (cfg, driver, cause) in [
+            (
+                per_unit_panel_cfg(Some(2)),
+                Stub::answering(verdict),
+                CAUSE_REJECT,
+            ),
+            (red_gate, Stub::new(), "gate:ok"),
+        ] {
+            let prompts = prompts_around_a_resume(&cfg, &driver, cause);
+            assert!(
+                prompts[1].starts_with(PREAMBLE),
+                "premise: the ordinary retry after a {cause} failure opens with the \
+                 prior-failure block; got:\n{}",
+                prompts[1]
+            );
+            assert!(
+                prompts[2].starts_with(PREAMBLE),
+                "the resumed re-entry after a {cause} escalation must open with the \
+                 prior-failure preamble; got:\n{}",
+                prompts[2]
+            );
+            assert_eq!(
+                prompts[2], prompts[1],
+                "the resumed re-entry after a {cause} escalation must carry the SAME \
+                 prior-failure block the retry carried, rebuilt from the logged failure"
+            );
+        }
+    }
+
+    /// The worker's prompts around an operator's one-attempt `rigger resume-unit` grant (gap
+    /// 61): `cfg`'s `implement` unit fails both attempts of a first process window and
+    /// escalates with `cause` at the bound of 2, then a second window - a fresh process that
+    /// knows the failure only from the log - re-enters it at attempt 2. Returns attempt 0's
+    /// prompt, the ordinary in-process retry's, and the resumed re-entry's.
+    fn prompts_around_a_resume(cfg: &Config, driver: &Stub, cause: &str) -> Vec<String> {
+        let st = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&st, driver, Vec::new());
+        let rs = run_isolated(cfg, &deps).unwrap();
+        let unit = &rs.units["implement"];
+        assert_eq!(
+            (unit.status, unit.attempts, unit.cause.as_str()),
+            (ledger::Status::Escalated, 2, cause),
+            "premise: the first window escalates after two attempts"
+        );
+        grant_resume(&st, "implement", 1);
+        run_isolated(cfg, &deps).unwrap();
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            3,
+            "premise: two first-window attempts plus the one granted attempt; prompts: {prompts:?}"
+        );
+        prompts
     }
 
     #[test]
@@ -27245,19 +27338,7 @@ mod tests {
 
         // The operator grants 2 more attempts, exactly `rigger resume-unit
         // implement --attempts 2` would append.
-        let resumed = crate::eventstore::Event::new(
-            ledger::TYPE_UNIT_RESUMED,
-            serde_json::to_vec(
-                &json!({"unit": "implement", "attempts_granted": 2, "by": "operator"}),
-            )
-            .unwrap(),
-        );
-        st.append(
-            STREAM,
-            crate::eventstore::ExpectedRevision::Any,
-            std::slice::from_ref(&resumed),
-        )
-        .unwrap();
+        grant_resume(&st, "implement", 2);
 
         // Second window (a fresh `rigger step`/`rigger run` resume): the unit must
         // re-enter remediation and get EXACTLY 2 more attempts (4 total) before it

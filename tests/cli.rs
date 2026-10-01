@@ -35,8 +35,8 @@ use common::cli::temp_store_project;
 use common::cli::validate_after_init;
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    write_scaffold, write_workflow_fixture, WorkflowFixture, REVIEWLESS_GIT_UNIT_WORKFLOW,
-    UNISOLATED_WORKER,
+    write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
+    REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
 };
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::pgid_of;
@@ -5141,6 +5141,128 @@ fn resume_unit_re_parks_on_the_durable_branch_and_status_names_the_grant() {
         out.contains("solo: escalated (awaiting a human)") && !out.contains("resumed by operator"),
         "a second escalation must read as plain escalated again, not still \"resumed\"; \
          got: {out:?} (stderr: {err})"
+    );
+}
+
+/// The review-gated twin of [`REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW`]: `solo`'s gate always
+/// passes, so its adjudicator `judge` is the only thing that fails it, and `max_retries: 2`
+/// gives it one ordinary retry before it escalates - a run that shows both the retry's prompt
+/// and, after a resume, the re-entry's.
+const REVIEW_GATED_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+  max_retries: 2
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    review:
+      adjudicator: judge
+"#,
+};
+
+/// The verdict `judge` renders on every attempt: a reject naming a REQUIRED item, so a prompt
+/// that carries the ruling names it.
+const REQUIRED_REJECT: &str = r#"{"verdict":"reject","issues":["REQUIRED: gap61 names the fix"]}"#;
+
+/// The prior-failure block a parked implementer's prompt opens with: everything before the
+/// first blank line, which separates the block from the task block that follows it.
+fn prior_failure_block(prompt: &str) -> &str {
+    prompt.split("\n\n").next().unwrap_or_default()
+}
+
+/// Gap 61 at the real binary boundary: a unit escalated on review rejects and granted another
+/// attempt with `rigger resume-unit` re-enters in a LATER `rigger step` process, so the failure
+/// it must fix reaches its implementer only through the log. The re-parked implementer's
+/// `SpawnRequested` prompt must open with the same prior-failure block the ordinary retry's
+/// carried - the preamble, then the adjudicator's reject with its REQUIRED item - never the
+/// fresh-unit prompt that leaves the implementer to rediscover the ruling.
+#[test]
+fn resume_unit_re_parks_the_implementer_with_the_prior_failure_block_its_retry_carried() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEW_GATED_GIT_ESCALATING_UNIT_WORKFLOW);
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+
+    // The implementer's diff, committed in the worktree it was handed so its branch diverges
+    // from the run branch before any step-start sweep can read an undiverged tip.
+    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    commit_the_setup_diff(&wt_dir);
+
+    // Attempts 0 and 1: each implementer reports, its gate passes, `judge` parks and rejects.
+    // The first reject parks the ordinary retry; the second escalates at the bound.
+    for attempt in 0..2 {
+        run_rigger_ok(
+            root,
+            &[
+                "result",
+                &format!("solo/implementer#{attempt}"),
+                "implemented",
+            ],
+        );
+        let out = step_line(root, "the implementer replays and the adjudicator parks");
+        assert!(
+            out.contains(&format!(r#""id":"solo/adjudicator#{attempt}""#)),
+            "attempt {attempt} must gate green and park the adjudicator; got: {out}"
+        );
+        run_rigger_ok(
+            root,
+            &[
+                "result",
+                &format!("solo/adjudicator#{attempt}"),
+                REQUIRED_REJECT,
+            ],
+        );
+        let out = step_line(root, "the reject folds");
+        let next = if attempt == 0 {
+            r#""id":"solo/implementer#1""#
+        } else {
+            r#""escalated":["solo"]"#
+        };
+        assert!(
+            out.contains(next),
+            "attempt {attempt}'s reject must lead to {next}; got: {out}"
+        );
+    }
+
+    run_rigger_ok(root, &["resume-unit", "solo", "--attempts", "1"]);
+    let out = step_line(root, "the resumed step re-parks the implementer");
+    assert!(
+        out.contains(r#""id":"solo/implementer#2""#),
+        "the resume must re-park the implementer at attempt 2; got: {out}"
+    );
+
+    let parked = rigger::spawn::recorded(&read_run_events(root)).unwrap();
+    let prompt_of = |id: &str| {
+        parked
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} must be parked"))
+            .prompt
+            .clone()
+    };
+    let retry = prompt_of("solo/implementer#1");
+    let resumed = prompt_of("solo/implementer#2");
+    let preamble =
+        "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n";
+    let rejected = format!("Your previous attempt was rejected by review: {REQUIRED_REJECT}");
+    assert!(
+        retry.starts_with(preamble) && retry.contains(&rejected),
+        "premise: the ordinary retry opens with the preamble and the reject; got:\n{retry}"
+    );
+    assert!(
+        resumed.starts_with(preamble),
+        "the resumed implementer's prompt must open with the prior-failure preamble; got:\n{resumed}"
+    );
+    assert_eq!(
+        prior_failure_block(&resumed),
+        prior_failure_block(&retry),
+        "the resumed implementer must carry the SAME prior-failure block the retry carried"
     );
 }
 
