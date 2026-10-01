@@ -11,11 +11,12 @@
 //!
 //! THE GUARD READS LIVENESS (spec 101): a run is live when a `rigger step` holds the step lock,
 //! when an in-flight spawn's liveness marker is younger than that spawn's wall-clock bound, or
-//! when a registry heartbeat for this store is younger than the idle window. A spawn is in flight
-//! until a real result is recorded for it: the step's own liveness fault does not end it. Unit
-//! terminality is not a liveness signal: a run whose driver died leaves its units non-terminal
-//! forever, and that run - the one whose bloat most needs the compaction - must not need
-//! `--force-live` to get it.
+//! when a DRIVER registration for this store is younger than the idle window - every `rigger
+//! step`, `run` and `serve` registers as one, a courier's discovery refresh never does. A spawn is
+//! in flight until a real result is recorded for it: the step's own liveness fault does not end
+//! it. Unit terminality is not a liveness signal: a run whose driver died leaves its units
+//! non-terminal forever, and that run - the one whose bloat most needs the compaction - must not
+//! need `--force-live` to get it.
 //!
 //! These tests drive the COMPILED binary against a real `.rigger/events.db`, because the
 //! criterion is an operator-facing refusal whose observable effects are the command's exit
@@ -49,6 +50,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::UNISOLATED_WORKER;
+use common::fixtures::registry_entries;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
@@ -1128,10 +1130,9 @@ fn the_marker_rigger_step_stamps_under_a_tilde_workdir_is_the_one_the_guard_read
 /// Given a dead driver's run whose one in-flight spawn is UNBOUNDED, its worker having touched
 /// the liveness marker every host keeps for every spawn a day before it died: when the operator
 /// runs `reset --derived`, then it refuses naming the `rigger result` that ends the spawn; when the
-/// operator records that result as told, then the spawn no longer holds the run live and the one
-/// signal left is the registry heartbeat that `rigger result` courier itself just stamped for
-/// this store; and once that heartbeat is past the idle window the compaction runs - never
-/// needing `--force-live`.
+/// operator records that result as told, then the spawn no longer holds the run live, and the
+/// registry entry that `rigger result` courier itself just stamped for this store is discovery,
+/// never a driver, so the compaction runs at once - never needing `--force-live`.
 #[test]
 fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result() {
     let dir = temp_store_project();
@@ -1169,39 +1170,18 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
         "the operator records the spawn's result; stdout: {out} stderr: {err}"
     );
 
-    let (out, err, ok) = reset().said();
-    assert!(
-        !ok,
-        "the result courier's own registry heartbeat is inside the idle window; stdout: {out:?}"
-    );
-    assert!(
-        !err.contains(SPAWN),
-        "a spawn with a recorded result has ended and must not be named; stderr: {err:?}"
-    );
-    assert!(
-        err.contains(&format!(
-            "1 driver registration(s) for this project's store in the machine-global instance \
-             registry (spec 50) heartbeat within the last {}s",
-            idle_window_secs()
-        )),
-        "the one signal left is the heartbeat the courier stamped; stderr: {err:?}"
-    );
-
     let instances = registry::instances_dir(state_home.path());
     let stamped =
         registry::read_live_no_prune(&instances, registry::now_ms(), registry::DEFAULT_IDLE_MS);
     assert_eq!(
         stamped.len(),
         1,
-        "the courier stamped exactly one entry, this store's"
+        "the result courier stamped exactly one entry, this store's"
     );
-    for mut inst in stamped {
-        inst.heartbeat_ms = registry::now_ms() - registry::DEFAULT_IDLE_MS - 60_000;
-        registry::write(&instances, &inst).expect("age the courier's heartbeat");
-    }
     assert_compacted(
         reset().said(),
-        "with the result recorded and the heartbeat past the idle window nothing is live",
+        "with the result recorded nothing is live: the result courier's fresh registry stamp is \
+         discovery, never a driver",
     );
 }
 
@@ -1211,8 +1191,9 @@ fn an_unbounded_spawn_holds_the_run_live_until_the_operator_records_its_result()
 
 /// Given the operator reads the binary's help or rigger's rendered skills, then each states the
 /// liveness definition this criterion owns - a held step lock, an in-flight spawn's marker inside
-/// its wall-clock bound, a registry heartbeat inside the idle window - and that a dead driver's
-/// run is not live; none still reads unit terminality or a bare unanswered spawn as live.
+/// its wall-clock bound, a driver registration's heartbeat inside the idle window - and that a
+/// dead driver's run is not live; none still reads unit terminality or a bare unanswered spawn as
+/// live.
 #[test]
 fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     let dir = temp_store_project();
@@ -1225,8 +1206,8 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     assert!(
         help.contains(
             "Refuses while the run is live (a held step lock, an in-flight spawn's marker inside \
-             its wall-clock bound, or a registry heartbeat inside the idle window), naming what is \
-             live (a dead driver's run is not)"
+             its wall-clock bound, or a driver registration's heartbeat inside the idle window), \
+             naming what is live (a dead driver's run is not)"
         ),
         "the --derived help must state the liveness definition; got {help:?}"
     );
@@ -1256,12 +1237,21 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
     assert!(
         reset_store.contains(
             "When no driver is alive (no `rigger step` holds the lock, no in-flight spawn's \
-             liveness marker is younger than its wall-clock bound, no registration for the store \
-             has a heartbeat inside the idle window) and no spawn of the run awaits its result, \
-             it also closes the current run's units"
+             liveness marker is younger than its wall-clock bound, no driver registration for the \
+             store has a heartbeat inside the idle window) and no spawn of the run awaits its \
+             result, it also closes the current run's units"
         ),
         "the reset-store skill must state the liveness `--runs` closes a dead run on, and that \
          the close waits for every spawn's result; got {reset_store:?}"
+    );
+    assert!(
+        reset_store.contains(
+            "A `rigger step` registers as the run's driver just as `run` and `serve` do, so a \
+             hand-landed unit closes once the last step's stamp is older than the idle window; a \
+             courier's (`emit`, `result`, `progress`) discovery refresh never counts as a driver"
+        ),
+        "the reset-store skill must state which registrations count as a driver; got \
+         {reset_store:?}"
     );
     assert!(
         !reset_store.contains("no spawn awaits a result"),
@@ -1278,7 +1268,10 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
              driver died is not live: units it left non-terminal never block the compaction, a \
              spawn with no marker never does, and an in-flight spawn stops blocking once its \
              marker outlives the spawn's bound or a real result is recorded for it. An unbounded \
-             spawn's marker never outlives its bound, so record that spawn's result to end it."
+             spawn's marker never outlives its bound, so record that spawn's result to end it. \
+             Every `rigger step`, `run` and `serve` registers as the run's driver, so the last \
+             step's stamp counts as a live driver for the idle window; a courier's (`emit`, \
+             `result`, `progress`) discovery refresh of that registration never does."
         ),
         "the using-rigger skill must state the liveness `--derived` refuses on; got {using:?}"
     );
@@ -1506,6 +1499,32 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     assert!(
         err.contains("registration"),
         "the refusal must name the live driver registration; stderr: {err:?}"
+    );
+}
+
+/// A courier's registry refresh is discovery, never a driver: a real `rigger emit` against this
+/// store seconds before, into the same registry, leaves compaction unrefused.
+#[test]
+fn reset_derived_is_not_refused_by_a_couriers_registry_refresh() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let state = [("XDG_STATE_HOME", state_home.path().to_str().unwrap())];
+
+    let emit = ["emit", "DecisionMade", r#"{"id":"d1","summary":"s"}"#];
+    let (_out, err, ok) = run_rigger_envs(root, &emit, &state);
+    assert!(ok, "rigger emit must succeed; stderr: {err}");
+    assert_eq!(
+        registry_entries(state_home.path()).len(),
+        1,
+        "the courier refreshed this store's entry in the registry the guard reads"
+    );
+
+    assert_prunes(
+        root,
+        &["reset", "--derived"],
+        &state,
+        "a courier's discovery refresh must never read as a live driver",
     );
 }
 

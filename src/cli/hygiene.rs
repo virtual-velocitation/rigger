@@ -592,9 +592,11 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
 ///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run`/`serve` process
 ///     alive.
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
-///     project's exact store whose heartbeat is younger than [`rigger::registry::DEFAULT_IDLE_MS`]:
-///     an in-process `rigger run`/`serve` (which never touches `step.lock`), or a driver between
-///     two of its `rigger step`s, elsewhere on this machine.
+///     project's exact store whose DRIVER heartbeat is younger than
+///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): an in-process
+///     `rigger run`/`serve` (which never touches `step.lock`), or a driver between two of its
+///     `rigger step`s (every step registers as the run's driver, so its last stamp counts for the
+///     idle window), elsewhere on this machine. A courier's discovery refresh is not one.
 ///
 /// Unit terminality is NOT a liveness signal, and neither is an in-flight spawn on its own,
 /// without a marker inside its bound: a run whose driver died leaves both behind forever, and
@@ -790,13 +792,7 @@ fn live_writer_facts(
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             let expected = registry_store_identity(selection, &root);
-            // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign
-            // project's registry entry as a side effect of checking THIS store for live writers
-            // (spec 62 criterion 5 round 4 - see `read_live_no_prune`'s doc).
-            rigger::registry::read_live_no_prune(dir, env.now_ms, rigger::registry::DEFAULT_IDLE_MS)
-                .into_iter()
-                .filter(|inst| inst.store == expected)
-                .count()
+            live_driver_registrations(dir, &expected, env.now_ms)
         })
         .unwrap_or(0);
 
@@ -805,6 +801,28 @@ fn live_writer_facts(
         live_spawns,
         driver_registrations,
     })
+}
+
+/// How many entries in the machine-global registry at `dir` record a live DRIVER of the store
+/// `expected` as of `now_ms` ([`rigger::registry::Instance::driver_live`]). A courier's discovery
+/// re-stamp (`emit`, `result`, `progress`) is not one: it drives nothing, and counting it would
+/// read an operator's own courier, seconds before a reset, as the live driver that keeps the
+/// reset from closing a hand-landed unit. A courier entry still counts while it carries a fresh
+/// driver stamp, so a live driver's own agent never hides that driver.
+fn live_driver_registrations(
+    dir: &Path,
+    expected: &rigger::registry::StoreIdentity,
+    now_ms: u64,
+) -> usize {
+    // `read_live_no_prune`, not `read_live`: this probe must never delete a foreign project's
+    // registry entry as a side effect of checking THIS store for live writers (spec 62
+    // criterion 5 round 4 - see `read_live_no_prune`'s doc).
+    rigger::registry::read_live_no_prune(dir, now_ms, rigger::registry::DEFAULT_IDLE_MS)
+        .into_iter()
+        .filter(|inst| {
+            inst.store == *expected && inst.driver_live(now_ms, rigger::registry::DEFAULT_IDLE_MS)
+        })
+        .count()
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -964,6 +982,7 @@ fn landed_units(
 mod tests {
     use super::*;
     use crate::test_support::ev;
+    use rigger::registry::{Instance, StoreIdentity, Writer, DEFAULT_IDLE_MS};
 
     /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
     /// reuses the SINGLE run-attribution authority (`run_attribution` + `current_run_id`), so a
@@ -1682,6 +1701,84 @@ mod tests {
         assert!(!facts(true, vec![], 0).driver_dead());
         assert!(!facts(false, vec![live_spawn("a/implementer#0", 1, 300)], 0).driver_dead());
         assert!(!facts(false, vec![], 1).driver_dead());
+    }
+
+    // --- Driver liveness: only a driver's registration keeps the driver alive ---
+
+    /// Quiet [`LiveWriterFacts`] but for the driver registrations counted, as of `now_ms`, from a
+    /// registry holding one entry for this store written by `writer` at `heartbeat_ms`.
+    fn facts_over_one_registration(
+        writer: Writer,
+        heartbeat_ms: u64,
+        now_ms: u64,
+    ) -> LiveWriterFacts {
+        let state = tempfile::tempdir().unwrap();
+        let dir = rigger::registry::instances_dir(state.path());
+        let store = StoreIdentity::Local {
+            path: "/home/dev/proj/.rigger/events.db".to_string(),
+        };
+        let entry = Instance {
+            project: "proj".to_string(),
+            root: "/home/dev/proj".to_string(),
+            store: store.clone(),
+            heartbeat_ms,
+            writer,
+        };
+        rigger::registry::write(&dir, &entry).unwrap();
+        LiveWriterFacts {
+            step_lock_held: false,
+            live_spawns: Vec::new(),
+            driver_registrations: live_driver_registrations(&dir, &store, now_ms),
+        }
+    }
+
+    /// The run's driver reads dead exactly when `dead` over one registration by `writer` at
+    /// `heartbeat_ms`, judged at `now_ms` (`why`).
+    fn assert_driver_dead(writer: Writer, heartbeat_ms: u64, now_ms: u64, dead: bool, why: &str) {
+        let facts = facts_over_one_registration(writer, heartbeat_ms, now_ms);
+        assert_eq!(facts.driver_dead(), dead, "{why}");
+    }
+
+    rigger::test_cases! {
+        /// A courier's discovery refresh drives nothing: seconds old, it leaves the driver dead.
+        a_courier_only_registration_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: None },
+            1_000,
+            1_500,
+            true,
+            "a fresh courier-only entry is no live driver",
+        );
+        a_fresh_driver_registration_keeps_the_driver_alive: assert_driver_dead(
+            Writer::Driver,
+            1_000,
+            1_500,
+            false,
+            "a fresh driver entry is a live driver",
+        );
+        a_stale_driver_registration_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Driver,
+            0,
+            DEFAULT_IDLE_MS + 1,
+            true,
+            "a driver entry past the idle window is no live driver",
+        );
+        /// A courier run by a live driver's own agent re-stamps the entry but carries the
+        /// driver's stamp, so the driver stays alive.
+        a_courier_carrying_a_fresh_driver_stamp_keeps_the_driver_alive: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: Some(1_000) },
+            1_200,
+            1_500,
+            false,
+            "a courier entry carrying a fresh driver stamp is a live driver",
+        );
+        /// The recorded shape: a dead driver's stamp stays dead under a fresh courier re-stamp.
+        a_courier_carrying_a_stale_driver_stamp_leaves_the_driver_dead: assert_driver_dead(
+            Writer::Courier { driver_heartbeat_ms: Some(0) },
+            DEFAULT_IDLE_MS + 1,
+            DEFAULT_IDLE_MS + 1,
+            true,
+            "a fresh courier entry carrying a stale driver stamp is no live driver",
+        );
     }
 
     /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn

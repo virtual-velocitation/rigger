@@ -10,8 +10,10 @@
 //! branch, no spawn of the run awaits its result (a relaunched driver resumes every such spawn,
 //! whatever its marker says), and nothing is driving the run - no `rigger step` holds the step
 //! lock, no in-flight spawn's liveness marker is younger than its wall-clock bound, and no
-//! registry heartbeat for the store is younger than the idle window (spec 101's liveness, the one
-//! both reset modes read).
+//! DRIVER registration for the store is younger than the idle window (spec 101's liveness, the one
+//! both reset modes read). A courier's (`emit`, `result`, `progress`) discovery refresh of the
+//! registry is not a driver's: the operator's own courier seconds before the reset never keeps a
+//! hand-landed unit open.
 //!
 //! These drive the COMPILED binary against a real git repo and `.rigger/events.db`, because the
 //! observable contract is the log the operator's next `rigger status` folds.
@@ -23,8 +25,10 @@ use common::cli::{
     read_run_events, real_result_body, rigger_file, run_rigger_envs, run_rigger_ok, seed_registry,
     seed_run_events,
 };
-use common::fixtures::{git_ok, git_ok_with_identity, git_out, temp_git_project_with_commit};
-use rigger::registry;
+use common::fixtures::{
+    git_ok, git_ok_with_identity, git_out, registry_entries, temp_git_project_with_commit,
+};
+use rigger::registry::{self, Writer};
 use std::path::Path;
 
 /// The run's history up to the hand landing: unit `a` integrated by the conductor, then the
@@ -93,8 +97,11 @@ struct Around {
     marker_secs_ago: Option<u64>,
     /// A `rigger step` holds the step lock for the whole reset.
     step_lock: bool,
-    /// This store's registry entry last heartbeat this many ms ago (`None`: no entry).
+    /// A DRIVER's registration for this store last heartbeat this many ms ago (`None`: no entry).
     heartbeat_ms_ago: Option<u64>,
+    /// The operator's own courier (`rigger emit`) re-stamps this store's registry entry seconds
+    /// before the reset, in the same registry the reset reads.
+    courier: bool,
 }
 
 /// No signal at all: nothing is driving the run. Each case sets the one signal it stands up over
@@ -103,6 +110,7 @@ const QUIET: Around = Around {
     marker_secs_ago: None,
     step_lock: false,
     heartbeat_ms_ago: None,
+    courier: false,
 };
 
 /// Seeds `events` into `root`, stands up the signals `around` names, runs `rigger reset --runs`,
@@ -122,19 +130,51 @@ fn reset_runs_over(
         );
     }
     let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
-    let seeded = around
-        .heartbeat_ms_ago
-        .map(|ago| seed_registry("proj", &toplevel, registry::now_ms() - ago).0);
-    let mut envs = vec![("RIGGER_TMPDIR", scratch_root)];
-    if let Some(home) = &seeded {
-        envs.push(("XDG_STATE_HOME", home.path().to_str().unwrap()));
+    let driver_heartbeat_ms = around.heartbeat_ms_ago.map(|ago| registry::now_ms() - ago);
+    let state = driver_heartbeat_ms
+        .map(|hb| seed_registry("proj", &toplevel, hb).0)
+        .unwrap_or_else(|| tempfile::tempdir().expect("a test-private XDG_STATE_HOME"));
+    let state_home = state.path().to_str().unwrap();
+    if around.courier {
+        courier_emits(root, state_home, driver_heartbeat_ms);
     }
+    let envs = [
+        ("RIGGER_TMPDIR", scratch_root),
+        ("XDG_STATE_HOME", state_home),
+    ];
     let before = run_log(root);
     let lock = around.step_lock.then(|| hold_step_lock(root));
     let (_out, err, ok) = run_rigger_envs(root, &["reset", "--runs"], &envs);
     drop(lock);
     assert!(ok, "rigger reset --runs must exit 0; stderr:\n{err}");
     (before, run_log(root))
+}
+
+/// The operator's own courier seconds before the reset: `rigger emit` against `root`'s store
+/// re-stamps its one entry in the registry under `state_home`, the registry the reset then reads,
+/// as discovery, carrying forward the stamp of the driver that registered it
+/// (`driver_heartbeat_ms`, `None` when none did) and never erasing it.
+fn courier_emits(root: &Path, state_home: &str, driver_heartbeat_ms: Option<u64>) {
+    let emit = [
+        "emit",
+        "DecisionMade",
+        r#"{"id":"d-hand-landing","summary":"checkin landed by hand"}"#,
+    ];
+    let (_out, err, ok) = run_rigger_envs(root, &emit, &[("XDG_STATE_HOME", state_home)]);
+    assert!(ok, "rigger emit must succeed; stderr: {err}");
+    let entries = registry_entries(Path::new(state_home));
+    assert_eq!(
+        entries.len(),
+        1,
+        "the courier re-stamped this store's one entry in the registry the reset reads"
+    );
+    assert_eq!(
+        entries[0].1.writer,
+        Writer::Courier {
+            driver_heartbeat_ms
+        },
+        "the courier's re-stamp carries the registered driver's stamp forward"
+    );
 }
 
 /// Every event of `root`'s run stream, oldest first, as `<type> <body>`.
@@ -187,21 +227,38 @@ fn reset_runs_closes_a_dead_run_whose_checkin_is_landed_on_the_run_branch() {
     );
 }
 
-/// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
-/// registration leaves behind: nothing is driving the run, so the landed unit is closed.
-#[test]
-fn reset_runs_closes_a_dead_run_whose_registry_heartbeat_outlived_the_idle_window() {
+/// Asserts `reset --runs` over [`DEAD_RUN`], with `around` standing, closes the landed
+/// `checkin` unit.
+fn assert_dead_run_closed(around: Around) {
     let dir = project(true, true);
     let root = dir.path();
-    let (before, after) = reset_runs_over(
-        root,
-        DEAD_RUN,
-        Around {
+    let (before, after) = reset_runs_over(root, DEAD_RUN, around);
+    assert_checkin_closed(root, &before, &after);
+}
+
+rigger::test_cases! {
+    /// A registry entry whose heartbeat is a minute past the idle window is what a dead driver's
+    /// registration leaves behind: nothing is driving the run, so the landed unit is closed.
+    reset_runs_closes_a_dead_run_whose_registry_heartbeat_outlived_the_idle_window:
+        assert_dead_run_closed(Around {
             heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
             ..QUIET
-        },
-    );
-    assert_checkin_closed(root, &before, &after);
+        });
+    /// A courier's registry refresh is discovery, never a driver: the operator's `rigger emit`
+    /// seconds before the reset leaves the landed unit closable.
+    reset_runs_closes_a_landed_unit_seconds_after_a_courier_refreshed_the_registry:
+        assert_dead_run_closed(Around {
+            courier: true,
+            ..QUIET
+        });
+    /// The recorded shape: the driver died, the operator landed the unit by hand and ran a
+    /// courier, then reset - the dead driver's stamp stays dead under the courier's re-stamp.
+    reset_runs_closes_a_landed_unit_when_a_courier_follows_a_stale_driver_registration:
+        assert_dead_run_closed(Around {
+            heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS + 60_000),
+            courier: true,
+            ..QUIET
+        });
 }
 
 /// The negative space of the rule: each case must leave the log exactly as it was.
@@ -264,6 +321,20 @@ rigger::test_cases! {
                 ..QUIET
             },
             "a heartbeat inside the idle window",
+        );
+    /// A driver registration inside the idle window owns the run even after a courier re-stamps
+    /// its entry: the courier carries the driver's stamp, so a landed branch stays open.
+    reset_runs_leaves_a_landed_unit_open_while_a_driver_registration_is_live_under_a_courier_refresh:
+        assert_left_open(
+            true,
+            true,
+            &[],
+            Around {
+                heartbeat_ms_ago: Some(registry::DEFAULT_IDLE_MS - 60_000),
+                courier: true,
+                ..QUIET
+            },
+            "a live driver registration under a courier's refresh",
         );
     /// Work that never reached the run branch is not landed.
     reset_runs_leaves_a_dead_run_open_while_its_work_is_not_on_the_run_branch: assert_left_open(

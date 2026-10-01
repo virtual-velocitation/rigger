@@ -10,7 +10,8 @@
 //! One entry holds TWO facts, because a process that DRIVES a run and a one-shot COURIER verb
 //! both write the same file: discovery (the project is active, so a dash lists it), which every
 //! writer refreshes, and driver liveness (a process that can dispatch a spawn or land a unit is
-//! alive), which only a driver stamps. [`Writer`] records which kind of process wrote an entry.
+//! alive), which only a driver stamps. [`Writer`] records which kind of process wrote an entry,
+//! and [`Instance::driver_live`] reads the driver fact alone.
 //!
 //! The registry is NEVER a source of truth and NEVER holds a credential (spec 50 secrets
 //! discipline); its loss is harmless, because live instances repopulate it as they heartbeat. A
@@ -57,7 +58,8 @@ pub enum StoreIdentity {
 ///   - DISCOVERY: the project is active on this machine, so a dash lists it. Every writer
 ///     refreshes it through [`Instance::heartbeat_ms`].
 ///   - DRIVER LIVENESS: a process that drives the run - one that can dispatch a spawn or land a
-///     unit at any moment - is alive. Only a [`Writer::Driver`] stamps it.
+///     unit at any moment - is alive. Only a [`Writer::Driver`] stamps it, and
+///     [`Instance::driver_live`] is how a consumer reads it.
 ///
 /// A consumer asking whether a run may be advancing right now must read the driver fact: a
 /// courier that merely recorded an event would otherwise read as a live driver for the whole
@@ -136,6 +138,14 @@ impl Instance {
                 driver_heartbeat_ms,
             } => driver_heartbeat_ms,
         }
+    }
+
+    /// Whether a process DRIVING this entry's run stamped it within `ttl_ms` of `now_ms`: the
+    /// driver-liveness fact, judged by [`is_stale`] exactly as any heartbeat is, and never the
+    /// discovery heartbeat a courier refreshes (see [`Writer`]).
+    pub fn driver_live(&self, now_ms: u64, ttl_ms: u64) -> bool {
+        self.driver_heartbeat_ms()
+            .is_some_and(|hb| !is_stale(hb, now_ms, ttl_ms))
     }
 }
 
@@ -726,6 +736,61 @@ mod tests {
             (Writer::Driver, 2_000),
             Writer::Driver,
             "a driver over a courier",
+        );
+    }
+
+    /// An entry written by `writer` with discovery heartbeat `heartbeat_ms` reads as a live
+    /// driver at `now_ms` exactly when `live` (`why`).
+    fn assert_driver_live(writer: Writer, heartbeat_ms: u64, now_ms: u64, live: bool, why: &str) {
+        let inst = Instance {
+            writer,
+            ..local(
+                "/home/dev/proj",
+                "/home/dev/proj/.rigger/events.db",
+                heartbeat_ms,
+            )
+        };
+        assert_eq!(inst.driver_live(now_ms, DEFAULT_IDLE_MS), live, "{why}");
+    }
+
+    crate::test_cases! {
+        a_drivers_fresh_heartbeat_is_a_live_driver: assert_driver_live(
+            Writer::Driver,
+            1_000,
+            1_500,
+            true,
+            "a driver inside the idle window",
+        );
+        a_drivers_stale_heartbeat_is_no_live_driver: assert_driver_live(
+            Writer::Driver,
+            0,
+            DEFAULT_IDLE_MS + 1,
+            false,
+            "a driver past the idle window",
+        );
+        /// A courier's fresh discovery heartbeat is never a driver's.
+        a_courier_that_carries_no_driver_heartbeat_is_no_live_driver: assert_driver_live(
+            courier(),
+            1_000,
+            1_500,
+            false,
+            "a courier alone",
+        );
+        a_courier_carrying_a_fresh_driver_heartbeat_is_a_live_driver: assert_driver_live(
+            Writer::Courier { driver_heartbeat_ms: Some(1_000) },
+            1_200,
+            1_500,
+            true,
+            "a courier over a driver inside the idle window",
+        );
+        /// The recorded shape: a dead driver's stamp stays dead however recently a courier
+        /// re-stamped discovery.
+        a_courier_carrying_a_stale_driver_heartbeat_is_no_live_driver: assert_driver_live(
+            Writer::Courier { driver_heartbeat_ms: Some(0) },
+            DEFAULT_IDLE_MS + 1,
+            DEFAULT_IDLE_MS + 1,
+            false,
+            "a fresh courier over a driver past the idle window",
         );
     }
 }

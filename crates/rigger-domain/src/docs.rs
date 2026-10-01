@@ -274,8 +274,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
          block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
          it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
-         result to end it. `--force-live` overrides the refusal for an operator certain no \
-         writer is using the store; it checks nothing.\n"
+         result to end it. Every `rigger step`, `run` and `serve` registers as the run's \
+         driver, so the last step's stamp counts as a live driver for the idle window; a \
+         courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
+         does. `--force-live` overrides the refusal for an operator certain no writer is using \
+         the store; it checks nothing.\n"
     );
 
     let _ = writeln!(s, "## Spec shape\n");
@@ -693,12 +696,15 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
              (no `rigger step` holds the lock, no in-flight spawn's liveness marker is younger \
-             than its wall-clock bound, no registration for the store has a heartbeat inside the \
-             idle window) and no spawn of the run awaits its result, it also closes the current \
-             run's units whose branch work is already landed on `rigger-run`: a unit landed by \
-             hand gets the `UnitIntegrated` only the conductor mints, so `rigger status` stops \
-             reporting the finished run as working. It only appends; a live run is left \
-             untouched.",
+             than its wall-clock bound, no driver registration for the store has a heartbeat \
+             inside the idle window) and no spawn of the run awaits its result, it also closes \
+             the current run's units whose branch work is already landed on `rigger-run`: a unit \
+             landed by hand gets the `UnitIntegrated` only the conductor mints, so `rigger \
+             status` stops reporting the finished run as working. It only appends; a live run is \
+             left untouched. A `rigger step` registers as the run's driver just as `run` and \
+             `serve` do, so a hand-landed unit closes once the last step's stamp is older than \
+             the idle window; a courier's (`emit`, `result`, `progress`) discovery refresh never \
+             counts as a driver, so your own courier just before the reset never holds it back.",
             "- `rigger reset --derived` compacts `events.db`: it keeps only each file's latest \
              generation of the derived index, at the latest event per replay key, deletes the \
              superseded generations and re-recordings, and vacuums so the file shrinks on disk. \

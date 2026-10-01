@@ -302,8 +302,9 @@ pre-dedup ingest accreted;\n                              \
 composes with --runs (each prunes its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \
 in-flight spawn's marker inside its wall-clock bound,\n                              \
-or a registry heartbeat inside the idle window), naming\n                              \
-what is live (a dead driver's run is not): compaction\n                              \
+or a driver registration's heartbeat inside the idle\n                              \
+window), naming what is live (a dead driver's run is\n                              \
+not): compaction\n                              \
 leaves revision gaps by design, and a stale writer can\n                              \
 reissue one and reorder the log - the corruption this\n                              \
 guard exists to prevent. --force-live skips the check\n                              \
