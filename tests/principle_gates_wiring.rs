@@ -6,6 +6,7 @@
 
 mod common;
 use common::cli::{run_rigger, temp_project};
+use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::collections::BTreeMap;
@@ -537,9 +538,17 @@ fn the_test_gate_fails_when_its_snippet_fails_to_source() {
     assert!(args.is_empty(), "cargo must not run: {args}");
 }
 
-/// The one listing the container runtime snippet asks for: every container carrying the test
-/// label, running or not, so a container without the label is never listed.
-const LABELLED_LISTING: &str = "ps -a --filter label=rigger.test --format {{.ID}} {{.CreatedAt}}";
+/// The one listing the container runtime snippet asks for: every container carrying the label
+/// key the test fixtures put on each container they start, running or not, so a container
+/// without the label is never listed.
+fn labelled_listing() -> String {
+    [
+        "ps -a --filter label=",
+        TEST_CONTAINER_LABEL.0,
+        " --format {{.ID}} {{.CreatedAt}}",
+    ]
+    .concat()
+}
 
 /// Sources the shipped container runtime snippet as a gate does, with a podman socket where
 /// the snippet looks for one when `runtime`, and, when `cli`, a stand-in `podman` on PATH whose
@@ -611,7 +620,7 @@ fn the_container_snippet_exports_the_found_socket_and_leaves_the_test_runner_cap
 #[test]
 fn the_container_snippet_removes_only_the_labelled_test_containers_past_their_age() {
     let (out, calls, _) = source_container_snippet(true, true, None);
-    assert_eq!(calls, [LABELLED_LISTING, "rm -f old"], "{out}");
+    assert_eq!(calls, [labelled_listing().as_str(), "rm -f old"], "{out}");
 }
 
 /// With RIGGER_TEST_CONTAINER_MAX_AGE_S=0 every labelled test container goes, the fresh one too.
@@ -620,9 +629,52 @@ fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age
     let (out, calls, _) = source_container_snippet(true, true, Some("0"));
     assert_eq!(
         calls,
-        [LABELLED_LISTING, "rm -f fresh", "rm -f old"],
+        [labelled_listing().as_str(), "rm -f fresh", "rm -f old"],
         "{out}"
     );
+}
+
+/// The KurrentDB fixture puts the test label on the container it starts, so the snippet's
+/// listing names that server and one a test ended by a signal left running is removed by the next
+/// gate. The container is the one publishing the host port its connection string carries - a
+/// port no other container on the host holds - read through the runtime the fixture reached.
+/// Skips, as the fixture does, where no container runtime is reachable.
+#[test]
+fn the_kurrentdb_fixture_labels_its_container_for_the_snippet() {
+    use testcontainers::bollard::query_parameters::ListContainersOptionsBuilder;
+    use testcontainers::bollard::Docker;
+    with_kurrentdb(|conn| {
+        let port: u16 = conn
+            .rsplit_once(':')
+            .and_then(|(_, rest)| rest.split('?').next())
+            .and_then(|port| port.parse().ok())
+            .unwrap_or_else(|| panic!("no host port in the connection string {conn}"));
+        let containers = container_runtime()
+            .block_on(async {
+                let all = ListContainersOptionsBuilder::default().all(true).build();
+                Docker::connect_with_defaults()?
+                    .list_containers(Some(all))
+                    .await
+            })
+            .expect("the container runtime lists its containers");
+        let server = containers
+            .iter()
+            .find(|c| {
+                c.ports
+                    .iter()
+                    .flatten()
+                    .any(|p| p.public_port == Some(port))
+            })
+            .unwrap_or_else(|| panic!("no container publishes the server's port {port}"));
+        let (key, value) = TEST_CONTAINER_LABEL;
+        let labels = server.labels.clone().unwrap_or_default();
+        assert_eq!(
+            labels.get(key).map(String::as_str),
+            Some(value),
+            "the KurrentDB container {:?} must carry the label {key}={value}; its labels: {labels:?}",
+            server.id
+        );
+    });
 }
 
 /// With no runtime found the snippet lists and removes nothing.

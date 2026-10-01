@@ -13,6 +13,13 @@ use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 /// The server's gRPC port inside its container.
 const KURRENTDB_PORT: u16 = 2113;
 
+/// The label, key then value, on every container a test fixture starts. The test gate's container
+/// snippet (`.rigger/gates/container-env.sh`) removes each container carrying this key once it is
+/// older than RIGGER_TEST_CONTAINER_MAX_AGE_S, so a server left running by a test a signal ended
+/// is removed by the next gate run. The snippet spells the key in shell, and
+/// `tests/principle_gates_wiring.rs` pins that spelling to this constant.
+pub const TEST_CONTAINER_LABEL: (&str, &str) = ("rigger.test", "true");
+
 /// Run `body` against a throwaway KurrentDB server ([`start_kurrentdb`]), handed its connection
 /// string, then remove the server's container whatever `body` did - on the runtime that started
 /// it, since a container handle dropped outside its runtime aborts the test binary and leaves the
