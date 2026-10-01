@@ -114,8 +114,8 @@ defaults:
 
 build:
   # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
-  # kind is now a validation error naming this spec): no per-round sweep; mutation runs
-  # ONCE at the `checkin` stage below via the `mutation` gate, remediated once.
+  # kind is now a validation error naming this spec): no per-round sweep; the sweep is the
+  # `mutation` gate below, declared but unwired until #32 lands.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
 # Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
@@ -210,8 +210,9 @@ gates:                      # the project's verification library, referenced by 
   # fixture repositories. The reviewer lens checks the same order.
   red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
   # The check-in-stage mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run
-  # ONCE at the `checkin` stage below - after every implement unit has integrated - never per
-  # implementer round. The logic lives in `.rigger/gates/mutation.sh` (its header carries the
+  # ONCE by a `checkin` stage that lists it - after every implement unit has integrated - never
+  # per implementer round. The `checkin` stage below leaves it unwired until #32 lands. The
+  # logic lives in `.rigger/gates/mutation.sh` (its header carries the
   # why of every clause: the `$RIGGER_RUN_BASE` diff base, the whole-workspace mutation with
   # diff-scoped test packages, the sweep's own memory-bounded scope and `-j` sizing, the
   # incremental anchor, the instrument-narrowing refusal and the survivor lines);
@@ -276,14 +277,14 @@ stages:
   #    unit it expanded into has integrated (an escalated or still-open unit leaves it
   #    unsatisfied, so the run's escalated fixpoint stays loud) - never before every
   #    unit has landed, and never per implementer round the way spec 73's original
-  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree,
-  #    THEN sweeps mutants; `max_retries: 2` overrides `defaults.max_retries` for this
-  #    stage alone - one remediation round for the WHOLE spec diff's mutants, then
-  #    integrate or escalate with the accounting already on record.
+  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree;
+  #    `max_retries: 2` overrides `defaults.max_retries` for this stage alone - one
+  #    remediation round for the WHOLE spec diff, then integrate or escalate.
   checkin:
     needs: [implement]
     agent: rust-engineer
-    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
-    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary, mutation]
+    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
+    # The `mutation` gate is declared above but unwired from this stage until #32 lands.
+    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary]
     on_pass: merge
-    coverage: "mutation efficacy of the whole spec diff"
+    coverage: "the whole spec diff passes every gate on the merged tree"
