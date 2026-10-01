@@ -25961,6 +25961,157 @@ mod tests {
         );
     }
 
+    /// The gate evidence a prior window logged when lane 0 of the speculating unit `s` merged
+    /// and broke the merged tree's gate (gap 61).
+    const LANE_0_MERGE_BREAK: &str = "ok: FAIL - lane 0's merge broke the merged tree";
+
+    /// The `UnitFailed` `run_speculation` records for that post-merge block on lane 0 of `s`,
+    /// written through the one body builder every failure path writes.
+    fn lane_0_merge_break() -> Event {
+        let blocked = PriorFailure {
+            gate_evidence: vec![LANE_0_MERGE_BREAK.into()],
+            ..Default::default()
+        };
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&blocked.failed_body("s", 1, CAUSE_INTEGRATE_CONFLICT)).unwrap(),
+        )
+    }
+
+    /// A driver under which every speculation lane writes a file and every reviewer approves.
+    fn approving_speculation_stub() -> Stub {
+        Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        }
+    }
+
+    #[test]
+    fn a_resumed_speculating_unit_re_enters_every_lane_with_its_logged_post_merge_block() {
+        // Gap 61 for a speculation group: in a prior window lane 0's merge broke the merged
+        // tree's gate (the UnitFailed `run_speculation` records, its evidence riding along),
+        // lanes 1 and 2 then ran their own gates and lost, and the unit escalated. An
+        // operator's `rigger resume-unit` re-enters the group in a fresh process that knows
+        // that failure only from the log. A group has no in-process retry lane - all K lanes
+        // are spawned before any is judged, and a group with no winner escalates - so every
+        // re-entered lane must open with the block an in-process retry builds from the same
+        // evidence. Lanes 1 and 2's gate verdicts sit at attempts past the logged failure's,
+        // but they are sibling candidates, never remediation attempts that moved past it.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let mut prior = vec![lane_0_merge_break()];
+        prior.extend((1..3).map(|lane| {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({
+                    "gate": "ok", "pass": true, "flaky": false, "evidence": ""
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, gate_key(GateKey::Verdict, "s", lane, "ok"))
+        }));
+        prior.push(Event::new(
+            ledger::TYPE_UNIT_ESCALATED,
+            serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+        ));
+        seed_events_in_run(&store, &[], &prior);
+        grant_resume(&store, "s", 1);
+
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&spec_cfg(3), &deps).unwrap();
+
+        let block =
+            format!("{PREAMBLE}Your previous attempt failed these gates: {LANE_0_MERGE_BREAK}\n\n");
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            3,
+            "premise: the resumed group re-spawns its three lanes; prompts: {prompts:?}"
+        );
+        for (lane, prompt) in prompts.iter().enumerate() {
+            assert!(
+                prompt.starts_with(&block),
+                "lane {lane} of the re-entered group must open with the logged post-merge \
+                 block:\n{block}\ngot:\n{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compensated_speculating_unit_never_re_enters_with_an_earlier_lanes_logged_block() {
+        // The compensation guard (gap 61) for a speculation group: lane 0's merge broke in a
+        // prior window (its UnitFailed logged the evidence), a later lane won and integrated
+        // at C, and a later unit's review queued a compensation naming `s` before the window
+        // died. The resume drains it - reverting C and re-entering the group one attempt past
+        // that logged failure, which the winning lane had already moved past - so no
+        // re-entered lane is ever prompted with it.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("s.rs"), "fn s_condemned() {}\n").unwrap();
+        for args in [
+            &["add", "s.rs"][..],
+            &["commit", "-q", "-m", "s integrates"][..],
+        ] {
+            run_git(&repo_path, args);
+        }
+        let commit_c = trimmed_stdout(&run_git(&repo_path, &["rev-parse", "HEAD"]));
+        let store = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &store,
+            &[],
+            &[
+                lane_0_merge_break(),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}))
+                        .unwrap(),
+                )
+                .with_meta(META_COMPENSATE_TARGET, "s")
+                .with_meta(
+                    META_CONTRADICTION,
+                    r#"{"verdict":"approve","compensate":"s"}"#,
+                ),
+            ],
+        );
+
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&spec_cfg(2), &deps).unwrap();
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && e.meta.get(META_COMPENSATED).map(String::as_str) == Some(commit_c.as_str())
+            }),
+            "premise: the resume drains the queued compensation, reverting s's commit C"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert_eq!(
+            prompts.len(),
+            2,
+            "premise: the compensated group re-spawns both lanes; prompts: {prompts:?}"
+        );
+        assert!(
+            prompts.iter().all(|p| !p.contains(LANE_0_MERGE_BREAK)),
+            "a compensation re-entry is never prompted with an earlier lane's logged failure; \
+             prompts:\n{prompts:?}"
+        );
+    }
+
     #[test]
     fn assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo() {
         // The guard that makes "run in the main repo" structurally impossible: with a
