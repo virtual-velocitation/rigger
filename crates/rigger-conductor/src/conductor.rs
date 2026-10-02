@@ -8557,8 +8557,8 @@ impl RunCtx<'_> {
         // so staleness measures against every current unit, not just the authored config.
         stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
-        // The unit being integrated: its name, agent, and gate library drive the FILE_TOUCHED
-        // / GATED_BY edges AND the post-merge re-gate (spec 12, unit 5), which re-runs the full
+        // The unit being integrated: its name and agent drive the FILE_TOUCHED records, and its
+        // gate library drives the post-merge re-gate (spec 12, unit 5), which re-runs the full
         // library `st.gates` against the merged tree.
         st: &Stage,
         // The unit's current attempt: the post-merge re-gate records its verdicts at this
@@ -8590,8 +8590,8 @@ impl RunCtx<'_> {
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
-        // so the FILE_TOUCHED / GATED_BY edges and the reindex see the real artifact
-        // set whether or not the unit was pre-committed.
+        // so the FILE_TOUCHED records and the reindex see the real artifact set whether
+        // or not the unit was pre-committed.
         let mut files = wt.changed_since_base()?;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
         // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
@@ -9075,9 +9075,9 @@ impl RunCtx<'_> {
         // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
         // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
         // tail. The reindex's own emits are keyed, so re-running it appends nothing twice, but the
-        // FILE_TOUCHED / GATED_BY emits below are not - so they come only after every fallible
-        // reindex step has succeeded, and a failed reindex leaves none of them for the resume to
-        // append a second time.
+        // FILE_TOUCHED emits below are not - so they come only after every fallible reindex step
+        // has succeeded, and a failed reindex leaves none of them for the resume to append a
+        // second time.
         if !commit.is_empty() {
             if let Some(g) = self.deps.grounder {
                 g.reindex(&self.deps.repo, &files);
@@ -9098,18 +9098,6 @@ impl RunCtx<'_> {
                 contextgraph::TYPE_FILE_TOUCHED,
                 json!({"path": f, "by": &st.agent}),
             )?;
-        }
-        // GATED_BY (§7): record which gates govern each artifact this unit changed. Each
-        // (file, gate) GateVerdict carries the artifact, which the projector folds into
-        // GATED_BY(artifact -> gate) - the edge a real run otherwise never produced (Phase 2
-        // carryover). `files` was captured before the merge, so it is the real artifact set.
-        for f in &files {
-            for gid in &st.gates {
-                self.emit(
-                    contextgraph::TYPE_GATE_VERDICT,
-                    json!({"gate": gid, "pass": true, "artifact": f}),
-                )?;
-            }
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects

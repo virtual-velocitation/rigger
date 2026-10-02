@@ -748,9 +748,9 @@ impl Worktree {
     ///
     /// [`Self::changed_files`] alone reports only the dirty worktree, which goes
     /// EMPTY once the conductor commits before gating (§3.2); this method spans the
-    /// commit, so the FILE_TOUCHED / GATED_BY edges and the grounder reindex still
-    /// see the unit's real artifact set whether or not it was committed first. Paths
-    /// are sorted and de-duplicated.
+    /// commit, so the FILE_TOUCHED records and the grounder reindex still see the
+    /// unit's real artifact set whether or not it was committed first. Paths are
+    /// sorted and de-duplicated.
     pub fn changed_since_base(&self) -> Result<Vec<String>, Error> {
         // Anchor on the branch's merge-base with the repo HEAD, not the repo HEAD
         // itself: other units may have merged into base since this worktree branched,
