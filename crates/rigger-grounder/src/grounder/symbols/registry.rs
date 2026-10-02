@@ -12,7 +12,39 @@ use std::sync::OnceLock;
 /// recorded radius names the tag-query generation that produced it. Bump it when a shipped
 /// grammar or an authored tags query changes, so a radius computed under an older grammar set
 /// is distinguishable on replay from one the current set would produce.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v1";
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v2";
+
+/// The Rust `tags` query. The upstream `tree-sitter-rust` `tags.scm` records a call only when the
+/// callee is a bare identifier or a method (`f()`, `x.f()`), so every path-qualified or turbofish
+/// call - `Store::open()`, `crate::sqlite::open_connection()`, `make::<T>()` - left no reference
+/// and its caller no call edge. It also tags an impl block only as a reference to its trait (or,
+/// for an inherent impl, its type), and only when that name is a bare identifier. This is the
+/// upstream query's definitions and call references verbatim, plus the path-qualified and
+/// turbofish call shapes, minus the impl-header references: impl blocks are read off the parsed
+/// tree by `extract` instead, which records each one as a definition with its trait and type
+/// references attributed to it, whatever their path or generic shape.
+const RUST_TAGS: &str = r#"
+(struct_item name: (type_identifier) @name) @definition.class
+(enum_item name: (type_identifier) @name) @definition.class
+(union_item name: (type_identifier) @name) @definition.class
+(type_item name: (type_identifier) @name) @definition.class
+(declaration_list (function_item name: (identifier) @name) @definition.method)
+(function_item name: (identifier) @name) @definition.function
+(trait_item name: (type_identifier) @name) @definition.interface
+(mod_item name: (identifier) @name) @definition.module
+(macro_definition name: (identifier) @name) @definition.macro
+
+(call_expression function: (identifier) @name) @reference.call
+(call_expression function: (field_expression field: (field_identifier) @name)) @reference.call
+(call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call
+(call_expression
+  function: (generic_function function: (identifier) @name)) @reference.call
+(call_expression
+  function: (generic_function function: (field_expression field: (field_identifier) @name))) @reference.call
+(call_expression
+  function: (generic_function function: (scoped_identifier name: (identifier) @name))) @reference.call
+(macro_invocation macro: (identifier) @name) @reference.call
+"#;
 
 /// The C# `tags` query. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose last
 /// pattern captures a bare `@module`, which `tree-sitter-tags` rejects (it accepts only
@@ -151,11 +183,7 @@ pub struct LanguageEntry {
 /// TypeScript `tags` query, so a `.tsx` file's JSX body parses instead of erroring.
 pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     let (lang, language, tags_query): (Lang, tree_sitter::Language, &'static str) = match ext {
-        "rs" => (
-            Lang::Rust,
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::TAGS_QUERY,
-        ),
+        "rs" => (Lang::Rust, tree_sitter_rust::LANGUAGE.into(), RUST_TAGS),
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),

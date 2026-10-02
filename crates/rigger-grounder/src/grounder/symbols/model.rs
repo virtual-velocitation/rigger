@@ -115,10 +115,11 @@ pub struct Def {
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
 /// reference occurs inside (the caller). `None` for a top-level reference outside every
-/// definition - an import or an `impl`-header trait bound that belongs to no function body. Set
-/// during extraction by attributing the reference to the innermost definition whose body contains
-/// it (spec 37). Serde-defaulted and omitted when `None` so a pre-37 persisted index folds as
-/// caller-less and a caller-less ref serializes byte-identically to before.
+/// definition - an import or a module-level call; an impl header's trait and type attribute
+/// to the impl block, a definition of its own. Set during extraction by attributing the reference
+/// to the innermost definition whose body contains it (spec 37). Serde-defaulted and omitted when
+/// `None` so a pre-37 persisted index folds as caller-less and a caller-less ref serializes
+/// byte-identically to before.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymRef {
     pub name: String,

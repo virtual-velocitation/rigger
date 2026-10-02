@@ -87,26 +87,10 @@ pub fn extract(
             });
         }
     }
-    // Attribute each reference to the innermost enclosing definition (the caller, spec 37). The
-    // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
-    // sort key, so identical source still yields byte-identical downstream events.
-    for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
-        r.enclosing = enclosing_def(&def_ranges, pos);
-    }
-    // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
-    // a definition directly annotated `#[test]`/`#[cfg(test)]` (or nested inside one). Byte-range
-    // based, so it is exact regardless of which line a construct starts or ends on; computed
-    // AFTER every def's range is known, so a def's own containment check can see siblings and
-    // ancestors alike whatever order the tags happened to arrive in.
-    //
-    // Round 4 (review REJECT `adj-u86c1-verdict-reject` round 3, findings
-    // `sdet-u86c1-r3-embedded-slash-attribute-plus-trailing-comment-severs-scan` /
-    // `arch-u86c1-r3-recurring-scan-defects-are-a-structural-parser-gap`): the 6th recurrence of a
-    // hand-rolled text scan of `#[...]` attribute shape. `test_regions` now reads the SAME parsed
-    // tree `tags_query` runs against - a second, full-grammar `tree_sitter::Parser::parse` over
-    // this same `source` - and walks its `attribute_item` nodes structurally instead of
-    // re-deriving attribute/comment boundaries from characters; this is still the one function
-    // touching tree-sitter, so the single-parsing-authority invariant (5.5.3) survives. A
+    // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
+    // the full grammar), read below for what the tags pass cannot express: impl blocks, test
+    // attributes, and out-of-line module declarations. This is still the one function touching
+    // tree-sitter, so the single-parsing-authority invariant (5.5.3) survives. A
     // `Parser::set_language` or `parse` failure here is defensive only: `ts_language` already
     // parsed successfully above via `TagsConfiguration::new`/`generate_tags`, using the identical
     // language, so this path degrades to an `Err` rather than a panic without ever being expected
@@ -118,19 +102,45 @@ pub fn extract(
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
-    // Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 3): a self-attributed
-    // `#[cfg(test)] impl Widget { .. }` is a test-region container exactly like a self-attributed
-    // `mod_item` already is, but `impl_item` is never itself a `def_ranges` entry (tags.scm tags it
-    // only as `@reference.implementation`, never a `@definition.*` - see
-    // `self_attributed_impl_regions`'s doc), so `test_regions` alone can never find it. Found by a
-    // direct tree walk instead and merged into the SAME `regions` list, so the containment check
-    // below covers a plain method nested in such an impl by the identical mechanism that already
-    // covers a plain helper nested in a `#[cfg(test)] mod`.
-    let mut regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
-    regions.extend(self_attributed_impl_regions(
-        tree.root_node(),
-        source.as_bytes(),
-    ));
+    // Every impl block is a definition of its own (gap 104), named by its header, with its trait
+    // and self type recorded as references. Added before the attribution pass below, so those two
+    // references attribute to the impl (the impl -> trait and impl -> type links) while a
+    // reference inside one of its methods still attributes to the method, the innermost range.
+    for block in impl_blocks(tree.root_node(), source.as_bytes()) {
+        def_ranges.push((block.range, block.name.clone()));
+        defs.push(Def {
+            kind: Kind::Impl,
+            name: block.name,
+            line: block.line,
+            is_test: false,
+            is_out_of_line_module: false,
+            path_override: None,
+            enclosing_inline_module_path: None,
+        });
+        for (name, line, pos) in block.targets {
+            ref_positions.push(pos);
+            refs.push(SymRef {
+                name,
+                line,
+                enclosing: None,
+                is_test: false,
+            });
+        }
+    }
+    // Attribute each reference to the innermost enclosing definition (the caller, spec 37). The
+    // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
+    // sort key, so identical source still yields byte-identical downstream events.
+    for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
+        r.enclosing = enclosing_def(&def_ranges, pos);
+    }
+    // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
+    // a definition directly annotated `#[test]`/`#[cfg(test)]` (or nested inside one), an impl
+    // block included. Byte-range based, so it is exact regardless of which line a construct starts
+    // or ends on; computed AFTER every def's range is known, so a def's own containment check can
+    // see siblings and ancestors alike whatever order the tags happened to arrive in.
+    // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
+    // re-deriving attribute/comment boundaries from characters.
+    let regions = test_regions(source.as_bytes(), tree.root_node(), &def_ranges);
     if !regions.is_empty() {
         for (d, (range, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -256,10 +266,7 @@ fn test_regions(
 /// `node-types.json`; `attribute` itself is never a sibling - it is always the sole named child of
 /// one of the other two), so these two checks are exhaustive.
 ///
-/// Round 6: the actual test - both directions - is [`node_preceded_by_test_attribute`], factored
-/// out so [`self_attributed_impl_regions`] can ask it of a node it already has in hand (from a
-/// direct tree walk) without a redundant `descendant_for_byte_range` round-trip through a range
-/// that was never in `def_ranges` to begin with (`impl_item` never is - see that function's doc).
+/// The actual test - both directions - is [`node_preceded_by_test_attribute`].
 fn preceded_by_test_attribute(
     source: &[u8],
     root: tree_sitter::Node,
@@ -271,8 +278,8 @@ fn preceded_by_test_attribute(
     node_preceded_by_test_attribute(node, source)
 }
 
-/// The shared core [`preceded_by_test_attribute`] and [`self_attributed_impl_regions`] both apply
-/// once a candidate node is in hand: self-attributed test either through the node's OWN leading
+/// The core [`preceded_by_test_attribute`] applies once a candidate node is in hand:
+/// self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
 /// as its sibling immediately before it.
 fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
@@ -280,39 +287,84 @@ fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bo
         || attribute_stack_names_test(source, node.prev_sibling(), |n| n.prev_sibling())
 }
 
-/// Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 3): every self-attributed
-/// `impl_item` node's own byte range, found by walking the parsed tree DIRECTLY rather than through
-/// `def_ranges` the way [`test_regions`] finds a self-attributed `mod_item`/`function_item`/etc. -
-/// `tree-sitter-rust`'s own `tags.scm` captures `impl_item` ONLY as `@reference.implementation`,
-/// never as any `@definition.*`, so an impl block can never appear in `def_ranges` in the first
-/// place and `test_regions`'s filter-over-`def_ranges` can structurally never see it, no matter how
-/// it is attributed. The caller merges these ranges into the SAME `regions` list `test_regions`
-/// returns, so a plain method (or any other item) nested inside a self-attributed impl block is
-/// marked test BY CONTAINMENT - the identical mechanism that already covers a plain helper nested
-/// inside a self-attributed `#[cfg(test)] mod`, with no separate containment rule needed here.
-fn self_attributed_impl_regions(
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Vec<std::ops::Range<usize>> {
+/// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
+/// `impl Type` for an inherent impl, each written as in the source with its whitespace collapsed),
+/// its whole byte range, its 1-based line, and the `(name, line, byte)` of each item it links to -
+/// the trait (when it has one) and the self type, by their base identifier, so a path-qualified
+/// (`crate::store::EventStore`) or generic (`Wrapper<T>`) name still links to its definition.
+struct ImplBlock {
+    name: String,
+    range: std::ops::Range<usize>,
+    line: u32,
+    targets: Vec<(String, u32, usize)>,
+}
+
+/// Every `impl_item` anywhere under `root` (an impl nested in a function or module included), in
+/// source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node kind, so a file of any
+/// other language has none.
+fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
     let mut out = Vec::new();
-    collect_self_attributed_impl_regions(root, source, &mut out);
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "impl_item" {
+            if let Some(block) = impl_block(node, source) {
+                out.push(block);
+            }
+        }
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        stack.extend(children.into_iter().rev());
+    }
     out
 }
 
-/// The preorder tree walk behind [`self_attributed_impl_regions`]: every `impl_item` node anywhere
-/// under `node` (not merely at the top level - a `#[cfg(test)] impl` can itself sit inside another
-/// container) that [`node_preceded_by_test_attribute`]s contributes its own `byte_range()`.
-fn collect_self_attributed_impl_regions(
-    node: tree_sitter::Node,
-    source: &[u8],
-    out: &mut Vec<std::ops::Range<usize>>,
-) {
-    if node.kind() == "impl_item" && node_preceded_by_test_attribute(node, source) {
-        out.push(node.byte_range());
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_self_attributed_impl_regions(child, source, out);
+/// The [`ImplBlock`] for one `impl_item` node, or `None` when its self type cannot be read (a
+/// syntax-error recovery shape).
+fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
+    let text = |n: tree_sitter::Node| -> Option<String> {
+        let raw = n.utf8_text(source).ok()?;
+        Some(raw.split_whitespace().collect::<Vec<_>>().join(" "))
+    };
+    let self_type = node.child_by_field_name("type")?;
+    let trait_node = node.child_by_field_name("trait");
+    let name = match trait_node {
+        Some(t) => format!("impl {} for {}", text(t)?, text(self_type)?),
+        None => format!("impl {}", text(self_type)?),
+    };
+    let targets = trait_node
+        .into_iter()
+        .chain(std::iter::once(self_type))
+        .filter_map(base_type_identifier)
+        .filter_map(|id| {
+            Some((
+                text(id)?,
+                id.start_position().row as u32 + 1,
+                id.start_byte(),
+            ))
+        })
+        .collect();
+    Some(ImplBlock {
+        name,
+        range: node.byte_range(),
+        line: node.start_position().row as u32 + 1,
+        targets,
+    })
+}
+
+/// The identifier a type names, through its path (`a::b::T` -> `T`), generic arguments
+/// (`T<U>` -> `T`) and reference or pointer (`&T` -> `T`); `None` for a shape that names no
+/// single type (a tuple, a slice, a function type).
+fn base_type_identifier(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let mut cur = node;
+    loop {
+        cur = match cur.kind() {
+            "type_identifier" => return Some(cur),
+            "scoped_type_identifier" => cur.child_by_field_name("name")?,
+            "generic_type" | "reference_type" | "pointer_type" => {
+                cur.child_by_field_name("type")?
+            }
+            _ => return None,
+        };
     }
 }
 
@@ -615,8 +667,8 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
 }
 
 /// The name of the INNERMOST definition whose byte range contains `pos`, or `None` when `pos`
-/// lies outside every definition (a top-level reference such as an import or an `impl`-header
-/// bound). Each definition tag carries the byte range of the WHOLE tagged construct - the function
+/// lies outside every definition (a top-level reference such as an import or a module-level
+/// call). Each definition tag carries the byte range of the WHOLE tagged construct - the function
 /// body included, not just its name span - so a reference inside a body falls within its
 /// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
 /// definition attributes to the nested one, not its outer scope. Deterministic for identical
