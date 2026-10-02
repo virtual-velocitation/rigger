@@ -120,6 +120,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
                 cfg: &cfg,
                 critic: &critic,
                 critiques: &critiques,
+                store_env: selection.handed_env(),
                 identity: &identity,
                 scratch_root: &scratch_root,
                 root: &root,
@@ -142,6 +143,9 @@ struct CriticHost<'a> {
     critic: &'a str,
     /// The critique's own store ([`critique_store`]).
     critiques: &'a dyn EventStore,
+    /// The verb's store selection, handed to the critic so its bound rigger server resolves the
+    /// store the critique is recorded to ([`StoreSelection::handed_env`]).
+    store_env: Vec<(String, String)>,
     identity: &'a str,
     /// The project scratch root; empty in a project with no git repository.
     scratch_root: &'a str,
@@ -185,6 +189,7 @@ impl CriticHost<'_> {
             dir: self.root.to_string_lossy().into_owned(),
             run_id: unit,
             title: spec.to_string(),
+            env: self.store_env.clone(),
             settings_json: serde_json::json!({
                 "permissions": { "deny": review::CRITIC_DENIED_TOOLS }
             })

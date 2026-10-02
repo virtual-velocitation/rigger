@@ -404,6 +404,17 @@ impl StoreSelection {
     fn is_sqlite(&self) -> bool {
         matches!(self, StoreSelection::Sqlite)
     }
+
+    /// The environment that hands this selection to a child rigger process: a server's
+    /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
+    /// secret file and the configured store, so the child resolves the same server whichever
+    /// rung selected it here; nothing for sqlite, whose child resolves through configuration.
+    fn handed_env(&self) -> Vec<(String, String)> {
+        match self {
+            StoreSelection::Sqlite => Vec::new(),
+            StoreSelection::Server(conn) => vec![(CONN_ENV.to_string(), conn.clone())],
+        }
+    }
 }
 
 /// The run's report sink ([`conductor::Deps::log`]) at this composition root: one line to stderr.
@@ -469,12 +480,13 @@ fn open_graph_to_read(
     Ok(Projector::open(graph_db, project)?)
 }
 
-/// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as
-/// unset so a stray `KURRENTDB_CONN=` never selects the server with no address.
+/// The environment variable carrying the server's full connection string (§48 rung 2).
+const CONN_ENV: &str = "KURRENTDB_CONN";
+
+/// The [`CONN_ENV`] connection string from the environment, treating an empty value as unset so
+/// a stray `KURRENTDB_CONN=` never selects the server with no address.
 fn env_conn() -> Option<String> {
-    std::env::var("KURRENTDB_CONN")
-        .ok()
-        .filter(|s| !s.is_empty())
+    std::env::var(CONN_ENV).ok().filter(|s| !s.is_empty())
 }
 
 /// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
