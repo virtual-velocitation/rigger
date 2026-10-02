@@ -50,6 +50,9 @@ enum Lint {
     Silent(&'static [&'static str], &'static str),
     /// The first stderr line carrying `.0` does (`true`) or does not (`false`) also carry `.1`.
     Line(&'static str, &'static str, bool, &'static str),
+    /// The stderr lines carrying `.0`, each read from its first `.0` to its end, are exactly
+    /// `.1`, in order.
+    Exactly(&'static str, &'static [&'static str], &'static str),
 }
 
 impl Lint {
@@ -66,6 +69,13 @@ impl Lint {
             Lint::Line(on, carries, want, why) => {
                 let line = find_line(err, on);
                 assert!(line.contains(carries) == want, "{why}; line:\n{line}");
+            }
+            Lint::Exactly(on, lines, why) => {
+                let got: Vec<&str> = err
+                    .lines()
+                    .filter_map(|line| line.find(on).map(|at| &line[at..]))
+                    .collect();
+                assert_eq!(got, lines, "{why}; stderr:\n{err}");
             }
         }
     }
@@ -1359,6 +1369,135 @@ rigger::test_cases! {
             &["F10 landing-order circularity", "F11 undecided removal"],
             "a spec that splits its surfaces, names its comparison surface and decides \
              removal draws no preflight tell",
+        )],
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 112, criterion 3, the full operator-visible lines. Given a spec whose criteria 1
+    /// and 3 measure `rigger step` with an unrelated criterion 2 between them (criterion 3
+    /// naming the span in two measured sentences) and whose criterion 4 makes two identity
+    /// claims naming no comparison surface while its Design decides no removal, when the
+    /// operator runs `rigger validate`, then each tell prints exactly once, in full, on the
+    /// criterion it names: the twin on the later criterion naming the earlier one, and one
+    /// line per F11 tell however many of criterion 4's sentences offend.
+    validate_prints_each_preflight_tell_once_in_full_with_its_criterion_number: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\nThe step reads the store once.\n\n## Done when\n\n\
+             - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
+             - [ ] the daemon starts on boot. This criterion OWNS the startup.\n\
+             - [ ] `rigger step` costs at most one read. `rigger step` appends no event. This \
+             criterion OWNS the query.\n\
+             - [ ] the rebuilt graph is byte-identical to the original. The export equals the \
+             import. This criterion OWNS the rebuild.\n",
+        ),
+        &[
+            Lint::Exactly(
+                "F10 landing-order circularity",
+                &["F10 landing-order circularity (criterion 3): twin measured surface \
+                   `rigger step` with criterion 1; if either lands first without the other, \
+                   does its own text hold? simulate the landing order and split ownership at \
+                   the seam in Design"],
+                "one twin line, on the later criterion, naming the earlier criterion and the \
+                 shared span once",
+            ),
+            Lint::Exactly(
+                "F11 undecided removal",
+                &[
+                    "F11 undecided removal (criterion 4): identity claim names no comparison \
+                     surface; name the bytes, projection or ordering it is compared on",
+                    "F11 undecided removal (criterion 4): identity claim while no Design or \
+                     Notes line decides removal; decide in Design what a later generation that \
+                     drops a fact does to it",
+                ],
+                "each F11 tell prints once on criterion 4, the comparison-surface tell first",
+            ),
+        ],
+    );
+
+    /// Given hard-wrapped criteria (the shape every committed spec uses), when the operator
+    /// runs `rigger validate`, then the twin tell reads each criterion's wrapped lines as one
+    /// block: criterion 1's and criterion 3's span and measure word share a sentence across
+    /// the wrap, while criterion 2's sentence ends at its wrap, so its measure word sits in a
+    /// sentence naming no span and it twins with neither.
+    validate_reads_a_hard_wrapped_criterion_as_one_block_for_the_twin_tell: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] `store` is opened by the daemon and\n  \
+             appends one event. This criterion OWNS the open.\n\
+             - [ ] `store` is opened.\n  \
+             It appends two events. This criterion OWNS the second open.\n\
+             - [ ] `store` is reopened and then\n  \
+             appends three events. This criterion OWNS the reopen.\n",
+        ),
+        &[Lint::Exactly(
+            "F10 landing-order circularity",
+            &["F10 landing-order circularity (criterion 3): twin measured surface `store` with \
+               criterion 1; if either lands first without the other, does its own text hold? \
+               simulate the landing order and split ownership at the seam in Design"],
+            "a span and a measure word one wrap apart in one sentence twin, and a sentence \
+             that ends at a wrap keeps its measure word from the span before it",
+        )],
+    );
+
+    /// Given an identity claim naming no comparison surface whose only removal decision is
+    /// a `## Notes` line, when the operator runs `rigger validate`, then the claim still
+    /// draws the comparison-surface tell, so it was read, and the Notes line silences the
+    /// removal tell.
+    validate_lets_a_notes_line_alone_decide_removal: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\nThe rebuild reads the log.\n\n## Done when\n\n\
+             - [ ] the rebuilt graph is byte-identical to the original. This criterion OWNS \
+             the rebuild.\n\n\
+             ## Notes\n\n- A fact a later generation drops leaves the rebuilt graph.\n",
+        ),
+        &[Lint::Exactly(
+            "F11 undecided removal",
+            &["F11 undecided removal (criterion 1): identity claim names no comparison \
+               surface; name the bytes, projection or ordering it is compared on"],
+            "a Notes line carrying a removal word decides removal while the claim itself \
+             is still read",
+        )],
+    );
+
+    /// Given an identity claim that names its comparison surface, a Design with no removal
+    /// word, and removal words in the Goal line, in the criterion itself and under
+    /// `## Global constraints`, when the operator runs `rigger validate`, then the removal
+    /// tell still fires: only a Design or Notes line decides removal.
+    validate_never_lets_a_line_outside_design_and_notes_decide_removal: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n**Goal:** a fact dropped by a later generation leaves the graph.\n\n\
+             ## Design\n\nThe rebuild reads the log.\n\n## Done when\n\n\
+             - [ ] the rebuilt graph is byte-identical to the original, compared on the live \
+             projection, and a removed fact is absent from it. This criterion OWNS the \
+             rebuild.\n\n\
+             ## Global constraints\n\n- A deleted fact is no longer read.\n",
+        ),
+        &[Lint::Exactly(
+            "F11 undecided removal",
+            &["F11 undecided removal (criterion 1): identity claim while no Design or Notes \
+               line decides removal; decide in Design what a later generation that drops a \
+               fact does to it"],
+            "a removal word outside every Design and Notes section decides nothing",
+        )],
+    );
+
+    /// The pair rule reaching F4 (specs/112, *The one masker*): given a Design paragraph
+    /// whose open disposition sits between two code spans, when the operator runs
+    /// `rigger validate`, then F4 reports it, where one span from the first backtick through
+    /// the last masked it.
+    validate_flags_a_disposition_smell_between_two_backtick_spans: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\n\
+             The plan names `rigger step` as the entry, and the team\n\
+             could instead retry through `rigger run` if this keeps recurring.\n\n\
+             ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n",
+        ),
+        &[Lint::Exactly(
+            "F4 disposition",
+            &["F4 disposition: open disposition (\"could instead\") outside Notes; decide it in \
+               Design or move it to Notes as an explicit deferral"],
+            "prose between two backtick spans is linted, so the smell between them warns once",
         )],
     );
 }
