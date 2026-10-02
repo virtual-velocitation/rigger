@@ -17818,14 +17818,15 @@ fn installed_skill_mtimes(
         .collect()
 }
 
-/// Spec 112, criterion 4 (existing data, the upgrade path): given a project `rigger setup`
-/// provisioned before the preflight skill shipped - every other registry skill installed and
-/// current, no `spec-preflight` directory - when the operator reruns `rigger setup`, then the
-/// one skill line it prints installs `spec-preflight`, the file holds the shipped bytes and its
-/// relative reference names the installed `planning-a-spec` skill beside it, and every other
-/// registry skill keeps its mtime.
+/// Spec 112, criterion 4 (existing data, the upgrade path): given a set-up project missing only
+/// `spec-preflight` - `rigger setup` ran and that one skill's directory is gone, so every other
+/// registry skill is installed and current - when the operator reruns `rigger setup`, then the
+/// project gains that skill alone: the one skill line it prints installs `spec-preflight`, the
+/// file holds the shipped bytes and its relative reference names the installed
+/// `planning-a-spec` skill beside it, and setup rewrites none of the others, every other
+/// registry skill keeping its mtime.
 #[test]
-fn setup_gives_a_project_provisioned_before_the_preflight_skill_that_skill_alone() {
+fn setup_gives_a_set_up_project_missing_only_the_preflight_skill_that_skill_alone() {
     let proj = temp_project();
     let root = proj.path();
     let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
