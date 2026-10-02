@@ -27966,6 +27966,87 @@ mod tests {
         );
     }
 
+    /// The bodies of the lessons recorded about exactly `path`.
+    fn lessons_about(events: &[Event], path: &str) -> Vec<Value> {
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .filter(|b| b["about"] == json!([path]))
+            .collect()
+    }
+
+    /// A later round's reject whose every item is a non-correctness finding outside the delta
+    /// that round reviewed converges: each item is recorded as a lesson for the operator about
+    /// its file, and the unit lands on that round, approved "converged", charged nothing more.
+    #[test]
+    fn a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons() {
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+        let lessons = lessons_about(&events, "feature.rs");
+        assert_eq!(lessons.len(), 1, "one operator lesson: {lessons:?}");
+        let summary = lessons[0]["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("operator") && summary.contains("reword the doc comment"),
+            "the lesson tells the operator the finding: {summary}"
+        );
+        let reviewed: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+            .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .filter(|b| b["status"] == "reviewed")
+            .collect();
+        assert_eq!(
+            reviewed.last().map(|b| b["evidence"]["review"].clone()),
+            Some(json!("converged")),
+            "the converged round's approve says so: {reviewed:?}"
+        );
+    }
+
+    /// Only a non-correctness item outside the delta converges: a correctness item outside it
+    /// still rejects and is the next round's REQUIRED list, while the wording item beside it
+    /// goes to the operator and leaves that list.
+    #[test]
+    fn a_correctness_item_outside_the_delta_still_rejects() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","required":[{"finding":"bound the retry loop","path":"feature.rs","correctness":true},{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+            (adjudicator_at(2, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            2,
+            "the correctness item outside the delta charges round 1 an attempt"
+        );
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            implementer[2].contains("- feature.rs: bound the retry loop")
+                && !implementer[2].contains("- feature.rs: reword the doc comment"),
+            "round 2's REQUIRED list is the correctness item alone:\n{}",
+            implementer[2]
+        );
+        assert_eq!(
+            lessons_about(&events, "feature.rs").len(),
+            1,
+            "the wording item went to the operator"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
