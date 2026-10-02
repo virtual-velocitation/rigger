@@ -4263,11 +4263,13 @@ impl RunCtx<'_> {
 
     /// THE ROUND DELTA: what unit `unit`'s worktree `wt` changed since its reviewers last
     /// judged it, as `(base, paths)` - `None` when no review round judged the unit before
-    /// `attempt` (a first round has no delta: the whole unit is new). `base` is
-    /// [`round_delta_base`]'s round-start sha; `paths` are the direct two-dot diff from it
-    /// ([`crate::worktree::DiffMode::Direct`]: `base` is a sha this same worktree's branch
-    /// already passed through) plus whatever the worktree holds uncommitted, so a delta read
-    /// at the build seam, before the pre-gate commit, still sees the implementer's edits.
+    /// `attempt` (a first round has no delta: the whole unit is new), or when that round judged
+    /// a sha this worktree's branch never passed through (a sibling speculation lane's tip),
+    /// so the round is reviewed whole. `base` is [`round_delta_base`]'s round-start sha;
+    /// `paths` are the direct two-dot diff from it ([`crate::worktree::DiffMode::Direct`]:
+    /// `base` is in this branch's history) plus whatever the worktree holds uncommitted, so a
+    /// delta read at the build seam, before the pre-gate commit, still sees the implementer's
+    /// edits.
     fn round_delta(
         &self,
         wt: &Worktree,
@@ -4275,7 +4277,9 @@ impl RunCtx<'_> {
         attempt: u32,
     ) -> Result<Option<(String, Vec<String>)>, Error> {
         let events = self.read_current_run()?;
-        let Some(base) = round_delta_base(&events, unit, attempt) else {
+        let Some(base) = round_delta_base(&events, unit, attempt)
+            .filter(|base| worktree::is_ancestor(&wt.dir, base, "HEAD"))
+        else {
             return Ok(None);
         };
         let mut paths = wt.diff_names(&base, crate::worktree::DiffMode::Direct)?;
