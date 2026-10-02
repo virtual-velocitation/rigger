@@ -744,6 +744,82 @@ mod tests {
         assert_eq!(fs.lang, Lang::Rust);
     }
 
+    /// Gap 104: the registered Rust grammar records every impl block as an `Impl` definition
+    /// named by its header, attributes the impl's trait and self type to that definition (the
+    /// impl -> trait and impl -> type links), and records a path-qualified or turbofish call
+    /// (`Type::open()`, `crate::m::f()`, `make::<T>()`) as a call reference like a plain one.
+    #[test]
+    fn rust_impl_blocks_are_definitions_linked_to_their_trait_and_type_and_path_calls_are_references(
+    ) {
+        let src = "\
+pub trait EventStore { fn append(&self); }
+pub struct Sqlite;
+impl EventStore for Sqlite { fn append(&self) { helper(); } }
+impl crate::store::EventStore for Kurrent { fn append(&self) {} }
+impl<T> EventStore for Wrapper<T> { fn append(&self) {} }
+impl Sqlite { pub fn open() -> Self { crate::sqlite::open_connection(); Sqlite } }
+pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>(); s }
+";
+        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
+        let fs = extract(src, Lang::Rust, &entry.language, entry.tags_query).unwrap();
+        let impls: Vec<(&str, u32)> = fs
+            .defs
+            .iter()
+            .filter(|d| d.kind == Kind::Impl)
+            .map(|d| (d.name.as_str(), d.line))
+            .collect();
+        assert_eq!(
+            impls,
+            vec![
+                ("impl EventStore for Sqlite", 3),
+                ("impl crate::store::EventStore for Kurrent", 4),
+                ("impl EventStore for Wrapper<T>", 5),
+                ("impl Sqlite", 6),
+            ],
+            "every impl block is a definition named by its header; got {:?}",
+            fs.defs
+        );
+        let refs: Vec<(&str, u32, Option<&str>)> = fs
+            .refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.line, r.enclosing.as_deref()))
+            .collect();
+        for expected in [
+            ("EventStore", 3, Some("impl EventStore for Sqlite")),
+            ("Sqlite", 3, Some("impl EventStore for Sqlite")),
+            ("helper", 3, Some("append")),
+            (
+                "EventStore",
+                4,
+                Some("impl crate::store::EventStore for Kurrent"),
+            ),
+            (
+                "Kurrent",
+                4,
+                Some("impl crate::store::EventStore for Kurrent"),
+            ),
+            ("EventStore", 5, Some("impl EventStore for Wrapper<T>")),
+            ("Wrapper", 5, Some("impl EventStore for Wrapper<T>")),
+            ("Sqlite", 6, Some("impl Sqlite")),
+            ("open_connection", 6, Some("open")),
+            ("open", 7, Some("open_store")),
+            ("append", 7, Some("open_store")),
+            ("make", 7, Some("open_store")),
+        ] {
+            assert!(
+                refs.contains(&expected),
+                "missing reference {expected:?}; got {refs:?}"
+            );
+        }
+        assert_eq!(
+            refs.iter()
+                .filter(|(n, l, _)| *n == "EventStore" && *l == 3)
+                .count(),
+            1,
+            "an impl's trait is referenced once, never twice; got {refs:?}"
+        );
+    }
+
     #[test]
     fn a_malformed_js_file_sets_partial_true_while_still_indexing_the_well_formed_part() {
         // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
@@ -813,15 +889,16 @@ fn free() {}
         // "interface" category, so `Drawable` lowers to Kind::Type, NOT Kind::Trait - i.e.
         // Kind::Trait is an unreachable arm with the only shipped grammar today.
         assert_eq!(kind_of_def("Drawable"), Some(Kind::Type));
-        // The Rust tags query emits no tag for an `impl` block, a `const`, or a `static`, so
-        // those definitions are absent (Kind::Impl / Kind::Constant are likewise unreachable
-        // with this grammar - the const/static drop is the same unit-2 tag-query concern).
+        // The Rust tags query emits no tag for a `const` or a `static`, so those definitions
+        // are absent (Kind::Constant is likewise unreachable with this grammar - the
+        // const/static drop is the same unit-2 tag-query concern). An `impl` block is read off
+        // the parsed tree instead (gap 104) and lowers to Kind::Impl, named by its header.
         assert_eq!(kind_of_def("MAX"), None);
         assert_eq!(kind_of_def("GLOBAL"), None);
-        assert_eq!(kind_of_def("impl"), None);
-        // Exactly the seven tagged definitions above; the lone reference is the `Drawable`
-        // bound named in the `impl` header.
-        assert_eq!(fs.defs.len(), 7);
+        assert_eq!(kind_of_def("impl Drawable for Widget"), Some(Kind::Impl));
+        // Exactly the seven tagged definitions above plus the impl block; the impl header
+        // references the `Drawable` bound it implements.
+        assert_eq!(fs.defs.len(), 8);
         assert!(fs.refs.iter().any(|r| r.name == "Drawable"));
     }
 
@@ -830,10 +907,9 @@ fn free() {}
         // Spec 37 criterion 1: the extractor attributes each reference to the INNERMOST definition
         // whose body encloses it (the caller), and a reference outside every definition carries
         // none. `fn f() { G(); }` yields a `SymRef` for `G` whose `enclosing` is `f`; a top-level
-        // reference belonging to no function body carries `None`. (The Rust tags query captures an
-        // `impl`-header trait bound as a reference but not a plain `use` import, so the top-level
-        // no-caller case here is the `impl Draw for Widget` header's `Draw` bound - a faithful
-        // realization of the spec's "a reference not inside any definition carries none".)
+        // reference belonging to no definition (the `setup!()` macro call at the end) carries
+        // `None`. An impl block is a definition of its own (gap 104), so the `Draw` bound in the
+        // `impl Draw for Widget` header attributes to that impl.
         let src = "\
 trait Draw {}
 struct Widget;
@@ -850,18 +926,30 @@ fn outer() {
         G();
     }
 }
+setup!();
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
 
-        // The `Draw` bound in the `impl` header (line 3) belongs to no function body: no caller.
+        // The `Draw` bound in the `impl` header (line 3) attributes to the impl block.
         let draw = fs
             .refs
             .iter()
             .find(|r| r.name == "Draw")
             .expect("the impl-header Draw reference is extracted");
         assert_eq!(
-            draw.enclosing, None,
+            draw.enclosing.as_deref(),
+            Some("impl Draw for Widget"),
+            "an impl header's trait reference attributes to the impl it belongs to"
+        );
+        // The top-level `setup!()` call belongs to no definition: no caller.
+        let setup = fs
+            .refs
+            .iter()
+            .find(|r| r.name == "setup")
+            .expect("the top-level setup! reference is extracted");
+        assert_eq!(
+            setup.enclosing, None,
             "a top-level reference outside every definition has no enclosing caller"
         );
 
