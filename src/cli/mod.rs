@@ -5967,6 +5967,17 @@ mod tests {
         ]);
     }
 
+    rigger::test_cases! {
+        /// Spec 112, criterion 4 (the accuracy pin, extending its spec-68 and spec-69 siblings to
+        /// the preflight skill): every bare `rigger <cmd>` `spec-preflight` teaches - `rigger
+        /// critique`, `rigger validate` and `rigger emit` - names a REAL entry in [`SUBCOMMANDS`]
+        /// and is literally present in its rendered output.
+        spec_preflight_skill_references_only_real_subcommands:
+            assert_skills_reference_only_real_subcommands(&[
+            ("spec-preflight", &["critique", "validate", "emit"]),
+        ]);
+    }
+
     /// Spec 20, unit 2; spec 68, criterion 1; spec 66, criterion 2 (the CI-lane guard,
     /// generalized over the whole registry AND every [`HANDBOOK_PAGES`] entry): EVERY REAL
     /// committed registry skill plus every handbook page must be byte-identical to a fresh

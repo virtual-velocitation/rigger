@@ -17134,7 +17134,7 @@ fn docs_renders_the_planning_field_guide_second_handbook_page() {
         .expect("rigger docs must have written the second handbook page to disk");
 
     // The rendered file carries the field guide's real content, not a stub or the wrong
-    // entry's bytes: its title, its full F1-F9 failure catalog (every class, not a subset),
+    // entry's bytes: its title, its full F1-F11 failure catalog (every class, not a subset),
     // the mid-run amendment protocol, and the measured-outcomes close.
     assert!(
         guide.starts_with("# Planning a loop run: the field guide"),
@@ -17151,6 +17151,8 @@ fn docs_renders_the_planning_field_guide_second_handbook_page() {
         "### F7 - Unpinned environment",
         "### F8 - Infra noise misread as semantic failure",
         "### F9 - Unbounded claim surface",
+        "### F10 - Landing-order circularity",
+        "### F11 - Undecided removal",
     ] {
         assert!(
             guide.contains(class),
@@ -17412,8 +17414,9 @@ fn docs_renders_every_per_operation_skill_through_the_compiled_binary() {
 /// `rigger setup` installs every skill in `names` into the consumer project at its own
 /// `.claude/skills/<name>/SKILL.md` path, loadable and carrying the operator-binary
 /// prohibition, and reports installing it; a no-op rerun leaves every one of them untouched
-/// (no install/refresh report line, not even a moved mtime).
-fn assert_setup_installs_each_skill(names: &[&str]) {
+/// (no install/refresh report line, not even a moved mtime). Returns the project for a caller
+/// that goes on to act on it.
+fn assert_setup_installs_each_skill(names: &[&str]) -> tempfile::TempDir {
     let proj = temp_project();
     let root = proj.path();
 
@@ -17474,6 +17477,7 @@ fn assert_setup_installs_each_skill(names: &[&str]) {
             "an up-to-date {name} must not even move its mtime"
         );
     }
+    proj
 }
 
 rigger::test_cases! {
@@ -17591,6 +17595,130 @@ rigger::test_cases! {
     /// entries) would pass every other test in this file and only show up by checking each
     /// installed file's own name and content here.
     setup_installs_every_watching_discipline_skill_into_the_consumer_project: assert_setup_installs_each_skill(&WATCHING_DISCIPLINE_SKILL_NAMES);
+}
+
+/// The bytes spec 112 ships as the `spec-preflight` skill body: the fenced block that closes the
+/// spec's Notes section, its fence lines excluded. The section is read line by line with the
+/// fences tracked, since the body's own `## ` headings sit inside its fence.
+fn spec_112_preflight_body() -> String {
+    let spec = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("specs/112-the-spec-is-critiqued-before-the-run.md"),
+    )
+    .expect("spec 112 is committed");
+    let mut closing = None;
+    let mut fenced: Option<String> = None;
+    for line in spec
+        .split_inclusive('\n')
+        .skip_while(|line| !line.starts_with("## Notes"))
+        .skip(1)
+    {
+        let fence = line.trim_end() == "```";
+        match fenced.as_mut() {
+            Some(_) if fence => closing = fenced.take(),
+            Some(text) => text.push_str(line),
+            None if fence => fenced = Some(String::new()),
+            None if line.starts_with("## ") => break,
+            None => {}
+        }
+    }
+    closing.expect("spec 112's Notes section closes with a fenced block")
+}
+
+/// No token of `text` is an absolute or home path - none opens with `/` or `~` once leading
+/// Markdown quoting is set aside - and no line names the project `root` or the operator's home
+/// directory, so the file reads the same in every checkout it is installed into.
+fn assert_no_absolute_or_home_path(text: &str, root: &Path) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let root = root.to_str().expect("a utf-8 project root");
+    for (n, line) in text.lines().enumerate() {
+        for token in line.split_whitespace() {
+            let bare = token.trim_start_matches(['`', '\'', '"', '(', '[', '<']);
+            assert!(
+                !bare.starts_with('/') && !bare.starts_with('~'),
+                "line {}: {token:?} is an absolute or home path:\n{line}",
+                n + 1
+            );
+        }
+        assert!(
+            !line.contains(root),
+            "line {} names the project root {root:?}:\n{line}",
+            n + 1
+        );
+        assert!(
+            home.len() <= 1 || !line.contains(&home),
+            "line {} names the home directory {home:?}:\n{line}",
+            n + 1
+        );
+    }
+}
+
+/// Spec 112, criterion 4 (SETUP SHIPS THE PREFLIGHT SKILL). Given a project with no skills
+/// directory, when the operator runs `rigger setup`, then `spec-preflight` lands at
+/// `.claude/skills/spec-preflight/SKILL.md` from the skill registry - reported, loadable, its
+/// bytes exactly spec 112's shipped body plus the operator-binary section every registry skill
+/// carries, naming no absolute or home path - and a rerun writes nothing. Given an installed copy
+/// with a line deleted, when setup runs again, then it reports refreshing the drifted skill and
+/// the file is the shipped bytes again, as for every registry skill. The `planning-a-spec` skill
+/// the same setup installs carries the F10 and F11 rows of the churn table.
+#[test]
+fn setup_ships_the_spec_preflight_skill_and_refreshes_it_on_drift() {
+    let proj = assert_setup_installs_each_skill(&["spec-preflight"]);
+    let root = proj.path();
+    let installed_path = root.join(".claude/skills/spec-preflight/SKILL.md");
+    let shipped = format!(
+        "{}{}",
+        spec_112_preflight_body(),
+        rigger::docs::OPERATOR_BINARY_PROHIBITION
+    );
+    let installed = std::fs::read_to_string(&installed_path).expect("setup installed it");
+    assert_eq!(
+        installed, shipped,
+        "the installed spec-preflight skill must be spec 112's shipped body, byte for byte, \
+         plus the operator-binary section"
+    );
+    assert_no_absolute_or_home_path(&installed, root);
+
+    let dropped: String = installed
+        .lines()
+        .filter(|line| *line != "## Step 3: the adversary pass")
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        dropped.lines().count() + 1,
+        installed.lines().count(),
+        "the drifted copy is the installed one with exactly one line deleted"
+    );
+    std::fs::write(&installed_path, &dropped).unwrap();
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "a setup rerun over a drifted skill must succeed; stderr:\n{err}"
+    );
+    assert!(
+        out.contains(
+            "refreshed the drifted spec-preflight skill (.claude/skills/spec-preflight/SKILL.md)"
+        ),
+        "setup must report refreshing the drifted spec-preflight skill; got:\n{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&installed_path).unwrap(),
+        shipped,
+        "the refresh must restore the shipped bytes"
+    );
+
+    let planning = std::fs::read_to_string(root.join(".claude/skills/planning-a-spec/SKILL.md"))
+        .expect("setup installed planning-a-spec");
+    for class in [
+        "| F10 landing-order circularity |",
+        "| F11 undecided removal |",
+    ] {
+        assert!(
+            planning.contains(class),
+            "the installed planning-a-spec churn table must carry the {class:?} row; \
+             got:\n{planning}"
+        );
+    }
 }
 
 /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled

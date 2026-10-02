@@ -1644,7 +1644,8 @@ mod tests {
     }
 
     /// Spec 68, criterion 2 (extended by spec 69, criterion 1 with the three watch-discipline
-    /// skills): the five-member per-operation family AND the three watch skills are IN the
+    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the five-member
+    /// per-operation family, the three watch skills AND the preflight skill are IN the
     /// registry, each name present exactly once, alongside (not instead of) `using-rigger`
     /// and `planning-a-spec`.
     #[test]
@@ -1661,6 +1662,7 @@ mod tests {
             "rigger-watch-a-run",
             "rigger-restore-the-dash",
             "rigger-diagnose-churn",
+            "spec-preflight",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == expected).count(),
@@ -1670,8 +1672,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            10,
-            "the registry must have exactly 10 entries; got {names:?}"
+            11,
+            "the registry must have exactly 11 entries; got {names:?}"
         );
     }
 
@@ -2112,5 +2114,227 @@ mod tests {
                 "{name}: must cross-link at least one sibling skill by name"
             );
         }
+    }
+
+    /// The text of `text` from the first `start` up to (not including) the next `end` after
+    /// it, so a test reads one section of a shipped document and nothing beyond it.
+    fn section<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+        let from = text
+            .find(start)
+            .unwrap_or_else(|| panic!("{start:?} must be in the document; got:\n{text}"));
+        let len = text[from..]
+            .find(end)
+            .unwrap_or_else(|| panic!("{end:?} must follow {start:?}; got:\n{text}"));
+        &text[from..from + len]
+    }
+
+    /// `text` with every run of whitespace, line breaks included, read as one space, so a test
+    /// pins a sentence of a shipped document whichever line it wraps on.
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The `spec-preflight` registry entry's own body, before the operator-binary stamp.
+    fn spec_preflight_body(ctx: &DocsContext) -> String {
+        let registry = skill_registry();
+        let entry = registry
+            .iter()
+            .find(|e| e.name == "spec-preflight")
+            .expect("spec-preflight must be in the registry");
+        (entry.render_body)(ctx)
+    }
+
+    /// Spec 112, criterion 4 (THE SHIPPED SKILL): `spec-preflight` is a registry entry whose
+    /// body, like `planning-a-spec`'s, ignores `ctx` (two different contexts render it alike),
+    /// opens with its loadable frontmatter and carries its sections in order: why, when, the
+    /// four steps, and the mid-run amendment.
+    #[test]
+    fn spec_preflight_is_a_registry_skill_carrying_its_four_steps_in_order() {
+        let body = spec_preflight_body(&sentinel_ctx());
+        assert_eq!(
+            body,
+            spec_preflight_body(&real_watch_facts_ctx()),
+            "the spec-preflight body carries no code-derived fact, so it ignores ctx"
+        );
+        assert!(
+            body.starts_with(
+                "---\nname: spec-preflight\ndescription: Use before launching any rigger spec, \
+                 after planning-a-spec - "
+            ),
+            "must open with skill frontmatter naming it; got: {}",
+            &body[..body.len().min(120)]
+        );
+        let mut from = 0;
+        for heading in [
+            "\n---\n\n# Spec preflight\n",
+            "\n## Why\n",
+            "\n## When\n",
+            "\n## Step 1: landing-order simulation\n",
+            "\n## Step 2: per-criterion corner walk\n",
+            "\n## Step 3: the adversary pass\n",
+            "\n## Step 4: resolve, record, re-run\n",
+            "\n## Mid-run amendment\n",
+        ] {
+            let at = body[from..]
+                .find(heading)
+                .unwrap_or_else(|| panic!("{heading:?} must follow the section before it"));
+            from += at + heading.len();
+        }
+    }
+
+    /// Spec 112, criterion 4 (the F10 and F11 catalog rows): every class the field guide's
+    /// failure catalog names, F1 through F11 in order, has exactly one row in
+    /// `planning-a-spec`'s churn table, in the table's three-cell shape and the catalog's order,
+    /// so the table stays complete; F9, F10 and F11 carry their class labels.
+    #[test]
+    fn churn_table_has_one_row_for_every_catalog_class() {
+        let ctx = sentinel_ctx();
+        let every_class: Vec<u32> = (1..=11).collect();
+        let guide = render_planning_field_guide(&ctx);
+        let catalog: Vec<u32> = guide
+            .lines()
+            .filter_map(|line| line.strip_prefix("### F"))
+            .map(|rest| rest.split(" - ").next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            catalog, every_class,
+            "the field guide's catalog runs F1 to F11"
+        );
+
+        let skill = render_planning_a_spec_skill(&ctx);
+        let header = "| Signature in the run | Catalog class | Fix at spec time |\n|---|---|---|\n";
+        let rows = &skill[skill.find(header).expect("the churn table") + header.len()..];
+        let mut labels = Vec::new();
+        for row in rows.lines().take_while(|line| line.starts_with('|')) {
+            let cells: Vec<&str> = row.split('|').collect();
+            assert_eq!(cells.len(), 5, "a churn-table row has three cells: {row:?}");
+            labels.push(cells[2].trim());
+        }
+        let rowed: Vec<u32> = labels
+            .iter()
+            .map(|label| label[1..].split(' ').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            rowed, every_class,
+            "one churn-table row per catalog class, in catalog order; got {labels:?}"
+        );
+        for label in [
+            "F9 claim surface",
+            "F10 landing-order circularity",
+            "F11 undecided removal",
+        ] {
+            assert!(
+                labels.contains(&label),
+                "the churn table must carry the {label:?} row; got {labels:?}"
+            );
+        }
+    }
+
+    /// Spec 112, criterion 4: the field guide's F10 and F11 sections each open by naming
+    /// itself an F3 shape and the simulation that finds it, then state its tell and a
+    /// countermeasure naming the `spec-preflight` step that runs that simulation.
+    #[test]
+    fn field_guide_f10_and_f11_open_as_f3_shapes_found_by_their_simulation() {
+        let guide = render_planning_field_guide(&sentinel_ctx());
+        for (heading, end, opening, step) in [
+            (
+                "### F10 - Landing-order circularity\n\n",
+                "### F11",
+                "An F3 shape, found by the landing-order simulation.",
+                "as its first step",
+            ),
+            (
+                "### F11 - Undecided removal\n\n",
+                "## Amending a spec mid-run",
+                "An F3 shape, found by the DROPPED corner of the corner walk.",
+                "as its second step",
+            ),
+        ] {
+            let body = &section(&guide, heading, end)[heading.len()..];
+            assert!(
+                flat(body).starts_with(opening),
+                "{heading:?} must open with {opening:?}; got:\n{body}"
+            );
+            let countermeasure = section(body, "**Countermeasure:**", "\n\n");
+            assert!(
+                body.contains("The tell is ")
+                    && body.find("The tell is ") < body.find("**Countermeasure:**"),
+                "{heading:?} must state its tell before its countermeasure; got:\n{body}"
+            );
+            let countermeasure = flat(countermeasure);
+            assert!(
+                countermeasure.contains("The `spec-preflight` skill")
+                    && countermeasure.contains(step),
+                "{heading:?}'s countermeasure must name the spec-preflight step that finds it; \
+                 got:\n{countermeasure}"
+            );
+        }
+    }
+
+    /// Spec 112, criterion 4: the shipped docs carry ONE corner list of eight, walked in one
+    /// order - `planning-a-spec`'s step 3, the field guide's F3 countermeasure and
+    /// `spec-preflight`'s step 2 each name empty, repeated, revert, DROPPED, concurrent,
+    /// crash-resume, cold start and existing data.
+    #[test]
+    fn the_shipped_docs_carry_one_corner_list_of_eight() {
+        let ctx = sentinel_ctx();
+        let skill = render_planning_a_spec_skill(&ctx);
+        let guide = render_planning_field_guide(&ctx);
+        let preflight = spec_preflight_body(&ctx);
+        for (label, list) in [
+            (
+                "planning-a-spec step 3",
+                section(&skill, "**3. Run the constraints walk.**", "**4. "),
+            ),
+            (
+                "the field guide's F3 countermeasure",
+                section(
+                    &guide,
+                    "**Countermeasure:** the constraints walk.",
+                    "### F4",
+                ),
+            ),
+            (
+                "spec-preflight step 2",
+                section(&preflight, "## Step 2: per-criterion corner walk", "Rules:"),
+            ),
+        ] {
+            let lower = list.to_lowercase();
+            let mut from = 0;
+            for corner in [
+                "empty",
+                "repeated",
+                "revert",
+                "dropped",
+                "concurrent",
+                "crash-resume",
+                "cold start",
+                "existing data",
+            ] {
+                let at = lower[from..].find(corner).unwrap_or_else(|| {
+                    panic!("{label} must walk the {corner:?} corner after the one before it; got:\n{list}")
+                });
+                from += at + corner.len();
+            }
+        }
+    }
+
+    /// Spec 112, criterion 4: `planning-a-spec`'s step 7 names the `spec-preflight` skill and,
+    /// under a workflow with a critic, `rigger critique <spec>` before launch.
+    #[test]
+    fn planning_a_spec_step_7_runs_spec_preflight_and_the_critique_before_launch() {
+        let skill = render_planning_a_spec_skill(&sentinel_ctx());
+        let step = section(
+            &skill,
+            "**7. Preflight, then launch.**",
+            "## Amending mid-run",
+        );
+        assert!(
+            flat(step).contains(
+                "Run the `spec-preflight` skill and, under a workflow with a critic, `rigger \
+                 critique <spec>` before launch."
+            ),
+            "step 7 must name spec-preflight and the critique before launch; got:\n{step}"
+        );
     }
 }
