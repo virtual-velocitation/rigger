@@ -202,8 +202,21 @@ enum HitKind {
 /// `commonness_map` for nearly every CONTAINS hit and silently handed it the artificial rarest
 /// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
 /// tiebreaker ("then by the existing lexical score").
+///
+/// Gap 104 adds two keys ahead of and inside that order. `coverage` - how many DISTINCT query terms
+/// occur (case-insensitively) in the entity's name or its file path - ranks first, so a query that
+/// names an entity by its shape or its module (`impl EventStore for` -> the impl blocks named
+/// `impl EventStore for Store`; `sqlite store open` -> `open_connection` in `store/sqlite.rs`)
+/// finds that entity above a name that matches one incidental word (`for`, `open`). `test` - the
+/// location is test code ([`Def::is_test`]/[`SymRef::is_test`]) - ranks after tier, so a test
+/// double never outranks the product code it stands in for.
+///
+/// [`Def::is_test`]: crate::grounder::symbols::model::Def::is_test
+/// [`SymRef::is_test`]: crate::grounder::symbols::model::SymRef::is_test
 struct ScoredHit<'a> {
+    coverage: usize,
     tier: u8,
+    test: bool,
     commonness: usize,
     lexical: u8,
     file: &'a str,
@@ -222,11 +235,26 @@ impl ScoredHit<'_> {
     fn entity(&self) -> (&str, Lang) {
         (self.name, self.lang)
     }
+
+    /// The ONE ranking order, best first: coverage, then tier, then product before test code,
+    /// then rarest commonness, then definition over reference, then file and line (a total,
+    /// deterministic order). Both the per-location collapse and the final sort in
+    /// [`scored_hits`] compare by it, so the two can never disagree.
+    fn rank(&self) -> impl Ord + '_ {
+        (
+            std::cmp::Reverse(self.coverage),
+            std::cmp::Reverse(self.tier),
+            self.test,
+            self.commonness,
+            std::cmp::Reverse(self.lexical),
+            self.file,
+            self.line,
+        )
+    }
 }
 
-/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked
-/// tier-first, then rarest-commonness-first, then definition-over-reference, then by file/line
-/// (a total, deterministic order) - the ONE scored, sorted pass both [`Symbols::ground`] and
+/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked by
+/// [`ScoredHit::rank`] - the ONE scored, sorted pass both [`Symbols::ground`] and
 /// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
 /// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
 /// its BEST tier - commonness is a property of the matched entity's own name, so it never varies
@@ -234,9 +262,11 @@ impl ScoredHit<'_> {
 /// scorer already made.
 fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let commonness = commonness_map(idx);
+    let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
-        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8| {
+        let lower_path = path.to_lowercase();
+        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
             // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `(name,
@@ -265,64 +295,46 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             if hit_tier == 0 {
                 return;
             }
-            let hit_commonness = commonness.get(&(name, fs.lang)).copied().unwrap_or(0);
-            best.entry((path.as_str(), line))
-                .and_modify(|slot| {
-                    // A third clause tie-breaking on `lexical` WITHIN this same (file, line)
-                    // slot would never fire: `scored_hits` scores every definition in a file
-                    // before any reference in it (`for d in &fs.defs { .. } for r in &fs.refs
-                    // { .. }`), so whichever candidate is already slotted here was always
-                    // inserted no later than any same-tier, same-commonness challenger could
-                    // reach it - an already-slotted reference (lexical 2) can only be
-                    // challenged by another reference (lexical 2, never greater), and an
-                    // already-slotted definition (lexical 3) can only be challenged by a
-                    // reference (lexical 2) or a later same-line definition (lexical 3, never
-                    // greater either). The definition wins by SCORING ORDER alone - the first
-                    // candidate to reach a tied (tier, commonness) slot stays. `lexical` still
-                    // decides definition-over-reference, but only ACROSS different slots, in
-                    // the final sort below.
-                    let better = hit_tier > slot.tier
-                        || (hit_tier == slot.tier && hit_commonness < slot.commonness);
-                    if better {
-                        *slot = ScoredHit {
-                            tier: hit_tier,
-                            commonness: hit_commonness,
-                            lexical,
-                            file: path.as_str(),
-                            line,
-                            name,
-                            lang: fs.lang,
-                            kind,
-                        };
+            let lower_name = name.to_lowercase();
+            let coverage = lower_terms
+                .iter()
+                .filter(|t| lower_name.contains(t.as_str()) || lower_path.contains(t.as_str()))
+                .count();
+            let hit = ScoredHit {
+                coverage,
+                tier: hit_tier,
+                test,
+                commonness: commonness.get(&(name, fs.lang)).copied().unwrap_or(0),
+                lexical,
+                file: path.as_str(),
+                line,
+                name,
+                lang: fs.lang,
+                kind,
+            };
+            // One row per (file, line): the better-ranked candidate keeps the slot - an impl
+            // block's definition, matching every word of an impl-shaped query, over the trait
+            // reference on its own header line.
+            match best.entry((path.as_str(), line)) {
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    if hit.rank() < slot.get().rank() {
+                        slot.insert(hit);
                     }
-                })
-                .or_insert(ScoredHit {
-                    tier: hit_tier,
-                    commonness: hit_commonness,
-                    lexical,
-                    file: path.as_str(),
-                    line,
-                    name,
-                    lang: fs.lang,
-                    kind,
-                });
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(hit);
+                }
+            }
         };
         for d in &fs.defs {
-            score_one(d.name.as_str(), d.line, HitKind::Def, 3);
+            score_one(d.name.as_str(), d.line, HitKind::Def, 3, d.is_test);
         }
         for r in &fs.refs {
-            score_one(r.name.as_str(), r.line, HitKind::Ref, 2);
+            score_one(r.name.as_str(), r.line, HitKind::Ref, 2, r.is_test);
         }
     }
     let mut hits: Vec<ScoredHit<'a>> = best.into_values().collect();
-    hits.sort_by(|a, b| {
-        b.tier
-            .cmp(&a.tier)
-            .then(a.commonness.cmp(&b.commonness))
-            .then(b.lexical.cmp(&a.lexical))
-            .then(a.file.cmp(b.file))
-            .then(a.line.cmp(&b.line))
-    });
+    hits.sort_by(|a, b| a.rank().cmp(&b.rank()));
     hits
 }
 
