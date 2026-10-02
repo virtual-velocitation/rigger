@@ -30,7 +30,7 @@
     ]
   },
   {
-    "id": "dup-670e6a1d59fa",
+    "id": "dup-dbe0ddeb0d1c",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -81,6 +81,11 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 6000,
         "end_line": 6002
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 61,
+        "end_line": 67
       }
     ]
   },
@@ -839,8 +844,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 323,
-        "end_line": 323
+        "start_line": 330,
+        "end_line": 330
       },
       {
         "file": "tests/common/served.rs",
@@ -1035,7 +1040,7 @@
     ]
   },
   {
-    "id": "dup-cac6ae431624",
+    "id": "dup-767eccd922ac",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3689,8 +3694,18 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 310,
-        "end_line": 310
+        "start_line": 328,
+        "end_line": 328
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 564,
+        "end_line": 564
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 1153,
+        "end_line": 1153
       },
       {
         "file": "tests/statusline_command_periphery.rs",
