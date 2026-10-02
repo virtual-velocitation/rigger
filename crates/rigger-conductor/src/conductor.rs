@@ -354,14 +354,19 @@ enum GateKey {
     PostMergeVerdict,
 }
 
-/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`.
-fn gate_key(kind: GateKey, unit: &str, attempt: u32, gate: &str) -> String {
+/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`, under the
+/// infra rerun ordinal `retry` (F3): `{unit}/{infix}:{gate}#{attempt}`, suffixed `~retry{n}`
+/// exactly as a spawn id is ([`spawn::with_retry`]) once an infrastructure failure has rerun the
+/// stage at the same attempt - so the rerun gates afresh instead of replaying the infra red the
+/// earlier ordinal recorded. Ordinal 0 adds nothing: every key an infra-free attempt mints is
+/// unchanged.
+fn gate_key(kind: GateKey, unit: &str, attempt: u32, retry: u32, gate: &str) -> String {
     let infix = match kind {
         GateKey::Verdict => "gate",
         GateKey::Skip => "gate-skip",
         GateKey::PostMergeVerdict => "postmerge-gate",
     };
-    format!("{unit}/{infix}:{gate}#{attempt}")
+    spawn::with_retry(format!("{unit}/{infix}:{gate}#{attempt}"), retry)
 }
 
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
@@ -434,16 +439,17 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
 
-/// The ATTEMPT ordinal a gate-run key ran under, recovered from the `{unit}/gate:{gate}#{attempt}`
-/// grammar [`gate_key`] mints. Distinct attempts are distinct gate runs (a
-/// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
-/// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
-/// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
-/// the attempt. A key with no `/gate:` infix (a skip or post-merge key) yields `None`.
+/// The ATTEMPT ordinal a gate-run key ran under, recovered from the
+/// `{unit}/gate:{gate}#{attempt}~retry{n}` grammar [`gate_key`] mints. Distinct attempts are
+/// distinct gate runs (a re-implementation re-gates), so the gate-outcome read
+/// ([`recorded_gate_outcome`]) and the attempt high-water ([`RunCtx::gate_verdict_high_water`])
+/// read it to tell attempts apart. The run segment AFTER `/gate:` (never the whole key) is read
+/// by [`spawn::attempt_of`], the one owner of the `#{attempt}~retry{n}` tail, so neither a `#` in
+/// the unit portion nor an infra rerun's retry ordinal is mis-read as the attempt. A key with no
+/// `/gate:` infix (a skip or post-merge key) or no `#` yields `None`.
 fn gate_key_attempt(key: &str) -> Option<u32> {
-    let (_, suffix) = key.split_once("/gate:")?;
-    let (_, attempt) = suffix.rsplit_once('#')?;
-    attempt.parse::<u32>().ok()
+    let (_, run) = key.split_once("/gate:")?;
+    run.contains('#').then(|| spawn::attempt_of(run))
 }
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
@@ -502,15 +508,20 @@ struct GateVerdictData {
 /// `false` at the latest attempt => `Some(false)`) mirrors the `GateOutcome` AND `run_gates`
 /// itself computes. Restricting to the LATEST attempt (distinct attempts are distinct gate runs,
 /// keyed by `#{attempt}` via `gate_key_attempt`) keeps a unit that re-gated GREEN after an
-/// earlier red reading `passed`: the prior attempt's red does not carry over. Within one gate key
-/// the latest verdict by log position wins (the same last-write-wins the replay cache reads).
+/// earlier red reading `passed`: the prior attempt's red does not carry over. Within an attempt
+/// the LATEST infra rerun ordinal (`~retry{n}`, F3) is the gate run in force the same way: the
+/// red an infrastructure fault left at ordinal 0 does not outlive the green its rerun recorded.
+/// Within one gate key the latest verdict by log position wins (the same last-write-wins the
+/// replay cache reads).
 pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
-    // Fold this unit's gate-run verdicts into a per-attempt, per-gate-key map in ONE pass over
-    // events. Keying the inner map by the full gate-run key keeps distinct gates distinct while
-    // letting a re-emit of the SAME key overwrite (last-write-wins by log position); the outer
-    // `BTreeMap` keeps attempts ordered so the latest attempt is `next_back`.
-    let mut by_attempt: std::collections::BTreeMap<u32, std::collections::BTreeMap<&str, bool>> =
-        std::collections::BTreeMap::new();
+    // Fold this unit's gate-run verdicts into a per-(attempt, rerun ordinal), per-gate-key map in
+    // ONE pass over events. Keying the inner map by the full gate-run key keeps distinct gates
+    // distinct while letting a re-emit of the SAME key overwrite (last-write-wins by log
+    // position); the outer `BTreeMap` keeps the gate runs ordered so the latest is `next_back`.
+    let mut by_attempt: std::collections::BTreeMap<
+        (u32, u32),
+        std::collections::BTreeMap<&str, bool>,
+    > = std::collections::BTreeMap::new();
     for e in events {
         if e.type_ != contextgraph::TYPE_GATE_VERDICT {
             continue;
@@ -526,12 +537,12 @@ pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
         };
         if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
             by_attempt
-                .entry(attempt)
+                .entry((attempt, spawn::retry_of(key)))
                 .or_default()
                 .insert(key.as_str(), v.pass);
         }
     }
-    // The latest attempt's outcome is the AND across its gates: any failing gate => `Some(false)`.
+    // The latest gate run's outcome is the AND across its gates: any failing gate => `Some(false)`.
     let (_, latest) = by_attempt.iter().next_back()?;
     Some(latest.values().all(|&pass| pass))
 }
@@ -574,6 +585,40 @@ const ROLE_REPLAN: &str = "replan";
 struct GateOutcome {
     pass: bool,
     evidence: Vec<String>,
+    /// The gates failed and EVERY failing gate's persistent class is `infra` (F3): the red is
+    /// an outage, not the author's code, so the stage reruns uncharged
+    /// ([`CAUSE_INFRA_GATE`]). One product or flaky red among them makes the outcome a plain
+    /// gate failure. False on a pass.
+    infra: bool,
+}
+
+impl GateOutcome {
+    /// The outcome of a pass that has not yet run a gate: green until a gate fails.
+    fn green() -> Self {
+        GateOutcome {
+            pass: true,
+            evidence: Vec::new(),
+            infra: false,
+        }
+    }
+
+    /// Fold one failing gate in: the outcome is red, its `"{gate}: {evidence}"` line joins the
+    /// evidence, and it stays infra only while every red so far is of the `infra` class.
+    fn fail(&mut self, gid: &str, evidence: &str, class: failure::FailureClass) {
+        self.infra = (self.pass || self.infra) && class == failure::FailureClass::Infra;
+        self.pass = false;
+        self.evidence.push(format!("{gid}: {evidence}"));
+    }
+
+    /// The cause wire a red outcome stamps (spec 69, criterion 3): [`CAUSE_INFRA_GATE`] for an
+    /// all-infra red, else the first failing gate's `gate:<name>`.
+    fn cause(&self) -> String {
+        if self.infra {
+            CAUSE_INFRA_GATE.to_string()
+        } else {
+            gate_failure_cause(&self.evidence)
+        }
+    }
 }
 
 /// Which gates a [`run_gates`](RunCtx::run_gates) pass runs (spec 12, unit 3).
@@ -651,6 +696,15 @@ enum PlanCommitOutcome {
 /// remediation instead of spinning.
 const CONFLICT_RESOLVE_BOUND: u32 = 3;
 
+/// The implementer retry id a unit's stage run under infra retry `ordinal` spawns as (F3): 0 on
+/// the stage's first run, and on every rerun a multiple of `CONFLICT_RESOLVE_BOUND + 1` - past
+/// the `~retry1..=CONFLICT_RESOLVE_BOUND` ids the same attempt's integration spawns its
+/// conflict-resolution rounds under ([`RunCtx::spawn_conflict_resolution_implementer`]) - so a
+/// rerun's recorded result is never replayed as a conflict resolution's.
+fn implementer_retry(ordinal: u32) -> u32 {
+    ordinal * (CONFLICT_RESOLVE_BOUND + 1)
+}
+
 /// The remediation prompt for a merge-conflict re-park (spec 88, criterion 1): lists ONLY
 /// the conflicting SOURCE paths a real edit must resolve - never a full re-implementation
 /// prompt, and never a registered regenerable path also in conflict (the conductor
@@ -685,9 +739,9 @@ enum GateRatchet {
     /// A believed-real failure (a `product` gate, or a `flaky` gate that stayed red
     /// across every rerun): demotes the ratchet exactly as a gate failure did before.
     FailDemote,
-    /// A persistent `infra` failure: a real failure that still charges the unit a
-    /// remediation attempt, but must NOT demote the ratchet (an outage must not cost the
-    /// gate its earned autonomy).
+    /// A persistent `infra` failure: it must NOT demote the ratchet (an outage must not cost
+    /// the gate its earned autonomy), and in a unit's implement lifecycle it charges no
+    /// remediation attempt (the stage reruns uncharged, F3).
     FailNoDemote,
 }
 
@@ -1387,6 +1441,16 @@ fn is_parked_or_budget_refused(e: &Error) -> bool {
 /// before [`degenerate_reviewer`] halts the run.
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
 
+/// The reviewer retry ids one review round spans: the round a unit's stage runs under infra
+/// retry `ordinal` (F3; 0 for its first run) owns the `1 + REVIEWER_RESPAWN_BOUND` retry ids
+/// after every earlier round's, so an infra rerun's reviewers are fresh spawns that never
+/// replay the verdicts of the round the outage spoiled, while each round keeps its own
+/// degenerate/error respawns.
+fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
+    let first = ordinal * (REVIEWER_RESPAWN_BOUND + 1);
+    first..=first + REVIEWER_RESPAWN_BOUND
+}
+
 /// What a review-tier spawn's stdout carries, which decides when
 /// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1432,8 +1496,15 @@ const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
 /// replays that non-degenerate result and folds normally. Re-running WITHOUT a corrected result just
 /// replays the recorded empties and halts here again - which is why the message names the
 /// re-record, not a bare re-run.
-fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt: u32) -> Error {
-    let latest = spawn_retry_id(stage, role, attempt, REVIEWER_RESPAWN_BOUND);
+fn degenerate_reviewer(
+    stage: &str,
+    tier: &str,
+    agent: &str,
+    role: &str,
+    attempt: u32,
+    ordinal: u32,
+) -> Error {
+    let latest = spawn_retry_id(stage, role, attempt, *review_retry_window(ordinal).end());
     Error(format!(
         "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned empty/whitespace-only output \
          on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate \
@@ -1509,6 +1580,107 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
 /// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
+
+/// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
+/// each marks an infrastructure or configuration fault that halts the step loudly, with the
+/// marker stripped from the operator's message, while charging the unit no attempt (no
+/// `UnitFailed`, no `UnitEscalated`) and recording no per-unit lesson that would misattribute
+/// the fault to the unit. A new halt joins this list; it never grows an arm of its own.
+const HALT_MARKERS: [&str; 5] = [
+    DEGENERATE_MARKER,
+    MISMATCH_MARKER,
+    PLAN_LANDING_MARKER,
+    LAND_REFUSED_MARKER,
+    INFRA_MARKER,
+];
+
+/// The sentinel an INFRA HALT (F3) embeds in its error so [`run_wave`](RunCtx::run_wave)
+/// routes it through its halt arm over [`HALT_MARKERS`]: a unit's stage failed on
+/// infrastructure more times than the taxonomy's infra limit allows
+/// ([`failure::Taxonomy::infra_limit`]), so the step halts loudly instead of charging the
+/// unit an attempt for an outage it did not cause.
+const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
+
+/// The `UnitStatus` token of an infra RERUN mark (F3): a unit's stage failed on
+/// infrastructure at `(attempt, ordinal)` and was not charged. Keyed by [`infra_mark_key`].
+/// Like [`STATUS_REVIEW_ROUND_START`] it is deliberately NOT a [`ledger::Status`] variant, so
+/// the ledger fold keeps the unit's lifecycle status and only merges the mark's evidence;
+/// the count of these marks at the unit's attempt is the next rerun's retry ordinal
+/// ([`InfraRetries::recorded`]).
+const STATUS_INFRA_RETRY: &str = "infra-retry";
+
+/// The `UnitStatus` token of an INFRA HALT mark (F3): the infra rerun at `(attempt, ordinal)`
+/// reached the taxonomy's infra limit and the step halted. Not a [`ledger::Status`] variant,
+/// exactly like [`STATUS_INFRA_RETRY`].
+const STATUS_INFRA_HALT: &str = "infra-halt";
+
+/// The replay key of an infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for the
+/// stage run of `unit` at `attempt` under retry `ordinal`, so a re-step re-appends it once.
+fn infra_mark_key(unit: &str, status: &str, attempt: u32, ordinal: u32) -> String {
+    format!("{unit}/{status}#{attempt}~{ordinal}")
+}
+
+/// The halt error a unit's stage returns once its infra reruns reach the taxonomy's infra
+/// limit (F3): it carries [`INFRA_MARKER`] for [`run_wave`](RunCtx::run_wave)'s halt arm and
+/// reads `infra: <evidence>` once the marker is stripped.
+fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
+    Error(format!(
+        "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?} failed on infrastructure ({cause}) at \
+         attempt {attempt} past the failure taxonomy's infra limit, so the step halts and the \
+         unit is charged no attempt; fix the outage and re-run - the unit resumes at the same \
+         attempt with a fresh bound)"
+    ))
+}
+
+/// A unit's infra reruns at one attempt (F3), folded from its [`STATUS_INFRA_RETRY`] and
+/// [`STATUS_INFRA_HALT`] marks so a later `rigger step` process resumes the same counts -
+/// log-carried, never process state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct InfraRetries {
+    /// The retry ordinal the stage's next run carries: one per infra rerun already recorded
+    /// at this attempt. It picks the implementer's retry id ([`implementer_retry`]), the gate
+    /// keys' suffix ([`gate_key`]) and the reviewers' retry window ([`review_retry_window`]),
+    /// so a rerun is fresh work that never replays the run the outage spoiled.
+    ordinal: u32,
+    /// The infra reruns recorded since this attempt's latest infra halt: the count the
+    /// taxonomy's infra limit bounds. A halt resets it, so a relaunch after the outage gets a
+    /// fresh bound while the ordinal keeps counting past every spoiled run.
+    since_halt: u32,
+}
+
+impl InfraRetries {
+    /// The reruns and halts `unit` recorded at `attempt` in `events` (this run's log), folded
+    /// in log order.
+    fn recorded(events: &[Event], unit: &str, attempt: u32) -> Self {
+        unit_status_marks(events, unit, &[STATUS_INFRA_RETRY, STATUS_INFRA_HALT])
+            .filter(|(_, at, _)| *at == u64::from(attempt))
+            .fold(Self::default(), |infra, (status, _, _)| infra.after(status))
+    }
+
+    /// The state after one more infra mark of `status`: a rerun ([`STATUS_INFRA_RETRY`])
+    /// advances both counts, a halt ([`STATUS_INFRA_HALT`]) restarts the bound and keeps the
+    /// ordinal. The one transition the log fold and the live rerun both apply, so the two can
+    /// never disagree on the next ordinal.
+    fn after(self, status: &str) -> Self {
+        if status == STATUS_INFRA_RETRY {
+            InfraRetries {
+                ordinal: self.ordinal + 1,
+                since_halt: self.since_halt + 1,
+            }
+        } else {
+            InfraRetries {
+                since_halt: 0,
+                ..self
+            }
+        }
+    }
+
+    /// Whether the infra failure of the run at this state halts rather than reruns: the
+    /// reruns recorded since the latest halt reached the taxonomy's infra `limit`.
+    fn exhausted(self, limit: u32) -> bool {
+        self.since_halt >= limit
+    }
+}
 
 /// The conductor's injected ports.
 pub struct Deps<'a> {
@@ -2224,6 +2396,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // halt reason distinct from convergence and the thin driver stops loudly on it.
     let mut rs = ledger::project(current_events).map_err(|e| Error(e.to_string()))?;
     rs.budget_halt = ctx.halt_reason();
+    rs.parked = ctx.parked.load(Ordering::SeqCst);
     // Spec 69, criterion 5 (the step wire carries attention): a before/after diff of THIS
     // call's window, `prior` (this call's own resume seed, already projected above) against
     // `rs` - see [`compute_attention`] for why the diff, not a persisting-state read, is
@@ -3118,15 +3291,16 @@ impl RunCtx<'_> {
     /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
     /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
     /// (which matches only the `/gate:` gate-RUN infix, so a `/gate-skip:` provenance key or a
-    /// `deferred/gate:` key never contributes) and the trailing `#{attempt}` via `rsplit_once`;
-    /// returns the max over the unit's keys, or `None` when it has recorded no gate verdict yet.
+    /// `deferred/gate:` key never contributes) and the attempt via [`gate_key_attempt`] (which
+    /// sees through an infra rerun's `~retry{n}` suffix); returns the max over the unit's keys, or
+    /// `None` when it has recorded no gate verdict yet.
     fn gate_verdict_high_water(&self, unit: &str) -> Option<u32> {
         self.gate_verdicts
             .lock()
             .unwrap()
             .keys()
             .filter(|k| unit_of_gate_key(k) == Some(unit))
-            .filter_map(|k| k.rsplit_once('#').and_then(|(_, a)| a.parse::<u32>().ok()))
+            .filter_map(|k| gate_key_attempt(k))
             .max()
     }
 
@@ -3331,7 +3505,9 @@ impl RunCtx<'_> {
         inputs: &[String],
         blast_radius: &[String],
     ) -> Result<(), Error> {
-        let key = gate_key(GateKey::Skip, unit, attempt, gid);
+        // A skip is the same decision on every infra rerun of the attempt (its blast radius
+        // does not change), so it keys at ordinal 0 and is recorded once per attempt.
+        let key = gate_key(GateKey::Skip, unit, attempt, 0, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
@@ -3713,60 +3889,21 @@ impl RunCtx<'_> {
                     // adv-confirm-review-tier-no-budgetexhausted,
                     // adv-budget-guard-cannot-assemble-reviewed-unit).
                     Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
-                    // A degenerate-reviewer HALT (Gap 18) is an INFRASTRUCTURE fault, not a
-                    // unit failure: the operator's reviewer agent/driver returned only
-                    // empty results. Route it through its OWN arm (like the park/budget
-                    // sentinels) - propagate the loud halt as the wave's error, but emit NO
-                    // per-unit lesson: a lesson here would misattribute the operator's
-                    // broken reviewer to the unit under review (finding adv-u2gap18-halt-
-                    // lesson-misattribution). It charges no attempt (no UnitFailed/
-                    // UnitEscalated - the halt writes nothing against the unit). Strip the
-                    // recognition marker so the operator's halt message stays clean.
-                    Err(e) if carries_marker(&e, DEGENERATE_MARKER) => {
+                    // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
+                    // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
+                    // landing refused by the run checkout's local changes, a unit's infra reruns
+                    // past the taxonomy's infra limit) - is an infrastructure or configuration
+                    // fault, not the unit's failure. ONE arm for all of them: propagate the loud
+                    // halt as the wave's error with the recognition marker stripped (so the
+                    // operator's message stays clean), emit NO per-unit lesson here (it would
+                    // misattribute the fault to the unit under work; `land_refused` records its
+                    // own path-naming lesson before minting its marker), and charge no attempt -
+                    // no UnitFailed/UnitEscalated is written on any halt's path.
+                    Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
                         if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(DEGENERATE_MARKER, "")));
-                        }
-                    }
-                    // A runtime verdict-channel mismatch (spec 18, unit 3) is an OPERATOR
-                    // persona-config fault, not the unit's fault: the gating reviewer
-                    // emitted its approve-shaped verdict as an event but put nothing on the
-                    // result channel the gate reads. Route it through its OWN arm like the
-                    // degenerate-reviewer halt - propagate the loud hard error (marker
-                    // stripped) but emit NO per-unit lesson (a lesson would misattribute the
-                    // operator's broken persona to the unit under review) and charge no
-                    // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
-                        }
-                    }
-                    // A plan-stage commit-landing infra fault (spec 88 c4,
-                    // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker)
-                    // is a CONDUCTOR-SIDE git-plumbing fault around landing a
-                    // producer's own commits onto the run branch, not the unit's
-                    // fault: route it through its OWN arm exactly like the
-                    // degenerate-reviewer and verdict-channel-mismatch halts -
-                    // propagate the loud hard error (marker stripped) but emit NO
-                    // per-unit lesson (a lesson would misattribute the conductor's own
-                    // git-plumbing fault to the producer unit) and charge no attempt
-                    // (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, PLAN_LANDING_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
-                        }
-                    }
-                    // A land-refused-for-local-changes infra fault (spec 103 criterion 8):
-                    // `Worktree::land` found local content in the run checkout blocking the
-                    // fast-forward, a CONDUCTOR-SIDE fault around the run checkout's own
-                    // state, never the unit's fault - its branch is untouched. Route it
-                    // through its OWN arm exactly like the other conductor-side infra faults
-                    // above: propagate the loud hard error (marker stripped) but emit NO
-                    // per-unit lesson here - [`Self::land_refused`] already recorded the
-                    // real, path-naming one before minting this marker - and charge no
-                    // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, LAND_REFUSED_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(LAND_REFUSED_MARKER, "")));
+                            first_err = Some(Error(
+                                HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
+                            ));
                         }
                     }
                     Err(e) => {
@@ -4405,6 +4542,9 @@ impl RunCtx<'_> {
         st: &Stage,
         dir: &str,
         attempt: u32,
+        // The stage run's infra retry ordinal (F3), which picks the reviewers' retry window
+        // ([`review_retry_window`]); 0 outside a unit stage's infra rerun.
+        ordinal: u32,
         flapped: bool,
         defer_reviewed: bool,
         blast_radius: &[String],
@@ -4471,6 +4611,7 @@ impl RunCtx<'_> {
                 &lenses,
                 dir,
                 attempt,
+                ordinal,
                 any_parked,
                 wt,
                 round.as_ref(),
@@ -4484,10 +4625,19 @@ impl RunCtx<'_> {
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
-            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses, round.as_ref())
-                .map_err(|e| {
-                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-                })?;
+            self.run_adversary(
+                st,
+                &adversary,
+                dir,
+                attempt,
+                ordinal,
+                wt,
+                &lenses,
+                round.as_ref(),
+            )
+            .map_err(|e| {
+                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+            })?;
         }
         if adjudicator.is_empty() {
             // The round's last real result was the adversary's (or the lenses', if the
@@ -4503,6 +4653,7 @@ impl RunCtx<'_> {
                 &adjudicator,
                 dir,
                 attempt,
+                ordinal,
                 wt,
                 &lenses,
                 &adversary,
@@ -4891,34 +5042,78 @@ impl RunCtx<'_> {
     /// implementer spawn `run_single_stage`'s recovery commit below would name) is
     /// genuinely halted right now, per [`liveness::spawn_is_halted`] - requested, carrying
     /// no real result, and no spawn of `unit` still touching a marker inside its own
-    /// wall-clock bound. Reads the log fresh (the same pattern this file's other
-    /// resume-time reads already use, e.g. [`Self::resume_phase`]); each marker is read under
-    /// the root its request recorded ([`liveness::MarkerRoots`], spec 101), and the scratch
-    /// root every other `Worktree::create`/reclaim call site in this file computes is only the
-    /// fallback for a request that recorded none.
+    /// wall-clock bound. `events` is the log the caller read fresh at stage entry, scoped to
+    /// THIS run alone (mirrors `run()`'s own `prior_events` fold and every
+    /// `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let a
+    /// PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses a
+    /// slug) satisfy this guard for a unit this run has never touched - the same Gap 11
+    /// zombie class `crate::run::current_run`'s own doc comment names. Each marker is read
+    /// under the root its request recorded ([`liveness::MarkerRoots`], spec 101), and the
+    /// scratch root every other `Worktree::create`/reclaim call site in this file computes is
+    /// only the fallback for a request that recorded none.
     fn halted_spawn_checkpoint_permitted(
         &self,
+        events: &[Event],
         unit: &str,
         named_spawn_id: &str,
     ) -> Result<bool, Error> {
-        // Scoped to THIS run alone (mirrors `run()`'s own `prior_events` fold and every
-        // `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let
-        // a PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses
-        // a slug) satisfy this guard for a unit this run has never touched - the same Gap 11
-        // zombie class `crate::run::current_run`'s own doc comment names.
-        let events = self.read_current_run()?;
         let scratch = crate::worktree::scratch_root_from_env(
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
         Ok(liveness::spawn_is_halted(
-            &events,
+            events,
             &scratch,
             &self.run_id,
             unit,
             named_spawn_id,
             std::time::SystemTime::now(),
         )?)
+    }
+
+    /// Record an infrastructure failure of `unit`'s stage run at `attempt` under `infra`'s
+    /// ordinal (F3): never charged - no `remediate`, no `UnitFailed` - but marked
+    /// [`STATUS_INFRA_RETRY`] with its `cause` and `evidence`. Returns the state the stage
+    /// reruns under (the next retry ordinal) while the taxonomy's infra limit allows another
+    /// run; past it, marks [`STATUS_INFRA_HALT`] and returns the [`infra_halt`] error that
+    /// halts the step.
+    fn retry_infra_failure(
+        &self,
+        unit: &str,
+        attempt: u32,
+        infra: InfraRetries,
+        cause: &str,
+        evidence: &str,
+    ) -> Result<InfraRetries, Error> {
+        let detail = format!("{cause}: {evidence}");
+        self.emit_infra_mark(unit, STATUS_INFRA_RETRY, attempt, infra.ordinal, &detail)?;
+        if !infra.exhausted(self.taxonomy.infra_limit()) {
+            return Ok(infra.after(STATUS_INFRA_RETRY));
+        }
+        self.emit_infra_mark(unit, STATUS_INFRA_HALT, attempt, infra.ordinal, &detail)?;
+        Err(infra_halt(unit, attempt, cause, evidence))
+    }
+
+    /// Append one infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for `unit`'s run
+    /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status.
+    fn emit_infra_mark(
+        &self,
+        unit: &str,
+        status: &str,
+        attempt: u32,
+        ordinal: u32,
+        detail: &str,
+    ) -> Result<(), Error> {
+        self.emit_keyed(
+            &infra_mark_key(unit, status, attempt, ordinal),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": unit,
+                "status": status,
+                "attempt": attempt,
+                "evidence": { status: detail },
+            }),
+        )
     }
 
     /// `any_parked` (spec 64 c1 round 4) is threaded straight through, unread, to the
@@ -4969,10 +5164,36 @@ impl RunCtx<'_> {
         // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
         // turns a resumable state into a hard, no-attempt-charged error instead of ever
         // reaching the idempotent path built to handle exactly this.
-        let named_halt_spawn = spawn_id(
+        //
+        // The run's log is read ONCE here, at stage entry: the halted-spawn guard below and
+        // the unit's infra reruns (F3) both fold it.
+        let events = self.read_current_run()?;
+        // Resume of a mid-remediation unit: seed the attempt counter from the prior
+        // window's folded `UnitFailed attempts:N` so bounded remediation CONTINUES from
+        // where it stopped instead of restarting at 0. A unit that failed twice across a
+        // prior window resumes at 2, makes its 3rd (final) attempt this window (under the
+        // default bound), and ESCALATES at the configured `max_retries` bound TOTAL - not
+        // a fresh `max_retries` every window forever.
+        // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
+        //
+        // Compensation re-entry (spec 12, unit 4): a unit a later unit's review proved wrong
+        // was reverted and re-entered here at ONE PAST its HIGH-WATER attempt (via
+        // `effective_attempts`, which reconciles the run-start `prior_attempts`, the live
+        // compensation bump the drain recorded, AND the highest attempt it already recorded a
+        // gate verdict at - so the value clears every attempt key its OWN prior in-run
+        // remediation consumed). Starting at the advanced attempt is what makes its
+        // re-implemented tree gate under a FRESH `(unit, attempt, gate)` key instead of
+        // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
+        // the fix, never a content-blind false green.
+        let mut attempts = self.effective_attempts(&st.name);
+        // The infra reruns this attempt already recorded (F3): the stage resumes under the
+        // next retry ordinal, so an earlier process's spoiled run is never replayed.
+        let mut infra = InfraRetries::recorded(&events, &st.name, attempts);
+        let named_halt_spawn = spawn_retry_id(
             &st.name,
             ROLE_IMPLEMENTER,
-            self.effective_attempts(&st.name),
+            attempts,
+            implementer_retry(infra.ordinal),
         );
         let halted_commit = match wt {
             // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
@@ -4984,7 +5205,11 @@ impl RunCtx<'_> {
             // never mistaken for abandoned work.
             Some(w)
                 if !w.merge_in_progress()
-                    && self.halted_spawn_checkpoint_permitted(&st.name, &named_halt_spawn)? =>
+                    && self.halted_spawn_checkpoint_permitted(
+                        &events,
+                        &st.name,
+                        &named_halt_spawn,
+                    )? =>
             {
                 w.commit_checkpoint(&format!(
                     "wip({}): tree of halted spawn {}",
@@ -5011,7 +5236,24 @@ impl RunCtx<'_> {
             // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
             // window already ran replays its recorded verdict; only gates it skipped run now.
             let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
-            let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+            // An all-infra red is an outage, not the approved code (F3): the suite reruns
+            // uncharged under the next retry ordinal until the taxonomy's infra limit halts
+            // the step.
+            let mut infra = InfraRetries::recorded(&events, &st.name, attempts);
+            let full = loop {
+                let full =
+                    self.run_gates_at(st, dir, attempts, infra.ordinal, GateSelection::Exhaustive)?;
+                if full.pass || !full.infra {
+                    break full;
+                }
+                infra = self.retry_infra_failure(
+                    &st.name,
+                    attempts,
+                    infra,
+                    &full.cause(),
+                    &full.evidence.join(" | "),
+                )?;
+            };
             if !full.pass {
                 // The exhaustive suite is red on a resumed approve (a skipped gate fails):
                 // do NOT integrate a failing tree. Record the failure so the unit re-enters
@@ -5029,7 +5271,7 @@ impl RunCtx<'_> {
                     w.ensure_present()?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
-                let cause = gate_failure_cause(&full.evidence);
+                let cause = full.cause();
                 let failure = PriorFailure {
                     gate_evidence: full.evidence,
                     ..Default::default()
@@ -5090,24 +5332,6 @@ impl RunCtx<'_> {
             return Ok(true);
         }
 
-        // Resume of a mid-remediation unit: seed the attempt counter from the prior
-        // window's folded `UnitFailed attempts:N` so bounded remediation CONTINUES from
-        // where it stopped instead of restarting at 0. A unit that failed twice across a
-        // prior window resumes at 2, makes its 3rd (final) attempt this window (under the
-        // default bound), and ESCALATES at the configured `max_retries` bound TOTAL - not
-        // a fresh `max_retries` every window forever.
-        // A unit with no prior failure (fresh, or never failed) starts at 0, unchanged.
-        //
-        // Compensation re-entry (spec 12, unit 4): a unit a later unit's review proved wrong
-        // was reverted and re-entered here at ONE PAST its HIGH-WATER attempt (via
-        // `effective_attempts`, which reconciles the run-start `prior_attempts`, the live
-        // compensation bump the drain recorded, AND the highest attempt it already recorded a
-        // gate verdict at - so the value clears every attempt key its OWN prior in-run
-        // remediation consumed). Starting at the advanced attempt is what makes its
-        // re-implemented tree gate under a FRESH `(unit, attempt, gate)` key instead of
-        // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
-        // the fix, never a content-blind false green.
-        let mut attempts = self.effective_attempts(&st.name);
         // The last attempt's concrete failure, threaded into the NEXT attempt's
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged. A unit re-entering at the attempt its logged failure left it
@@ -5204,7 +5428,14 @@ impl RunCtx<'_> {
                 // (Ok(false), not escalated); the run loop records BudgetExhausted. The
                 // reservation is keyed by the spawn's deterministic id so a REPLAY of an
                 // already-recorded implementer (a resumed step) is admitted free.
-                let implementer_id = spawn_id(&st.name, ROLE_IMPLEMENTER, attempts);
+                // An infra rerun (F3) spawns under its retry ordinal's id, so a crashed or
+                // halted run's recorded result is never replayed as this run's.
+                let implementer_id = spawn_retry_id(
+                    &st.name,
+                    ROLE_IMPLEMENTER,
+                    attempts,
+                    implementer_retry(infra.ordinal),
+                );
                 if !self.reserve_spawn(&implementer_id) {
                     return Ok(false);
                 }
@@ -5247,7 +5478,8 @@ impl RunCtx<'_> {
                 // could never converge - the exact bug this guard closes. An agent that
                 // DELIBERATELY opted out (`isolation: none`) runs in the project cwd by
                 // design (§3.1, §6), so it is exempt. A guard failure is a spawn error
-                // (remediate, do not abort) - the discipline a mid-spawn crash gets.
+                // (never the unit's code, so never charged) - the discipline a mid-spawn
+                // crash gets.
                 let isolation_check = if self.agent_isolated(&st.agent) {
                     self.assert_isolated_cwd("implementer", &st.agent, dir)
                 } else {
@@ -5324,8 +5556,9 @@ impl RunCtx<'_> {
                     // UnitFailed and no remediation, so the step ends once every
                     // in-flight spawn is parked and a later step replays the result.
                     Err(e) if is_parked(&e) => return Err(e),
-                    // A mid-spawn crash (usage limit, non-zero exit) is remediated,
-                    // not propagated: it must not abort the whole run (§8).
+                    // A mid-spawn crash (a non-zero exit, a live host's wall-clock stop) is
+                    // an infrastructure failure: rerun uncharged at the same attempt (F3)
+                    // below, never propagated - it must not abort the whole run (§8).
                     Err(e) => {
                         // adj-u104c5 REQUIRED FIX 2: this text reaches the operator
                         // verbatim via the escalation lesson below (`why`) - strip a
@@ -5463,8 +5696,13 @@ impl RunCtx<'_> {
                     // staleness passes use), skipping and logging the rest. A remediation iteration
                     // then re-verifies only what its change could have touched; the exhaustive suite
                     // is asserted once at the integrate door below.
-                    let gate_outcome =
-                        self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
+                    let gate_outcome = self.run_gates_at(
+                        st,
+                        dir,
+                        attempts,
+                        infra.ordinal,
+                        GateSelection::Narrowed(&blast_radius),
+                    )?;
                     if gate_outcome.pass {
                         // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
                         // asserted this worktree exists exactly ONCE, before this call began - the
@@ -5518,6 +5756,7 @@ impl RunCtx<'_> {
                             st,
                             dir,
                             attempts,
+                            infra.ordinal,
                             attempts > 0,
                             false,
                             &radius.safe,
@@ -5584,8 +5823,13 @@ impl RunCtx<'_> {
                             // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
                             // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
                             // itself is untouched - the exhaustive suite gates whether it is CALLED.
-                            let full =
-                                self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+                            let full = self.run_gates_at(
+                                st,
+                                dir,
+                                attempts,
+                                infra.ordinal,
+                                GateSelection::Exhaustive,
+                            )?;
                             if full.pass {
                                 // The gates passed AND the review explicitly approved: the only
                                 // path that mints an `IntegrationApproval`, so the only path that
@@ -5637,27 +5881,42 @@ impl RunCtx<'_> {
                                 // inner loop had skipped fails against the merged-to-be tree): treat
                                 // it like any gate failure - capture the evidence and fall through
                                 // to remediation, do NOT integrate a tree that fails the full suite.
-                                cause = gate_failure_cause(&full.evidence);
+                                cause = full.cause();
                                 next.gate_evidence = full.evidence;
                             }
                         } else {
                             // A rejecting adjudicator is treated exactly like a gate failure:
                             // capture its reasoning for the next attempt's prompt (item 5) and
-                            // fall through to remediation, do NOT integrate.
-                            cause = CAUSE_REJECT.to_string();
+                            // fall through to remediation, do NOT integrate. A reject blaming
+                            // infrastructure reruns the stage uncharged instead (F3).
+                            cause = review_failure_cause(&review.reason);
                             next.review_reason = review.reason;
                         }
                     } else {
                         // Capture the failing gates' evidence for the next attempt's
                         // prompt (item 3 / spec 02).
-                        cause = gate_failure_cause(&gate_outcome.evidence);
+                        cause = gate_outcome.cause();
                         next.gate_evidence = gate_outcome.evidence;
                     }
                 } // end `else` (non-producer lifecycle), spec 88 criterion 4
             }
 
+            // An infrastructure failure (F3) is never the author's: no `remediate`, no
+            // `UnitFailed`. The stage reruns at the SAME attempt under the next retry ordinal -
+            // re-implementing only when the implementer itself crashed, otherwise re-gating and
+            // re-reviewing the committed tree - until the taxonomy's infra limit halts the
+            // step. `prior` is left as it was: an outage is no feedback for the author.
+            if is_infra_cause(&cause) {
+                let evidence = spawn_err.clone().unwrap_or_else(|| next.summary());
+                infra = self.retry_infra_failure(&st.name, attempts, infra, &cause, &evidence)?;
+                skip_implement = spawn_err.is_none();
+                continue;
+            }
             let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
             attempts = rem.attempts;
+            // The new attempt's infra reruns, from the log read at entry (none, unless an
+            // earlier process already ran it).
+            infra = InfraRetries::recorded(&events, &st.name, attempts);
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
             // SAME bug class the `reviewed` stamp above now guards against - a review
@@ -5685,14 +5944,12 @@ impl RunCtx<'_> {
             )?;
             if rem.decision == safety::Decision::Escalate {
                 // The escalation lesson carries the CONCRETE final failure (spec 02):
-                // the spawn crash, or the specific gate/review reason, never a generic
-                // placeholder when one is available.
-                let why = if let Some(e) = &spawn_err {
-                    e.clone()
-                } else if !next.is_empty() {
-                    next.summary()
-                } else {
+                // the specific gate/review reason, never a generic placeholder when one is
+                // available. A spawn crash never reaches here - it is infra (F3).
+                let why = if next.is_empty() {
                     "its gates or review would not pass".to_string()
+                } else {
+                    next.summary()
                 };
                 self.emit_lesson(
                     wt,
@@ -5983,6 +6240,7 @@ impl RunCtx<'_> {
                 st,
                 &dir,
                 lane,
+                0,
                 false,
                 true,
                 &radius.safe,
@@ -6476,12 +6734,13 @@ impl RunCtx<'_> {
                 &lenses,
                 dir,
                 attempts,
+                0,
                 any_lens_parked,
                 None,
                 None,
             )?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, None, &lenses, None)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, 0, None, &lenses, None)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -6494,6 +6753,7 @@ impl RunCtx<'_> {
                     &st.adjudicator,
                     dir,
                     attempts,
+                    0,
                     None,
                     &lenses,
                     &st.adversary,
@@ -6643,9 +6903,8 @@ impl RunCtx<'_> {
     ///     from `any_parked`, spec 64 c1) - a park anywhere in the chunk answers yes, no
     ///     matter what else also happened in that chunk;
     ///   - "did anything here need to halt the run loudly" (the propagated `Result`,
-    ///     which `run_wave` routes through its dedicated arms -
-    ///     carries_marker(.., DEGENERATE_MARKER)/carries_marker(.., MISMATCH_MARKER)/catch-all,
-    ///     conductor.rs:2874-2917 - per spec 19c) - a GENUINE terminal error anywhere in
+    ///     which `run_wave` routes through its halt arm over [`HALT_MARKERS`] or its
+    ///     catch-all, per spec 19c) - a GENUINE terminal error anywhere in
     ///     the chunk must reach that dispatch, not be masked by a co-chunked park.
     ///
     /// Collapsing both into the ONE `Result` this function returns (round 2's swap-to-
@@ -6654,6 +6913,10 @@ impl RunCtx<'_> {
     /// prioritize the genuine error (as below) and the LOSING half must come from
     /// somewhere else - `any_parked` is that somewhere else, read by `run_fan_out_stage`
     /// separately from the propagated Err.
+    // Each argument is a distinct review input - the stage, its lens ids, the worktree dir,
+    // the attempt and its infra retry ordinal, the any-parked out-param, the unit worktree,
+    // the later-round block - the same primitive-argument shape `run_reviewer` carries this
+    // allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
@@ -6661,6 +6924,7 @@ impl RunCtx<'_> {
         agent_ids: &[String],
         dir: &str,
         attempt: u32,
+        ordinal: u32,
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
@@ -6672,7 +6936,9 @@ impl RunCtx<'_> {
             let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt, wt, round)))
+                    .map(|a| {
+                        s.spawn(move || self.run_lens(st, a, dir, attempt, ordinal, wt, round))
+                    })
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -6720,12 +6986,17 @@ impl RunCtx<'_> {
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
     /// spawns (item 9) surface as an error so the run halts.
+    // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
+    // retry ordinal, the ensure-on-park worktree, the later-round block) - the same
+    // primitive-argument shape `run_reviewer` carries this allow for.
+    #[allow(clippy::too_many_arguments)]
     fn run_lens(
         &self,
         st: &Stage,
         agent_id: &str,
         dir: &str,
         attempt: u32,
+        ordinal: u32,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
@@ -6741,6 +7012,7 @@ impl RunCtx<'_> {
             agent_id,
             dir,
             attempt,
+            ordinal,
             true,
             // A lens's stdout is NOT its verdict - it emits findings to the graph - so an
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
@@ -6799,6 +7071,9 @@ impl RunCtx<'_> {
         agent_id: &str,
         dir: &str,
         attempt: u32,
+        // The stage run's infra retry ordinal (F3): this reviewer spawns over the round's
+        // [`review_retry_window`], so an infra rerun's review is fresh work.
+        ordinal: u32,
         parallel: bool,
         output: ReviewerOutput,
         prompt: &str,
@@ -6818,9 +7093,10 @@ impl RunCtx<'_> {
                 st.name
             ))
         })?;
-        // retry 0 is the reviewer's ORIGINAL spawn (its plain `spawn_id`); each later
-        // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
-        for retry in 0..=REVIEWER_RESPAWN_BOUND {
+        // The round's first retry id is the reviewer's ORIGINAL spawn (its plain `spawn_id` on
+        // a stage's first run); each later id is a `~retry{n}` respawn. At most
+        // `1 + REVIEWER_RESPAWN_BOUND` spawns per round.
+        for retry in review_retry_window(ordinal) {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
@@ -6940,7 +7216,9 @@ impl RunCtx<'_> {
                 return Ok(result);
             }
         }
-        Err(degenerate_reviewer(&st.name, tier, agent_id, role, attempt))
+        Err(degenerate_reviewer(
+            &st.name, tier, agent_id, role, attempt, ordinal,
+        ))
     }
 
     /// Whether the GATING spawn `id` emitted an approve-shaped verdict via `rigger_emit`
@@ -7093,6 +7371,9 @@ impl RunCtx<'_> {
     /// own lens agent ids (spec 67, criterion 4) - the CALLER's already-routed value (light
     /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
     /// [`review_roster`].
+    // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
+    // retry ordinal, the ensure-on-park worktree, the routed lens roster, the later-round
+    // block) - the same primitive-argument shape `run_reviewer` carries this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adversary(
         &self,
@@ -7100,6 +7381,7 @@ impl RunCtx<'_> {
         adv_id: &str,
         dir: &str,
         attempt: u32,
+        ordinal: u32,
         wt: Option<&Worktree>,
         lenses: &[String],
         round: Option<&ReviewRound>,
@@ -7116,6 +7398,7 @@ impl RunCtx<'_> {
             adv_id,
             dir,
             attempt,
+            ordinal,
             false,
             // Like a lens, the adversary's stdout is discarded (findings go to the graph),
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
@@ -7152,6 +7435,7 @@ impl RunCtx<'_> {
         adj_id: &str,
         dir: &str,
         attempt: u32,
+        ordinal: u32,
         wt: Option<&Worktree>,
         lenses: &[String],
         adversary_id: &str,
@@ -7181,6 +7465,7 @@ impl RunCtx<'_> {
             adj_id,
             dir,
             attempt,
+            ordinal,
             false,
             // The adjudicator's stdout IS the gating verdict, so an empty/whitespace-only
             // stdout is degenerate on every path (including a replayed recorded result), and
@@ -7580,6 +7865,7 @@ impl RunCtx<'_> {
                     &gate_st.adversary,
                     dir,
                     attempts,
+                    0,
                     false,
                     ReviewerOutput::Findings,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
@@ -7600,6 +7886,7 @@ impl RunCtx<'_> {
                     &gate_st.adjudicator,
                     dir,
                     attempts,
+                    0,
                     false,
                     ReviewerOutput::Verdict,
                     &prompt,
@@ -7838,7 +8125,8 @@ impl RunCtx<'_> {
     /// re-running the command (so a stepwise run that hits a cargo gate pays its
     /// duration once, not once per step) and appends no duplicate verdict. Distinct
     /// attempts are distinct gate runs - a re-implementation must re-gate - so only
-    /// re-reaching the SAME attempt's gate is a replay.
+    /// re-reaching the SAME attempt's gate is a replay. Runs under retry ordinal 0; a unit
+    /// stage's infra rerun gates through [`run_gates_at`](Self::run_gates_at).
     fn run_gates(
         &self,
         st: &Stage,
@@ -7846,10 +8134,21 @@ impl RunCtx<'_> {
         attempt: u32,
         selection: GateSelection,
     ) -> Result<GateOutcome, Error> {
-        let mut outcome = GateOutcome {
-            pass: true,
-            evidence: Vec::new(),
-        };
+        self.run_gates_at(st, dir, attempt, 0, selection)
+    }
+
+    /// [`run_gates`](Self::run_gates) for the stage run at `attempt` under infra retry
+    /// `ordinal` (F3): the ordinal suffixes every gate key ([`gate_key`]), so an infra rerun
+    /// re-runs its gates instead of replaying the reds the outage left.
+    fn run_gates_at(
+        &self,
+        st: &Stage,
+        dir: &str,
+        attempt: u32,
+        ordinal: u32,
+        selection: GateSelection,
+    ) -> Result<GateOutcome, Error> {
+        let mut outcome = GateOutcome::green();
         // Per-unit build cache (Gap 19): a gate running INSIDE a unit's worktree builds into
         // a unit-keyed CARGO_TARGET_DIR that is the SIBLING of that worktree, so concurrent
         // units' divergent trees never poison one shared incremental cache - a compile error a
@@ -7980,9 +8279,9 @@ impl RunCtx<'_> {
             // other selection uses the canonical gate-run key.
             let key = match selection {
                 GateSelection::PostMerge => {
-                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, gid)
+                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, ordinal, gid)
                 }
-                _ => gate_key(GateKey::Verdict, &st.name, attempt, gid),
+                _ => gate_key(GateKey::Verdict, &st.name, attempt, ordinal, gid),
             };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
@@ -7991,8 +8290,7 @@ impl RunCtx<'_> {
             // identical to the live run's.
             if let Some((pass, evidence)) = cached(&self.gate_verdicts, &key) {
                 if !pass {
-                    outcome.pass = false;
-                    outcome.evidence.push(format!("{gid}: {evidence}"));
+                    outcome.fail(gid, &evidence, self.classify_gate_failure(&evidence).0);
                 }
                 continue;
             }
@@ -8088,13 +8386,36 @@ impl RunCtx<'_> {
                 )?;
             }
             if !pass {
-                outcome.pass = false;
                 // Capture the failing gate's compact summary so the next attempt's
-                // prompt names exactly which gate failed and why (item 3 / spec 02).
-                outcome.evidence.push(format!("{gid}: {evidence}"));
+                // prompt names exactly which gate failed and why (item 3 / spec 02), and
+                // its persistent class so an all-infra red reruns uncharged (F3).
+                outcome.fail(gid, &evidence, self.classify_gate_failure(&evidence).0);
             }
         }
         Ok(outcome)
+    }
+
+    /// The failure taxonomy's reading of a red gate's `evidence` (spec 10, unit 2): the
+    /// FIRST matching rule's class, rerun limit and backoff, or a plain `product` defect with
+    /// no rerun when no rule matches. The one classification both a gate's in-place reruns
+    /// ([`run_gate_with_taxonomy`](Self::run_gate_with_taxonomy)) and the stage's infra
+    /// verdict ([`GateOutcome::fail`]) read, live or replayed.
+    fn classify_gate_failure(
+        &self,
+        evidence: &str,
+    ) -> (failure::FailureClass, u32, failure::Backoff) {
+        match self
+            .taxonomy
+            .classify(&Signal::from_output(evidence.to_string()))
+        {
+            Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
+            // No rule matched: a plain product defect (no rerun) - today's behavior.
+            None => (
+                failure::FailureClass::Product,
+                0,
+                failure::Backoff::default(),
+            ),
+        }
     }
 
     /// Run one gate and fold the failure taxonomy's three-way outcome (spec 10, unit 2).
@@ -8139,16 +8460,7 @@ impl RunCtx<'_> {
         }
         // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
         // hold no borrow of the taxonomy across the rerun loop below.
-        let sig = Signal::from_output(res.evidence.clone());
-        let (class, limit, backoff) = match self.taxonomy.classify(&sig) {
-            Some(rule) => (rule.class, rule.limit, rule.backoff.clone()),
-            // No rule matched: a plain product defect (no rerun) - today's behavior.
-            None => (
-                failure::FailureClass::Product,
-                0,
-                failure::Backoff::default(),
-            ),
-        };
+        let (class, limit, backoff) = self.classify_gate_failure(&res.evidence);
         let first_evidence = res.evidence;
         if !class.reruns() || limit == 0 {
             // A failure that is never rerun (a `product` defect, or a rerunnable class
@@ -11657,12 +11969,37 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   plain gate failure at the BRANCH POINT where it is detected (`integration.blocked`
 ///   or [`PlanCommitOutcome::Conflict`]), never inferred from the shared evidence
 ///   accumulator both cases populate for the retry prompt.
-/// - [`CAUSE_INFRA_SPAWN`]: a mid-spawn driver crash (a non-zero exit, a non-usage-limit
-///   error) - the usage-limit case never reaches `UnitFailed` at all (spec 06 unit 6:
-///   wait-until-reset + re-spawn, no attempt charged).
+/// - The `infra:<kind>` causes ([`is_infra_cause`]) name an infrastructure failure of a
+///   unit's stage, which is never charged (F3): the stage reruns at the same attempt and
+///   records the cause on an [`STATUS_INFRA_RETRY`] mark, never on a `UnitFailed`.
+///   [`CAUSE_INFRA_SPAWN`] is a mid-spawn driver crash (a non-zero exit, a non-usage-limit
+///   error, a live host's wall-clock stop) - the usage-limit case never reaches here at all
+///   (spec 06 unit 6: wait-until-reset + re-spawn); [`CAUSE_INFRA_GATE`] a gate red whose
+///   every failing gate is of the taxonomy's `infra` class ([`GateOutcome::infra`]);
+///   [`CAUSE_INFRA_REVIEW`] an adjudicator reject blaming infrastructure
+///   ([`spawn::Adjudication::is_infra_fault`]).
 const CAUSE_REJECT: &str = "reject";
 const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
 const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
+const CAUSE_INFRA_GATE: &str = "infra:gate";
+const CAUSE_INFRA_REVIEW: &str = "infra:review";
+
+/// Whether a stage failure's `cause` is an infrastructure failure (F3): the ONE predicate a
+/// unit's stage asks before it charges a remediation attempt, over every infra source the
+/// cause wire names.
+fn is_infra_cause(cause: &str) -> bool {
+    [CAUSE_INFRA_SPAWN, CAUSE_INFRA_GATE, CAUSE_INFRA_REVIEW].contains(&cause)
+}
+
+/// The cause a review reject stamps: [`CAUSE_INFRA_REVIEW`] when the adjudicator's verdict
+/// line (`reason`, its raw output) blames infrastructure, else [`CAUSE_REJECT`].
+fn review_failure_cause(reason: &str) -> String {
+    if spawn::Adjudication::parse(reason).is_some_and(|a| a.is_infra_fault()) {
+        CAUSE_INFRA_REVIEW.to_string()
+    } else {
+        CAUSE_REJECT.to_string()
+    }
+}
 
 /// The `gate:<name>` cause (spec 69, criterion 3) for a plain gate-suite failure: the
 /// FIRST failing gate's id, parsed off the `"{gate}: {evidence}"` convention
@@ -12987,18 +13324,31 @@ fn review_round_starts<'a>(
     events: &'a [Event],
     unit: &'a str,
 ) -> impl Iterator<Item = (u64, String)> + 'a {
+    unit_status_marks(events, unit, &[STATUS_REVIEW_ROUND_START])
+        .filter_map(|(_, attempt, e)| Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?)))
+}
+
+/// Every attempt-stamped `UnitStatus` mark `unit` recorded with one of `statuses`, in log
+/// order, as `(status, attempt, event)`: the one parse the log-carried per-unit marks share
+/// (a review round's start sha, a stage's infra reruns). A mark missing its `attempt` is not
+/// one of these and is skipped.
+fn unit_status_marks<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    statuses: &'a [&'a str],
+) -> impl Iterator<Item = (&'a str, u64, &'a Event)> + 'a {
     events.iter().filter_map(move |e| {
         if e.type_ != ledger::TYPE_UNIT_STATUS {
             return None;
         }
         let v: Value = serde_json::from_slice(&e.data).ok()?;
-        if v.get("id").and_then(Value::as_str) != Some(unit)
-            || v.get("status").and_then(Value::as_str) != Some(STATUS_REVIEW_ROUND_START)
-        {
+        if v.get("id").and_then(Value::as_str) != Some(unit) {
             return None;
         }
+        let recorded = v.get("status").and_then(Value::as_str)?;
+        let status = statuses.iter().copied().find(|s| *s == recorded)?;
         let attempt = v.get("attempt").and_then(Value::as_u64)?;
-        Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?))
+        Some((status, attempt, e))
     })
 }
 
@@ -13813,7 +14163,7 @@ mod tests {
             )
             .with_meta(
                 META_REPLAY_KEY,
-                gate_key(GateKey::Verdict, unit, attempt, gate),
+                gate_key(GateKey::Verdict, unit, attempt, 0, gate),
             )
         }
 
@@ -13879,7 +14229,7 @@ mod tests {
             }))
             .unwrap(),
         )
-        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, "test"));
+        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, 0, "test"));
         let artifact = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({ "gate": "build", "pass": true, "artifact": "src/a.rs" }))
@@ -13889,6 +14239,45 @@ mod tests {
             recorded_gate_outcome(&[skip, artifact], "u3"),
             None,
             "a skip and an artifact verdict are not the unit's own gate run"
+        );
+    }
+
+    #[test]
+    fn unit_of_gate_key_strips_a_retry_ordinal() {
+        // F3: an infra rerun gates the SAME attempt again under a retry ordinal, which rides
+        // the gate key's coordinate tail exactly as it rides a spawn id, `#{attempt}~retry{n}`.
+        // Every reader of the key must see through it: the unit before `/gate:`, the attempt
+        // before `~retry`.
+        let retried = "u1/gate:test#2~retry1";
+        assert_eq!(gate_key(GateKey::Verdict, "u1", 2, 1, "test"), retried);
+        assert_eq!(
+            gate_key(GateKey::Verdict, "u1", 2, 0, "test"),
+            "u1/gate:test#2",
+            "ordinal 0 leaves every infra-free key unchanged"
+        );
+        assert_eq!(unit_of_gate_key(retried), Some("u1"));
+        assert_eq!(
+            gate_key_attempt(retried),
+            Some(2),
+            "the retry ordinal must not hide the attempt the gate ran at"
+        );
+        // The red an infra fault left at ordinal 0 and the green its rerun recorded at ordinal 1
+        // are the SAME attempt: the rerun's verdict is the unit's current outcome.
+        let verdict = |key: &str, pass: bool| {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({
+                    "gate": "test", "pass": pass, "flaky": false, "evidence": ""
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, key)
+        };
+        let rerun_green = vec![verdict("u1/gate:test#2", false), verdict(retried, true)];
+        assert_eq!(
+            recorded_gate_outcome(&rerun_green, "u1"),
+            Some(true),
+            "an infra rerun's green at the same attempt must read passed"
         );
     }
 
@@ -20472,8 +20861,8 @@ mod tests {
         assert_eq!(
             verdicts_after_landing,
             [
-                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, "g1")),
-                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, "g2")),
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, 0, "g1")),
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, 0, "g2")),
             ],
             "the landing records each gate once, keyed by unit and attempt"
         );
@@ -21268,7 +21657,7 @@ mod tests {
         const UNIT: &str = "gc";
         const GATE: &str = "g@h1";
         let started_key = format!("{UNIT}/started");
-        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, GATE);
+        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, 0, GATE);
 
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -26613,7 +27002,10 @@ mod tests {
                 }))
                 .unwrap(),
             )
-            .with_meta(META_REPLAY_KEY, gate_key(GateKey::Verdict, "s", lane, "ok"))
+            .with_meta(
+                META_REPLAY_KEY,
+                gate_key(GateKey::Verdict, "s", lane, 0, "ok"),
+            )
         }));
         prior.push(Event::new(
             ledger::TYPE_UNIT_ESCALATED,
@@ -28138,6 +28530,60 @@ mod tests {
     }
 
     #[test]
+    fn an_adjudicator_infra_fault_reject_reruns_the_review_without_charging() {
+        // F3: an adjudicator that rejects with `cause: infra-fault` reports a gate, tool or
+        // harness failure, not a defect in the author's code - the unit was never judged on
+        // its merits, so the reject charges no attempt. The stage reruns at the SAME attempt
+        // under the next retry ordinal, whose review spawns afresh (a replayed reject would
+        // otherwise re-decide it forever); the committed implementation is not respawned.
+        let cfg = per_unit_panel_cfg(None);
+        let infra_fault =
+            r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"infra-fault"}"#;
+        let driver = Stub {
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("implement", ROLE_ADJUDICATOR, 0),
+                infra_fault.to_string(),
+            )]),
+            ..Stub::answering(r#"{"verdict":"approve"}"#)
+        };
+        let (rs, events) = run_logged(&cfg, &driver);
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the rerun's review approves, so the unit integrates"
+        );
+        assert_eq!(
+            rs.units["implement"].attempts, 0,
+            "an infra-fault reject charges no attempt"
+        );
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra-fault reject must write no UnitFailed"
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the rerun reviews the committed work again; the implementer is not respawned"
+        );
+        let rerun_verdict =
+            spawn_retry_id("implement", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
+        assert!(
+            driver.spawn_ids().contains(&rerun_verdict),
+            "the rerun's adjudicator spawns under the next ordinal's id {rerun_verdict:?}: {:?}",
+            driver.spawn_ids()
+        );
+        assert!(
+            rs.units["implement"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with("infra:review")),
+            "the retry names its infra cause: {:?}",
+            rs.units["implement"].evidence
+        );
+    }
+
+    #[test]
     fn an_always_rejecting_adjudicator_escalates_after_exactly_max_retries_cycles() {
         // FIX 1 (the churn bug): an adjudicator that ALWAYS rejects must NOT loop the
         // unit forever. Each implement -> gates -> review cycle that ends in a reject
@@ -28730,36 +29176,171 @@ mod tests {
         assert_final_attempt_approval_integrates(&cfg, "review", "a standalone review");
     }
 
-    /// Run one stage `s` whose every spawn crashes mid-flight: the run completes (Ok), never
-    /// aborted, and the crashing unit escalates. Returns the run state.
-    fn crashing_spawn_run() -> RunState {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                ..Default::default()
-            },
-        );
-        let driver = Stub {
-            fail_spawn: true,
-            ..Stub::new()
-        };
-        let (rs, _events) = run_logged(&cfg, &driver);
+    /// Run one stage `s` whose gate fails on a product defect every attempt: the run completes
+    /// (Ok) and the unit escalates at the default remediation bound. Returns the run state.
+    fn failing_gate_run() -> RunState {
+        let mut cfg = one_gated_stage_cfg("s");
+        cfg.workflow.gates.insert("ok".into(), gate_def("false"));
+        let (rs, _events) = run_logged(&cfg, &Stub::new());
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
         rs
     }
 
+    /// The replay keys of `events`' `UnitStatus` marks carrying `status`, in log order.
+    fn status_mark_keys(events: &[Event], status: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["status"] == status)
+            })
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+            .collect()
+    }
+
     #[test]
-    fn mid_spawn_crash_escalates_without_aborting_the_run() {
-        let rs = crashing_spawn_run();
-        // spec 69, criterion 3 (the cause wire): a mid-spawn crash's UnitFailed carries
-        // the closed-vocabulary "infra:spawn" cause, never a gate or review label.
+    fn an_infra_spawn_crash_retries_under_a_retry_id_and_charges_nothing() {
+        // F3: a crash mid-spawn is infrastructure - the agent process died and the unit's code
+        // was never judged - so it charges no remediation attempt. The stage reruns at the SAME
+        // attempt under the next retry ordinal: the implementer re-spawns under a retry id of
+        // attempt 0 (never the next attempt's `s/implementer#1`) past the
+        // `~retry1..=CONFLICT_RESOLVE_BOUND` ids the attempt's conflict resolution spawns under,
+        // so neither can replay the other's recorded result; the retry is recorded as an
+        // `infra-retry` mark naming the `infra:spawn` cause, and no `UnitFailed` is written.
+        let cfg = one_gated_stage_cfg("s");
+        let driver = Stub {
+            fail_spawn_ids: [spawn_id("s", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let (rs, events) = run_logged(&cfg, &driver);
         assert_eq!(
-            rs.units["s"].cause, "infra:spawn",
-            "a mid-spawn crash must be stamped as an infra cause, not inferred downstream"
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the retried spawn succeeds, so the unit integrates"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "a crash charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra crash must write no UnitFailed"
+        );
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_retry_id(
+                "s",
+                ROLE_IMPLEMENTER,
+                0,
+                CONFLICT_RESOLVE_BOUND + 1
+            )),
+            "the crashed spawn must be retried under its retry id at the same attempt: {ids:?}"
+        );
+        for conflict_round in 1..=CONFLICT_RESOLVE_BOUND {
+            let conflict_id = spawn_retry_id("s", ROLE_IMPLEMENTER, 0, conflict_round);
+            assert!(
+                !ids.contains(&conflict_id),
+                "an infra rerun must never take the conflict-resolution id {conflict_id:?}: {ids:?}"
+            );
+        }
+        assert!(
+            !ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "a crash must never advance the unit to its next attempt: {ids:?}"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            vec!["s/infra-retry#0~0".to_string()],
+            "the crashed ordinal is recorded once, keyed by attempt and ordinal"
+        );
+        assert!(
+            rs.units["s"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with("infra:spawn")),
+            "the retry names its infra cause: {:?}",
+            rs.units["s"].evidence
+        );
+    }
+
+    #[test]
+    fn infra_retries_past_the_bound_halt_the_step_and_a_relaunch_gets_a_fresh_bound() {
+        // F3: an outage that outlasts the taxonomy's infra limit (the shipped rule reruns twice)
+        // must not loop and must not charge the unit either: the third consecutive crash halts
+        // the step LOUDLY with `infra: <evidence>`, recording an `infra-halt` mark - no
+        // UnitFailed, no escalation, no per-unit lesson. The retry count is read from the log
+        // since the attempt's latest `infra-halt`, so a relaunch after the outage starts a
+        // FRESH bound: one more crash there is retried, not halted again.
+        let cfg = one_gated_stage_cfg("s");
+        let st = Store::open(":memory:").unwrap();
+        // The implementer of the stage run at infra ordinal `n` spawns under retry id
+        // `n * (CONFLICT_RESOLVE_BOUND + 1)`, past the attempt's conflict-resolution ids.
+        let rerun_id =
+            |n: u32| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n * (CONFLICT_RESOLVE_BOUND + 1));
+        let crashing = |ordinals: std::ops::Range<u32>| Stub {
+            fail_spawn_ids: ordinals.map(rerun_id).collect(),
+            ..Stub::new()
+        };
+
+        // The outage: the original spawn and both of its retries crash.
+        let outage = crashing(0..3);
+        let err = match run_isolated(&cfg, &stub_deps(&st, &outage, Vec::new())) {
+            Ok(rs) => panic!(
+                "an outage past the infra bound must halt the step, got {:?}",
+                rs.units["s"].status
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("infra: "),
+            "the halt must say it is infrastructure: {:?}",
+            err.0
+        );
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the operator-facing halt must not carry an internal sentinel marker: {:?}",
+            err.0
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        for charged in [
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+            contextgraph::TYPE_LESSON_LEARNED,
+        ] {
+            assert_eq!(
+                count_of_type(&events, charged),
+                0,
+                "an infra halt charges the unit nothing: no {charged}"
+            );
+        }
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            [
+                "s/infra-retry#0~0",
+                "s/infra-retry#0~1",
+                "s/infra-retry#0~2"
+            ],
+            "every crashed ordinal is recorded"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            ["s/infra-halt#0~2"],
+            "the halt is recorded at the ordinal that reached the bound"
+        );
+
+        // The relaunch after the outage: the next ordinal crashes once more, then recovers.
+        let recovering = crashing(3..4);
+        let rs = run_isolated(&cfg, &stub_deps(&st, &recovering, Vec::new())).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a relaunch gets a fresh bound: one crash is retried, not halted"
+        );
+        assert_eq!(
+            rs.units["s"].attempts, 0,
+            "the relaunch charges nothing either"
+        );
+        assert!(
+            recovering.spawn_ids().contains(&rerun_id(4)),
+            "the relaunch continues the retry ordinals, never reusing a crashed id: {:?}",
+            recovering.spawn_ids()
         );
     }
 
@@ -28805,7 +29386,7 @@ mod tests {
         /// escalating attempt is ALSO the unit's third failure - a recurrence - so both entries
         /// fire together; that co-occurrence is correct, not a double-report of the same signal.
         a_newly_escalated_unit_stamps_an_attention_entry: assert_attention(
-            crashing_spawn_run(),
+            failing_gate_run(),
             vec![
                 ledger::AttentionEntry::unit_scoped(
                     ledger::ATTENTION_ESCALATED,
@@ -28933,11 +29514,13 @@ mod tests {
         run_isolated(cfg, &deps).unwrap()
     }
 
-    /// Record a failed result for unit `unit`'s implementer attempt `attempt`.
-    fn fail_implementer(st: &Store, unit: &str, attempt: u32) {
+    /// Answer unit `unit`'s implementer at `attempt`, so the next step gates that attempt - and
+    /// [`parked_unit_u`]'s red gate fails it on a product defect, charging one attempt. (A
+    /// crashed spawn would charge nothing: an infra failure retries uncharged, F3.)
+    fn fail_attempt(st: &Store, unit: &str, attempt: u32) {
         crate::spawn_store::record_result(
             st,
-            &crate::spawn::SpawnResult::failed(spawn_id(unit, ROLE_IMPLEMENTER, attempt), "boom"),
+            &crate::spawn::SpawnResult::ok(spawn_id(unit, ROLE_IMPLEMENTER, attempt), "done"),
         )
         .unwrap();
     }
@@ -29057,10 +29640,12 @@ mod tests {
         );
     }
 
-    /// A config whose one gated unit `u` retries up to `max_retries`, over a started store whose
-    /// first stepwise call freshly parks attempt 0 - crossing no threshold.
+    /// A config whose one unit `u` retries up to `max_retries` against a gate that fails every
+    /// attempt on a product defect, over a started store whose first stepwise call freshly parks
+    /// attempt 0 - crossing no threshold.
     fn parked_unit_u(max_retries: u32) -> (Config, Store) {
         let mut cfg = agent_a_cfg(vec![gated_by_ok("u", &[])]);
+        cfg.workflow.gates.insert("ok".into(), gate_def("false"));
         cfg.workflow.defaults.max_retries = max_retries;
         let st = started_store();
         let rs = replay_step(&cfg, &st);
@@ -29088,7 +29673,7 @@ mod tests {
         let (cfg, st) = parked_unit_u(1);
 
         // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
-        fail_implementer(&st, "u", 0);
+        fail_attempt(&st, "u", 0);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
         assert_eq!(
@@ -29142,7 +29727,7 @@ mod tests {
         let (cfg, st) = parked_unit_u(5);
 
         // Attempt 0 fails: the FIRST failure is not a recurrence.
-        fail_implementer(&st, "u", 0);
+        fail_attempt(&st, "u", 0);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 1);
         assert!(
@@ -29152,7 +29737,7 @@ mod tests {
         );
 
         // Attempt 1 fails: the SECOND failure - a recurrence.
-        fail_implementer(&st, "u", 1);
+        fail_attempt(&st, "u", 1);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 2);
         assert_eq!(
@@ -29168,7 +29753,7 @@ mod tests {
         // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
         // already carries more than two recorded (failed) results while a fresh attempt
         // (#3) is still parked awaiting an answer: the stalled-frontier signal.
-        fail_implementer(&st, "u", 2);
+        fail_attempt(&st, "u", 2);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
         assert_eq!(
@@ -30755,13 +31340,12 @@ mod tests {
     #[test]
     fn a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation() {
         // Spec 64, criterion 2's other half: a stage that goes terminal by FAILING (every
-        // attempt crashes and remediation exhausts into `UnitEscalated`, never a park)
+        // attempt fails its gate and remediation exhausts into `UnitEscalated`, never a park)
         // must still remove the worktree exactly as before criterion 1 - but, since only
         // an Ok(true) integrate deletes the branch (`run_stage` conductor.rs ~3155), the
         // branch must SURVIVE as the human's evidence, identical to today's behavior. No
         // existing test drives this through the public `run()` seam with a real repo (the
-        // sibling repo-less test `mid_spawn_crash_escalates_without_aborting_the_run`
-        // cannot observe worktree/branch state at all).
+        // repo-less escalation tests cannot observe worktree/branch state at all).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -30778,14 +31362,14 @@ mod tests {
             },
         );
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            fail_spawn: true,
-            ..Stub::new()
-        };
+        let driver = Stub::new();
         let deps = Deps {
             store: &store,
             driver: &driver,
-            gates: &RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache),
+            gates: &RecordingRunner {
+                fail: HashSet::from(["ok".to_string()]),
+                ..RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache)
+            },
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -30796,11 +31380,11 @@ mod tests {
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Escalated,
-            "every attempt crashes, so remediation exhausts into an escalation"
+            "every attempt fails its gate, so remediation exhausts into an escalation"
         );
         assert!(
             driver.spawned("a"),
-            "the implementer must actually have been spawned (and crashed), or this test proves nothing"
+            "the implementer must actually have been spawned, or this test proves nothing"
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
@@ -32078,6 +32662,110 @@ mod tests {
     }
 
     #[test]
+    fn a_resumed_reviewed_units_infra_red_reruns_the_exhaustive_suite_without_charging() {
+        // F3 on the `ResumePhase::Reviewed` path: a prior window recorded an approved
+        // `reviewed` but the merge was interrupted, and the resumed exhaustive re-assert goes
+        // red on infrastructure across every in-place rerun. That red is an outage, not the
+        // approved code: no UnitFailed is written, the suite reruns under its next retry
+        // ordinal (`s/gate:g#0~retry1`), and its green lands the unit at the same attempt.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An infra rule rerunning twice in place, with zero backoff so the test never sleeps.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("No space left on device".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        // Red for the resumed re-assert and both of its in-place reruns, green from then on.
+        let outage = FlakyGate {
+            fail_first: 3,
+            runs: AtomicU32::new(0),
+            evidence: "error: No space left on device (os error 28)".into(),
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            gates: &outage,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the rerun's green lands the approved unit"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "an infra red charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra red on the resumed merge must write no UnitFailed"
+        );
+        assert!(
+            !driver.spawned("worker"),
+            "the approved work is re-gated, never re-implemented"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["s/infra-retry#0~0"],
+            "the infra-red ordinal is recorded once"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY).map(String::as_str)
+                        == Some("s/gate:g#0~retry1")
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["pass"] == true)),
+            "the rerun records its own green under the retried gate key"
+        );
+    }
+
+    #[test]
     fn a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause() {
         // spec 69, criterion 3 (the cause wire): the RESUMED counterpart of
         // `integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit`
@@ -32322,7 +33010,7 @@ mod tests {
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, "ok");
+        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, 0, "ok");
         assert!(
             events
                 .iter()
@@ -35000,20 +35688,20 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
         };
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        // A persistently failing gate never integrates (an infra HOLD still charges a
-        // remediation attempt - it just must not demote the ratchet).
-        assert_ne!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "a persistently failing gate must never integrate"
+        // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
+        // rerun to give, the first one halts the step.
+        let halted = run_isolated(&cfg, &deps);
+        assert!(
+            matches!(&halted, Err(e) if e.0.contains("infra: ")),
+            "a zero-limit infra fault must halt the step, never charge or integrate: {:?}",
+            halted.map(|rs| rs.units["s"].status)
         );
-        // limit 0: the gate is NEVER rerun - it ran EXACTLY once per attempt (the default
-        // remediation bound is 3), proving the no-rerun/zero-limit early-return path.
+        // limit 0: the gate is NEVER rerun - it ran EXACTLY once, proving the
+        // no-rerun/zero-limit early-return path.
         assert_eq!(
             always_fail.runs.load(Ordering::SeqCst),
-            3,
-            "a zero-limit infra rule is never rerun: one run per attempt via the early-return"
+            1,
+            "a zero-limit infra rule is never rerun: one run via the early-return, then the halt"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // The pinned single-authority invariant: an infra fault at the INLINE gate must HOLD
@@ -35080,7 +35768,9 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
             };
-            run_isolated(&cfg, &deps).unwrap();
+            // An infra outage halts the step (F3) and a flaky failure escalates: either way the
+            // run ends, and only the gate runs and the ratchet are under test here.
+            let _ = run_isolated(&cfg, &deps);
             let runs = always_fail.runs.load(Ordering::SeqCst);
             let demoted = st
                 .read_stream(STREAM, 0, Direction::Forward)
@@ -35090,9 +35780,10 @@ mod tests {
             (runs, demoted)
         };
 
-        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each
-        // attempt runs the gate 3x (initial + 2 reruns); the default remediation bound is 3,
-        // so 9 runs prove the rerun loop actually ran, and no demote proves the hold.
+        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each stage
+        // run gates 3x (initial + 2 reruns), and the uncharged stage reruns twice before the
+        // step halts (F3), so 9 runs prove the rerun loop actually ran, and no demote proves
+        // the hold.
         let (infra_runs, infra_demoted) = inline_exhaustion(
             "infra",
             "OUTAGE",
@@ -35100,7 +35791,7 @@ mod tests {
         );
         assert_eq!(
             infra_runs, 9,
-            "an infra rule with limit 2 reruns the gate twice per attempt before exhausting"
+            "an infra rule with limit 2 reruns the gate twice per stage run before exhausting"
         );
         assert!(
             !infra_demoted,
@@ -35121,6 +35812,92 @@ mod tests {
         assert!(
             flaky_demoted,
             "a flaky gate that stays red across every rerun is a believed-real failure and demotes"
+        );
+    }
+
+    #[test]
+    fn an_infra_gate_red_reruns_the_stage_at_the_same_attempt_without_charging() {
+        // F3: a gate that stays red on infrastructure across its in-place reruns is not the
+        // unit's defect, so it charges no remediation attempt. The stage reruns at the SAME
+        // attempt under the next retry ordinal: the implementation is not respawned (its
+        // committed work is what the gate never got to judge), the gate runs again under its
+        // retried key `s/gate:g#0~retry1`, and the rerun's green integrates the unit.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An infra rule rerunning twice in place, with zero backoff so the test never sleeps.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("No space left on device".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // Red for the first stage run and both of its in-place reruns, green from then on.
+        let outage = FlakyGate {
+            fail_first: 3,
+            runs: AtomicU32::new(0),
+            evidence: "error: No space left on device (os error 28)".into(),
+        };
+        let deps = Deps {
+            gates: &outage,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the stage's rerun goes green, so the unit integrates"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "an infra red charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra red must write no UnitFailed"
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the rerun gates the committed work again; the implementer is not respawned"
+        );
+        assert_eq!(
+            outage.runs.load(Ordering::SeqCst),
+            4,
+            "three in-place runs at ordinal 0, then the stage's rerun at ordinal 1"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["s/infra-retry#0~0"],
+            "the infra-red ordinal is recorded once"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY).map(String::as_str)
+                        == Some("s/gate:g#0~retry1")
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["pass"] == true)),
+            "the rerun records its own green under the retried gate key"
+        );
+        assert_eq!(
+            recorded_gate_outcome(&events, "s"),
+            Some(true),
+            "the unit's recorded gate outcome is the rerun's green"
         );
     }
 

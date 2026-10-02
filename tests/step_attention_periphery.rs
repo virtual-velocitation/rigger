@@ -38,7 +38,8 @@
 //! twice without the run advancing burns full agent cost per round"). Each round is a
 //! SEPARATE `rigger step` subprocess; between rounds, a courier's outcome is seeded directly
 //! into the on-disk store (mirroring `tests/cli.rs`'s `seed_run_events`), exactly as `rigger
-//! result <id> --error <why>` would leave it for the next step to replay.
+//! result <id> <output>` would leave it for the next step to replay, and the unit's gate goes
+//! red on it.
 //!
 //! NOT OWNED here: the `escalated` signal in isolation and the clean-step omission (extended
 //! onto `tests/cli.rs`'s pre-existing `step_carries_the_escalated_set_when_a_fixpoint_is_
@@ -147,7 +148,7 @@ use common::git::temp_git_project_with_commit;
 
 use std::process::Command;
 
-/// A single-unit workflow whose gate always PASSES and whose remediation bound
+/// A single-unit workflow whose gate always FAILS and whose remediation bound
 /// (`max_retries: 5`) is generous enough that the unit is STILL retrying - never escalated -
 /// once its attempt count passes the stalled-frontier threshold of two. Offline and
 /// repo-less: `nop` grounder, `isolation: none`, `on_pass: none` (never attempts a merge, so
@@ -159,11 +160,11 @@ const ATTENTION_PROGRESSION_WORKFLOW: WorkflowFixture = WorkflowFixture {
   budget: 60
   max_retries: 5
 gates:
-  ok: { run: "true", kind: core }
+  red: { run: "false", kind: core }
 stages:
   u:
     agent: worker
-    gates: [ok]
+    gates: [red]
     on_pass: none
 "#,
 };
@@ -189,12 +190,12 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         "parking the first attempt crosses no threshold; got: {line:?}"
     );
 
-    // Attempt #0 fails (a worker's driver-error result, exactly what a courier's `rigger
-    // result --error` leaves for the next step to replay). The FIRST failure is not a
+    // Attempt #0 fails (the worker's result, exactly what a courier's `rigger result` leaves
+    // for the next step to replay, goes red at the unit's gate). The FIRST failure is not a
     // recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
     let line = step_line(root, "round 2 step must succeed");
     assert!(
@@ -210,7 +211,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // Attempt #1 fails - the SECOND failure on this unit - a recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let line = step_line(root, "round 3 step must succeed");
     assert!(
@@ -230,7 +231,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // signal joins the recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
     let line = step_line(root, "round 4 step must succeed");
     assert!(
@@ -353,7 +354,7 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
     mrest[..mend].to_string()
 }
 
-/// Two independent stages that never answer normally: `u` keeps failing (the exact
+/// Two independent stages that never pass: `u` keeps failing its gate (the exact
 /// worker-death-recurred/stalled-frontier scenario above), `h` parks and is later driven
 /// hung via a planted stale marker. Both share `max_wall_clock` (so BOTH carry a
 /// `marker_path` in the wave - proving the ordering test below reads the RIGHT item's path)
@@ -366,9 +367,12 @@ const ATTENTION_ORDERING_WORKFLOW: WorkflowFixture = WorkflowFixture {
   budget: 60
   max_retries: 5
   max_wall_clock: 60
+gates:
+  red: { run: "false", kind: core }
 stages:
   u:
     agent: worker
+    gates: [red]
     on_pass: none
   h:
     agent: worker
@@ -412,7 +416,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // u's first failure - not a recurrence. h is untouched (healthy, no marker planted yet).
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 2 step must succeed; stderr: {err}");
@@ -424,7 +428,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // u's second failure - a recurrence, the ONLY signal this round.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
@@ -445,7 +449,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // must merge its `halted` entry (rank 1) in FRONT of both.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
     let line = step_line(root, "round 4 step must succeed");
     assert_eq!(
@@ -568,7 +572,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
 
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 2 step must succeed; stderr: {err}");
@@ -577,7 +581,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     // one-entry wire and render it for real.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
@@ -605,7 +609,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     // iteration and ordering a single-entry check cannot distinguish from a hardcoded one-liner.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 4 step must succeed; stderr: {err}");

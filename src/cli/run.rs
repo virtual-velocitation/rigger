@@ -668,7 +668,10 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         // surfaced regardless.
         if let Some(root) = &scratch_root {
             if let Ok(events) = runscope::read::read_run(&store, conductor::STREAM) {
-                if terminal_and_no_live_worker(&events).unwrap_or(false) {
+                let settled = spawn::step_result(runscope::current_run(&events));
+                if settled.is_ok_and(|step| {
+                    rigger::liveness::terminal_and_no_live_worker(&events, &step).unwrap_or(false)
+                }) {
                     reclaim_run_scratch(root);
                 }
             }
@@ -812,7 +815,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    let mut step = spawn::step_result(&events).map_err(|e| e.to_string())?;
+    // The conductor pass's own live state - its budget halt, its escalated units, its
+    // attention entries - is stamped on by the same seam (`spawn::step_of_pass`).
+    let mut step = spawn::step_of_pass(&events, rs).map_err(|e| e.to_string())?;
     // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
     // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
     // and a bounded spawn's staleness watchdog around THIS path, never re-deriving a scratch
@@ -834,32 +839,6 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
                 .map(|p| p.to_string_lossy().into_owned());
         }
     }
-    // Surface a spawn-budget HALT (Gap 13) distinct from convergence: the conductor sets
-    // `budget_halt` from its in-process breaker when a trip left ready work unscheduled, so
-    // the printed `Step` carries a halt reason (`{"...","done":true,"halted":"..."}`) the
-    // thin driver stops LOUDLY on - instead of reading a starved run as a clean completion.
-    //
-    // Surface a WEDGED terminus (spec 19c, unit 1) distinct from a clean completion, ALONGSIDE
-    // the budget halt: the set of units that escalated (exhausted remediation and went
-    // terminal without integrating), taken from the conductor's projected run state - the
-    // single authority for the escalated set, reusing the folded `UnitEscalated` status.
-    // Omitted from the wire when empty, so a clean run's `{"wave":[],"done":true}` shape is
-    // unchanged; when non-empty the driver treats a `done` fixpoint carrying it as a LOUD stop
-    // (exactly as for a budget halt), so a unit that can never pass review no longer
-    // masquerades as a clean "run complete". Escalation-and-continue MID-run is untouched -
-    // only the driver's read of the final terminus changes, and it gates on `step.done`.
-    // Stamped BEFORE the `halted` move below (which consumes `rs.budget_halt`), as it borrows
-    // `rs`.
-    step.escalated = rs.escalated_units();
-    // Surface the push-side ATTENTION array (spec 69, criterion 5): the conductor already
-    // computed it as a before/after diff of this call's own transition (see
-    // `conductor::compute_attention`), so this is a plain move of the live state onto the
-    // wire - exactly like `escalated` and `halted`, and like them omitted when empty so a
-    // clean step's `{"wave":[],"done":true}` shape stays byte-for-byte unchanged. Rendering
-    // each entry as a narrator log line is a later criterion's job (spec 69, "the driver
-    // relays it"); this step only stamps the wire.
-    step.attention = rs.attention;
-    step.halted = rs.budget_halt;
     // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
     // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
     // scratch. Surfaced as a loud halt so the driver stops on a named reason instead of reading
@@ -953,10 +932,10 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // state, not just a clean fixpoint: a wedge/escalation and a budget halt reclaim too.
     //
     // Gated on the SINGLE `terminal_and_no_live_worker` predicate (the never-delete-live-owned
-    // rail): the pending frontier is empty, no liveness-fault spawn may still be alive, AND no
-    // manual-review pause is still pending. The SAME predicate gates the definition-drift teardown
-    // above, so EVERY still-advancing condition is inherited by both sites and none can drift
-    // between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
+    // rail): the step is `done` (its pass parked nothing), the pending frontier is empty, no
+    // liveness-fault spawn may still be alive, AND no manual-review pause is still pending. The
+    // SAME predicate gates the definition-drift teardown above, so EVERY still-advancing
+    // condition is inherited by both sites and none can drift between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
     // halted.is_none()`) to also fire on a budget halt / escalation while still sparing a liveness
     // halt or a manual-review pause. Best-effort - never fails the step. `?` here can never
     // actually err: all three sub-reads (`step_result` and `hung_spawns`, both read through
@@ -975,7 +954,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // without any per-caller guard to keep in sync. (A budget halt / escalation IS terminal per
     // criterion 3 and leaves the inbox empty, so those still reclaim - only a non-terminal
     // manual-review pause is excluded.)
-    if terminal_and_no_live_worker(&events)? {
+    if rigger::liveness::terminal_and_no_live_worker(&events, &step)? {
         if let Some(root) = &scratch_root {
             reclaim_run_scratch(root);
         }
@@ -1016,52 +995,6 @@ fn merge_hung_attention(
         attention.sort_by_key(|e| ledger::attention_kind_rank(e.kind));
     }
     attention
-}
-
-/// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
-/// criterion 3): true when the current run has NO worker that may still be alive under the shared
-/// scratch AND no unit still awaiting a human. Both run-teardown sites - the definition-drift
-/// early-return in [`cmd_step`] and the terminal-fixpoint teardown after `conductor::run` - gate on
-/// THIS function, so every still-advancing condition is inherited by both and none can drift into a
-/// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
-/// frontier ALONE - first omitting the hung check, then the manual-review check).
-///
-/// Two conditions, both required:
-/// - EVERY spawn has ENDED (`liveness::unended_spawns(...)` is empty, the one authority `reset
-///   --runs` closes on too): the pending frontier is empty - every recorded spawn has a result, so
-///   no in-flight wave and no obviously-live worker - and NO spawn is HUNG - a liveness-fault
-///   result answers the frontier yet leaves a worker that may still be alive and writing under
-///   the shared scratch, and which the operator may yet recover, so it still blocks reclamation;
-///   and
-/// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
-///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
-///   WITHOUT parking any spawn, so it leaves no unended spawn - the spawn core alone reads
-///   terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
-///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
-///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
-///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
-///   full stream (which already carries a prior step's `ManualReview`), so it needs the exclusion
-///   too. Folding it into this shared core keeps a single authority for "no still-advancing work"
-///   and closes the never-delete-live breach a per-caller guard re-opened.
-///
-/// Scoped to the CURRENT run only (`runscope::current_run`), so a prior run's unanswered spawns or
-/// paused units never gate this run's teardown. Errs only if a malformed stored event cannot be
-/// replayed; callers treat an `Err` as "not safe to reclaim" (never delete on uncertainty).
-fn terminal_and_no_live_worker(events: &[Event]) -> Result<bool, String> {
-    let scoped = runscope::current_run(events);
-    let spawns_ended = rigger::liveness::unended_spawns(scoped)
-        .map_err(|e| e.to_string())?
-        .is_empty();
-    // The manual-review inbox, projected from the SAME scoped slice - the single authority for
-    // which units still await a human. A non-terminal manual-review PAUSE leaves no unended spawn
-    // (it parks no spawn), so the spawn core alone reads terminal even though the run is still
-    // advancing. Folding the exclusion HERE - not at each caller - means both teardown sites
-    // inherit it structurally and the guard can never diverge between them.
-    let no_manual_review = ledger::project(scoped)
-        .map_err(|e| e.to_string())?
-        .manual_review
-        .is_empty();
-    Ok(spawns_ended && no_manual_review)
 }
 
 /// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3):

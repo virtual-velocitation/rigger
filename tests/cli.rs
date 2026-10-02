@@ -5010,9 +5010,10 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
 /// and of the implementer's own
 /// `a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation`
 /// (`conductor.rs`'s `mod tests`), which proves the same guarantee with a synchronous,
-/// single-process `Stub` driver that never parks at all. Here the implementer's crash is a
-/// REPLAYED `SpawnResult` a LATER process reads back (never a park), so remediation exhausts
-/// into `UnitEscalated` only once this second real process folds it - the shape the
+/// single-process `Stub` driver that never parks at all. Here the implementer's result is a
+/// REPLAYED `SpawnResult` a LATER process reads back (never a park) and its gate goes red, so
+/// remediation exhausts into `UnitEscalated` only once this second real process folds it - the
+/// shape the
 /// implementer's own comment notes no existing test could drive through a real repo. Only a
 /// successful `Ok(true)` integrate deletes the branch (`run_stage`, `src/conductor.rs`), and
 /// this path never reaches one, so the worktree must still be reclaimed while the branch
@@ -5025,21 +5026,13 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
 
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
 
-    // The out-of-process courier reports a genuine crash, never a verdict.
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "solo/implementer#0",
-            "boundary-genuine-crash-marker",
-            "--error",
-        ],
-    );
-    assert!(ok, "recording the crash must succeed; stderr: {err}");
+    // The out-of-process courier reports the implementer's result.
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
+    assert!(ok, "recording the result must succeed; stderr: {err}");
 
-    // Step 2: the crash replays, `max_retries: 1` escalates on this FIRST failed attempt (no
-    // second implementer spawn), and the run reaches a fixpoint AROUND the escalated unit -
-    // terminal, never parked.
+    // Step 2: the result replays, its gate goes red, `max_retries: 1` escalates on this FIRST
+    // failed attempt (no second implementer spawn), and the run reaches a fixpoint AROUND the
+    // escalated unit - terminal, never parked.
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok,
@@ -5047,7 +5040,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     );
     assert!(
         out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
-        "the crash must exhaust remediation into an escalated fixpoint; got: {out:?}"
+        "the red gate must exhaust remediation into an escalated fixpoint; got: {out:?}"
     );
 
     // The unit's worktree is reclaimed exactly as a clean integrate's...
@@ -5123,18 +5116,13 @@ fn resume_unit_re_parks_on_the_durable_branch_and_status_names_the_grant() {
         "the re-parked implementer must build on the SAME durable branch tip, not a fresh one"
     );
 
-    // Fail the resumed attempt too: the widened bound (2) is now spent, so this is the
-    // FINAL escalation the grant covers.
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            "solo/implementer#1",
-            "boundary-genuine-crash-marker-2",
-            "--error",
-        ],
+    // Fail the resumed attempt too (its gate goes red again): the widened bound (2) is now
+    // spent, so this is the FINAL escalation the grant covers.
+    let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#1", "implemented again"]);
+    assert!(
+        ok,
+        "recording the second result must succeed; stderr: {err}"
     );
-    assert!(ok, "recording the second crash must succeed; stderr: {err}");
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok,

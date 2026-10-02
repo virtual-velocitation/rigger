@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eventstore::Event;
-use crate::ledger::AttentionEntry;
+use crate::ledger::{AttentionEntry, RunState};
 
 /// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
 /// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
@@ -146,7 +146,21 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
 /// assert_eq!(spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2), "u/adjudicator#1~retry2");
 /// ```
 pub fn spawn_retry_id(unit: &str, role: &str, attempt: u32, retry: u32) -> String {
-    let base = spawn_id(unit, role, attempt);
+    with_retry(spawn_id(unit, role, attempt), retry)
+}
+
+/// Suffix `base` with the deterministic `~retry{n}` RETRY ORDINAL: `retry == 0` returns `base`
+/// unchanged, so an original keeps its exact id, and each `retry > 0` appends `~retry{retry}` -
+/// `~` is neither the `/` nor the `#` an id's structure reserves. The ONE minting authority for
+/// the suffix [`retry_of`] reads back, shared by a respawn's [`spawn_retry_id`] and the gate key
+/// an infra rerun records its verdict under, so the two can never spell it apart.
+///
+/// ```
+/// # use rigger_domain::spawn::with_retry;
+/// assert_eq!(with_retry("u/gate:test#2".into(), 0), "u/gate:test#2");
+/// assert_eq!(with_retry("u/gate:test#2".into(), 1), "u/gate:test#2~retry1");
+/// ```
+pub fn with_retry(base: String, retry: u32) -> String {
     if retry == 0 {
         base
     } else {
@@ -210,7 +224,8 @@ pub fn unit_of(id: &str) -> Option<&str> {
 /// respawn suffix trimmed first), or `0` when the id carries no `#{attempt}`. The inverse of
 /// the `#{attempt}` ordinal [`spawn_id`] mints - kept here beside [`spawn_role`] so the id
 /// grammar has ONE owner: a reader never re-parses `#`/`~retry` in a view adapter, which would
-/// silently diverge if the separators ever moved with the struct.
+/// silently diverge if the separators ever moved with the struct. A gate key's
+/// `{gate}#{attempt}~retry{n}` run segment ends in the same tail, so its attempt reads here too.
 ///
 /// ```
 /// # use rigger_domain::spawn::attempt_of;
@@ -272,6 +287,65 @@ pub struct Adjudication {
     /// colour) reads this directly instead of inferring it from `cause`'s presence, which
     /// is silent on a reject that declared no cause.
     pub verdict: Option<String>,
+}
+
+/// The adjudicator's reject `cause` blaming a gate, tool or harness failure rather than the
+/// author's code - the one spelling of the adjudicator persona's `infra-fault` cause that
+/// [`Adjudication::is_infra_fault`] reads.
+pub const CAUSE_INFRA_FAULT: &str = "infra-fault";
+
+impl Adjudication {
+    /// Parse an adjudicator's raw `output` for its grown verdict line (spec 11): the LAST
+    /// JSON object line carrying a `verdict`, `upheld`, or `discarded` field yields the upheld
+    /// and discarded finding ids and the rejection cause. `None` when the output carries no
+    /// verdict line (an old-contract adjudicator, or unparseable output). The single
+    /// verdict-line parse every reader shares - [`SpawnResult::adjudication`] for a recorded
+    /// result, the conductor for the verdict a review round just returned.
+    pub fn parse(output: &str) -> Option<Adjudication> {
+        for line in output.lines().rev() {
+            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            if v.get("verdict").is_none()
+                && v.get("upheld").is_none()
+                && v.get("discarded").is_none()
+            {
+                continue;
+            }
+            // One string-array reader for both id lists, so `upheld` and `discarded` can
+            // never drift on how a verdict array is decoded.
+            let str_array = |key: &str| -> Vec<String> {
+                v.get(key)
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let cause = v
+                .get("cause")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty());
+            let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
+            return Some(Adjudication {
+                upheld: str_array("upheld"),
+                discarded: str_array("discarded"),
+                cause,
+                verdict,
+            });
+        }
+        None
+    }
+
+    /// Whether the verdict blames infrastructure ([`CAUSE_INFRA_FAULT`]): the review could
+    /// not judge the author's code, so the conductor reruns the stage uncharged instead of
+    /// handing the author a remediation attempt.
+    pub fn is_infra_fault(&self) -> bool {
+        self.cause.as_deref() == Some(CAUSE_INFRA_FAULT)
+    }
 }
 
 /// A single spawn request: one agent to run, plus the deterministic id that names it
@@ -523,52 +597,15 @@ impl SpawnResult {
     }
 
     /// Parse this ADJUDICATOR result's grown verdict line (spec 11) into its
-    /// [`Adjudication`]: the LAST JSON object line of the output carrying a `verdict`,
-    /// `upheld`, or `discarded` field yields the upheld and discarded finding ids and the
-    /// rejection cause. Returns `None` when this is not an adjudicator result, or the output
-    /// carries no verdict line (an old-contract adjudicator, or unparseable output) - the
-    /// caller then disposes / attributes nothing. The single disposition-parse authority
-    /// both the review-quality metric and the context-graph finding-expiry read.
+    /// [`Adjudication`] through [`Adjudication::parse`]. Returns `None` when this is not an
+    /// adjudicator result, or the output carries no verdict line - the caller then disposes /
+    /// attributes nothing. The single disposition-parse authority both the review-quality
+    /// metric and the context-graph finding-expiry read.
     pub fn adjudication(&self) -> Option<Adjudication> {
         if !self.is_adjudicator() {
             return None;
         }
-        for line in self.output.lines().rev() {
-            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            if v.get("verdict").is_none()
-                && v.get("upheld").is_none()
-                && v.get("discarded").is_none()
-            {
-                continue;
-            }
-            // One string-array reader for both id lists, so `upheld` and `discarded` can
-            // never drift on how a verdict array is decoded.
-            let str_array = |key: &str| -> Vec<String> {
-                v.get(key)
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            let cause = v
-                .get("cause")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .filter(|s| !s.is_empty());
-            let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
-            return Some(Adjudication {
-                upheld: str_array("upheld"),
-                discarded: str_array("discarded"),
-                cause,
-                verdict,
-            });
-        }
-        None
+        Adjudication::parse(&self.output)
     }
 }
 
@@ -798,7 +835,9 @@ pub struct Step {
     /// [`SpawnResult`], so the conductor replayed the whole log and parked nothing that
     /// still awaits a courier (all units integrated, or the run terminated). Another
     /// step would change nothing. A non-empty `wave` always implies `done == false`,
-    /// since a freshly parked spawn has no result yet.
+    /// since a freshly parked spawn has no result yet. `rigger step` also requires its own
+    /// pass to have parked nothing ([`step_of_pass`]), since a result can land after the
+    /// pass parked its spawn and before the step reads the log back.
     pub done: bool,
     /// The halt reason when the run STOPPED on the spawn-budget breaker rather than
     /// converging (Gap 13): e.g. `"budget exhausted: 200/200 spawns"`. `None` on a clean
@@ -890,6 +929,24 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         // it empty too (like `halted` and `escalated`).
         attention: Vec::new(),
     })
+}
+
+/// The [`Step`] `rigger step` prints after one conductor pass: [`step_result`]'s pending
+/// frontier over the log read AFTER the pass, with the pass's own live state `rs` stamped on
+/// it - the budget `halted` reason, the `escalated` units and the `attention` entries, each a
+/// fact of this process's run that the log alone cannot give (see those [`Step`] fields).
+///
+/// `done` also needs the pass to have PARKED nothing ([`RunState::parked`]). A courier can
+/// record a result between the pass parking that spawn and the step reading the log back, so
+/// every request then holds a result while the pass never folded it - the work that result
+/// unlocks (a unit's next reviewer) is still owed, and printing `done` would end the run.
+pub fn step_of_pass(events: &[Event], rs: RunState) -> Result<Step, serde_json::Error> {
+    let mut step = step_result(events)?;
+    step.done = step.done && !rs.parked;
+    step.escalated = rs.escalated_units();
+    step.attention = rs.attention;
+    step.halted = rs.budget_halt;
+    Ok(step)
 }
 
 /// The full prompt a worker fetches for its parked spawn: the persona (when the spawn

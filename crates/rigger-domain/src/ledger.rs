@@ -164,6 +164,12 @@ pub struct RunState {
     /// `rigger step` copies it onto its printed `Step` so the thin driver stops loudly on a
     /// halt instead of reading convergence.
     pub budget_halt: Option<String>,
+    /// Whether THIS run process's conductor pass PARKED a spawn - stopped at a request with
+    /// no result - so it reached no fixpoint. Like [`budget_halt`](RunState::budget_halt) it
+    /// is a fact of the live pass, never folded by [`project`]: a result a courier records
+    /// after the pass parked it is in the log the step reads back, yet the pass never folded
+    /// it, so only this says the run still owes the work that result unlocks.
+    pub parked: bool,
     /// Unit ids currently awaiting a human: a `ManualReview` was emitted for the unit and
     /// the run does not (yet) class it terminal - the manual-review half of the
     /// action-needed inbox. Deduped and lexically ordered for a stable render. Folded by
