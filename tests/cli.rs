@@ -17614,32 +17614,24 @@ rigger::test_cases! {
     setup_installs_every_watching_discipline_skill_into_the_consumer_project: assert_setup_installs_each_skill(&WATCHING_DISCIPLINE_SKILL_NAMES);
 }
 
-/// The bytes spec 112 ships as the `spec-preflight` skill body: the fenced block that closes the
-/// spec's Notes section, its fence lines excluded. The section is read line by line with the
-/// fences tracked, since the body's own `## ` headings sit inside its fence.
+/// The bytes spec 112 ships as the `spec-preflight` skill body, found literally: the text after
+/// the opening fence line that follows its Notes sentence naming the shipped body, up to the next
+/// line that is exactly three backticks - the body holds no such line.
 fn spec_112_preflight_body() -> String {
     let spec = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("specs/112-the-spec-is-critiqued-before-the-run.md"),
     )
     .expect("spec 112 is committed");
-    let mut closing = None;
-    let mut fenced: Option<String> = None;
-    for line in spec
-        .split_inclusive('\n')
-        .skip_while(|line| !line.starts_with("## Notes"))
-        .skip(1)
-    {
-        let fence = line.trim_end() == "```";
-        match fenced.as_mut() {
-            Some(_) if fence => closing = fenced.take(),
-            Some(text) => text.push_str(line),
-            None if fence => fenced = Some(String::new()),
-            None if line.starts_with("## ") => break,
-            None => {}
-        }
-    }
-    closing.expect("spec 112's Notes section closes with a fenced block")
+    let (_, fenced) = spec
+        .split_once(
+            "The shipped `spec-preflight` body, byte for byte between the fence lines:\n\n```\n",
+        )
+        .expect("spec 112's Notes name the shipped body and open its fence on the next line");
+    let (body, _) = fenced
+        .split_once("\n```\n")
+        .expect("a line of exactly three backticks closes the shipped body");
+    format!("{body}\n")
 }
 
 /// The `spec-preflight` skill as `rigger setup` installs it and `rigger docs` renders it: spec
@@ -17652,15 +17644,15 @@ fn shipped_spec_preflight_skill() -> String {
     )
 }
 
-/// Every backtick span of `text` that is a relative path (opening `./` or `../`), in order, each
-/// asserted to name an existing file from `dir`, the directory the skill file sits in - so a
-/// skill that names no absolute path still names only files its reader can open.
+/// Every code span of `text` ([`rigger::spec::code_spans`], read line by line) that is a
+/// relative path (opening `./` or `../`), in order, each asserted to name an existing file from
+/// `dir`, the directory the skill file sits in - so a skill that names no absolute path still
+/// names only files its reader can open.
 fn relative_references_resolving_from(text: &str, dir: &Path) -> Vec<String> {
     let references: Vec<String> = text
         .lines()
-        .flat_map(|line| line.split('`').skip(1).step_by(2))
+        .flat_map(rigger::spec::code_spans)
         .filter(|span| span.starts_with("./") || span.starts_with("../"))
-        .map(str::to_string)
         .collect();
     for reference in &references {
         assert!(
