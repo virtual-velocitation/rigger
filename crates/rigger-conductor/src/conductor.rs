@@ -28536,6 +28536,38 @@ mod tests {
         );
     }
 
+    /// A reject blaming infrastructure is never split (F3): even one whose only item is a
+    /// wording finding outside the delta reaches the stage's failure cause whole, so the stage
+    /// reruns uncharged instead of converging, and nothing goes to the operator.
+    #[test]
+    fn a_later_round_infra_fault_reject_is_never_split() {
+        let rerun = *review_retry_window(1).start();
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","cause":"infra-fault","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+            (adjudicator_at(1, rerun), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["implement/infra-retry#1~0"],
+            "the infra-fault reject reruns its stage rather than converging"
+        );
+        assert_eq!(
+            lessons_about(&events, "feature.rs"),
+            Vec::<Value>::new(),
+            "an infra-fault reject sends nothing to the operator"
+        );
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
