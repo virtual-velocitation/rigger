@@ -26,9 +26,11 @@ rejection loop: implementer picks one reading, reviewer picks the other.
 
 **3. Run the constraints walk.** For every Global constraint x every criterion (and every
 mechanism Design prescribes), walk the corner-case list: empty, repeated, REVERT/rollback,
-concurrent actors, crash-resume, cold start (fresh process, empty memory). Write what must
-happen into the spec. If a prescribed mechanism fails a corner under a constraint, the spec is
-self-contradictory - fix it now; the panel will otherwise find it around attempt 5.
+DROPPED (a fact present in an earlier generation and absent in a later one), concurrent actors,
+crash-resume, cold start (fresh process, empty memory), existing data (a store or tree that
+predates the mechanism). Write what must happen into the spec. If a prescribed mechanism fails
+a corner under a constraint, the spec is self-contradictory - fix it now; the panel will
+otherwise find it around attempt 5.
 
 **4. Place state explicitly.** Any criterion about dedup, persistence, recovery, budgets, or
 caches names WHERE the authoritative state lives (the log, a file, a flock) and names the
@@ -50,9 +52,11 @@ feature lanes green; no new event type unless the spec's whole point is one; fal
 for any criterion that might be impossible; anything the gates cannot see flagged for the
 adjudicator to demand evidence on.
 
-**7. Preflight, then launch.** `rigger validate` is mandatory (it catches model-alias drift -
-run `rigger canary --if-model-changed` on a warning); `rigger reset --runs` before a large run;
-anchor `base=` on the ref the work must land on. Launch via the /rigger workflow only.
+**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
+critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
+model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
+before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
+workflow only.
 
 ## Amending mid-run
 
@@ -73,6 +77,9 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 | Plan baseline-match fails, paraphrased units | F6 copyability | One-sentence criteria, detail to Notes |
 | First run after a while churns everywhere | F7 environment | validate preflight + canary on drift |
 | High attempt counts, findings about worktrees/caches/quota | F8 infra noise | Audit findings; fix infra separately |
+| A ratified unit rejected again each round for a new prose claim | F9 claim surface | Bound the claim surface in the criterion; delete an unowed claim rather than qualify it |
+| Plan-critique rejects two criteria that each need the other's change | F10 landing-order circularity | Landing-order simulation (spec-preflight step 1) |
+| Identity claim rejected with `cause: spec-ambiguity` once a fact is dropped | F11 undecided removal | DROPPED corner + named comparison surface (spec-preflight step 2) |
 
 ## Operator binary boundary
 

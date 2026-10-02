@@ -51,11 +51,12 @@ was amended.)
 
 **Countermeasure:** the constraints walk. Take every Global constraint and every criterion and
 walk them against the standard corner-case list: empty input, repeated input, REVERT/rollback to
-a prior state, concurrent actors, crash-and-resume, cold start (fresh process, empty caches). A
-constraint you have not walked against a corner case is a rejection you have scheduled for
-attempt 5. When Design prescribes a mechanism, the walk applies to the mechanism too - or drop
-the prescription and let the criteria state observables the implementer must find a mechanism
-for.
+a prior state, DROPPED (a fact present in an earlier generation and absent in a later one),
+concurrent actors, crash-resume, cold start (fresh process, empty caches), existing data (a store
+or tree that predates the mechanism - the upgrade path). A constraint you have not walked
+against a corner case is a rejection you have scheduled for attempt 5. When Design prescribes a
+mechanism, the walk applies to the mechanism too - or drop the prescription and let the criteria
+state observables the implementer must find a mechanism for.
 
 ### F4 - Open dispositions
 
@@ -126,6 +127,35 @@ RULE stated short and pinned by an accuracy check, and say explicitly that no en
 cases or guarantees beyond it is owed. **At remediation time:** prefer deletion to replacement -
 a claim the artifact does not owe is removed, not repaired - and treat any fix that ADDS a
 universal as the failure mode repeating.
+
+### F10 - Landing-order circularity
+
+An F3 shape, found by the landing-order simulation. Two criteria assert the same measured
+property of one surface - a command, a store read, a file, a counter - and each one's fixture
+needs the other's change, so whichever unit lands first fails its own text on a tree without the
+other. The tell is a plan-critique reject naming two criteria that each need the other's change,
+and a re-plan that draws the same reject.
+
+**Countermeasure:** simulate landing order before launch. For every ordered pair of criteria
+sharing a surface, ask "if A lands first, on a tree without B, does A's own text hold?" Each
+"no" is a defect to fix before launch: move the assertion to the later unit, split ownership at
+the seam in a named Design block, or make the earlier criterion's assertion conditional on what
+exists at its landing. The `spec-preflight` skill runs this simulation as its first step.
+
+### F11 - Undecided removal
+
+An F3 shape, found by the DROPPED corner of the corner walk. A criterion claims an identity
+(byte-identical, equal, the same as) and no Design sentence decides what a later generation that
+DROPS a fact - a row, a link or a file present before and absent after - does to it. A corner
+walk without the DROPPED corner does not reach it: the implementer narrows the fixture to
+inputs that only add or move facts, and an adjudicator rejects the built unit with cause
+`spec-ambiguity`. The tell is an identity claim that names no comparison surface, or a fixture
+that never removes anything.
+
+**Countermeasure:** every identity claim names its comparison surface (which bytes, which
+projection, which ordering), Design decides its DROPPED corner, and its fixture drops a fact
+explicitly. The `spec-preflight` skill walks this corner for every criterion as its second
+step.
 
 ## Amending a spec mid-run
 
