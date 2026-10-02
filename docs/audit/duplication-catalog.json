@@ -5119,7 +5119,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ece6988d7484",
+    "id": "dup-f4d16bef38a8",
     "classification": "near",
     "sites": [
       {
@@ -5129,11 +5129,16 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_spec_preflight_skill",
+        "content_hash": "32f25aed00fff94c"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
         "name": "render_planning_field_guide",
         "content_hash": "2258b5edd93c6ece"
       }
     ],
-    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "docs::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
