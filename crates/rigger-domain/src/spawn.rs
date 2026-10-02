@@ -359,13 +359,19 @@ impl Adjudication {
     /// not judge the author's code, so the conductor reruns the stage uncharged instead of
     /// handing the author a remediation attempt.
     pub fn is_infra_fault(&self) -> bool {
-        self.cause.as_deref() == Some(CAUSE_INFRA_FAULT)
+        self.has_cause(CAUSE_INFRA_FAULT)
     }
 
     /// Whether the verdict blames the spec ([`CAUSE_SPEC_AMBIGUITY`]): the plan-critique reject
     /// names a defect in a criterion's own text that no re-plan can remove.
     pub fn is_spec_ambiguity(&self) -> bool {
-        self.cause.as_deref() == Some(CAUSE_SPEC_AMBIGUITY)
+        self.has_cause(CAUSE_SPEC_AMBIGUITY)
+    }
+
+    /// Whether the verdict declared exactly `cause`: the one cause comparison every named cause
+    /// predicate reads.
+    fn has_cause(&self, cause: &str) -> bool {
+        self.cause.as_deref() == Some(cause)
     }
 }
 
