@@ -17664,31 +17664,33 @@ fn relative_references_resolving_from(text: &str, dir: &Path) -> Vec<String> {
     references
 }
 
-/// No token of `text` is an absolute or home path - none opens with `/` or `~` once leading
-/// Markdown quoting is set aside - and no line names the project `root` or the operator's home
-/// directory, so the file reads the same in every checkout it is installed into.
+/// No line of `text` holds an absolute or home path, so the file reads the same in every
+/// checkout it is installed into: no `/` or `~` opens a path at the start of a whitespace token
+/// or right after a `"`, `'`, `=`, `:`, `[`, `(`, `<` or backtick inside one, and no line names
+/// `$HOME`, `${HOME}`, the project `root` or the operator's home directory (a home of `/` or
+/// none is not looked for).
 fn assert_no_absolute_or_home_path(text: &str, root: &Path) {
     let home = std::env::var("HOME").unwrap_or_default();
     let root = root.to_str().expect("a utf-8 project root");
+    let names = ["$HOME", "${HOME}", root, home.as_str()];
     for (n, line) in text.lines().enumerate() {
         for token in line.split_whitespace() {
-            let bare = token.trim_start_matches(['`', '\'', '"', '(', '[', '<']);
+            for (at, _) in token.match_indices(['/', '~']) {
+                let before = token[..at].chars().next_back();
+                assert!(
+                    !before.is_none_or(|c| "\"'=:[(<`".contains(c)),
+                    "line {}: {token:?} holds an absolute or home path:\n{line}",
+                    n + 1
+                );
+            }
+        }
+        for name in names.iter().filter(|name| name.len() > 1) {
             assert!(
-                !bare.starts_with('/') && !bare.starts_with('~'),
-                "line {}: {token:?} is an absolute or home path:\n{line}",
+                !line.contains(name),
+                "line {} names {name:?}:\n{line}",
                 n + 1
             );
         }
-        assert!(
-            !line.contains(root),
-            "line {} names the project root {root:?}:\n{line}",
-            n + 1
-        );
-        assert!(
-            home.len() <= 1 || !line.contains(&home),
-            "line {} names the home directory {home:?}:\n{line}",
-            n + 1
-        );
     }
 }
 
