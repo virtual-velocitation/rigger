@@ -22,10 +22,11 @@ use common::cli::{
     read_run_events, run_rigger_ok, step_line, temp_repoless_project, with_run_store,
     write_scaffold,
 };
-use rigger::conductor::{META_REPLAY_KEY, STREAM, TYPE_SPEC_DEFECT};
-use rigger::contextgraph::TYPE_LESSON_LEARNED;
+use common::fixtures::{
+    critique_reject, keyed_index, keyed_payload, stop_records, the_stop_records,
+};
+use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
-use rigger::ledger::TYPE_UNIT_ESCALATED;
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -42,16 +43,9 @@ const HALT: &str = "amend the spec and relaunch: plan-critique found a spec defe
                     ./specs/widget.md (adv-2, adv-3)";
 
 /// The first `spec-ambiguity` reject line of the stopping run's gate.
-const SPEC_AMBIGUITY_FIRST: &str =
-    r#"{"verdict":"reject","upheld":["adv-1"],"discarded":[],"cause":"spec-ambiguity"}"#;
-
-/// The second `spec-ambiguity` reject line of the stopping run's gate, which the halt names.
-const SPEC_AMBIGUITY_SECOND: &str =
-    r#"{"verdict":"reject","upheld":["adv-2","adv-3"],"discarded":[],"cause":"spec-ambiguity"}"#;
-
-/// A `decomposition-conflict` reject line: a defect a re-plan can fix.
-const DECOMPOSITION_CONFLICT: &str =
-    r#"{"verdict":"reject","upheld":["adv-4"],"discarded":[],"cause":"decomposition-conflict"}"#;
+fn spec_ambiguity_first() -> String {
+    critique_reject("spec-ambiguity", &["adv-1"])
+}
 
 /// A plan stage producing the DAG and the plan-critique gate over it. `max_retries: 3` leaves
 /// the gate a re-plan after its second reject, so a stop - not the remediation bound - is what
@@ -163,30 +157,6 @@ fn adjudicate(root: &Path, k: u32, verdict: &str) {
     run_rigger_ok(root, &["result", &adjudicator, verdict]);
 }
 
-/// The `(type, replay key)` of every spec-defect stop record in `events`, in log order.
-fn stop_records(events: &[Event]) -> Vec<(String, String)> {
-    events
-        .iter()
-        .filter_map(|e| {
-            let key = e.meta.get(META_REPLAY_KEY)?;
-            key.contains("/spec-defect")
-                .then(|| (e.type_.clone(), key.clone()))
-        })
-        .collect()
-}
-
-/// The three records a stop after attempt 1 appends, each once, in order.
-fn the_stop_records() -> Vec<(String, String)> {
-    [
-        (TYPE_LESSON_LEARNED, "plan-critique/spec-defect-lesson#1"),
-        (TYPE_SPEC_DEFECT, "plan-critique/spec-defect#1"),
-        (TYPE_UNIT_ESCALATED, "plan-critique/spec-defect-escalated#1"),
-    ]
-    .into_iter()
-    .map(|(t, k)| (t.to_string(), k.to_string()))
-    .collect()
-}
-
 /// The ids of every spawn `events` requested, in log order.
 fn requested(events: &[Event]) -> Vec<String> {
     rigger::spawn::requests(events)
@@ -194,15 +164,6 @@ fn requested(events: &[Event]) -> Vec<String> {
         .into_iter()
         .map(|r| r.id)
         .collect()
-}
-
-/// The payload of the event recorded under replay `key` in `events`.
-fn keyed_payload(events: &[Event], key: &str) -> Value {
-    let e = events
-        .iter()
-        .find(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key))
-        .unwrap_or_else(|| panic!("no event under {key}"));
-    serde_json::from_slice(&e.data).unwrap()
 }
 
 /// A project whose latest run, launched on [`SPEC`] after one on [`EARLIER_SPEC`], is driven up
@@ -214,7 +175,7 @@ fn answered_second_spec_ambiguity_reject() -> tempfile::TempDir {
     let root = dir.path();
     launch(root, &[EARLIER_SPEC, SPEC]);
     plan_and_review_first(root);
-    adjudicate(root, 0, SPEC_AMBIGUITY_FIRST);
+    adjudicate(root, 0, &spec_ambiguity_first());
     // A first `spec-ambiguity` reject re-plans as before: no stop record, no halt.
     re_plan_and_review(root, 1);
     assert_eq!(
@@ -222,7 +183,12 @@ fn answered_second_spec_ambiguity_reject() -> tempfile::TempDir {
         Vec::new(),
         "a first spec-ambiguity reject records no stop"
     );
-    adjudicate(root, 1, SPEC_AMBIGUITY_SECOND);
+    // The second, which the halt names.
+    adjudicate(
+        root,
+        1,
+        &critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+    );
     dir
 }
 
@@ -339,10 +305,7 @@ fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
         "plan-critique/spec-defect-lesson#1",
         "plan-critique/spec-defect-escalated#1",
     ] {
-        let at = log
-            .iter()
-            .position(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(crashed_before))
-            .unwrap_or_else(|| panic!("the stopping step recorded nothing under {crashed_before}"));
+        let at = keyed_index(&log, crashed_before);
         let resumed = critique_project();
         with_run_store(resumed.path(), |store| {
             for e in &log[..at] {
@@ -378,14 +341,19 @@ fn an_earlier_runs_spec_ambiguity_reject_is_never_read_across_the_run_boundary()
     let root = dir.path();
     launch(root, &[EARLIER_SPEC]);
     plan_and_review_first(root);
-    adjudicate(root, 0, SPEC_AMBIGUITY_FIRST);
+    adjudicate(root, 0, &spec_ambiguity_first());
     parks(root, &["plan/replan#1"]);
 
     launch(root, &[SPEC]);
     plan_and_review_first(root);
-    adjudicate(root, 0, DECOMPOSITION_CONFLICT);
+    // A defect a re-plan can fix.
+    adjudicate(
+        root,
+        0,
+        &critique_reject("decomposition-conflict", &["adv-4"]),
+    );
     re_plan_and_review(root, 1);
-    adjudicate(root, 1, SPEC_AMBIGUITY_FIRST);
+    adjudicate(root, 1, &spec_ambiguity_first());
     parks(root, &["plan/replan#2"]);
     assert_eq!(
         stop_records(&read_run_events(root)),

@@ -14091,6 +14091,9 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
+        critique_reject, keyed_index, keyed_payload, run_log, stop_records, the_stop_records,
+    };
+    use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
@@ -43459,11 +43462,6 @@ mod tests {
          followed a re-plan that did not clear the previous one; amend the spec and relaunch: \
          plan-critique found a spec defect in specs/widget.md (adv-2, adv-3)";
 
-    /// A plan-critique adjudicator's reject line carrying `cause` and upholding `upheld`.
-    fn critique_reject(cause: &str, upheld: &[&str]) -> String {
-        json!({"verdict": "reject", "upheld": upheld, "discarded": [], "cause": cause}).to_string()
-    }
-
     const APPROVE: &str = r#"{"verdict":"approve"}"#;
 
     /// A plan-critique driver whose planner proposes [`widget_split`] on every spawn and whose
@@ -43504,47 +43502,6 @@ mod tests {
         ids
     }
 
-    /// The `(type, replay key)` of every spec-defect stop record in `st`'s run stream, in log
-    /// order.
-    fn stop_records(st: &Store) -> Vec<(String, String)> {
-        st.read_stream(STREAM, 0, Direction::Forward)
-            .unwrap()
-            .into_iter()
-            .filter_map(|e| {
-                let key = e.meta.get(META_REPLAY_KEY)?.clone();
-                key.contains("/spec-defect").then_some((e.type_, key))
-            })
-            .collect()
-    }
-
-    /// The three records a stop after attempt 1 appends, each once, in order.
-    fn the_stop_records() -> Vec<(String, String)> {
-        vec![
-            (
-                contextgraph::TYPE_LESSON_LEARNED.to_string(),
-                "plan-critique/spec-defect-lesson#1".to_string(),
-            ),
-            (
-                TYPE_SPEC_DEFECT.to_string(),
-                "plan-critique/spec-defect#1".to_string(),
-            ),
-            (
-                ledger::TYPE_UNIT_ESCALATED.to_string(),
-                "plan-critique/spec-defect-escalated#1".to_string(),
-            ),
-        ]
-    }
-
-    /// The payload of the event recorded under replay `key` in `st`'s run stream.
-    fn keyed_payload(st: &Store, key: &str) -> Value {
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let e = events
-            .iter()
-            .find(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key))
-            .unwrap_or_else(|| panic!("no event under {key}"));
-        serde_json::from_slice(&e.data).unwrap()
-    }
-
     /// One step over a store whose run was launched on [`STOP_SPEC`], under a driver whose
     /// adjudicator rejects rounds 0 and 1 with `spec-ambiguity` - the second after the re-plan
     /// the first one drove: the store and the driver after the stopping step, with its state.
@@ -43569,11 +43526,11 @@ mod tests {
             "the stopping reject re-plans nothing and nothing implements"
         );
         assert_eq!(
-            stop_records(&st),
+            stop_records(&run_log(&st)),
             the_stop_records(),
             "the lesson, the SpecDefect and the escalation, in that order, each under its key"
         );
-        let lesson = keyed_payload(&st, "plan-critique/spec-defect-lesson#1");
+        let lesson = keyed_payload(&run_log(&st), "plan-critique/spec-defect-lesson#1");
         assert_eq!(
             (&lesson["summary"], &lesson["about"]),
             (&json!(STOP_LESSON), &json!([STOP_SPEC])),
@@ -43581,8 +43538,8 @@ mod tests {
         );
         assert_eq!(
             (
-                keyed_payload(&st, "plan-critique/spec-defect#1"),
-                keyed_payload(&st, "plan-critique/spec-defect-escalated#1"),
+                keyed_payload(&run_log(&st), "plan-critique/spec-defect#1"),
+                keyed_payload(&run_log(&st), "plan-critique/spec-defect-escalated#1"),
             ),
             (json!({"reason": STOP_HALT}), json!({"id": "plan-critique"})),
             "the SpecDefect carries the halt text; the escalation is the gate's own"
@@ -43625,7 +43582,7 @@ mod tests {
             (
                 rs.units["plan-critique"].status,
                 rs.budget_halt,
-                stop_records(&st)
+                stop_records(&run_log(&st))
             ),
             (ledger::Status::Integrated, None, Vec::new()),
             "{why}: the round after the rejects approves and nothing stops"
@@ -43662,7 +43619,7 @@ mod tests {
         let rs = critique_step(&st, &driver);
         let halt =
             "amend the spec and relaunch: plan-critique found a spec defect in the spec (none upheld)";
-        let lesson = keyed_payload(&st, "plan-critique/spec-defect-lesson#1");
+        let lesson = keyed_payload(&run_log(&st), "plan-critique/spec-defect-lesson#1");
         assert_eq!(
             (rs.budget_halt.as_deref(), &lesson["about"]),
             (Some(halt), &json!([])),
@@ -43736,12 +43693,7 @@ mod tests {
             "plan-critique/spec-defect-lesson#1",
             "plan-critique/spec-defect-escalated#1",
         ] {
-            let at = log
-                .iter()
-                .position(|e| {
-                    e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(crashed_before)
-                })
-                .unwrap();
+            let at = keyed_index(&log, crashed_before);
             let resumed = Store::open(":memory:").unwrap();
             for e in &log[..at] {
                 resumed
@@ -43753,7 +43705,7 @@ mod tests {
             assert_eq!(
                 (
                     driver.spawn_ids(),
-                    stop_records(&resumed),
+                    stop_records(&run_log(&resumed)),
                     rs.budget_halt.as_deref()
                 ),
                 (Vec::<String>::new(), the_stop_records(), Some(STOP_HALT)),
