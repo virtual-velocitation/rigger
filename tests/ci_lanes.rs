@@ -195,6 +195,36 @@ fn ci_runs_the_no_default_and_core_lanes_through_the_lanes_script() {
     );
 }
 
+/// The check-in stage gates both non-default lanes through the very commands CI runs: its
+/// `lanes` gate calls the lanes script once per lane, so the loop's check-in and CI never run
+/// different lane commands, and the post-merge re-gate covers the merged tree with them. Like
+/// the `test` gate, it first sources the container runtime snippet, so a container-backed test
+/// runs under the gate instead of skipping.
+#[test]
+fn ci_and_the_lanes_gate_run_one_script_that_derives_its_members() {
+    let workflow: serde_yaml::Value = serde_yaml::from_str(&repo_text(".rigger/workflow.yml"))
+        .expect(".rigger/workflow.yml must be valid YAML");
+    let listed = workflow["stages"]["checkin"]["gates"]
+        .as_sequence()
+        .is_some_and(|gates| gates.iter().any(|gate| gate.as_str() == Some("lanes")));
+    assert!(listed, "the checkin stage must list the `lanes` gate");
+    let gate = workflow["gates"]["lanes"]["run"]
+        .as_str()
+        .expect(".rigger/workflow.yml must declare a `lanes` gate with a `run` command");
+    assert!(
+        gate.starts_with(". .rigger/gates/container-env.sh"),
+        "the `lanes` gate must source the container runtime snippet first: {gate}"
+    );
+    let ci = job_run_scripts(&workflow_yaml(), "build-test");
+    for lane in LANES {
+        let call = format!("sh {LANES_SCRIPT} {lane}");
+        assert!(
+            gate.contains(&call) && ci.lines().any(|line| line.trim() == call),
+            "the `lanes` gate and CI must both run `{call}`: gate {gate:?}"
+        );
+    }
+}
+
 /// The light lane lints every workspace target with warnings denied and runs every workspace
 /// test, both without the default features - the battery the default lane runs, on the
 /// grep-only `cfg` universe.
