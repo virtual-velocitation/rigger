@@ -19,8 +19,8 @@ use common::cli::{
 };
 use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_spawns, critique_stub_task, write_critique_stub,
-    write_critique_stub_reporting,
+    critique_stub_argv, critique_stub_conn, critique_stub_spawns, critique_stub_task,
+    write_critique_stub, write_critique_stub_reporting,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -224,6 +224,12 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         flag_value(&argv, "--model"),
         "sonnet",
         "the persona's rung for attempt 0"
+    );
+    assert_eq!(
+        critique_stub_conn(first.path()),
+        "unset",
+        "a sqlite selection hands the critic no server: its bound rigger server resolves the \
+         local store through configuration"
     );
     let system = flag_value(&argv, "--system-prompt");
     assert!(
@@ -1174,6 +1180,87 @@ fn the_kurrentdb_flag_selects_the_server_backend_and_fabricates_no_local_store()
          missing connection:\n{stderr}"
     );
     assert_eq!(critique_stub_spawns(work.path()), 0, "no critic is spawned");
+}
+
+/// Given a project whose configuration selects no server, when a spec is critiqued on a KurrentDB
+/// server selected by the flags alone, then the critic is handed that selection as
+/// `KURRENTDB_CONN`, and the critic's own bound rigger server, started under it, reads the
+/// critique's findings back from that server through `rigger_peers`.
+#[test]
+fn a_server_selected_by_flags_alone_is_handed_to_the_critic_whose_bound_server_reads_it() {
+    common::fixtures::with_kurrentdb(|conn| {
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        let (work, path) = stub(REJECT);
+        let scratch = root.join("scratch");
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &[
+                "critique",
+                SPEC_REL,
+                "--eventstore",
+                "kurrentdb",
+                "--conn",
+                conn,
+            ],
+            &[
+                ("PATH", &path),
+                ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ],
+        );
+        assert!(ok, "the critique records on the server; stderr:\n{err}");
+        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert!(
+            !rigger_file(root, "events.db").exists(),
+            "the critique lives on the server, never a local store"
+        );
+        let handed = critique_stub_conn(work.path());
+        assert_eq!(
+            handed, conn,
+            "the critic is handed the flag-selected server"
+        );
+
+        // The critic's bound server, under the environment the critic was handed, answers
+        // `rigger_peers` from that server: the copies of the critique's findings about the spec.
+        let state = tempfile::tempdir().unwrap();
+        let spawn = critique_spawn_id(SPEC_HASH, 0);
+        let mut mcp = common::cli::rigger_command(
+            root,
+            &["mcp", "--spawn", &spawn],
+            &[("KURRENTDB_CONN", &handed)],
+            state.path(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+        let call = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "rigger_peers", "arguments": {"files": [SPEC_REL]}},
+        });
+        {
+            use std::io::Write;
+            let mut stdin = mcp.stdin.take().unwrap();
+            writeln!(stdin, "{call}").unwrap();
+        }
+        let answered = mcp.wait_with_output().unwrap();
+        let reply = String::from_utf8_lossy(&answered.stdout);
+        assert!(
+            answered.status.success(),
+            "the critic's bound server starts under the handed selection; stderr:\n{}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        for id in [format!("sc-{SPEC_HASH}-0-1"), format!("sc-{SPEC_HASH}-0-2")] {
+            assert!(
+                reply.contains(&id),
+                "rigger_peers reads the critique copy {id} from the server:\n{reply}"
+            );
+        }
+    });
 }
 
 #[test]
