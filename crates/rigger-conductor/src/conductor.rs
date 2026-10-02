@@ -43286,6 +43286,15 @@ mod tests {
     /// project whose one file names [`WIDGET_CRITERION`] - two such steps over ONE store model
     /// the stepwise resume the production `rigger step` path runs on.
     fn critique_step(st: &Store, driver: &dyn AgentDriver) -> RunState {
+        critique_step_under(&critique_cfg(), st, driver).unwrap()
+    }
+
+    /// [`critique_step`] for the workflow `cfg` over any `store`: the step's own result.
+    fn critique_step_under(
+        cfg: &Config,
+        store: &dyn EventStore,
+        driver: &dyn AgentDriver,
+    ) -> Result<RunState, Error> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("feature.rs"),
@@ -43297,9 +43306,9 @@ mod tests {
         };
         let deps = Deps {
             grounder: Some(&grep),
-            ..stub_deps(st, driver, vec![WIDGET_CRITERION.to_string()])
+            ..stub_deps(store, driver, vec![WIDGET_CRITERION.to_string()])
         };
-        run_isolated(&critique_cfg(), &deps).unwrap()
+        run_isolated(cfg, &deps)
     }
 
     #[test]
@@ -43502,17 +43511,29 @@ mod tests {
         ids
     }
 
+    /// A store holding one run launched on [`STOP_SPEC`] over `criteria`, minted through
+    /// `start_fresh` the way a CLI run entry mints one.
+    fn launched_on_stop_spec(criteria: &[String]) -> Store {
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::start_fresh(&st, criteria, "", "", "", STOP_SPEC).unwrap();
+        st
+    }
+
+    /// A plan-critique driver whose adjudicator rejects rounds 0 and 1 with `spec-ambiguity`,
+    /// the second upholding the findings [`STOP_HALT`] names.
+    fn rejecting_twice_for_spec_ambiguity() -> Stub {
+        critique_rounds(&[
+            critique_reject("spec-ambiguity", &["adv-1"]),
+            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+        ])
+    }
+
     /// One step over a store whose run was launched on [`STOP_SPEC`], under a driver whose
     /// adjudicator rejects rounds 0 and 1 with `spec-ambiguity` - the second after the re-plan
     /// the first one drove: the store and the driver after the stopping step, with its state.
     fn stopped_run() -> (Store, Stub, RunState) {
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::start_fresh(&st, &[WIDGET_CRITERION.to_string()], "", "", "", STOP_SPEC)
-            .unwrap();
-        let driver = critique_rounds(&[
-            critique_reject("spec-ambiguity", &["adv-1"]),
-            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
-        ]);
+        let st = launched_on_stop_spec(&[WIDGET_CRITERION.to_string()]);
+        let driver = rejecting_twice_for_spec_ambiguity();
         let rs = critique_step(&st, &driver);
         (st, driver, rs)
     }
@@ -43637,13 +43658,9 @@ mod tests {
             &[],
             vec![plan_stage(), critique_stage("adversary")],
         );
-        let st = Store::open(":memory:").unwrap();
         let criteria = vec![WIDGET_CRITERION.to_string(), gadget.to_string()];
-        crate::run_store::start_fresh(&st, &criteria, "", "", "", STOP_SPEC).unwrap();
-        let driver = critique_rounds(&[
-            critique_reject("spec-ambiguity", &["adv-1"]),
-            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
-        ]);
+        let st = launched_on_stop_spec(&criteria);
+        let driver = rejecting_twice_for_spec_ambiguity();
         let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria))
             .expect("a stopped gate returns its halted state, never the coverage error");
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -43713,6 +43730,43 @@ mod tests {
                  without spawning"
             );
         }
+    }
+
+    #[test]
+    fn a_stop_whose_lesson_append_fails_records_nothing_after_it_and_the_next_step_completes_it() {
+        let st = launched_on_stop_spec(&[WIDGET_CRITERION.to_string()]);
+        // Fails only the stop's lesson: its summary is the one event carrying this text.
+        let failing = FailingStore {
+            inner: &st,
+            fail_containing: "stopped the run: its spec-ambiguity reject",
+        };
+        let Err(err) = critique_step_under(
+            &critique_cfg(),
+            &failing,
+            &rejecting_twice_for_spec_ambiguity(),
+        ) else {
+            panic!("a stop whose lesson append failed must fail its step");
+        };
+        assert_eq!(
+            (err.0.as_str(), stop_records(&run_log(&st))),
+            (
+                "event store: simulated store failure appending an event containing \
+                 \"stopped the run: its spec-ambiguity reject\"",
+                Vec::new()
+            ),
+            "the failed lesson fails the stop before its SpecDefect and completion key"
+        );
+        let healthy = Stub::new();
+        let rs = critique_step(&st, &healthy);
+        assert_eq!(
+            (
+                healthy.spawn_ids(),
+                stop_records(&run_log(&st)),
+                rs.budget_halt.as_deref()
+            ),
+            (Vec::<String>::new(), the_stop_records(), Some(STOP_HALT)),
+            "the next healthy step completes the stop, each record once, without spawning"
+        );
     }
 
     /// The gate's `UnitFailed` for its round `k`, under the replay key the gate records it with,
