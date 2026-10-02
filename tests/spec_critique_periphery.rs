@@ -1521,10 +1521,6 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
     assert_eq!(review_findings(root), Vec::<Value>::new());
 }
 
-/// Given a project with no git repository holding critique-named liveness and transcript
-/// directories under its root and under `RIGGER_TMPDIR`, when its spec is critiqued, then the
-/// critique records with an empty scratch root and its directory removal is a no-op: every planted
-/// directory stays, and nothing new is written under either base.
 /// Given two calls that raced on one text minted one spawn id, so the critique stream holds two
 /// attempt-0 requests and no result, when the unchanged text is critiqued again, then the next
 /// attempt is the number of requests recorded for the hash, 2, never the number of distinct ids.
@@ -1570,6 +1566,10 @@ fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
     assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 2, SPEC_REL));
 }
 
+/// Given a project with no git repository holding critique-named liveness and transcript
+/// directories under its root and under `RIGGER_TMPDIR`, when its spec is critiqued, then the
+/// critique records with an empty scratch root and its directory removal is a no-op: every planted
+/// directory stays, and nothing new is written under either base.
 #[test]
 fn a_project_with_no_git_repository_removes_no_critique_directory_under_its_root_or_tmpdir() {
     let dir = temp_repoless_project();
