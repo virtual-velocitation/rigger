@@ -8560,6 +8560,60 @@ mod tests {
         );
     }
 
+    /// The probe's one error classification, which every step of the probe reads its error
+    /// through: an error the peer caused proves nothing serves the port, a timeout is a holder
+    /// that is alive but silent, and any other error is the probe itself failing - a local
+    /// failure of the probing process (no descriptor, file slot or source port left, no buffer
+    /// space or memory, a denied or interrupted call) that proves nothing about the dash, so it
+    /// carries its error text instead of reading as a gone dash.
+    #[test]
+    fn a_probe_error_reads_as_the_peer_a_silent_holder_or_the_probe_failing() {
+        use std::io::ErrorKind as Kind;
+        for kind in [
+            Kind::ConnectionRefused,
+            Kind::ConnectionReset,
+            Kind::ConnectionAborted,
+            Kind::BrokenPipe,
+        ] {
+            assert_eq!(
+                classify_probe_error(io::Error::from(kind)),
+                ProbeMiss::Refused,
+                "{kind:?} comes from the peer"
+            );
+        }
+        for kind in [Kind::TimedOut, Kind::WouldBlock] {
+            assert_eq!(
+                classify_probe_error(io::Error::from(kind)),
+                ProbeMiss::Silent,
+                "{kind:?} is a holder that did not answer in time"
+            );
+        }
+        // EMFILE, ENFILE, EADDRNOTAVAIL and ENOBUFS, numbered as on Linux.
+        let local = [24, 23, 99, 105].map(io::Error::from_raw_os_error);
+        let kinds = [Kind::OutOfMemory, Kind::PermissionDenied, Kind::Interrupted];
+        for error in local.into_iter().chain(kinds.map(io::Error::from)) {
+            let text = error.to_string();
+            assert_eq!(
+                classify_probe_error(error),
+                ProbeMiss::Failed(text.clone()),
+                "{text} is the probe failing, never proof the dash is gone"
+            );
+        }
+    }
+
+    /// A probe that failed proved nothing about the port, so its answer is neither serving nor
+    /// gone and carries the failure's text; a refusal and a silent holder keep their answers.
+    #[test]
+    fn a_failed_probe_answers_neither_serving_nor_gone() {
+        let error = "Too many open files (os error 24)".to_string();
+        assert_eq!(
+            ProbeMiss::Failed(error.clone()).answer(),
+            DashAnswer::ProbeFailed(error)
+        );
+        assert_eq!(ProbeMiss::Refused.answer(), DashAnswer::NotServing);
+        assert_eq!(ProbeMiss::Silent.answer(), DashAnswer::Unresponsive);
+    }
+
     #[test]
     fn dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies() {
         let m = DashMarker {
@@ -8619,6 +8673,21 @@ mod tests {
                 pid: Some(4242),
             },
             "a held port that does not answer in the window -> unresponsive, not dead"
+        );
+
+        // A MATCHING marker whose port the probe could not reach because the probe itself
+        // failed -> that failure, with its error text: nothing proved the dash busy or gone.
+        let error = "Too many open files (os error 24)".to_string();
+        assert_eq!(
+            dash_status(Some(url.clone()), Some(m), |_| DashAnswer::ProbeFailed(
+                error.clone()
+            )),
+            DashStatus::ProbeFailed {
+                url: url.clone(),
+                pid: Some(4242),
+                error,
+            },
+            "a probe that failed locally -> its failure is reported, never busy and never dead"
         );
     }
 

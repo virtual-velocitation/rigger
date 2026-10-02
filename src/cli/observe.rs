@@ -685,6 +685,19 @@ mod tests {
             ),
             "a held port that did not answer in the window is busy, never reported dead"
         );
+        assert_eq!(
+            dash_status_line(&dash::DashStatus::ProbeFailed {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: Some(4242),
+                error: "Too many open files (os error 24)".into(),
+            }),
+            Some(
+                "dashboard: http://127.0.0.1:7420/ (pid 4242) could not be probed: Too many \
+                 open files (os error 24) - unknown, not dead"
+                    .to_string()
+            ),
+            "a probe that failed locally prints its error, never a busy or a dead dash"
+        );
     }
 
     /// Spec 69, criterion 4's third clause ("`--json` carries the same truth"): the JSON
@@ -730,6 +743,22 @@ mod tests {
                 "dashboard": {"status": "unresponsive", "url": "http://127.0.0.1:7420/", "pid": null}
             })),
             "a held port that did not answer in the window carries its url, never not_serving"
+        );
+        assert_eq!(
+            dash_status_json(&dash::DashStatus::ProbeFailed {
+                url: "http://127.0.0.1:7420/".into(),
+                pid: None,
+                error: "Too many open files (os error 24)".into(),
+            }),
+            Some(serde_json::json!({
+                "dashboard": {
+                    "status": "probe_failed",
+                    "url": "http://127.0.0.1:7420/",
+                    "pid": null,
+                    "error": "Too many open files (os error 24)"
+                }
+            })),
+            "a probe that failed locally carries its url and its error, never not_serving"
         );
     }
 

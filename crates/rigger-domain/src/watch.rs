@@ -1044,6 +1044,41 @@ mod tests {
         );
     }
 
+    /// A dash the probe could not reach because the probe itself failed is reported with the
+    /// probe's error: nothing proved it busy or dead, so neither wording appears.
+    #[test]
+    fn a_dash_whose_probe_failed_is_reported_with_the_probe_error() {
+        let no_heartbeats = BTreeMap::new();
+        let inputs = WatchInputs {
+            dash: DashProbe::ProbeFailed {
+                pid: Some(4242),
+                port: 7420,
+                error: "Too many open files (os error 24)".to_string(),
+            },
+            ..empty_inputs(&[], &no_heartbeats)
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(
+            anomalies.len(),
+            1,
+            "a probe that could not run is never silently healthy"
+        );
+        let line = anomalies[0].line();
+        assert!(
+            line.contains(
+                "dash on port 7420 (pid 4242) could not be probed: Too many open files (os error \
+                 24) - unknown, not dead"
+            ),
+            "the probe failure, with its error; got: {line}"
+        );
+        assert!(
+            !line.contains("busy")
+                && !line.contains("dead pid")
+                && !line.contains("does not answer"),
+            "a failed probe never reads as a busy or a dead dash; got: {line}"
+        );
+    }
+
     /// A dash on port 7420 probed `NotServing` (naming `pid`, when a marker recorded one) for a
     /// run that began `run_started_ago` seconds ago with its breadcrumb written
     /// `breadcrumb_ago` seconds ago, `attempted` this run, must be reported as exactly one
