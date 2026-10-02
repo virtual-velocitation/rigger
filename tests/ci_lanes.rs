@@ -422,6 +422,26 @@ fn core_members() -> Vec<(String, bool)> {
         .collect()
 }
 
+/// The CI workflow raises no test address-space cap: every test step runs under the test
+/// runner's default bound (`.cargo/pidns-runner.sh`), the bound the loop's own test gate runs
+/// under, so a test that needs more address space than that fails CI exactly as it fails the
+/// gate - never passing CI on a raised cap the gate does not have.
+#[test]
+fn the_ci_workflow_raises_no_test_address_space_cap() {
+    let text = repo_text(".github/workflows/rust.yml");
+    let raised: Vec<(usize, &str)> = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("RIGGER_TEST_AS_BYTES"))
+        .map(|(index, line)| (index + 1, line.trim()))
+        .collect();
+    assert!(
+        raised.is_empty(),
+        ".github/workflows/rust.yml must not name the test runner's address-space override: \
+         {raised:#?}"
+    );
+}
+
 /// The `install-nolock` job must run `cargo install --path .` WITHOUT `--locked` and then
 /// execute the resulting binary. That job is the regression guard for dependency skew on a
 /// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
