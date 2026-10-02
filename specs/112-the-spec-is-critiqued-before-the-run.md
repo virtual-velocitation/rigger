@@ -220,17 +220,20 @@ exit status never changes. Words match case-insensitively and whole-word through
 `find_word`. A sentence is the text between `. ` boundaries of a criterion's full block
 (`criterion_blocks`); the measure, identity and comparison-surface words match on the sentence
 masked by the file's one span masker, `strip_inline_code` (*The one masker*), and the twin tell
-reads its spans, the backtick pairs that mask blanks, from the sentence before the mask. A section
+reads its spans, the backtick spans that mask blanks, from the sentence before the mask. A section
 runs from its heading to the next heading of the same or shallower level, as `notes_section_lines`
 reads one, so a heading-shaped line inside a fence counts as a heading (accepted).
 - *The one masker.* Criterion 3's unit corrects `strip_inline_code` in place and adds no second
-  masker: it blanks backtick spans pair by pair (consecutive backtick marks; an unpaired last
-  backtick blanks to the end of the text masked, the sentence for these tells) and keeps its
-  double-quote rule unchanged (one span from the first quote mark through the last when their count
-  is even, to the end of the text masked when it is odd). A code span is a paired Markdown
-  construct, so a measure word between two code spans is prose the twin tell must see; a stray quote
-  is common prose, so quoted text keeps failing closed. A stray backtick pairs with the opener of a
-  real span after it, so that span's text is linted; accepted, since a stray backtick is a Markdown
+  masker: it blanks backtick spans paired by backtick run, as CommonMark delimits a code span (a run
+  of n consecutive backticks opens a span that closes at the next run of exactly n backticks; a run
+  with no closing run of its length blanks to the end of the text masked - the sentence for these
+  tells, the paragraph for F4), and keeps its double-quote rule unchanged (one span from the first
+  quote mark through the last when their count is even, to the end of the text masked when it is
+  odd). The twin tell's one span reader pairs runs the same way and drops an empty span, so the
+  tell never names an empty surface. A code span is a paired Markdown construct, so a measure
+  word between two code spans is prose the twin tell must see; a stray quote is common prose, so
+  quoted text keeps failing closed. A stray backtick run pairs with the opener of the next real span
+  of its length, so that span's text is linted; accepted, since a stray backtick is a Markdown
   defect the rendered spec shows. The correction reaches F4 (`disposition_advisories`, the masker's
   one other caller, which masks a paragraph), whose prose between two backtick spans is now linted.
   In the same commit criterion 3's unit rewrites to the pair rule the masker's doc comment, the doc
@@ -440,16 +443,16 @@ and 5 at any point, 6 last):
   until its spec is critiqued; a consumer workflow naming no adversary begins new runs as before,
   with the one line; a run branch holding another copy of the spec cannot change the hash, taken
   from the bytes read before the anchor.
-- *Criterion 3.* Empty: no criteria, no tells; a sentence whose last backtick is unpaired blanks
-  from it to the sentence end, and one with an odd count of quote marks blanks from its first quote
-  mark to the sentence end. Repeated: a span shared by three criteria yields one advisory per
-  pair; an F11 tell fires once per criterion however many of its sentences offend. Reverted,
-  DROPPED, concurrent, crash-resume: out of scope - a pure function of one text. Cold start: pure.
-  Existing data: committed specs may warn (advisory only), a real span after a stray backtick
-  included; the corpus snapshot pins F10 and F11 at their observed totals and re-pins F4's fire
-  set, which the backtick pairing moves; every other existing test assertion stands unchanged and
-  one pair-rule assertion is added (*The one masker*); any amendment of this spec that moves a
-  total re-pins it.
+- *Criterion 3.* Empty: no criteria, no tells; an unclosed backtick run blanks from it to the
+  sentence end, and an odd count of quote marks blanks from the first quote mark to the sentence
+  end; a double-backtick span masks as one span; an empty span is not a surface. Repeated: a span
+  shared by three criteria yields one advisory per pair; an F11 tell fires once per criterion
+  however many of its sentences offend. Reverted, DROPPED, concurrent, crash-resume: out of scope -
+  a pure function of one text. Cold start: pure. Existing data: committed specs may warn (advisory
+  only), a real span after a stray backtick included; the corpus snapshot pins F10 and F11 at their
+  observed totals and re-pins F4's fire set, which the backtick pairing moves; every other existing
+  test assertion stands unchanged and one pair-rule assertion is added (*The one masker*); any
+  amendment of this spec that moves a total re-pins it.
 - *Criterion 4.* Empty: a project with no skills directory gets one. Repeated: a rerun
   writes nothing. Reverted: an edited installed copy is refreshed like any drifted registry skill.
   DROPPED: an installed copy with a line deleted is refreshed (drift compares the rendered bytes
