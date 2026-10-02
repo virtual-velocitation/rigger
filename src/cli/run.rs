@@ -3029,6 +3029,19 @@ mod tests {
         );
     }
 
+    /// A dash that holds its marker's port but is too busy to answer within the probe window is
+    /// alive: the step reads it as serving and starts no second dash, which could only fail to
+    /// bind the held port - the reading `rigger status` and `rigger watch` give the same probe.
+    #[test]
+    fn dash_marker_serving_reads_a_silent_port_holder_as_a_busy_dash() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        assert!(
+            dash_marker_serving(dash::DashMarker { port, pid: 1 }),
+            "a marker whose port is held but silent names a busy dash, never a gone one"
+        );
+    }
+
     /// A marker left by a crashed/reaped dash (recorded but NOT serving) does not suppress a
     /// fresh start: the step starts a new dash and overwrites the stale marker.
     #[test]
