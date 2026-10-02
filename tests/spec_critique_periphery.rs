@@ -77,10 +77,7 @@ fn critique(root: &Path, spec: &str, path: &str, scratch: &Path) -> (String, Str
 /// Every event of the critique's own stream: the project's namespace plus `-critique`.
 fn critique_events(root: &Path) -> Vec<Event> {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(
-        &backend,
-        &format!("{}-critique", run_stream_identity(root)),
-    );
+    let store = Namespaced::new(&backend, &format!("{}-critique", run_stream_identity(root)));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .unwrap()
@@ -141,8 +138,14 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
 
     // When the spec is critiqued for the first time ...
     let (out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
-    assert!(ok, "a recorded critique exits 0 whatever its findings; stderr:\n{err}");
-    assert_eq!(out, expected_out, "the findings and the verdict, read back from the store");
+    assert!(
+        ok,
+        "a recorded critique exits 0 whatever its findings; stderr:\n{err}"
+    );
+    assert_eq!(
+        out, expected_out,
+        "the findings and the verdict, read back from the store"
+    );
 
     // ... the plan-critique adversary ran once, on the spec text, through the headless host.
     assert_eq!(critique_stub_spawns(first.path()), 1, "one critic spawn");
@@ -151,15 +154,25 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         task.ends_with(SPEC),
         "the critique prompt ends with the spec text verbatim:\n{task}"
     );
-    assert!(task.contains(PLAN_CRITIQUE_RULES), "the prompt carries the shared rules");
-    assert!(task.contains("`specs/9-demo.md`"), "the prompt names the spec path");
+    assert!(
+        task.contains(PLAN_CRITIQUE_RULES),
+        "the prompt carries the shared rules"
+    );
+    assert!(
+        task.contains("`specs/9-demo.md`"),
+        "the prompt names the spec path"
+    );
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
         "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers",
         "the critic's tools are replaced: no Bash, Agent, Grep or emit"
     );
-    assert_eq!(flag_value(&argv, "--model"), "sonnet", "the persona's rung for attempt 0");
+    assert_eq!(
+        flag_value(&argv, "--model"),
+        "sonnet",
+        "the persona's rung for attempt 0"
+    );
     let system = flag_value(&argv, "--system-prompt");
     assert!(
         system.starts_with("You are the CRITIC-PERSONA adversary."),
@@ -218,12 +231,29 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let (again, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
     // ... it answers from the store with zero spawns and appends nothing.
-    assert_eq!(again, expected_out, "the same recorded findings and verdict");
-    assert_eq!(critique_stub_spawns(first.path()), 1, "zero spawns on unchanged text");
-    assert_eq!(spawn_events(&critique_events(root)), recorded, "no second request");
+    assert_eq!(
+        again, expected_out,
+        "the same recorded findings and verdict"
+    );
+    assert_eq!(
+        critique_stub_spawns(first.path()),
+        1,
+        "zero spawns on unchanged text"
+    );
+    assert_eq!(
+        spawn_events(&critique_events(root)),
+        recorded,
+        "no second request"
+    );
     assert_eq!(review_findings(root), copies, "a copy is skipped by its id");
-    assert!(!leftover.exists(), "every critique run's scratch goes with the next call");
-    assert!(loop_run.exists(), "a loop run's scratch is never a critique's to remove");
+    assert!(
+        !leftover.exists(),
+        "every critique run's scratch goes with the next call"
+    );
+    assert!(
+        loop_run.exists(),
+        "a loop run's scratch is never a critique's to remove"
+    );
 
     // When one line of the spec is deleted, the new text is critiqued afresh ...
     let edited = SPEC.replace("- [ ] a test proves the widget hides\n", "");
@@ -232,8 +262,16 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let second_path = write_critique_stub(second.path(), APPROVE);
     let (fresh, err, ok) = critique(root, SPEC_REL, &second_path, &scratch);
     assert!(ok, "the edited text's critique exits 0; stderr:\n{err}");
-    assert_eq!(critique_stub_spawns(second.path()), 1, "the edited text spawns the critic");
-    assert_eq!(critique_stub_spawns(first.path()), 1, "the first stub is not spawned again");
+    assert_eq!(
+        critique_stub_spawns(second.path()),
+        1,
+        "the edited text spawns the critic"
+    );
+    assert_eq!(
+        critique_stub_spawns(first.path()),
+        1,
+        "the first stub is not spawned again"
+    );
     // ... and inherits none of the earlier findings.
     assert_eq!(fresh, "{\"verdict\":\"approve\"}\n");
     assert!(!fresh.contains(&hash), "no earlier finding is printed");
@@ -249,7 +287,11 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
             (TYPE_SPAWN_RESULT.to_string(), edited_spawn),
         ]
     );
-    assert_eq!(review_findings(root), copies, "a clean critique copies nothing");
+    assert_eq!(
+        review_findings(root),
+        copies,
+        "a clean critique copies nothing"
+    );
 }
 
 #[test]
@@ -270,7 +312,10 @@ fn under_a_workflow_with_no_critic_the_verb_refuses_naming_both_keys_and_records
 
     // ... the verb refuses, naming both keys, answering nothing and recording nothing.
     assert!(!ok, "a workflow with no critic refuses the verb");
-    assert!(err.contains(NO_CRITIC_CLAUSE), "the refusal names both keys:\n{err}");
+    assert!(
+        err.contains(NO_CRITIC_CLAUSE),
+        "the refusal names both keys:\n{err}"
+    );
     assert_eq!(out, "", "a refusal prints no finding");
     assert_eq!(critique_stub_spawns(stub.path()), 1, "no spawn");
     assert_eq!(every_event(root), before, "nothing is recorded");
@@ -290,9 +335,16 @@ fn a_spec_outside_the_repository_or_with_no_criteria_is_refused_before_any_store
     std::fs::write(&outside, SPEC).unwrap();
     let (_out, err, ok) = critique(root, outside.to_str().unwrap(), &path, &scratch);
     assert!(!ok, "a spec outside the repository is refused");
-    assert!(err.contains("outside the repository"), "the refusal says why:\n{err}");
+    assert!(
+        err.contains("outside the repository"),
+        "the refusal says why:\n{err}"
+    );
 
-    std::fs::write(root.join("specs/no-criteria.md"), "# A spec\n\nNo checkboxes.\n").unwrap();
+    std::fs::write(
+        root.join("specs/no-criteria.md"),
+        "# A spec\n\nNo checkboxes.\n",
+    )
+    .unwrap();
     let (_out, err, ok) = critique(root, "specs/no-criteria.md", &path, &scratch);
     assert!(!ok, "a spec with no Done-when criteria is refused");
     assert!(err.contains("loop-ready"), "the loop-ready refusal:\n{err}");
@@ -312,7 +364,12 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
     let stub = tempfile::tempdir().unwrap();
     let path = write_critique_stub(stub.path(), REJECT);
     let absolute = root.join(SPEC_REL);
-    let (out, err, ok) = critique(root, absolute.to_str().unwrap(), &path, &root.join("scratch"));
+    let (out, err, ok) = critique(
+        root,
+        absolute.to_str().unwrap(),
+        &path,
+        &root.join("scratch"),
+    );
     assert!(ok, "a repo-less project critiques; stderr:\n{err}");
     let hash = critique_hash(SPEC);
     assert!(
@@ -388,4 +445,68 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
         "opus",
         "attempt 1 runs the persona's rung for attempt 1"
     );
+}
+
+#[test]
+fn the_verb_takes_the_store_flags_rigger_run_takes_and_refuses_malformed_arguments() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let stub = tempfile::tempdir().unwrap();
+    let path = write_critique_stub(stub.path(), REJECT);
+    let scratch = root.join("scratch");
+    let envs = [
+        ("PATH", path.as_str()),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ];
+    for (args, refusal) in [
+        (
+            vec!["critique"],
+            "critique: expected a spec path: rigger critique <spec>",
+        ),
+        (
+            vec!["critique", SPEC_REL, "specs/other.md"],
+            "critique: unexpected second positional argument \"specs/other.md\"",
+        ),
+        (
+            vec!["critique", "--frob", SPEC_REL],
+            "critique: unknown flag \"--frob\"",
+        ),
+        (
+            vec!["critique", SPEC_REL, "--eventstore", "postgres"],
+            "critique: --eventstore expects sqlite|kurrentdb, got Some(\"postgres\")",
+        ),
+        (
+            vec!["critique", SPEC_REL, "--conn"],
+            "critique: --conn expects a connection url",
+        ),
+    ] {
+        let (_out, err, ok) = run_rigger_envs(root, &args, &envs);
+        assert!(!ok, "{args:?} is refused");
+        assert!(err.contains(refusal), "{args:?} says {refusal:?}:\n{err}");
+    }
+    assert_eq!(
+        critique_stub_spawns(stub.path()),
+        0,
+        "a malformed call spawns nothing"
+    );
+    assert!(
+        !rigger_file(root, "events.db").exists(),
+        "a malformed call opens no store"
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["critique", "--eventstore", "sqlite", SPEC_REL],
+        &envs,
+    );
+    assert!(
+        ok,
+        "--eventstore sqlite selects the local store; stderr:\n{err}"
+    );
+    assert!(
+        out.starts_with(&format!("sc-{}-0-1 | BLOCKING | ", critique_hash(SPEC))),
+        "the critique is recorded and printed:\n{out}"
+    );
+    assert_eq!(critique_stub_spawns(stub.path()), 1);
 }
