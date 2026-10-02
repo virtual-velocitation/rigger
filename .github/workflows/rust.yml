@@ -51,6 +51,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
+      # Full debuginfo in the hundreds of test binaries the three feature lanes build exceeds the
+      # runner's disk; line tables keep the file:line of panic messages and backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
       # Pin fastembed's model cache to a stable, absolute path (its default is a
       # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
       # restore the ~130 MB of embedding weights across runs.
@@ -190,6 +193,8 @@ jobs:
   # runs the same suite the SQLite store passes (proxy fidelity).
   kurrentdb:
     runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
