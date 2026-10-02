@@ -405,9 +405,11 @@ rejection loop: implementer picks one reading, reviewer picks the other.
 
 **3. Run the constraints walk.** For every Global constraint x every criterion (and every
 mechanism Design prescribes), walk the corner-case list: empty, repeated, REVERT/rollback,
-concurrent actors, crash-resume, cold start (fresh process, empty memory). Write what must
-happen into the spec. If a prescribed mechanism fails a corner under a constraint, the spec is
-self-contradictory - fix it now; the panel will otherwise find it around attempt 5.
+DROPPED (a fact present in an earlier generation and absent in a later one), concurrent actors,
+crash-resume, cold start (fresh process, empty memory), existing data (a store or tree that
+predates the mechanism). Write what must happen into the spec. If a prescribed mechanism fails
+a corner under a constraint, the spec is self-contradictory - fix it now; the panel will
+otherwise find it around attempt 5.
 
 **4. Place state explicitly.** Any criterion about dedup, persistence, recovery, budgets, or
 caches names WHERE the authoritative state lives (the log, a file, a flock) and names the
@@ -429,9 +431,11 @@ feature lanes green; no new event type unless the spec's whole point is one; fal
 for any criterion that might be impossible; anything the gates cannot see flagged for the
 adjudicator to demand evidence on.
 
-**7. Preflight, then launch.** `rigger validate` is mandatory (it catches model-alias drift -
-run `rigger canary --if-model-changed` on a warning); `rigger reset --runs` before a large run;
-anchor `base=` on the ref the work must land on. Launch via the /rigger workflow only.
+**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
+critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
+model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
+before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
+workflow only.
 
 ## Amending mid-run
 
@@ -452,6 +456,9 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 | Plan baseline-match fails, paraphrased units | F6 copyability | One-sentence criteria, detail to Notes |
 | First run after a while churns everywhere | F7 environment | validate preflight + canary on drift |
 | High attempt counts, findings about worktrees/caches/quota | F8 infra noise | Audit findings; fix infra separately |
+| A ratified unit rejected again each round for a new prose claim | F9 claim surface | Bound the claim surface in the criterion; delete an unowed claim rather than qualify it |
+| Plan-critique rejects two criteria that each need the other's change | F10 landing-order circularity | Landing-order simulation (spec-preflight step 1) |
+| Identity claim rejected with `cause: spec-ambiguity` once a fact is dropped | F11 undecided removal | DROPPED corner + named comparison surface (spec-preflight step 2) |
 "#;
 
 /// Render the `planning-a-spec` skill. `ctx` is accepted only to match the registry's
@@ -461,9 +468,143 @@ fn render_planning_a_spec_skill(_ctx: &DocsContext) -> String {
     PLANNING_A_SPEC_BODY.to_string()
 }
 
+/// The `spec-preflight` skill's body (spec 112, criterion 4): the pre-launch procedure that runs
+/// after `planning-a-spec` - the landing-order simulation, the per-criterion corner walk and the
+/// `rigger critique` adversary pass, then resolving and recording every BLOCKING finding. Spec
+/// 112 ships it byte for byte as the fenced block closing its Notes section. Like
+/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant.
+const SPEC_PREFLIGHT_BODY: &str = r#"---
+name: spec-preflight
+description: Use before launching any rigger spec, after planning-a-spec - simulate landing order and walk every criterion's corners, then run rigger critique on the spec and close every BLOCKING finding before launch.
+---
+
+# Spec preflight
+
+## Why
+
+A checklist read in the author's head does not simulate the run. Two spec defects survive
+planning-a-spec and each costs a whole loop round:
+
+- Landing-order circularity (F10): two criteria assert the same measured property of one
+  command, and each one's fixture needs the other's change. Whichever unit lands first fails its
+  own text, and plan-critique finds it only at run time.
+- Undecided removal (F11): a criterion claims an identity (byte-identical, equal) and no Design
+  sentence decides what a later generation that DROPS a fact does to it. The corner walk never
+  reaches it, the implementer narrows the fixture, and the round is lost.
+
+This skill makes you EXECUTE two simulations and one adversarial pass before launch. It does not
+repeat planning-a-spec (`../planning-a-spec/SKILL.md`); run that recipe first, then this.
+
+## When
+
+- After the draft passes planning-a-spec.
+- Before `rigger validate`.
+- Before any launch or relaunch.
+- Again after any mid-run Design amendment.
+- Never skipped for a small spec.
+
+## Step 1: landing-order simulation
+
+1. Table the criteria in the order their units land (follow the needs chain; independent units
+   in any order).
+2. List every measured surface each criterion asserts over: a command, a store read, a file, a
+   counter, a test double.
+3. For every ORDERED PAIR (A, B) sharing a surface, write one line:
+   `If A lands first, on a tree WITHOUT B, does A's own text hold? yes/no - why.`
+4. Every "no" is a defect. Fix it now, one of three ways:
+   - move the assertion to the later unit;
+   - split ownership at the seam in a Design block named `CRITERIA A AND B SPLIT AT <seam>`;
+   - make the earlier criterion's assertion conditional on what exists at its landing.
+5. Rule: a criterion is testable in isolation on the tree it lands on, never only on the
+   finished tree.
+
+Worked example (shared surface: the reads one command makes):
+
+    C2 first, without C3: C2 asserts "the command reads no derived event", but excluding
+      derived reads needs C3's query to serve them -> NO.
+    C3 first, without C2: C3 asserts the same, but its seed relies on C2's exclusion -> NO.
+    Fix: Design block "CRITERIA 2 AND 3 SPLIT AT the derived-read seam": C2 owns the
+      exclusion, C3 owns the query; only the later-landing unit asserts "reads no derived event".
+
+## Step 2: per-criterion corner walk
+
+For EACH criterion's mechanism (not only per global constraint), write one sentence per corner,
+or "out of scope - <reason>":
+
+| Corner | Question |
+|---|---|
+| empty | No input, no rows, no prior generation. |
+| repeated | The same input twice. |
+| reverted | An earlier state re-asserted later. |
+| DROPPED | A fact, row, file or link present in an earlier generation and absent in a later one. |
+| concurrent | Two actors on the mechanism at once. |
+| crash-resume | The process dies mid-mechanism; the next run resumes from the log. |
+| cold start | A fresh process, empty memory. |
+| existing data | A store or tree that predates the mechanism - the upgrade path. |
+
+Rules:
+- Every identity claim (identical, equal, the same, byte-identical) names its comparison
+  surface: which bytes, which projection, which ordering.
+- Its fixture includes the DROPPED corner explicitly. A fixture that only adds or moves facts
+  does not test an identity claim.
+- A corner no Design sentence decides is a defect; decide it in Design now.
+
+Worked example (an identity claim over a compacted log):
+
+    DROPPED: generation N links doc D -> E; generation N+1 re-ingests D without the link.
+      The compacted log keeps only N+1; the original log holds N and N+1. Undecided: does
+      N+1 supersede N's link in the fold? If not, the two rebuilds differ -> the claim is false.
+    Fix: Design "a generation supersedes the whole prior generation; the comparison surface is
+      the live projection, not raw bytes"; the fixture drops a link and drops an entity.
+
+## Step 3: the adversary pass
+
+Run `rigger critique <spec>`. It runs the workflow's critic (the plan-critique gate's adversary,
+else `defaults.review.adversary`) against the spec text, records its findings and verdict keyed on
+the text's content hash, and prints them; unchanged text is answered from the record, and any edit
+is critiqued afresh. Under a workflow naming neither, `rigger critique` refuses and runs are not
+gated, so skip Steps 3 and 4.2. Each finding is one line:
+
+    <id> | BLOCKING or NON-BLOCKING | <criterion or Design block> | <exact reading that breaks> | <smallest Design change that closes it>
+
+## Step 4: resolve, record, re-run
+
+1. Close every BLOCKING finding in Design or Global constraints. Once a run has built code, never
+   edit a criterion. Before any run, a criterion rewrite is allowed, and Steps 1-3 then run again
+   from the top.
+2. Run `rigger critique <spec>` on the amended text until it returns no BLOCKING finding. Close or
+   record each NON-BLOCKING one.
+3. Close a BLOCKING finding you judge wrong, or already decided, with a recorded resolution
+   instead of a text change (`<ids>` are the quoted finding ids):
+
+       rigger emit DecisionMade '{"id":"preflight-<short>","governs":["<spec>"],"resolves":[<ids>],"summary":"closed <ids>: <one line each>"}'
+
+4. `rigger validate <spec>`.
+5. Launch.
+
+Refusal rule: do not launch, relaunch, or amend-and-continue with an open BLOCKING finding.
+
+## Mid-run amendment
+
+When a review or plan-critique reject names a defect in the spec itself:
+
+1. Amend Design and Global constraints only; a criterion edit orphans the live run.
+2. Land the amendment between steps, never while a step is mid-flight.
+3. `rigger emit DecisionMade` with the spec path in `governs`, so in-flight agents see it through
+   the graph.
+4. Run Steps 1-3 on the amended spec before the next step spawns.
+"#;
+
+/// Render the `spec-preflight` skill. `ctx` is accepted only to match the registry's uniform
+/// `fn(&DocsContext) -> String` signature ([`SkillEntry`]); this body has nothing in it to
+/// interpolate from `ctx`.
+fn render_spec_preflight_skill(_ctx: &DocsContext) -> String {
+    SPEC_PREFLIGHT_BODY.to_string()
+}
+
 /// The planning field guide's body, committed as-is at
 /// `docs/handbook/planning-field-guide.md` (spec 66, criterion 2): the failure catalog
-/// (F1-F9) this repo's own event history recorded, the mid-run amendment protocol, and
+/// (F1-F11) this repo's own event history recorded, the mid-run amendment protocol, and
 /// measured outcomes. This is a HANDBOOK PAGE, not a skill (it carries no frontmatter and
 /// is not in [`skill_registry`]) - it is the "how to produce a loop-ready spec" companion
 /// the `planning-a-spec` skill and `authoring-loops.md`'s shape rules both point readers
@@ -523,11 +664,12 @@ was amended.)
 
 **Countermeasure:** the constraints walk. Take every Global constraint and every criterion and
 walk them against the standard corner-case list: empty input, repeated input, REVERT/rollback to
-a prior state, concurrent actors, crash-and-resume, cold start (fresh process, empty caches). A
-constraint you have not walked against a corner case is a rejection you have scheduled for
-attempt 5. When Design prescribes a mechanism, the walk applies to the mechanism too - or drop
-the prescription and let the criteria state observables the implementer must find a mechanism
-for.
+a prior state, DROPPED (a fact present in an earlier generation and absent in a later one),
+concurrent actors, crash-resume, cold start (fresh process, empty caches), existing data (a store
+or tree that predates the mechanism - the upgrade path). A constraint you have not walked
+against a corner case is a rejection you have scheduled for attempt 5. When Design prescribes a
+mechanism, the walk applies to the mechanism too - or drop the prescription and let the criteria
+state observables the implementer must find a mechanism for.
 
 ### F4 - Open dispositions
 
@@ -598,6 +740,35 @@ RULE stated short and pinned by an accuracy check, and say explicitly that no en
 cases or guarantees beyond it is owed. **At remediation time:** prefer deletion to replacement -
 a claim the artifact does not owe is removed, not repaired - and treat any fix that ADDS a
 universal as the failure mode repeating.
+
+### F10 - Landing-order circularity
+
+An F3 shape, found by the landing-order simulation. Two criteria assert the same measured
+property of one surface - a command, a store read, a file, a counter - and each one's fixture
+needs the other's change, so whichever unit lands first fails its own text on a tree without the
+other. The tell is a plan-critique reject naming two criteria that each need the other's change,
+and a re-plan that draws the same reject.
+
+**Countermeasure:** simulate landing order before launch. For every ordered pair of criteria
+sharing a surface, ask "if A lands first, on a tree without B, does A's own text hold?" Each
+"no" is a defect to fix before launch: move the assertion to the later unit, split ownership at
+the seam in a named Design block, or make the earlier criterion's assertion conditional on what
+exists at its landing. The `spec-preflight` skill runs this simulation as its first step.
+
+### F11 - Undecided removal
+
+An F3 shape, found by the DROPPED corner of the corner walk. A criterion claims an identity
+(byte-identical, equal, the same as) and no Design sentence decides what a later generation that
+DROPS a fact - a row, a link or a file present before and absent after - does to it. A corner
+walk without the DROPPED corner does not reach it: the implementer narrows the fixture to
+inputs that only add or move facts, and an adjudicator rejects the built unit with cause
+`spec-ambiguity`. The tell is an identity claim that names no comparison surface, or a fixture
+that never removes anything.
+
+**Countermeasure:** every identity claim names its comparison surface (which bytes, which
+projection, which ordering), Design decides its DROPPED corner, and its fixture drops a fact
+explicitly. The `spec-preflight` skill walks this corner for every criterion as its second
+step.
 
 ## Amending a spec mid-run
 
@@ -1115,9 +1286,9 @@ impl SkillEntry {
 
 /// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline),
 /// `planning-a-spec` (the authoring discipline), the five-member per-operation family
-/// (spec 68, criterion 2), and the three watch-discipline skills (spec 69, criterion 1) -
-/// one skill per operation, joining this same list by appending entries, never by adding a
-/// second, independently-walked enumeration.
+/// (spec 68, criterion 2), the three watch-discipline skills (spec 69, criterion 1) and
+/// `spec-preflight` (spec 112, criterion 4) - one skill per operation, joining this same list
+/// by appending entries, never by adding a second, independently-walked enumeration.
 pub fn skill_registry() -> Vec<SkillEntry> {
     vec![
         SkillEntry {
@@ -1159,6 +1330,10 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         SkillEntry {
             name: "rigger-diagnose-churn",
             render_body: render_diagnose_churn_skill,
+        },
+        SkillEntry {
+            name: "spec-preflight",
+            render_body: render_spec_preflight_skill,
         },
     ]
 }
@@ -1644,7 +1819,8 @@ mod tests {
     }
 
     /// Spec 68, criterion 2 (extended by spec 69, criterion 1 with the three watch-discipline
-    /// skills): the five-member per-operation family AND the three watch skills are IN the
+    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the five-member
+    /// per-operation family, the three watch skills AND the preflight skill are IN the
     /// registry, each name present exactly once, alongside (not instead of) `using-rigger`
     /// and `planning-a-spec`.
     #[test]
@@ -1661,6 +1837,7 @@ mod tests {
             "rigger-watch-a-run",
             "rigger-restore-the-dash",
             "rigger-diagnose-churn",
+            "spec-preflight",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == expected).count(),
@@ -1670,8 +1847,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            10,
-            "the registry must have exactly 10 entries; got {names:?}"
+            11,
+            "the registry must have exactly 11 entries; got {names:?}"
         );
     }
 
@@ -2112,5 +2289,221 @@ mod tests {
                 "{name}: must cross-link at least one sibling skill by name"
             );
         }
+    }
+
+    /// The text of `text` from the first `start` up to (not including) the next `end` after
+    /// it, so a test reads one section of a shipped document and nothing beyond it.
+    fn section<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
+        let from = text
+            .find(start)
+            .unwrap_or_else(|| panic!("{start:?} must be in the document; got:\n{text}"));
+        let len = text[from..]
+            .find(end)
+            .unwrap_or_else(|| panic!("{end:?} must follow {start:?}; got:\n{text}"));
+        &text[from..from + len]
+    }
+
+    /// The `spec-preflight` registry entry's own body, before the operator-binary stamp.
+    fn spec_preflight_body(ctx: &DocsContext) -> String {
+        let registry = skill_registry();
+        let entry = registry
+            .iter()
+            .find(|e| e.name == "spec-preflight")
+            .expect("spec-preflight must be in the registry");
+        (entry.render_body)(ctx)
+    }
+
+    /// Spec 112, criterion 4 (THE SHIPPED SKILL): `spec-preflight` is a registry entry whose
+    /// body, like `planning-a-spec`'s, ignores `ctx` (two different contexts render it alike),
+    /// opens with its loadable frontmatter and carries its sections in order: why, when, the
+    /// four steps, and the mid-run amendment.
+    #[test]
+    fn spec_preflight_is_a_registry_skill_carrying_its_four_steps_in_order() {
+        let body = spec_preflight_body(&sentinel_ctx());
+        assert_eq!(
+            body,
+            spec_preflight_body(&real_watch_facts_ctx()),
+            "the spec-preflight body carries no code-derived fact, so it ignores ctx"
+        );
+        assert!(
+            body.starts_with(
+                "---\nname: spec-preflight\ndescription: Use before launching any rigger spec, \
+                 after planning-a-spec - "
+            ),
+            "must open with skill frontmatter naming it; got: {}",
+            &body[..body.len().min(120)]
+        );
+        let mut from = 0;
+        for heading in [
+            "\n---\n\n# Spec preflight\n",
+            "\n## Why\n",
+            "\n## When\n",
+            "\n## Step 1: landing-order simulation\n",
+            "\n## Step 2: per-criterion corner walk\n",
+            "\n## Step 3: the adversary pass\n",
+            "\n## Step 4: resolve, record, re-run\n",
+            "\n## Mid-run amendment\n",
+        ] {
+            let at = body[from..]
+                .find(heading)
+                .unwrap_or_else(|| panic!("{heading:?} must follow the section before it"));
+            from += at + heading.len();
+        }
+    }
+
+    /// Spec 112, criterion 4 (the F10 and F11 catalog rows): every class the field guide's
+    /// failure catalog names, F1 through F11 in order, has exactly one row in
+    /// `planning-a-spec`'s churn table, in the table's three-cell shape and the catalog's order,
+    /// so the table stays complete; F9, F10 and F11 carry their class labels.
+    #[test]
+    fn churn_table_has_one_row_for_every_catalog_class() {
+        let ctx = sentinel_ctx();
+        let every_class: Vec<u32> = (1..=11).collect();
+        let guide = render_planning_field_guide(&ctx);
+        let catalog: Vec<u32> = guide
+            .lines()
+            .filter_map(|line| line.strip_prefix("### F"))
+            .map(|rest| rest.split(" - ").next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            catalog, every_class,
+            "the field guide's catalog runs F1 to F11"
+        );
+
+        let skill = render_planning_a_spec_skill(&ctx);
+        let header = "| Signature in the run | Catalog class | Fix at spec time |\n|---|---|---|\n";
+        let rows = &skill[skill.find(header).expect("the churn table") + header.len()..];
+        let mut labels = Vec::new();
+        for row in rows.lines().take_while(|line| line.starts_with('|')) {
+            let cells: Vec<&str> = row.split('|').collect();
+            assert_eq!(cells.len(), 5, "a churn-table row has three cells: {row:?}");
+            labels.push(cells[2].trim());
+        }
+        let rowed: Vec<u32> = labels
+            .iter()
+            .map(|label| label[1..].split(' ').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(
+            rowed, every_class,
+            "one churn-table row per catalog class, in catalog order; got {labels:?}"
+        );
+        for label in [
+            "F9 claim surface",
+            "F10 landing-order circularity",
+            "F11 undecided removal",
+        ] {
+            assert!(
+                labels.contains(&label),
+                "the churn table must carry the {label:?} row; got {labels:?}"
+            );
+        }
+    }
+
+    /// Spec 112, criterion 4: the field guide's F10 and F11 sections each open by naming
+    /// itself an F3 shape and the simulation that finds it, then state its tell and a
+    /// countermeasure naming the `spec-preflight` step that runs that simulation.
+    #[test]
+    fn field_guide_f10_and_f11_open_as_f3_shapes_found_by_their_simulation() {
+        let guide = render_planning_field_guide(&sentinel_ctx());
+        for (heading, end, opening, step) in [
+            (
+                "### F10 - Landing-order circularity\n\n",
+                "### F11",
+                "An F3 shape, found by the landing-order simulation.",
+                "as its first step",
+            ),
+            (
+                "### F11 - Undecided removal\n\n",
+                "## Amending a spec mid-run",
+                "An F3 shape, found by the DROPPED corner of the corner walk.",
+                "as its second step",
+            ),
+        ] {
+            let body = &section(&guide, heading, end)[heading.len()..];
+            assert!(
+                crate::wave::normalize_ws(body).starts_with(opening),
+                "{heading:?} must open with {opening:?}; got:\n{body}"
+            );
+            let countermeasure = section(body, "**Countermeasure:**", "\n\n");
+            assert!(
+                body.contains("The tell is ")
+                    && body.find("The tell is ") < body.find("**Countermeasure:**"),
+                "{heading:?} must state its tell before its countermeasure; got:\n{body}"
+            );
+            let countermeasure = crate::wave::normalize_ws(countermeasure);
+            assert!(
+                countermeasure.contains("The `spec-preflight` skill")
+                    && countermeasure.contains(step),
+                "{heading:?}'s countermeasure must name the spec-preflight step that finds it; \
+                 got:\n{countermeasure}"
+            );
+        }
+    }
+
+    /// Spec 112, criterion 4: the shipped docs carry ONE corner list of eight, walked in one
+    /// order - `planning-a-spec`'s step 3, the field guide's F3 countermeasure and
+    /// `spec-preflight`'s step 2 each name empty, repeated, revert, DROPPED, concurrent,
+    /// crash-resume, cold start and existing data.
+    #[test]
+    fn the_shipped_docs_carry_one_corner_list_of_eight() {
+        let ctx = sentinel_ctx();
+        let skill = render_planning_a_spec_skill(&ctx);
+        let guide = render_planning_field_guide(&ctx);
+        let preflight = spec_preflight_body(&ctx);
+        for (label, list) in [
+            (
+                "planning-a-spec step 3",
+                section(&skill, "**3. Run the constraints walk.**", "**4. "),
+            ),
+            (
+                "the field guide's F3 countermeasure",
+                section(
+                    &guide,
+                    "**Countermeasure:** the constraints walk.",
+                    "### F4",
+                ),
+            ),
+            (
+                "spec-preflight step 2",
+                section(&preflight, "## Step 2: per-criterion corner walk", "Rules:"),
+            ),
+        ] {
+            let lower = list.to_lowercase();
+            let mut from = 0;
+            for corner in [
+                "empty",
+                "repeated",
+                "revert",
+                "dropped",
+                "concurrent",
+                "crash-resume",
+                "cold start",
+                "existing data",
+            ] {
+                let at = lower[from..].find(corner).unwrap_or_else(|| {
+                    panic!("{label} must walk the {corner:?} corner after the one before it; got:\n{list}")
+                });
+                from += at + corner.len();
+            }
+        }
+    }
+
+    /// Spec 112, criterion 4: `planning-a-spec`'s step 7 names the `spec-preflight` skill and,
+    /// under a workflow with a critic, `rigger critique <spec>` before launch.
+    #[test]
+    fn planning_a_spec_step_7_runs_spec_preflight_and_the_critique_before_launch() {
+        let skill = render_planning_a_spec_skill(&sentinel_ctx());
+        let step = section(
+            &skill,
+            "**7. Preflight, then launch.**",
+            "## Amending mid-run",
+        );
+        assert!(
+            crate::wave::normalize_ws(step).contains(
+                "Run the `spec-preflight` skill and, under a workflow with a critic, `rigger \
+                 critique <spec>` before launch."
+            ),
+            "step 7 must name spec-preflight and the critique before launch; got:\n{step}"
+        );
     }
 }

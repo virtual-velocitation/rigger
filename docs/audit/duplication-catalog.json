@@ -4356,8 +4356,8 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-227133ad22cd",
-    "classification": "exact",
+    "id": "dup-5449e35bae05",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
@@ -4367,7 +4367,7 @@
       {
         "file": "crates/rigger-domain/src/spec.rs",
         "name": "strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule",
-        "content_hash": "804615af198d8343"
+        "content_hash": "e03a3633c753e907"
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
@@ -5124,7 +5124,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ece6988d7484",
+    "id": "dup-f4d16bef38a8",
     "classification": "near",
     "sites": [
       {
@@ -5134,11 +5134,16 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
+        "name": "render_spec_preflight_skill",
+        "content_hash": "32f25aed00fff94c"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
         "name": "render_planning_field_guide",
         "content_hash": "2258b5edd93c6ece"
       }
     ],
-    "proposed_home": "docs::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "docs::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

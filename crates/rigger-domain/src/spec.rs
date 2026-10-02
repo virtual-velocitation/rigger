@@ -343,8 +343,9 @@ fn truncate_for_message(s: &str) -> String {
 // ---------------------------------------------------------------------------------------
 
 /// One discipline advisory from the mechanical spec lint: which field-guide class it maps
-/// to (`"F1 ownership"`, `"F4 disposition"`, or `"hygiene"` for the diff gate's em-dash
-/// rule, which has no catalog entry of its own), the 1-based Done-when criterion it is
+/// to (`"F1 ownership"`, `"F4 disposition"`, `"F10 landing-order circularity"`, `"F11
+/// undecided removal"`, or `"hygiene"` for the diff gate's em-dash rule, which has no
+/// catalog entry of its own), the 1-based Done-when criterion it is
 /// tied to (`None` when the offending text sits outside any checkbox - Design prose,
 /// Global constraints, or Notes), and a human detail. Advisory only: `rigger validate`
 /// never fails on one.
@@ -477,10 +478,14 @@ fn denied_owner_positions(lower: &str) -> Vec<usize> {
 /// home, so a hit there is exempt; a fenced code block, a backtick-quoted inline code span,
 /// or a double-quoted span (the field guide's own convention for NAMING these exact
 /// phrases, e.g. this spec's own Design bullet) can carry any of these words as literal
-/// quoted text, so all three are excluded too - quoted or named text can never
-/// false-positive.
+/// quoted text, so all three are excluded too, through the one masker
+/// [`strip_inline_code`]: backtick spans pair by backtick run, as Markdown delimits a code
+/// span, so a double-backtick span blanks as one span, prose between two code spans is
+/// linted, and a run that no later run of its length closes blanks to the paragraph end;
+/// quoted text blanks from the first quote mark through the last, or to the paragraph end
+/// on an odd count, so quoted text can never false-positive.
 pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
-    let notes = notes_section_lines(text);
+    let notes = section_lines(text, &["notes"]);
     let fenced = fenced_code_lines(text);
     let owners = line_criterion(text);
     let lines: Vec<&str> = text.lines().collect();
@@ -705,11 +710,192 @@ pub fn hygiene_advisories(text: &str) -> Vec<LintAdvisory> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------------------
+// Spec 112 (THE VALIDATE TELLS): the two spec-preflight defect classes findable from the
+// spec text alone - F10 landing-order circularity (two criteria asserting a measure over one
+// surface) and F11 undecided removal (an identity claim with no comparison surface, or with
+// no removal corner decided in Design or Notes). Each tell reads a criterion's sentences
+// ([`criterion_sentences`]) and matches its words whole-word and case-insensitively through
+// [`find_word`] on the sentence [`strip_inline_code`] masked.
+// ---------------------------------------------------------------------------------------
+
+/// A sentence carrying one of these asserts a measured property of the surface it names.
+const MEASURE_WORDS: [&str; 8] = [
+    "exactly",
+    "zero",
+    "at most",
+    "no more than",
+    "reads no",
+    "costs",
+    "materializes",
+    "appends",
+];
+
+/// A sentence carrying one of these claims an identity between two things.
+const IDENTITY_WORDS: [&str; 5] = [
+    "identical",
+    "byte-identical",
+    "equal to",
+    "equals",
+    "the same as",
+];
+
+/// A sentence carrying one of these names the surface an identity claim is compared on.
+const COMPARISON_SURFACE_WORDS: [&str; 6] = [
+    "projection",
+    "wire form",
+    "compared on",
+    "comparison surface",
+    "bytes of",
+    "ordered by",
+];
+
+/// A Design or Notes line carrying one of these decides a removal corner.
+const REMOVAL_WORDS: [&str; 8] = [
+    "drop",
+    "drops",
+    "dropped",
+    "removed",
+    "removal",
+    "absent",
+    "deleted",
+    "no longer",
+];
+
+/// The class label the twin measured surface tell reports under.
+const F10_LANDING_ORDER: &str = "F10 landing-order circularity";
+/// The class label both identity-claim tells report under.
+const F11_UNDECIDED_REMOVAL: &str = "F11 undecided removal";
+
+/// Whether `lower` (already lowercased) carries any word of `list` as a standalone word
+/// ([`find_word`]).
+fn carries_any(lower: &str, list: &[&str]) -> bool {
+    list.iter().any(|w| find_word(lower, w).is_some())
+}
+
+/// One sentence of a criterion: its raw text, whose backtick spans ([`code_spans`]) name the
+/// surfaces it measures, and `words`, that text masked by [`strip_inline_code`] and
+/// lowercased - the haystack every word list of the tells matches on through
+/// [`carries_any`].
+struct Sentence {
+    raw: String,
+    words: String,
+}
+
+/// Each criterion's sentences, numbered as [`criterion_blocks`] numbers the criteria: a
+/// sentence is the text between `. ` boundaries of the criterion's full block.
+fn criterion_sentences(text: &str) -> Vec<(usize, Vec<Sentence>)> {
+    criterion_blocks(text)
+        .into_iter()
+        .map(|(n, block)| {
+            let sentences = block
+                .split(". ")
+                .map(|raw| Sentence {
+                    words: strip_inline_code(raw).to_lowercase(),
+                    raw: raw.to_string(),
+                })
+                .collect();
+            (n, sentences)
+        })
+        .collect()
+}
+
+/// F10 twin measured surface: criteria `i < j` each hold a sentence carrying the same
+/// backtick span and a [`MEASURE_WORDS`] word, so whichever lands first is asserted over a
+/// surface the other changes. One advisory per pair and shared span, on criterion `j`,
+/// naming criterion `i` and the span; pairs run in criterion order and spans in byte order.
+fn twin_surface_advisories(text: &str) -> Vec<LintAdvisory> {
+    let measured: Vec<(usize, std::collections::BTreeSet<String>)> = criterion_sentences(text)
+        .into_iter()
+        .map(|(n, sentences)| {
+            let spans = sentences
+                .iter()
+                .filter(|s| carries_any(&s.words, &MEASURE_WORDS))
+                .flat_map(|s| code_spans(&s.raw))
+                .collect();
+            (n, spans)
+        })
+        .collect();
+    let mut out = Vec::new();
+    for (j, (later, later_spans)) in measured.iter().enumerate() {
+        for (earlier, earlier_spans) in &measured[..j] {
+            for span in earlier_spans.intersection(later_spans) {
+                out.push(LintAdvisory {
+                    class: F10_LANDING_ORDER,
+                    criterion: Some(*later),
+                    detail: format!(
+                        "twin measured surface `{span}` with criterion {earlier}; if either \
+                         lands first without the other, does its own text hold? simulate the \
+                         landing order and split ownership at the seam in Design"
+                    ),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The one F11 rule both identity-claim tells share: a criterion holding a sentence that
+/// carries an [`IDENTITY_WORDS`] word and whose masked words also satisfy `offends` draws
+/// one advisory carrying `detail`, once per criterion however many of its sentences offend.
+fn identity_claim_advisories(
+    text: &str,
+    offends: impl Fn(&str) -> bool,
+    detail: &str,
+) -> Vec<LintAdvisory> {
+    criterion_sentences(text)
+        .into_iter()
+        .filter(|(_, sentences)| {
+            sentences
+                .iter()
+                .any(|s| carries_any(&s.words, &IDENTITY_WORDS) && offends(&s.words))
+        })
+        .map(|(n, _)| LintAdvisory {
+            class: F11_UNDECIDED_REMOVAL,
+            criterion: Some(n),
+            detail: detail.to_string(),
+        })
+        .collect()
+}
+
+/// F11 identity claim without a comparison surface: an identity sentence
+/// ([`identity_claim_advisories`]) carrying no [`COMPARISON_SURFACE_WORDS`] word.
+fn comparison_surface_advisories(text: &str) -> Vec<LintAdvisory> {
+    identity_claim_advisories(
+        text,
+        |words| !carries_any(words, &COMPARISON_SURFACE_WORDS),
+        "identity claim names no comparison surface; name the bytes, projection or ordering it \
+         is compared on",
+    )
+}
+
+/// F11 identity claim with no removal corner: while no line of a Design or Notes section
+/// ([`section_lines`]), read unmasked with fenced lines included, carries a
+/// [`REMOVAL_WORDS`] word, every criterion holding an identity sentence
+/// ([`identity_claim_advisories`]) draws one advisory.
+fn removal_corner_advisories(text: &str) -> Vec<LintAdvisory> {
+    let decided = text
+        .lines()
+        .zip(section_lines(text, &["design", "notes"]))
+        .any(|(line, inside)| inside && carries_any(&line.to_lowercase(), &REMOVAL_WORDS));
+    if decided {
+        return Vec::new();
+    }
+    identity_claim_advisories(
+        text,
+        |_| true,
+        "identity claim while no Design or Notes line decides removal; decide in Design what a \
+         later generation that drops a fact does to it",
+    )
+}
+
 /// The full mechanical spec lint (spec 66): every shape advisory ([`spec_shape_advisories`]
 /// above, mapped through with its ORIGINAL wording preserved verbatim so every existing
 /// caller/test pinned to that wording keeps matching), plus ownership, open-disposition,
-/// and hygiene advisories. This is the ONE surface `cmd_validate` calls for the pre-launch
-/// spec lint - never a second, parallel aggregation.
+/// and hygiene advisories, then spec 112's preflight tells (F10 twin measured surface, F11
+/// identity claim without a comparison surface, F11 identity claim with no removal corner).
+/// This is the ONE surface `cmd_validate` and the in-run `load_criteria` call for the spec
+/// lint - never a second, parallel aggregation.
 pub fn spec_lint_advisories(text: &str) -> Vec<LintAdvisory> {
     let mut out: Vec<LintAdvisory> = spec_shape_advisories(text)
         .into_iter()
@@ -727,28 +913,33 @@ pub fn spec_lint_advisories(text: &str) -> Vec<LintAdvisory> {
     out.extend(ownership_advisories(text));
     out.extend(disposition_advisories(text));
     out.extend(hygiene_advisories(text));
+    out.extend(twin_surface_advisories(text));
+    out.extend(comparison_surface_advisories(text));
+    out.extend(removal_corner_advisories(text));
     out
 }
 
-/// For each line (0-based, aligned with `text.lines()`), whether it falls inside a
-/// `## Notes` (or deeper) section - the section runs from that heading to the next heading
-/// at the SAME OR SHALLOWER level, or to end of file.
-fn notes_section_lines(text: &str) -> Vec<bool> {
+/// For each line (0-based, aligned with `text.lines()`), whether it falls inside a section
+/// whose heading title starts, case-insensitively, with one of `titles` (each lowercase):
+/// `["notes"]` is F4's `## Notes` (or deeper) exemption, `["design", "notes"]` the F11
+/// removal-corner tell's Design-or-Notes prose. A section runs from its heading to the next
+/// heading at the SAME OR SHALLOWER level, or to end of file; a matching heading nested
+/// inside an open section opens nothing new, so the outer section keeps every subsection up
+/// to its own end. A heading-shaped line inside a fence counts as a heading.
+fn section_lines(text: &str, titles: &[&str]) -> Vec<bool> {
     let mut out = Vec::with_capacity(text.lines().count());
-    let mut notes_level: Option<usize> = None;
+    let mut open: Option<usize> = None;
     for line in text.lines() {
         if let Some(level) = heading_level(line) {
-            if let Some(nl) = notes_level {
-                if level <= nl {
-                    notes_level = None;
-                }
+            if open.is_some_and(|outer| level <= outer) {
+                open = None;
             }
-            let title = line.trim_start()[level..].trim();
-            if title.to_lowercase().starts_with("notes") {
-                notes_level = Some(level);
+            let title = line.trim_start()[level..].trim().to_lowercase();
+            if open.is_none() && titles.iter().any(|t| title.starts_with(t)) {
+                open = Some(level);
             }
         }
-        out.push(notes_level.is_some());
+        out.push(open.is_some());
     }
     out
 }
@@ -781,54 +972,116 @@ fn fenced_code_lines(text: &str) -> Vec<bool> {
     out
 }
 
-/// `line` with quoted-or-named text blanked to spaces (never dropped, so word boundaries
+/// `text` with quoted-or-named text blanked to spaces (never dropped, so word boundaries
 /// around a masked span cannot merge two words into a new one), so a prose scan cannot
 /// match text quoted as code (backticks) or a phrase NAMED in double quotes - the field
 /// guide's own convention for listing its exact smell phrases (e.g. specs/66's own Design
-/// bullet, which quotes all three: it must not trip its own lint). Runs once over a whole
-/// joined paragraph (see [`disposition_advisories`]), so a span may cross an original
-/// hard-wrap boundary.
+/// bullet, which quotes all three: it must not trip its own lint). The one span masker of
+/// this file: F4 runs it once over a whole joined paragraph (see
+/// [`disposition_advisories`]), so a span may cross an original hard-wrap boundary, and the
+/// spec 112 tells run it over one criterion sentence (see [`criterion_sentences`]).
 ///
-/// ONE MASK SPAN PER DELIMITER KIND, no opener-candidacy or closer-selection heuristics
-/// (specs/66 Design, `d66-mask-one-span-per-kind`): every prior false-positive recurrence
-/// of the quoted-text-can-never-false-positive class - nine shapes across rounds 4-14:
-/// stray marks stealing later openers, digit-adjacent marks embedded inside spans, on a
-/// span's own closer, or glued to its own opener, twin spans merging - lived in exactly
-/// those heuristics, each fix breeding the next shape. Per kind (backtick, double quote):
-/// an EVEN count of the mark masks from its FIRST occurrence through its LAST; an ODD
-/// count masks from its FIRST occurrence to the end of the paragraph. Any genuinely
-/// quoted text follows some opener of its kind, so it is masked under ANY arrangement of
-/// strays, units marks, or multiple spans; unquoted prose between or after marks may be
-/// over-masked, which is expendable RECALL for an advisory lint - the invariant this
-/// function exists for is that quoted or named text can NEVER false-positive, and under
-/// this rule that holds structurally rather than shape-by-shape.
-fn strip_inline_code(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
+/// BACKTICKS PAIR BY RUN (specs/112 Design, *The one masker*, `d112-op-backtick-run-pairing`):
+/// a code span is a paired Markdown construct, delimited as CommonMark delimits one, so
+/// [`backtick_spans`] opens a span at a run of n consecutive backticks and closes it at the
+/// next run of exactly n, and each span is blanked through both runs: a double-backtick
+/// span masks as one span, and prose between two code spans stays visible to the scan. A
+/// run that no later run of its length closes blanks from itself to the end of the masked
+/// text. A stray backtick run pairs with the opener of the next real span of its length, so
+/// that span's text is linted - a Markdown defect the rendered spec shows.
+///
+/// DOUBLE QUOTES KEEP ONE SPAN (specs/66 Design, `d66-mask-one-span-per-kind`, narrowed to
+/// the quote kind by `d112-mask-narrows-d66-one-span-to-quotes`): a stray quote is common
+/// prose (an inches mark), so
+/// [`quote_span`] blanks from the FIRST quote mark through the LAST when their count is
+/// even, and from the FIRST to the end of the masked text when it is odd. Any genuinely
+/// quoted text follows some quote mark, so it is masked under any arrangement of strays,
+/// units marks or several quoted spans; unquoted prose between quotes is over-masked,
+/// which is expendable recall - quoted text fails closed.
+fn strip_inline_code(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut mask = vec![false; chars.len()];
-    for kind in ['`', '"'] {
-        let positions: Vec<usize> = chars
-            .iter()
-            .enumerate()
-            .filter(|&(_, &c)| c == kind)
-            .map(|(i, _)| i)
-            .collect();
-        let Some(&first) = positions.first() else {
-            continue;
-        };
-        let end = if positions.len().is_multiple_of(2) {
-            positions[positions.len() - 1]
-        } else {
-            chars.len() - 1
-        };
-        for slot in &mut mask[first..=end] {
-            *slot = true;
-        }
+    for (open, close) in backtick_spans(&chars).into_iter().chain(quote_span(&chars)) {
+        let end = close.unwrap_or(chars.len() - 1);
+        mask[open..=end].fill(true);
     }
     chars
         .iter()
         .zip(mask.iter())
         .map(|(&c, &masked)| if masked { ' ' } else { c })
         .collect()
+}
+
+/// The char index of every `mark` in `chars`, in order.
+fn mark_positions(chars: &[char], mark: char) -> Vec<usize> {
+    chars
+        .iter()
+        .enumerate()
+        .filter(|&(_, &c)| c == mark)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The maximal runs of consecutive backticks in `chars`, in order, as `(first, last)` char
+/// indices of each run's first and last mark.
+fn backtick_runs(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for at in mark_positions(chars, '`') {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == at => *last = at,
+            _ => runs.push((at, at)),
+        }
+    }
+    runs
+}
+
+/// The backtick code spans of `chars`, in order, as `(open, close)` char indices, paired as
+/// CommonMark delimits a code span: a run of n backticks ([`backtick_runs`]) opens a span
+/// that the next run of exactly n closes, every run between them being the span's text, and
+/// `close` is the closing run's last mark. An opening run that no later run of its length
+/// closes yields no close (`None`) and ends the scan, its blank running to the end of the
+/// masked text. The one pairing [`strip_inline_code`] masks with and [`code_spans`] reads
+/// spans from, so the two never disagree on which runs pair.
+fn backtick_spans(chars: &[char]) -> Vec<(usize, Option<usize>)> {
+    let mut runs = backtick_runs(chars).into_iter();
+    let mut spans = Vec::new();
+    while let Some((open, opened)) = runs.next() {
+        let close = runs
+            .find(|&(first, last)| last - first == opened - open)
+            .map(|(_, last)| last);
+        spans.push((open, close));
+    }
+    spans
+}
+
+/// The text of each closed backtick code span of `text` ([`backtick_spans`]), in order, its
+/// delimiting runs trimmed off: the one backtick code-span reader, so every reader of a
+/// Markdown code span pairs runs by the rule [`strip_inline_code`] masks with. An unclosed
+/// run names no span. No span is empty: runs are maximal, so a closing run never directly
+/// follows its opener, and the trimmed text, which neither starts nor ends with a backtick,
+/// is exactly the span's content - never an empty surface.
+pub fn code_spans(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    backtick_spans(&chars)
+        .into_iter()
+        .filter_map(|(open, close)| {
+            let span: String = chars[open..=close?].iter().collect();
+            Some(span.trim_matches('`').to_string())
+        })
+        .collect()
+}
+
+/// The one double-quote span of `chars` as `(open, close)` char indices: from the first
+/// quote mark through the last when their count is even, with no close (`None`) when it is
+/// odd; `None` when `chars` holds no quote mark.
+fn quote_span(chars: &[char]) -> Option<(usize, Option<usize>)> {
+    let quotes = mark_positions(chars, '"');
+    let open = *quotes.first()?;
+    let close = quotes
+        .last()
+        .copied()
+        .filter(|_| quotes.len().is_multiple_of(2));
+    Some((open, close))
 }
 
 /// For each line (0-based), the 1-based Done-when criterion whose FULL TEXT BLOCK it falls
@@ -1931,6 +2184,13 @@ mod tests {
             "a     then            ",
             "each delimiter kind computes its own span independently"
         );
+        // Backticks pair span by span (specs/112, *The one masker*): two code spans blank
+        // pair by pair, and the prose between them stays visible to the scan.
+        assert_eq!(
+            strip_inline_code("`x` could instead `y` end"),
+            "    could instead     end",
+            "two backtick spans blank pair by pair, never first-through-last"
+        );
     }
 
     /// Mutation-efficacy gap (round-14 accounting): the loop-continuation index
@@ -2283,5 +2543,371 @@ mod tests {
             - [ ] the store passes the contract suite\n\
             - [ ] either it retries or it escalates \u{2014} immediately\n";
         assert_eq!(spec_lint_advisories(text), spec_lint_advisories(text));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 112 (unit c3): THE VALIDATE TELLS - F10 twin measured surface, F11 identity claim
+    // without a comparison surface, F11 identity claim with no removal corner - and the
+    // backtick pair rule of the one masker they read through. Pinned at the pure
+    // `spec_lint_advisories` seam, each tell read back through its class label.
+    // -----------------------------------------------------------------------------------
+
+    /// The rendered advisories of `class` that `spec_lint_advisories` reports on `text`.
+    fn tells(text: &str, class: &str) -> Vec<String> {
+        spec_lint_advisories(text)
+            .into_iter()
+            .filter(|a| a.class == class)
+            .map(|a| a.to_string())
+            .collect()
+    }
+
+    const F10: &str = "F10 landing-order circularity";
+    const F11: &str = "F11 undecided removal";
+    const NO_SURFACE: &str =
+        "identity claim names no comparison surface; name the bytes, projection or ordering it \
+         is compared on";
+    const NO_REMOVAL: &str =
+        "identity claim while no Design or Notes line decides removal; decide in Design what a \
+         later generation that drops a fact does to it";
+
+    /// The rendered F10 advisory on criterion `later` naming `earlier` and `span`.
+    fn twin(later: usize, span: &str, earlier: usize) -> String {
+        format!(
+            "F10 landing-order circularity (criterion {later}): twin measured surface `{span}` \
+             with criterion {earlier}; if either lands first without the other, does its own \
+             text hold? simulate the landing order and split ownership at the seam in Design"
+        )
+    }
+
+    /// The rendered F11 advisory on criterion `n` carrying `detail` ([`NO_SURFACE`] or
+    /// [`NO_REMOVAL`]).
+    fn f11(n: usize, detail: &str) -> String {
+        format!("F11 undecided removal (criterion {n}): {detail}")
+    }
+
+    /// A spec whose Design decides removal, so only `criteria` can draw a tell.
+    fn decided_spec(criteria: &[&str]) -> String {
+        let mut text =
+            String::from("# W\n\n## Design\n\nA dropped link is decided here.\n\n## Done when\n\n");
+        for c in criteria {
+            text.push_str(&format!("- [ ] {c} This criterion OWNS it.\n"));
+        }
+        text
+    }
+
+    /// `spec_lint_advisories` on [`decided_spec`] over `criteria` reports exactly `expected`
+    /// (rendered, in order) under `class`.
+    fn assert_decided_tells(criteria: &[&str], class: &str, expected: &[String]) {
+        assert_eq!(tells(&decided_spec(criteria), class), expected);
+    }
+
+    crate::test_cases! {
+        /// Criterion 1's measure word ("reads no") sits between two backtick spans: the pair
+        /// rule leaves it visible, where one span from first to last mark would mask it.
+        twin_tell_names_the_later_criterion_the_earlier_one_and_the_shared_span: assert_decided_tells(
+            &["`rigger step` reads no `derived` event.", "`rigger step` costs at most one read."],
+            F10,
+            &[twin(2, "rigger step", 1)],
+        );
+        /// A span shared by three criteria yields one advisory per pair.
+        twin_tell_reports_one_advisory_per_pair_of_criteria_sharing_a_span: assert_decided_tells(
+            &[
+                "`store` appends one event.",
+                "`store` appends two events.",
+                "`store` appends three events.",
+            ],
+            F10,
+            &[twin(2, "store", 1), twin(3, "store", 1), twin(3, "store", 2)],
+        );
+        /// Two shared spans draw one advisory each, in byte order, however often a criterion
+        /// repeats one.
+        twin_tell_reports_each_shared_span_once_in_byte_order: assert_decided_tells(
+            &[
+                "`b` and `a` costs one read, and `b` appends once.",
+                "`a` and `b` and `c` costs one read.",
+            ],
+            F10,
+            &[twin(2, "a", 1), twin(2, "b", 1)],
+        );
+        /// The measure word must sit in the span's own sentence (`. ` boundaries).
+        twin_tell_needs_the_measure_word_in_the_spans_own_sentence: assert_decided_tells(
+            &["`store` appends one event.", "`store` is opened. It costs one read."],
+            F10,
+            &[],
+        );
+        /// After a pair, an unpaired last backtick names no span: only the paired `s` is a
+        /// twin, never the unpaired tail.
+        twin_tell_names_no_span_for_an_unpaired_last_backtick: assert_decided_tells(
+            &["`s` appends `tail one.", "`s` appends `tail one."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// An unpaired last backtick after a pair blanks to its sentence end, so a measure
+        /// word after it is hidden and criterion 1 measures nothing.
+        twin_tell_does_not_see_a_measure_word_after_an_unpaired_backtick_that_follows_a_pair: assert_decided_tells(
+            &["`s` is `odd appends one.", "`s` appends two."],
+            F10,
+            &[],
+        );
+        /// The blank of an unpaired backtick stops at its sentence end, so the next sentence's
+        /// span and measure word are seen.
+        twin_tell_sees_the_sentence_after_an_unpaired_backtick: assert_decided_tells(
+            &["`s` is `odd. `s` appends one.", "`s` appends two."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// The blank of an odd count of quote marks stops at its sentence end, so the next
+        /// sentence's span and measure word are seen.
+        twin_tell_sees_the_sentence_after_an_odd_quote_mark: assert_decided_tells(
+            &["`s` is \"odd. `s` appends one.", "`s` appends two."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// A double-backtick span is one span whose text is the surface it names, never an
+        /// empty surface, so it twins with the same surface spelled in single backticks.
+        twin_tell_reads_a_double_backtick_span_as_the_surface_it_delimits: assert_decided_tells(
+            &["``store`` appends one event.", "`store` appends two events."],
+            F10,
+            &[twin(2, "store", 1)],
+        );
+        /// A measure word inside a code span is masked, so it measures nothing.
+        twin_tell_does_not_see_a_measure_word_inside_a_code_span: assert_decided_tells(
+            &["`s` sets `exactly` one.", "`s` sets `exactly` two."],
+            F10,
+            &[],
+        );
+        /// A measure word between two quoted spans is masked and not seen (accepted): quoted
+        /// text keeps one span from the first quote mark through the last.
+        twin_tell_does_not_see_a_measure_word_between_two_quoted_spans: assert_decided_tells(
+            &["`s` sets \"a\" exactly \"b\".", "`s` sets \"a\" exactly \"b\"."],
+            F10,
+            &[],
+        );
+        /// Two offending sentences in one criterion still draw one advisory.
+        identity_tell_fires_once_per_criterion_on_a_claim_naming_no_comparison_surface: assert_decided_tells(
+            &[
+                "the rebuild is identical to the original. The log equals the copy.",
+                "the daemon starts.",
+                "the export is the same as the import.",
+            ],
+            F11,
+            &[f11(1, NO_SURFACE), f11(3, NO_SURFACE)],
+        );
+        /// An identity word inside a code span is masked, so it claims nothing.
+        identity_tell_does_not_see_an_identity_word_inside_a_code_span: assert_decided_tells(
+            &["the `identical` flag is set."],
+            F11,
+            &[],
+        );
+    }
+
+    /// `strip_inline_code` blanks `text` to exactly `masked`, and `code_spans` reads exactly
+    /// `spans` from it: the masker and the span reader pair backtick runs by one rule.
+    fn assert_backtick_runs(text: &str, masked: &str, spans: &[&str]) {
+        assert_eq!(strip_inline_code(text), masked, "masked {text:?}");
+        assert_eq!(code_spans(text), spans, "spans of {text:?}");
+    }
+
+    crate::test_cases! {
+        /// Spec 112, *The one masker* (`d112-op-backtick-run-pairing`): a run of two backticks
+        /// opens a span that the next run of two closes, so the span blanks through both runs
+        /// and reads as its text; the character right after the closing run stays visible.
+        backtick_runs_mask_a_double_backtick_span_as_one_span: assert_backtick_runs(
+            "a``x``y z",
+            "a     y z",
+            &["x"],
+        );
+        /// Single backticks inside a double-backtick span are its text, as Markdown nests
+        /// them: only the closing run of two ends the span.
+        backtick_runs_read_single_backticks_inside_a_double_backtick_span_as_text: assert_backtick_runs(
+            "`` `a` `` b",
+            "          b",
+            &[" `a` "],
+        );
+        /// A run with no later run of its length blanks to the end of the masked text and
+        /// names no span, whatever shorter runs follow it.
+        backtick_runs_blank_an_unclosed_run_to_the_end_past_shorter_runs: assert_backtick_runs(
+            "x ``a` b `c` d",
+            "x             ",
+            &[],
+        );
+        /// Spans of different widths pair independently and in order, and an unclosed last
+        /// run blanks to the end; prose between the spans stays visible.
+        backtick_runs_pair_each_width_in_order_and_blank_an_unclosed_last_run: assert_backtick_runs(
+            "`a`, ``b``, `c d",
+            "   ,      ,     ",
+            &["a", "b"],
+        );
+        /// A stray single backtick pairs with the opener of the next single-backtick span,
+        /// passing over a double-backtick span as its text, so that span's own text is
+        /// linted and its closing mark blanks to the end.
+        backtick_runs_pair_a_stray_backtick_with_the_next_run_of_its_width: assert_backtick_runs(
+            "`x ``y`` `z` w",
+            "          z   ",
+            &["x ``y`` "],
+        );
+    }
+
+    #[test]
+    fn twin_tell_matches_every_measure_word_whole_word_and_case_insensitively() {
+        for word in [
+            "exactly",
+            "ZERO",
+            "At Most",
+            "no more than",
+            "reads no",
+            "Costs",
+            "materializes",
+            "APPENDS",
+        ] {
+            let first = format!("`s` {word} one.");
+            let second = format!("`s` {word} two.");
+            let text = decided_spec(&[&first, &second]);
+            assert_eq!(
+                tells(&text, F10),
+                [twin(2, "s", 1)],
+                "measure word {word:?}"
+            );
+        }
+        let text = decided_spec(&["`s` zeroed one.", "`s` zeroed two."]);
+        assert_eq!(
+            tells(&text, F10),
+            Vec::<String>::new(),
+            "a measure word inside a longer word is no measure word"
+        );
+    }
+
+    #[test]
+    fn identity_tell_matches_every_identity_word_whole_word_and_case_insensitively() {
+        for word in [
+            "IDENTICAL",
+            "Byte-Identical",
+            "equal to",
+            "equals",
+            "The Same As",
+        ] {
+            let claim = format!("the rebuild is {word} the original.");
+            let text = decided_spec(&[&claim]);
+            assert_eq!(
+                tells(&text, F11),
+                [f11(1, NO_SURFACE)],
+                "identity word {word:?}"
+            );
+        }
+        for near_miss in [
+            "the rebuild is unequal to the original.",
+            "the rebuild is the same asset.",
+            "the rebuild is near-identical.",
+        ] {
+            let text = decided_spec(&[near_miss]);
+            assert_eq!(tells(&text, F11), Vec::<String>::new(), "{near_miss:?}");
+        }
+    }
+
+    #[test]
+    fn identity_tell_is_silenced_by_each_comparison_surface_word_in_the_same_sentence() {
+        for surface in [
+            "projection",
+            "Wire Form",
+            "compared on",
+            "COMPARISON SURFACE",
+            "bytes of",
+            "ordered by",
+        ] {
+            let claim = format!("the rebuild is identical, its {surface} pinned.");
+            let text = decided_spec(&[&claim]);
+            assert_eq!(
+                tells(&text, F11),
+                Vec::<String>::new(),
+                "surface {surface:?}"
+            );
+        }
+        let text = decided_spec(&["the rebuild is identical. Its projection is pinned."]);
+        assert_eq!(
+            tells(&text, F11),
+            [f11(1, NO_SURFACE)],
+            "a comparison surface in another sentence does not name this claim's surface"
+        );
+    }
+
+    #[test]
+    fn removal_tell_fires_on_every_identity_criterion_when_no_design_or_notes_line_decides_removal()
+    {
+        let text = "# W\n\n## Design\n\nThe rebuild reads the log.\n\n\
+            ## Done when\n\n\
+            - [ ] the rebuild is identical, compared on the projection. This criterion OWNS it.\n\
+            - [ ] the daemon starts and no longer stops. This criterion OWNS it.\n\
+            - [ ] the export equals the import, compared on its bytes. The copy equals it, \
+            compared on the projection. This criterion OWNS it.\n\n\
+            ## Global constraints\n\n- A dropped fact is out of scope here.\n";
+        assert_eq!(tells(text, F11), [f11(1, NO_REMOVAL), f11(3, NO_REMOVAL)]);
+    }
+
+    #[test]
+    fn removal_tell_is_silenced_by_each_removal_word_on_a_design_or_notes_line() {
+        for word in [
+            "drop",
+            "DROPS",
+            "dropped",
+            "Removed",
+            "removal",
+            "absent",
+            "deleted",
+            "No Longer",
+        ] {
+            for section in ["## Design", "## Notes (non-criteria)", "### DESIGN"] {
+                let text = format!(
+                    "# W\n\n{section}\n\nA fact `{word}` here.\n\n## Done when\n\n\
+                     - [ ] the rebuild is identical, compared on the projection. This \
+                     criterion OWNS it.\n"
+                );
+                assert_eq!(
+                    tells(&text, F11),
+                    Vec::<String>::new(),
+                    "{word:?} under {section:?}"
+                );
+            }
+        }
+        let fenced = "# W\n\n## Design\n\n```\ndeleted\n```\n\n## Done when\n\n\
+            - [ ] the rebuild is identical, compared on the projection. This criterion OWNS it.\n";
+        assert_eq!(
+            tells(fenced, F11),
+            Vec::<String>::new(),
+            "a fenced Design line decides removal too"
+        );
+    }
+
+    #[test]
+    fn removal_tell_reads_a_design_section_to_the_next_heading_of_its_own_level() {
+        let claim = "## Done when\n\n- [ ] the rebuild is identical, compared on the projection. \
+            This criterion OWNS it.\n";
+        let fires = |design: &str| tells(&format!("# W\n\n{design}\n\n{claim}"), F11);
+        assert_eq!(
+            fires("## Design\n\nok.\n\n### Notes on it\n\nok.\n\n### Later\n\nA dropped fact."),
+            Vec::<String>::new(),
+            "a subsection after a nested Notes heading is still the Design section's"
+        );
+        assert_eq!(
+            fires("## Design\n\n### Sub\n\nA dropped fact."),
+            Vec::<String>::new(),
+            "a deeper heading stays inside the Design section"
+        );
+        assert_eq!(
+            fires("## Design\n\nok.\n\n## Other\n\nA dropped fact."),
+            [f11(1, NO_REMOVAL)],
+            "a heading of the same level ends the Design section"
+        );
+        assert_eq!(
+            fires("### Design\n\nok.\n\n## Other\n\nA dropped fact."),
+            [f11(1, NO_REMOVAL)],
+            "a shallower heading ends the Design section"
+        );
+    }
+
+    #[test]
+    fn the_tells_are_silent_on_a_spec_with_no_criteria() {
+        let text = "# W\n\n## Design\n\n`s` costs exactly one read and is identical.\n";
+        assert_eq!(tells(text, F10), Vec::<String>::new());
+        assert_eq!(tells(text, F11), Vec::<String>::new());
     }
 }

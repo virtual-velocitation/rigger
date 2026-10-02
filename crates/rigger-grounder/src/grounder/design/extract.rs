@@ -35,6 +35,8 @@
 
 use std::collections::BTreeSet;
 
+use rigger_domain::spec::code_spans;
+
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
 use crate::grounder::symbols::events::is_under_tests_dir;
 
@@ -271,7 +273,7 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
     for line in unfenced_lines(contents) {
         // Inline-code CODE-path mentions -> the doc's kind-specific design->code relation ("this
         // doc designs / constrains / governs this code").
-        for span in inline_code_spans(line) {
+        for span in code_spans(line) {
             // Spec 86 criterion 1's CONSTRAINTS WALK (module doc): a tests/-rooted mention is
             // excluded from the design-intent link pass too, by the SAME rule the code-entity
             // pass applies to a whole file under tests/ - never a second, independent check.
@@ -331,33 +333,6 @@ fn unfenced_lines(contents: &str) -> Vec<&str> {
         if !in_fence {
             out.push(line);
         }
-    }
-    out
-}
-
-/// Every backtick-delimited inline code span on a line, in order (its content, without the
-/// backticks). An unterminated span is ignored. The reliable, unambiguous carrier for a path the
-/// doc mentions inline.
-fn inline_code_spans(line: &str) -> Vec<String> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '`' {
-            match chars[i + 1..].iter().position(|&c| c == '`') {
-                Some(off) => {
-                    let j = i + 1 + off;
-                    let span: String = chars[i + 1..j].iter().collect();
-                    if !span.is_empty() {
-                        out.push(span);
-                    }
-                    i = j + 1;
-                    continue;
-                }
-                None => break,
-            }
-        }
-        i += 1;
     }
     out
 }
