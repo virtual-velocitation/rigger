@@ -679,13 +679,13 @@
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 70,
-        "end_line": 70
+        "start_line": 78,
+        "end_line": 78
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 162,
-        "end_line": 162
+        "start_line": 170,
+        "end_line": 170
       },
       {
         "file": "tests/ci_lanes.rs",
@@ -1809,8 +1809,8 @@
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 57,
-        "end_line": 57
+        "start_line": 65,
+        "end_line": 65
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",

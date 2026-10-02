@@ -1,8 +1,10 @@
 //! Periphery (real-git) proof for the check-in `mutation` gate: the SHIPPED script
-//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` runs and `rigger init` writes
-//! into a consumer project - driven against fixture repositories with a stand-in `cargo` and a
-//! stand-in `systemd-run` on a fixture PATH (`tests/fixtures/mutation-gate-*.sh`, argv
-//! capture), so every launch decision is read back exactly and no real sweep ever runs.
+//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` declares as its `mutation` gate
+//! (no stage runs it until issue #32 lands; its diff-base logic is what a re-wired `checkin`
+//! stage will use) and `rigger init` writes into a consumer project - driven against fixture
+//! repositories with a stand-in `cargo` and a stand-in `systemd-run` on a fixture PATH
+//! (`tests/fixtures/mutation-gate-*.sh`, argv capture), so every launch decision is read back
+//! exactly and no real sweep ever runs.
 //!
 //! THE DIFF BASE (spec 91, adv-u91c2-mutation-gate-diff-base-collapses-to-empty). The gate
 //! diffs the whole spec against `$RIGGER_RUN_BASE` - the run branch's tip AT THE MOMENT the run
@@ -28,17 +30,23 @@
 //! fails the gate by name as an environment failure.
 //!
 //! THE ANCHOR IS THIS SPEC'S OWN; ITS CATCHES ARE THE PROJECT'S. The incremental anchor a sweep
-//! leaves under the scratch root records the `$RIGGER_RUN_BASE` that sweep was given, and it
-//! narrows the next sweep to the diff since its tip, re-running its misses by name, only when that
-//! recorded base is this run's and HEAD holds the tip. Any other anchor narrows nothing - a
-//! previous spec's, whether its tip is behind, at or past the run base (an escalated check-in the
-//! run branch merged after this run started), one that records no base, one HEAD no longer holds
-//! or whose tip names no object here: the gate sweeps the whole spec diff and re-runs none of its
-//! misses. Its catch map is read whichever run wrote it: every catch whose catching test changed
-//! since the owned tip, else since the run base, is re-run by name. Every entry for a mutant this
-//! sweep did not examine is carried forward, whichever run recorded it; a re-run catch is
-//! re-recorded, and dropped when it now survives. A run base git cannot resolve fails the gate
-//! before anything runs.
+//! leaves under the scratch root records the `$RIGGER_RUN_BASE` that sweep was given. That
+//! recorded base alone owns its misses: when it is this run's, the next sweep re-runs them by
+//! name wherever the anchor's tip sits. HEAD holding the tip governs narrowing alone: an anchor of
+//! this run whose tip HEAD holds narrows the next sweep to the diff since that tip, and one HEAD
+//! no longer holds (a rewritten attempt) or whose tip names no object here narrows nothing while
+//! its misses are still re-run, so a rewrite never erases a miss outside the spec diff. Any other
+//! anchor narrows nothing and re-runs none of its misses - a previous spec's, whether its tip is
+//! behind, at or past the run base (an escalated check-in the run branch merged after this run
+//! started), and one that records no base: the gate sweeps the whole spec diff. Its catch map is
+//! read whichever run wrote it: every catch whose catching test changed since the owned tip, else
+//! since the run base, is re-run by name. The catching test is the test binary nextest names,
+//! wherever in the workspace it lives: a package's `tests/<t>.rs`, all of that package's for a
+//! change nested deeper under its `tests/` and no other's, and a workspace crate's `src/` for that
+//! crate's lib unit tests. Only the entries of mutants this sweep did not examine are carried
+//! forward, whichever run recorded them; a mutant it examined again - in its own diff or re-run by
+//! name - is re-recorded by the binary that caught it this time, and dropped when it now survives.
+//! A run base git cannot resolve fails the gate before anything runs.
 //!
 //! THE GATE OWNS ITS INSTRUMENT. A unit diff that adds an exclusion or examine key to
 //! `.cargo/mutants.toml`, or a cargo-mutants skip attribute, fails before any sweep.
@@ -397,6 +405,18 @@ fn run_gate_over_anchor(
     recorded_base: Option<&str>,
     caught: &str,
 ) -> (GateRun, tempfile::TempDir) {
+    run_gate_over_anchor_with(repo, base, tip, recorded_base, caught, &[])
+}
+
+/// [`run_gate_over_anchor`] with extra environment for the fixture tools.
+fn run_gate_over_anchor_with(
+    repo: &Path,
+    base: &str,
+    tip: &str,
+    recorded_base: Option<&str>,
+    caught: &str,
+    env: &[(&str, &str)],
+) -> (GateRun, tempfile::TempDir) {
     let scratch = tempfile::tempdir().unwrap();
     write(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
     write(
@@ -413,13 +433,11 @@ fn run_gate_over_anchor(
         );
     }
     let mutants = scratch.path().join("cargo-mutants-checkin");
-    let run = run_gate_with(
-        repo,
-        Some(base),
-        FORTY_GIB_KB,
-        true,
-        &[("MUTANTS", mutants.to_str().unwrap())],
-    );
+    let env: Vec<(&str, &str)> = [("MUTANTS", mutants.to_str().unwrap())]
+        .into_iter()
+        .chain(env.iter().copied())
+        .collect();
+    let run = run_gate_with(repo, Some(base), FORTY_GIB_KB, true, &env);
     (run, scratch)
 }
 
@@ -619,6 +637,232 @@ fn an_earlier_specs_catch_counts_test_changes_from_the_run_base_wherever_its_tip
 }
 
 #[test]
+fn a_mapped_mutant_the_sweep_examines_again_is_re_recorded_once_never_kept_stale_beside_it() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // A previous spec's record maps x.rs's mutant to foo and y.rs's to bar. This spec's sweep
+    // examines x.rs's mutant again and its tests catch it, failing first in bar this time; y.rs's
+    // it does not examine.
+    let [origin, base, _head] = three_commit_history(dir);
+    let (run, scratch) = run_gate_over_anchor_with(
+        dir,
+        &base,
+        &base,
+        Some(&origin),
+        CAUGHT_BY_FOO_AND_BAR,
+        &[("RIGGER_FIXTURE_CAUGHT", "x.rs:1:4: replace x with ()\tbar")],
+    );
+    assert_narrowed_nothing(
+        dir,
+        &run,
+        scratch.path(),
+        &base,
+        "x.rs:1:4: replace x with ()\tbar\ny.rs:1:4: replace y with ()\tbar\n",
+        None,
+        "only the entry of a mutant this sweep did not examine (y.rs's) is carried; the one it \
+         examined again (x.rs's) is re-recorded once, by the binary that caught it this time, and \
+         never kept stale beside it",
+    );
+}
+
+#[test]
+fn a_miss_and_a_catch_re_run_by_name_are_listed_once_each_in_name_order() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    // This run's last sweep examined the foo rewrite and left its miss in a.rs; its map holds a
+    // catch in a.rs by bar, whose test changed since. The catch's name sorts before the miss's,
+    // though the gate reads the misses first.
+    let [_origin, base, anchor, _head] = catch_history(dir);
+    let caught = "a.rs:1:10: replace a with Default::default()\tbar\n";
+    assert!(
+        caught < ANCHOR_MISS,
+        "fixture precondition: the catch's name sorts before the miss's"
+    );
+    let (run, _scratch) = run_gate_over_anchor(dir, &base, &anchor, Some(&base), caught);
+    assert_swept(
+        &run,
+        Some(
+            "mutants --list --workspace \
+             -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with Default::default\\(\\) \
+             -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) ",
+        ),
+        "the miss and the catch re-run by name reach one listing, once each and in name order, \
+         whichever source named them first",
+    );
+}
+
+/// [`workspace_repo`]'s workspace, then the landing of its test binaries - the root package's
+/// integration tests `foo` and `bar` and its shared `tests/common` module, an integration test
+/// `render` in each of `alpha` and `beta`, and `alpha`'s own shared `tests/common` module - then
+/// one commit each changing `alpha`'s render test, the root's shared module, `alpha`'s shared
+/// module, `beta`'s source, the root package's source and `beta`'s README. Returns the landing and
+/// each change, in that order.
+fn workspace_test_history(repo: &Path) -> [String; 7] {
+    workspace_repo(repo);
+    let test = "#[test]\nfn t() {}\n";
+    let helper = "pub fn h() {}\n";
+    let changed_helper = "pub fn h() -> u8 {\n    1\n}\n";
+    [
+        commit_files(
+            repo,
+            &[
+                ("tests/foo.rs", test),
+                ("tests/bar.rs", test),
+                ("tests/common/mod.rs", helper),
+                ("crates/alpha/tests/render.rs", test),
+                ("crates/alpha/tests/common/mod.rs", helper),
+                ("crates/beta/tests/render.rs", test),
+            ],
+            "the workspace's test binaries land",
+        ),
+        commit_files(
+            repo,
+            &[(
+                "crates/alpha/tests/render.rs",
+                "#[test]\nfn t() {\n    let _ = 1;\n}\n",
+            )],
+            "alpha's render test is weakened",
+        ),
+        commit_files(
+            repo,
+            &[("tests/common/mod.rs", changed_helper)],
+            "the root's shared test module changes",
+        ),
+        commit_files(
+            repo,
+            &[("crates/alpha/tests/common/mod.rs", changed_helper)],
+            "alpha's shared test module changes",
+        ),
+        commit_files(
+            repo,
+            &[(
+                "crates/beta/src/lib.rs",
+                "pub fn f(a: u8, b: u8) -> u8 {\n    a - b\n}\n",
+            )],
+            "beta's source changes",
+        ),
+        commit_files(
+            repo,
+            &[("src/lib.rs", "pub fn root() -> u8 {\n    2\n}\n")],
+            "the root package's source changes",
+        ),
+        commit_files(
+            repo,
+            &[("crates/beta/README.md", "beta\n")],
+            "beta's README changes",
+        ),
+    ]
+}
+
+/// The catch map of [`workspace_test_history`]'s workspace: one mutant caught first by each of its
+/// test binaries, each named as nextest names it less the root package's own prefix - `alpha` and
+/// `beta` for the crates' lib unit tests, `fixture-root` for the root package's.
+const CAUGHT_ACROSS_THE_WORKSPACE: &str = "\
+crates/alpha/src/lib.rs:2:5: replace f -> u8 with 0\talpha::render
+crates/alpha/src/lib.rs:2:5: replace f -> u8 with 1\talpha
+crates/beta/src/lib.rs:2:5: replace f -> u8 with 0\tbeta::render
+crates/beta/src/lib.rs:2:5: replace f -> u8 with 1\tbeta
+src/lib.rs:2:5: replace root -> u8 with 0\tfoo
+src/lib.rs:2:5: replace root -> u8 with 1\tbar
+src/lib.rs:2:5: replace root -> u8 with 2\tfixture-root
+";
+
+#[test]
+fn a_catch_is_re_run_when_the_test_binary_that_caught_it_changes_wherever_it_lives() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path();
+    let [landed, render, root_common, alpha_common, beta_src, root_src, beta_readme] =
+        workspace_test_history(dir);
+    // A previous spec's record, with no recorded base, holds one catch by each test binary. Each
+    // case's run starts one commit before its HEAD, so its spec diff is that one change, and the
+    // catches re-run by name are exactly those of the binaries the change reaches.
+    for (case, base, head, listed) in [
+        (
+            "a crate's integration test changes: that binary's catches, never another crate's \
+             binary of the same name",
+            &landed,
+            &render,
+            Some("-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 "),
+        ),
+        (
+            "the root's shared test module changes: every root integration binary's catches and \
+             no crate's",
+            &render,
+            &root_common,
+            Some(
+                "-F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 0 \
+                 -F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 1 ",
+            ),
+        ),
+        (
+            "a crate's shared test module changes: every integration binary of that crate",
+            &root_common,
+            &alpha_common,
+            Some("-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 "),
+        ),
+        (
+            "a crate's source changes: that crate's lib unit-test binary",
+            &alpha_common,
+            &beta_src,
+            Some("-F crates/beta/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 1 "),
+        ),
+        (
+            "the root package's source changes: no binary, since its lib and its bin share src/ \
+             and no path says which of them a change compiles into",
+            &beta_src,
+            &root_src,
+            None,
+        ),
+        (
+            "a crate's file outside its src/ and tests/ changes: no binary",
+            &root_src,
+            &beta_readme,
+            None,
+        ),
+    ] {
+        git_ok(dir, &["checkout", "-q", head]);
+        let (run, _scratch) =
+            run_gate_over_anchor(dir, base, base, None, CAUGHT_ACROSS_THE_WORKSPACE);
+        let listing = listed.map(|l| format!("mutants --list --workspace {l}"));
+        assert_swept(&run, listing.as_deref(), case);
+    }
+}
+
+#[test]
+fn a_catch_is_recorded_under_its_binary_less_only_the_root_packages_own_prefix() {
+    let mutant = "crates/alpha/src/lib.rs:2:5: replace f -> u8 with 0";
+    // The root package here is `fixture-root`, not this repository's own.
+    for (case, binary, recorded) in [
+        ("a root integration test", "fixture-root::foo", "foo"),
+        (
+            "a crate's integration test",
+            "alpha::render",
+            "alpha::render",
+        ),
+    ] {
+        let repo = tempfile::tempdir().unwrap();
+        let base = workspace_repo(repo.path());
+        let (run, scratch) = run_gate_over_anchor_with(
+            repo.path(),
+            &base,
+            &base,
+            None,
+            "",
+            &[("RIGGER_FIXTURE_CAUGHT", &format!("{mutant}\t{binary}"))],
+        );
+        assert_narrowed_nothing(
+            repo.path(),
+            &run,
+            scratch.path(),
+            &base,
+            &format!("{mutant}\t{recorded}\n"),
+            None,
+            case,
+        );
+    }
+}
+
+#[test]
 fn an_anchor_of_this_run_that_head_does_not_hold_narrows_nothing() {
     let repo = tempfile::tempdir().unwrap();
     let [origin, middle, _head] = three_commit_history(repo.path());
@@ -657,13 +901,22 @@ fn an_anchor_of_this_run_that_head_does_not_hold_narrows_nothing() {
         "fixture precondition: a pruned anchor's tip names no object in this repository"
     );
     // An anchor HEAD does not hold narrows nothing, even one recording RIGGER_RUN_BASE - a
-    // rewritten attempt's, or one whose tip was pruned - and its misses are not re-run by name.
+    // rewritten attempt's, or one whose tip was pruned - but it records this run's base, so its
+    // misses are this spec's own and are re-run by name.
     for (case, tip) in [
         ("a rewritten attempt", rewritten.as_str()),
         ("a pruned tip", UNKNOWN_SHA),
     ] {
         let (run, scratch) = run_gate_over_anchor(repo.path(), &origin, tip, Some(&origin), "");
-        assert_narrowed_nothing(repo.path(), &run, scratch.path(), &origin, "", None, case);
+        assert_narrowed_nothing(
+            repo.path(),
+            &run,
+            scratch.path(),
+            &origin,
+            "",
+            Some("mutants --list --workspace -F a\\.rs(:[0-9]+:[0-9]+)?: replace a with \\(\\) "),
+            case,
+        );
     }
 }
 
