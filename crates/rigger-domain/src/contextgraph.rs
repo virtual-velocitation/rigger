@@ -725,6 +725,37 @@ pub trait Projection: Send + Sync {
     }
 }
 
+/// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
+/// undirected [`Projection::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
+/// the same depth ([`Projection::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
+/// once. The subgraph alone never reaches a caller in another file - that caller's `CALLS` edge
+/// lands on a placeholder in its OWN file's namespace - so without the callers walk "who calls
+/// this" had no answer from the neighborhood (gap 104). The callers walk resolves those
+/// placeholders by name and stops at an ambiguous name rather than guessing.
+pub fn around(p: &dyn Projection, seed: &[String], depth: i64) -> Result<Graph, Error> {
+    let mut g = p.subgraph(seed, depth)?;
+    let callers = p.calls(seed, Direction::Up, depth, TIER_INFERRED)?;
+    let mut node_ids: std::collections::BTreeSet<String> =
+        g.nodes.iter().map(|n| n.id.clone()).collect();
+    for c in callers.nodes {
+        if node_ids.insert(c.node.id.clone()) {
+            g.nodes.push(c.node);
+        }
+    }
+    let mut edge_keys: std::collections::BTreeSet<(String, String, String)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
+        .collect();
+    for c in callers.edges {
+        let e = c.edge;
+        if edge_keys.insert((e.from.clone(), e.to.clone(), e.rel.clone())) {
+            g.edges.push(e);
+        }
+    }
+    Ok(g)
+}
+
 /// The `CodeEntityExtracted` payload (spec 29a): one definition the extraction pass emits. It
 /// is the ONE serialization contract shared by both sides of the log - the feature-gated emit
 /// pass (`grounder::symbols`) constructs and serializes it, and the always-compiled fold

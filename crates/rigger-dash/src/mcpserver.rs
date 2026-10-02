@@ -663,10 +663,11 @@ impl<'a> Server<'a> {
 
     /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
     /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
-    /// for the workflow bridge's event fold - `around` calls the trait's existing
-    /// [`Projection::subgraph`], `show` the trait's [`Projection::locate`] added alongside this
-    /// fix, so no second graph-reading implementation is needed for either selector. Only
-    /// reachable on the lookup surface; [`call_tool`] never dispatches here otherwise.
+    /// for the workflow bridge's event fold - `around` serves [`crate::contextgraph::around`] (the
+    /// trait's [`Projection::subgraph`] plus the seed's cross-file callers), `show` the trait's
+    /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
+    /// is needed for either selector. Only reachable on the lookup surface; [`call_tool`] never
+    /// dispatches here otherwise.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
         let around = args.get("around").and_then(Value::as_str).unwrap_or("");
@@ -698,8 +699,7 @@ impl<'a> Server<'a> {
                 }),
             });
         }
-        let g = graph
-            .subgraph(&[around.to_string()], depth)
+        let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
         Ok(json!({
             "nodes": g.nodes.iter().map(|n| json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
