@@ -741,10 +741,20 @@ impl<T: SpawnEventBody> SpawnEvent for T {
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
-/// [`recorded`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
+/// [`requests`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
 /// event is skipped in exactly one place rather than three times over.
 fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
     events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
+}
+
+/// Every [`TYPE_SPAWN_REQUESTED`] event in `events` decoded, in log order, one request per
+/// event - the ONE strict per-event decode: [`recorded`] folds it into its map, and a caller
+/// that counts parks (a re-parked id counting once per park) reads it directly. A malformed
+/// spawn body fails the whole read, never skipped.
+pub fn requests(events: &[Event]) -> Result<Vec<SpawnRequest>, serde_json::Error> {
+    spawn_requested_events(events)
+        .map(SpawnRequest::from_event)
+        .collect()
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -759,12 +769,10 @@ fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
 /// propagates the parse error rather than skipping it - see [`recorded_lenient`] for
 /// the degrade-tolerant sibling a read-only display caller needs instead.
 pub fn recorded(events: &[Event]) -> Result<BTreeMap<String, SpawnRequest>, serde_json::Error> {
-    let mut out = BTreeMap::new();
-    for e in spawn_requested_events(events) {
-        let req = SpawnRequest::from_event(e)?;
-        out.insert(req.id.clone(), req);
-    }
-    Ok(out)
+    Ok(requests(events)?
+        .into_iter()
+        .map(|req| (req.id.clone(), req))
+        .collect())
 }
 
 /// Whether a spawn with `id` has already been parked in `events` - a cheap

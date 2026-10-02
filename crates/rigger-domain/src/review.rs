@@ -9,8 +9,8 @@ use serde_json::Value;
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    attempt_of, lens_role, result_of, spawn_id, SpawnEvent, SpawnRequest, SpawnResult,
-    ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
+    attempt_of, lens_role, requests, result_of, spawn_id, SpawnEvent, SpawnResult, ROLE_ADVERSARY,
+    TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -578,23 +578,24 @@ fn why_no_critique(results: &[Event], hash: &str, attempt: u32) -> Option<String
 /// result, or with a result that is no critique, still counts, so the next call runs the next
 /// attempt; a request that cannot be read fails the count, so an attempt id is never reused.
 pub fn next_critique_attempt(store: &dyn EventStore, hash: &str) -> Result<u32, StoreError> {
-    let requests = store.read_stream_typed(
+    let events = store.read_stream_typed(
         crate::run::STREAM,
         0,
         TypeSelection::Only(&[TYPE_SPAWN_REQUESTED]),
     )?;
-    critique_requests(&requests, hash).map_err(|e| {
+    critique_requests(&events, hash).map_err(|e| {
         StoreError::Backend(format!(
             "a spawn request recorded on the critique stream is unreadable: {e}"
         ))
     })
 }
 
-/// How many of the `SpawnRequested` events among `events` request a critic spawn of `hash`.
+/// How many of the spawn requests among `events` ([`requests`], one per `SpawnRequested` event,
+/// so a re-parked id counts once per park) request a critic spawn of `hash`.
 fn critique_requests(events: &[Event], hash: &str) -> Result<u32, serde_json::Error> {
     let mut requested = 0;
-    for event in events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED) {
-        if critique_attempt(&SpawnRequest::from_event(event)?.id, hash).is_some() {
+    for request in requests(events)? {
+        if critique_attempt(&request.id, hash).is_some() {
             requested += 1;
         }
     }
