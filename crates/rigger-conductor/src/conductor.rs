@@ -14784,6 +14784,36 @@ mod tests {
         );
     }
 
+    /// A pattern finding - one defect shape recurring across sites - is REQUIRED as a
+    /// whole-tree audit: the next attempt's implementer is told to audit the whole tree, fix
+    /// every site and record its audit as DecisionMade `audit-<unit>-<attempt>` listing every
+    /// site checked, and the next review round is pointed at that same record.
+    #[test]
+    fn a_pattern_item_asks_the_implementer_for_a_whole_tree_audit_record() {
+        let (_, _, driver) = run_review_rounds(&[
+            (
+                adjudicator_at(0, 0),
+                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"}]}"#,
+            ),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        let ask = "PATTERN: unscoped log reads. Audit the whole tree, fix every site, and record \
+                   DecisionMade `audit-implement-1` listing every site checked.";
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            !implementer[0].contains("PATTERN:") && implementer[1].contains(ask),
+            "the attempt after the pattern finding is asked for the audit:\n{}",
+            implementer[1]
+        );
+        for agent in ["lens", "adversary", "adj"] {
+            let round = &driver.prompts_for(agent)[1];
+            assert!(
+                round.contains("unscoped log reads") && round.contains("`audit-implement-1`"),
+                "{agent}'s next round names the pattern and the audit record:\n{round}"
+            );
+        }
+    }
+
     #[test]
     fn a_resumed_unit_re_enters_with_the_prior_failure_block_its_retry_carried() {
         // Gap 61: a unit an operator resumes after an escalation re-enters the implementer
