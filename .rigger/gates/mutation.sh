@@ -110,42 +110,42 @@
 # the mutated packages only: seconds, not minutes) is that confirmation; only the by-name
 # rerun, which follows it on the same tree, skips its own.
 #
-# INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
-# the logic has changed"). The sweep leaves four facts under `mutation-anchor/`, a sibling of
-# the unit roots under the scratch root (`${MUTANTS%/*}`): the `$RIGGER_RUN_BASE` it was given
+# INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or the
+# logic has changed"). The sweep leaves four facts under `mutation-anchor/`, a sibling of the
+# unit roots under the scratch root (`${MUTANTS%/*}`): the `$RIGGER_RUN_BASE` it was given
 # (`base`), the tree it examined (`tip`), its misses (`missed.txt`) and, per caught mutant, the
 # test binary whose first failure caught it (`caught.map`, read off the nextest FAIL line in
 # each mutant's log). The anchor lives OUTSIDE `$MUTANTS` because that root is reclaimed with
-# the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the
-# gate wrote it). Misses are the run's own, and the recorded base alone says whose: when it is
-# this sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - the
-# sweep re-runs every earlier miss by name. Narrowing needs one more fact, HEAD holding the tip:
-# then the sweep covers every mutant in the diff since the tip. An anchor of this run whose tip
-# HEAD no longer holds (a rewritten attempt, or a tip pruned from the repository) narrows
-# nothing and its misses are still re-run: a miss outside the spec diff would otherwise leave
-# all gate state, and the same tree would fail and then pass. Any other anchor narrows nothing
-# and re-runs none of its misses, and the sweep is the whole spec diff against
-# `$RIGGER_RUN_BASE`: none at all (the first sweep, a reclaimed scratch root), one that records
-# another run's base (a previous spec's), and one that records no base. Ownership is the
-# recorded base, never ancestry: the anchor lives under the
-# project's scratch root, so HEAD routinely holds a previous spec's last sweep tip - behind the
-# run base on a run branch not rewritten between specs, or past it when that spec's escalated
-# check-in is landed by hand during this run - and taking it would sweep only the changes since
-# it and re-run that spec's misses, failing this spec on survivors that are not its own.
-# Catches are the project's knowledge, whichever run recorded them: the sweep also re-runs by
-# name every caught mutant in the map whose catching binary changed since one point - the owned
-# tip, else `$RIGGER_RUN_BASE` - so a spec that rewrites the test catching an earlier spec's
-# mutant examines that mutant again on its first sweep. The map names a binary as nextest does,
-# less the root package's own `<root>::` prefix, and a changed path reaches binaries through the
-# package that owns it: its `tests/<t>.rs` is the integration-test binary `<package>::<t>` (`<t>`
-# for the root package); a change nested deeper under its tests/ (a shared module, a fixture)
-# reaches every integration-test binary of that package and no other, since only they compile
-# it; a change under a workspace crate's src/ reaches that crate's lib unit-test binary
-# `<crate>`. The root package's own unit-test binaries are reached by no path: its lib and its
-# bin share src/, and no path says which of them a change compiles into. That same point is the
-# base of the diff the sweep covers. The rerun's misses join the sweep's own missed.txt so one file is
-# the verdict. A solo-merging unit's post-merge re-sweep is therefore the empty merge delta and
-# passes in seconds. A mutant the main sweep already examined is not examined again by name.
+# the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the gate
+# wrote it). Misses are the run's own, and the recorded base alone says whose: when it is this
+# sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - the sweep
+# re-runs every earlier miss by name. Narrowing needs one more fact, HEAD holding the tip: then
+# the sweep covers every mutant in the diff since the tip. An anchor of this run whose tip HEAD
+# no longer holds (a rewritten attempt, or a tip pruned from the repository) narrows nothing and
+# its misses are still re-run: a miss outside the spec diff would otherwise leave all gate
+# state, and the same tree would fail and then pass. Any other anchor narrows nothing and
+# re-runs none of its misses, and the sweep is the whole spec diff against `$RIGGER_RUN_BASE`:
+# none at all (the first sweep, a reclaimed scratch root), one that records another run's base
+# (a previous spec's), and one that records no base. Ownership is the recorded base, never
+# ancestry: the anchor lives under the project's scratch root, so HEAD routinely holds a
+# previous spec's last sweep tip - behind the run base on a run branch not rewritten between
+# specs, or past it when that spec's escalated check-in is landed by hand during this run - and
+# taking it would sweep only the changes since it and re-run that spec's misses, failing this
+# spec on survivors that are not its own. Catches are the project's knowledge, whichever run
+# recorded them: the sweep also re-runs by name every caught mutant in the map whose catching
+# binary changed since one point - the owned tip, else `$RIGGER_RUN_BASE` - so a spec that
+# rewrites the test catching an earlier spec's mutant examines that mutant again on its first
+# sweep. The map names a binary as nextest does, less the root package's own `<root>::` prefix,
+# and a changed path reaches binaries through the package that owns it: its `tests/<t>.rs` is
+# the integration-test binary `<package>::<t>` (`<t>` for the root package); a change nested
+# deeper under its tests/ (a shared module, a fixture) reaches every integration-test binary of
+# that package and no other, since only they compile it; a change under a workspace crate's src/
+# reaches that crate's lib unit-test binary `<crate>`. The root package's own unit-test binaries
+# are reached by no path: its lib and its bin share src/, and no path says which of them a
+# change compiles into. That same point is the base of the diff the sweep covers. The rerun's
+# misses join the sweep's own missed.txt so one file is the verdict. A solo-merging unit's
+# post-merge re-sweep is therefore the empty merge delta and passes in seconds. A mutant the
+# main sweep already examined is not examined again by name.
 #
 # THE GATE OWNS ITS INSTRUMENT (2026-09-17: a remediation round excluded two survivors by name
 # with an equivalence argument that was wrong for one). The unit diff since `$RIGGER_RUN_BASE`
