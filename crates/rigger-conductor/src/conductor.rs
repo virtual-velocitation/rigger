@@ -2013,6 +2013,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         parked: std::sync::atomic::AtomicBool::new(false),
         manual_review: std::sync::atomic::AtomicBool::new(false),
         budget_halted: std::sync::atomic::AtomicBool::new(false),
+        spec_defect_halt: std::sync::OnceLock::new(),
         #[cfg(feature = "symbols")]
         ingested: std::sync::atomic::AtomicBool::new(false),
         prior_status,
@@ -2271,6 +2272,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             }
         }
     }
+    // A plan-critique gate that stopped on a spec defect in this process (spec 112, criterion 5)
+    // ends the step with its halt here, before the coverage check: the held DAG may leave a
+    // criterion uncovered, and the stop's records already carry the amend route.
+    if ctx.spec_defect_halt.get().is_some() {
+        return settle_run_state(&ctx, &prior, prior_events, base_spawns);
+    }
     ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
 
     // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
@@ -2386,22 +2393,37 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
-    let (current_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    settle_run_state(&ctx, &prior, prior_events, base_spawns)
+}
+
+/// The caller-visible [`RunState`] a `run()` call returns (its normal end, and a plan-critique
+/// gate's spec-defect stop, which returns before the coverage check - spec 112, criterion 5):
+/// this run's slice projected, stamped with the conductor's IN-PROCESS state - the halt reason,
+/// whether the pass parked, and the attention entries this call's window crossed against `prior`,
+/// the run state `prior_events` projected at the call's start, `base_spawns` the distinct spawns
+/// they recorded.
+fn settle_run_state(
+    ctx: &RunCtx,
+    prior: &RunState,
+    prior_events: &[Event],
+    base_spawns: u32,
+) -> Result<RunState, Error> {
+    let (current_events, _) = crate::run::read::read_current_run(ctx.deps.store, STREAM)?;
     let current_events = current_events.as_slice();
     // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
-    // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
+    // then stamp the live BUDGET halt reason (Gap 13) from the conductor's IN-PROCESS breaker
     // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
-    // resume with a raised budget clears it), so `rigger step` reads it here to print a
-    // halt reason distinct from convergence and the thin driver stops loudly on it.
+    // resume with a raised budget clears it). The attention diff below reads it; the step's
+    // whole halt reason is stamped after that.
     let mut rs = ledger::project(current_events).map_err(|e| Error(e.to_string()))?;
-    rs.budget_halt = ctx.halt_reason();
+    rs.budget_halt = ctx.budget_halt_reason();
     rs.parked = ctx.parked.load(Ordering::SeqCst);
     // Spec 69, criterion 5 (the step wire carries attention): a before/after diff of THIS
-    // call's window, `prior` (this call's own resume seed, already projected above) against
+    // call's window, `prior` (this call's own resume seed, projected at its start) against
     // `rs` - see [`compute_attention`] for why the diff, not a persisting-state read, is
     // what "once per threshold crossing" needs with no new event and no cross-process dedup.
     // `base_spawns` is the already-folded distinct-spawn count from BEFORE this call (seeded
-    // above for the budget breaker itself); the after-count reads the SAME in-process
+    // at its start for the budget breaker itself); the after-count reads the SAME in-process
     // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
     // for "spawns made", which (unlike `spawn::recorded` over the event log) counts a
     // BLOCKING driver's spawns too: only a stepwise/replay driver ever PARKS a
@@ -2450,14 +2472,19 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // strictly BETWEEN two `rigger step` invocations; see `hung_cursor_path`'s own doc
     // comment for the full reasoning.
     rs.attention = compute_attention(
-        &prior,
+        prior,
         &rs,
-        cfg.workflow.defaults.budget,
+        ctx.cfg.workflow.defaults.budget,
         base_spawns as usize,
         after_spawns,
         budget_exhausted_before,
         &parked_units,
     );
+    // The step's whole HALT reason, stamped AFTER the attention diff, whose `halted` entry is
+    // the budget breaker's alone: the budget's reason, else a spec-defect stop's (spec 112,
+    // criterion 5), whose attention entry is the gate's own escalation. `rigger step` prints it
+    // as `halted` so the thin driver stops loudly instead of reading convergence.
+    rs.budget_halt = ctx.halt_reason();
     Ok(rs)
 }
 
@@ -2566,10 +2593,10 @@ fn compute_attention(
     // Signal 2 (BUDGET half only - see the doc comment above for the hung half, computed by
     // `rigger step` itself, and for why this is gated on event presence rather than a
     // spawn-count comparison): `after.budget_halt` being `Some` means the breaker genuinely
-    // refused a ready spawn THIS call (see `RunCtx::halt_reason`); `!budget_exhausted_before`
-    // means no earlier call in this run has already recorded that fact. Together they are
-    // exactly "the first call whose breaker trip durably happened" - once per run, since
-    // `BudgetExhausted` itself only ever appends once.
+    // refused a ready spawn THIS call (see `RunCtx::budget_halt_reason`);
+    // `!budget_exhausted_before` means no earlier call in this run has already recorded that
+    // fact. Together they are exactly "the first call whose breaker trip durably happened" -
+    // once per run, since `BudgetExhausted` itself only ever appends once.
     if !budget_exhausted_before {
         if let Some(reason) = after.budget_halt.as_deref() {
             out.push(ledger::AttentionEntry::run_scoped(
@@ -2636,6 +2663,60 @@ fn compute_attention(
 /// defers the coverage gate until after planning (§3.2).
 fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
     stages.values().any(|st| !st.produces.is_empty())
+}
+
+/// The plan-critique adjudicator's reject `cause` for a defect in a criterion's own text that no
+/// decomposition can remove (spec 112, criterion 5): the one cause that is a spec defect.
+const CAUSE_SPEC_AMBIGUITY: &str = "spec-ambiguity";
+
+/// A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE (spec 112, criterion 5): the stop predicate, one
+/// pure function over the current run slice `run`, `s` the attempt the plan-critique gate `gate`'s
+/// next round would run and `plan` the gate's producer. It holds - answering the stopping reject's
+/// adjudication, whose upheld ids the stop names - when the gate's rejects at attempts `s - 2` and
+/// `s - 1` (each the `UnitFailed` under replay key `<gate>/failed#<k>`) both carry a review reason
+/// whose parsed cause is `spec-ambiguity`, the re-plan `spawn_id(plan, replan, s - 1)` between them
+/// is recorded, the re-plan at `s` is not, and no event carries the stop's completion key
+/// `<gate>/spec-defect-escalated#<s-1>`. A re-plan is recorded by its `SpawnRequested` or
+/// `SpawnResult` (the stepwise driver records both) or by an event it emitted, stamped with its id
+/// as [`META_SPAWN`] (a blocking driver records no spawn event). So a first `spec-ambiguity` reject
+/// re-plans as before, and the stop fires on one that follows a re-plan which did not clear the
+/// previous one.
+fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
+    let earlier = s.checked_sub(2)?;
+    let stopping = s - 1;
+    let keyed = |key: String| {
+        run.iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
+    };
+    let spec_ambiguity = |k: u32| {
+        keyed(format!("{gate}/failed#{k}"))
+            .and_then(Event::decode::<Value>)
+            .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
+            .filter(|a| a.cause.as_deref() == Some(CAUSE_SPEC_AMBIGUITY))
+    };
+    let re_planned = |attempt: u32| {
+        let id = spawn_id(plan, ROLE_REPLAN, attempt);
+        spawn::is_recorded(run, &id)
+            || matches!(spawn::result_of(run, &id), Ok(Some(_)))
+            || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+    };
+    spec_ambiguity(earlier)?;
+    let adjudication = spec_ambiguity(stopping)?;
+    let completed = keyed(format!("{gate}/spec-defect-escalated#{stopping}")).is_some();
+    (re_planned(stopping) && !re_planned(s) && !completed).then_some(adjudication)
+}
+
+/// The halt a spec-defect stop reports (spec 112, criterion 5): the amend route, the run's spec as
+/// recorded (`the spec` when it recorded none) and the stopping reject's upheld finding ids (`none
+/// upheld` when it upheld none).
+fn spec_defect_halt(spec: &str, upheld: &[String]) -> String {
+    let spec = if spec.is_empty() { "the spec" } else { spec };
+    let upheld = if upheld.is_empty() {
+        "none upheld".to_string()
+    } else {
+        upheld.join(", ")
+    };
+    format!("amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld})")
 }
 
 struct RunCtx<'a> {
@@ -2709,6 +2790,12 @@ struct RunCtx<'a> {
     /// the phase boundary holds the DEFERRED gate rather than record it against the
     /// partial tree the halt left behind (same finding pair as `manual_review`).
     budget_halted: std::sync::atomic::AtomicBool,
+    /// The halt text of a plan-critique gate that stopped on a spec defect IN THIS PROCESS
+    /// (spec 112, criterion 5: [`stopped_on_spec_defect`](RunCtx::stopped_on_spec_defect)), the
+    /// in-process half [`halt_reason`](RunCtx::halt_reason) reports below a budget halt. Like
+    /// `budget_halted` it is a condition of this step only: a later step finds the gate
+    /// terminal, and the durable record is the stop's `SpecDefect` and lesson.
+    spec_defect_halt: std::sync::OnceLock<String>,
     /// Set the first time this process ingests the live project into the unified graph
     /// (spec 29c criterion 5): the grounding path walks and extracts the tree at most ONCE
     /// per process, so a run whose step builds many prompts pays the walk once, not per
@@ -2979,6 +3066,7 @@ impl<'a> RunCtx<'a> {
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
             budget_halted: std::sync::atomic::AtomicBool::new(false),
+            spec_defect_halt: std::sync::OnceLock::new(),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
@@ -3763,16 +3851,14 @@ impl RunCtx<'_> {
         )
     }
 
-    /// The run's live HALT reason when the spawn-budget breaker stopped this process with
-    /// ready work unscheduled (Gap 13), or `None` when the run converged cleanly. Read from
-    /// the IN-PROCESS `budget_halted` flag (set by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)),
-    /// NOT from the durable `BudgetExhausted` event: a halt is a condition of the CURRENT run
-    /// process, so a resume with a raised `defaults.budget` - which admits the spawn and never
-    /// trips the breaker - reports no halt, even though the earlier halt's `BudgetExhausted`
-    /// still sits in the log. `rigger step` copies this onto its printed [`Step`](crate::spawn::Step)
-    /// so the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}`
-    /// as a clean completion.
-    fn halt_reason(&self) -> Option<String> {
+    /// The run's live BUDGET halt reason when the spawn-budget breaker stopped this process with
+    /// ready work unscheduled (Gap 13), else `None`. Read from the IN-PROCESS `budget_halted`
+    /// flag (set by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)), NOT from the durable
+    /// `BudgetExhausted` event: a halt is a condition of the CURRENT run process, so a resume
+    /// with a raised `defaults.budget` - which admits the spawn and never trips the breaker -
+    /// reports no halt, even though the earlier halt's `BudgetExhausted` still sits in the log.
+    /// The one reason [`compute_attention`] stamps a `halted` entry for.
+    fn budget_halt_reason(&self) -> Option<String> {
         if self.budget_halted.load(Ordering::SeqCst) {
             Some(format!(
                 "budget exhausted: {}/{} spawns",
@@ -3782,6 +3868,17 @@ impl RunCtx<'_> {
         } else {
             None
         }
+    }
+
+    /// The run's live HALT reason, or `None` when the run converged cleanly: the budget halt
+    /// ([`budget_halt_reason`](RunCtx::budget_halt_reason)) when the breaker tripped, else the
+    /// spec-defect stop's halt text when a plan-critique gate stopped in this process (spec 112,
+    /// criterion 5). `rigger step` copies this onto its printed [`Step`](crate::spawn::Step) so
+    /// the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}` as a
+    /// clean completion; it fills that field from hung liveness only when this is `None`.
+    fn halt_reason(&self) -> Option<String> {
+        self.budget_halt_reason()
+            .or_else(|| self.spec_defect_halt.get().cloned())
     }
 
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
@@ -3929,6 +4026,8 @@ impl RunCtx<'_> {
                             None,
                             &name,
                             &format!("stage {name:?} failed in its wave: {msg}"),
+                            None,
+                            None,
                         );
                         if first_err.is_none() {
                             first_err = Some(Error(msg));
@@ -4876,6 +4975,8 @@ impl RunCtx<'_> {
                  attempt charged.",
                 residue.join(", ")
             ),
+            None,
+            None,
         );
         w.restore_reviewed_sha(round_start_sha)?;
         Ok(())
@@ -5965,6 +6066,8 @@ impl RunCtx<'_> {
                         "unit {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
+                    None,
+                    None,
                 );
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
@@ -6417,6 +6520,8 @@ impl RunCtx<'_> {
                 "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration",
                 st.name
             ),
+            None,
+            None,
         );
         self.emit_meta(
             ledger::TYPE_UNIT_ESCALATED,
@@ -6885,6 +6990,8 @@ impl RunCtx<'_> {
                         "review stage {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
+                    None,
+                    None,
                 );
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
@@ -7541,7 +7648,9 @@ impl RunCtx<'_> {
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
     /// ownership, open dispositions - [`PLAN_CRITIQUE_RULES`], the text the spec critique
     /// prompt reads too), plus the unit size cap ([`unit_size_cap`]) as a blocking rule
-    /// pushed after them. On a re-plan it leads with the prior rejection so
+    /// pushed after them, and closes with the verdict paragraph, whose cause contract tells a
+    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
+    /// criterion 5) from one a re-plan can fix. On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
     /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
@@ -7612,12 +7721,24 @@ impl RunCtx<'_> {
                 ));
             }
         }
+        // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
+        // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
+        // a defect in a criterion's own text from one a re-plan can fix.
         b.push_str(
             "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
              release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
              back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect, or a unit over the size cap - never for mechanical \
-             blast-radius overlap alone.\n",
+             (open disposition) defect, a unit over the size cap, or a defect in a \
+             criterion's own text that no decomposition can remove - never for mechanical \
+             blast-radius overlap alone. A reject's cause follows this gate's contract, \
+             which governs it over any generic cause wording in your persona: \
+             \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's \
+             own text and no decomposition can remove it (two criteria that contradict \
+             under every landing order, a criterion no plan can satisfy, a demanded \
+             mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
+             defect a re-plan can fix (twin units, a missing exclusion between units, a unit \
+             over the size cap, a unit owning no criterion, a split the planner chose). When \
+             unsure, \"cause\":\"decomposition-conflict\".\n",
         );
         b
     }
@@ -7788,6 +7909,15 @@ impl RunCtx<'_> {
     /// repo-less run). The attempt counter is seeded from the prior log so the escalation
     /// bound ACCUMULATES across steps and a replay parks at the next unrecorded frontier
     /// (mirrors `run_fan_out_review_loop`).
+    ///
+    /// Round `k` critiques at attempt `k`; its reject records `UnitFailed` under
+    /// `<gate>/failed#<k>` and returns to the round head at attempt `k + 1`. The round head
+    /// decides, in order (spec 112, criterion 5): the spec-defect stop
+    /// ([`stopped_on_spec_defect`](Self::stopped_on_spec_defect)); else, for a reject this call
+    /// recorded, the remediation decision - escalate, or re-plan at the new attempt and
+    /// harvest; then the critique. On entry the attempt is the seeded one, so a step re-entering
+    /// after a crash mid-stop completes the stop without spawning, and a round a later step
+    /// enters re-plans nothing.
     #[allow(clippy::too_many_arguments)]
     fn plan_critique_loop(
         &self,
@@ -7834,7 +7964,46 @@ impl RunCtx<'_> {
         let mut prior_reason = self
             .logged_prior_failure(&gate_name, attempts)
             .review_reason;
+        // The remediation decision of a reject THIS call recorded, which the round head takes;
+        // a round entered from the log carries none, so it re-plans nothing.
+        let mut rejected: Option<safety::Decision> = None;
         loop {
+            // The round head: the spec-defect stop first (spec 112, criterion 5)...
+            if self.stopped_on_spec_defect(&gate_name, plan_name, attempts)? {
+                // Terminal but NOT integrated, like the escalation below: the fan-out stays
+                // gated and the step halts with the amend route.
+                terminal.insert(gate_name.clone());
+                return Ok(false);
+            }
+            // ...else the remediation of the reject this call recorded...
+            if let Some(decision) = rejected.take() {
+                if decision == safety::Decision::Escalate {
+                    let why = if prior_reason.trim().is_empty() {
+                        "the adjudicator did not approve the decomposition".to_string()
+                    } else {
+                        format!("plan-critique rejected: {}", prior_reason.trim())
+                    };
+                    self.emit_lesson(
+                        None,
+                        &gate_name,
+                        &format!(
+                            "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
+                        ),
+                        None,
+                        None,
+                    );
+                    self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
+                    // Terminal but NOT integrated: the fan-out stays gated, so nothing
+                    // implements over a decomposition three reviews could not fix.
+                    terminal.insert(gate_name.clone());
+                    return Ok(false);
+                }
+                // Retry: feed the rejection back to the planner (bounded by remediation
+                // depth) and re-harvest its revised DAG for this round's critique.
+                self.re_plan(plan_name, &plan_st, attempts, &prior_reason)?;
+                self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            }
+            // ...then the critique.
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
             // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
             // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
@@ -7926,7 +8095,7 @@ impl RunCtx<'_> {
             }
 
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
-            // replay re-reaching it appends no duplicate) and either escalate or re-plan.
+            // replay re-reaching it appends no duplicate); the round head decides what follows.
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
@@ -7942,31 +8111,55 @@ impl RunCtx<'_> {
                 // along (gap 61).
                 failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
             )?;
-            if rem.decision == safety::Decision::Escalate {
-                let why = if reason.trim().is_empty() {
-                    "the adjudicator did not approve the decomposition".to_string()
-                } else {
-                    format!("plan-critique rejected: {}", reason.trim())
-                };
-                self.emit_lesson(
-                    None,
-                    &gate_name,
-                    &format!(
-                        "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
-                    ),
-                );
-                self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
-                // Terminal but NOT integrated: the fan-out stays gated, so nothing
-                // implements over a decomposition three reviews could not fix.
-                terminal.insert(gate_name.clone());
-                return Ok(false);
-            }
-            // Retry: feed the rejection back to the planner (bounded by remediation depth)
-            // and re-harvest its revised DAG for the next critique iteration.
-            self.re_plan(plan_name, &plan_st, attempts, &reason)?;
-            self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            rejected = Some(rem.decision);
             prior_reason = reason;
         }
+    }
+
+    /// The round head's spec-defect stop (spec 112, criterion 5): when [`spec_defect_stop`]
+    /// holds over the current run for the plan-critique gate `gate` (producer `plan`) at attempt
+    /// `s`, record the stop and answer `true`; else record nothing and answer `false`. The stop
+    /// records three events in order, each under its own replay key so a step re-reaching it
+    /// appends only what is missing: a lesson about the run's spec naming the stopping reject's
+    /// upheld ids, the `SpecDefect` carrying the halt text (its fold, `RunState::spec_defect`, is
+    /// the stop's durable run-state form), then the gate's `UnitEscalated` under the completion
+    /// key. It sets this process's spec-defect halt ([`halt_reason`](Self::halt_reason)) and
+    /// re-plans nothing.
+    fn stopped_on_spec_defect(&self, gate: &str, plan: &str, s: u32) -> Result<bool, Error> {
+        let run = self.read_current_run()?;
+        let Some(stopping) = spec_defect_stop(&run, gate, plan, s) else {
+            return Ok(false);
+        };
+        let k = s - 1;
+        let spec = crate::run::current_run_spec_path(&run);
+        let halt = spec_defect_halt(&spec, &stopping.upheld);
+        let about: Vec<String> = if spec.is_empty() {
+            Vec::new()
+        } else {
+            vec![spec]
+        };
+        self.emit_lesson(
+            None,
+            gate,
+            &format!(
+                "plan-critique {gate:?} stopped the run: its spec-ambiguity reject at attempt {k} \
+                 followed a re-plan that did not clear the previous one; {halt}"
+            ),
+            Some(&format!("{gate}/spec-defect-lesson#{k}")),
+            Some(&about),
+        );
+        self.emit_keyed(
+            &format!("{gate}/spec-defect#{k}"),
+            TYPE_SPEC_DEFECT,
+            json!({"reason": halt}),
+        )?;
+        self.emit_keyed(
+            &format!("{gate}/spec-defect-escalated#{k}"),
+            ledger::TYPE_UNIT_ESCALATED,
+            json!({"id": gate}),
+        )?;
+        let _ = self.spec_defect_halt.set(halt);
+        Ok(true)
     }
 
     /// The resolved build environment for this run (spec 65's ONE build-environment
@@ -8919,6 +9112,8 @@ impl RunCtx<'_> {
                                 "deferred gate {gid:?} failed at the phase boundary: {}",
                                 res.evidence
                             ),
+                            None,
+                            None,
                         );
                     }
                     (res.pass, res.evidence)
@@ -10946,21 +11141,36 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
+    /// Record a `LessonLearned` about `unit_name`. `about` names what the lesson is about when
+    /// given (the spec-defect stop names the spec, spec 112 criterion 5); without it the lesson
+    /// is about the files `wt` touched. `key`, when given, records it under that replay key, so
+    /// a step re-reaching the same lesson appends nothing.
+    fn emit_lesson(
+        &self,
+        wt: Option<&Worktree>,
+        unit_name: &str,
+        summary: &str,
+        key: Option<&str>,
+        about: Option<&[String]>,
+    ) {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
         // worktree before gating (§3.2, FIX 2), so a plain `git status` is clean by
         // the time a unit escalates - we use `changed_since_base` (the committed diff
         // unioned with any residual dirty files) so the lesson still names the real
         // artifact, not an empty set.
-        let about: Vec<String> = wt
-            .and_then(|w| w.changed_since_base().ok())
-            .unwrap_or_default();
+        let about: Vec<String> = match about {
+            Some(about) => about.to_vec(),
+            None => wt
+                .and_then(|w| w.changed_since_base().ok())
+                .unwrap_or_default(),
+        };
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
-        let _ = self.emit(
-            contextgraph::TYPE_LESSON_LEARNED,
-            json!({"id": id, "summary": summary, "about": about}),
-        );
+        let payload = json!({"id": id, "summary": summary, "about": about});
+        let _ = match key {
+            Some(key) => self.emit_keyed(key, contextgraph::TYPE_LESSON_LEARNED, payload),
+            None => self.emit(contextgraph::TYPE_LESSON_LEARNED, payload),
+        };
     }
 
     /// Handle [`worktree::LandOutcome::Blocked`] (spec 103, criterion 8: A REFUSED LANDING
@@ -11010,7 +11220,7 @@ impl RunCtx<'_> {
              the unit's own branch lands unchanged",
             named.join(", ")
         );
-        self.emit_lesson(Some(wt), unit, &summary);
+        self.emit_lesson(Some(wt), unit, &summary, None, None);
         Error(format!(
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
             paths.join(", ")
@@ -13098,13 +13308,7 @@ struct StartedCriterionProbe {
 /// unit test), so every comparison against it degrades to "always equal" there rather
 /// than refusing every match.
 fn current_run_spec(events: &[Event]) -> String {
-    events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
-        .map(|rs| ledger::spec_stem(&rs.spec))
-        .unwrap_or_default()
+    ledger::spec_stem(&crate::run::current_run_spec_path(events))
 }
 
 /// The MOST RECENT prior unit, OF THE SAME SPEC, that served `criterion_id` and either
@@ -24237,6 +24441,7 @@ mod tests {
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
             budget_halted: std::sync::atomic::AtomicBool::new(false),
+            spec_defect_halt: std::sync::OnceLock::new(),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
@@ -30842,6 +31047,7 @@ mod tests {
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
             budget_halted: std::sync::atomic::AtomicBool::new(false),
+            spec_defect_halt: std::sync::OnceLock::new(),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),

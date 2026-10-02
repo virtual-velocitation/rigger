@@ -171,6 +171,12 @@ pub fn current_run_id(events: &[Event]) -> Option<String> {
     latest(events).map(|r| r.run)
 }
 
+/// The spec path the current (latest) run was launched with, its [`RunStarted::spec`] exactly as
+/// recorded, or empty when no run has started or the run carries none.
+pub fn current_run_spec_path(events: &[Event]) -> String {
+    latest(events).map(|r| r.spec).unwrap_or_default()
+}
+
 /// The resolved run-branch base the current (latest) run anchored on, read from its
 /// [`TYPE_RUN_STARTED`] event's [`META_BASE`] metadata (spec 38, criterion 3). `None` when no
 /// run has started, or when the latest run was started before base persistence existed (a

@@ -146,8 +146,9 @@ pub struct ResumeGrant {
 #[derive(Default)]
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
-    /// Whether the run flagged a spec defect (an uncovered criterion, §4.4). Folded
-    /// from the conductor's SpecDefect event; gates [`RunState::release_ready`].
+    /// Whether the run flagged a spec defect (an uncovered criterion, §4.4, or a plan-critique
+    /// stop on a spec defect, spec 112 criterion 5). Folded from the conductor's SpecDefect
+    /// event; gates [`RunState::release_ready`].
     pub spec_defect: bool,
     /// Whether a deferred gate failed at the run's phase boundary. Folded from the
     /// conductor's DeferredGateFailed event; gates `done` so a
@@ -155,11 +156,13 @@ pub struct RunState {
     pub deferred_gate_failed: bool,
     /// The run's live HALT reason when the spawn-budget breaker stopped this run process
     /// with ready work unscheduled (Gap 13) - e.g. `"budget exhausted: 200/200 spawns"` -
-    /// or `None` on a clean fixpoint. Unlike the other fields this is NOT folded from the
-    /// log by [`project`]: a halt is a condition of the CURRENT run process, so
-    /// `conductor::run` stamps it from its in-process breaker state after projecting. Folding
-    /// the durable `BudgetExhausted` event would falsely re-report a halt the operator has
-    /// since resolved by raising the budget (a resume then schedules the work and never
+    /// else when a plan-critique gate stopped it on a spec defect (spec 112, criterion 5:
+    /// `"amend the spec and relaunch: ..."`), or `None` on a clean fixpoint. Unlike the
+    /// other fields this is NOT folded from the log by [`project`]: a halt is a condition of
+    /// the CURRENT run process, so `conductor::run` stamps it from its in-process state after
+    /// projecting (the stop's durable form is its `SpecDefect`, folded into `spec_defect`).
+    /// Folding the durable `BudgetExhausted` event would falsely re-report a halt the operator
+    /// has since resolved by raising the budget (a resume then schedules the work and never
     /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
     /// `rigger step` copies it onto its printed `Step` so the thin driver stops loudly on a
     /// halt instead of reading convergence.
