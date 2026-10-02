@@ -9,7 +9,8 @@ use serde_json::Value;
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
-    lens_role, spawn_id, SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_RESULT,
+    attempt_of, lens_role, result_of, spawn_id, SpawnEvent, SpawnRequest, SpawnResult,
+    ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -351,6 +352,24 @@ pub const CRITIC_TOOLS: [&str; 5] = [
     "mcp__rigger__rigger_peers",
 ];
 
+/// The tools the critic is denied, whatever the operator's own settings allow (a deny wins over
+/// every allow source): every tool that builds, records or edits - the shell, the fan-out tools,
+/// the search tool the critic reads through the graph instead, every editing tool, and the
+/// recording tools of the spawn's own rigger server.
+pub const CRITIC_DENIED_TOOLS: [&str; 11] = [
+    "Bash",
+    "Agent",
+    "Task",
+    "Grep",
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "mcp__rigger__rigger_emit",
+    "mcp__rigger__rigger_progress",
+    "mcp__rigger__rigger_scratch",
+];
+
 /// The `by` a critique finding's graph copy carries.
 pub const SPEC_CRITIC: &str = "spec-critic";
 
@@ -385,12 +404,10 @@ pub fn is_critique_run(name: &str) -> bool {
 }
 
 /// The attempt a critique spawn id of `hash` carries, or `None` when `id` is not exactly
-/// [`critique_spawn_id`] of the hash at some attempt.
+/// [`critique_spawn_id`] of the hash at some attempt: the ordinal the id grammar's own reader
+/// ([`attempt_of`]) returns, kept only when minting it back gives `id` itself.
 fn critique_attempt(id: &str, hash: &str) -> Option<u32> {
-    let attempt: u32 = id
-        .strip_prefix(&format!("{}/{ROLE_ADVERSARY}#", critique_unit(hash)))?
-        .parse()
-        .ok()?;
+    let attempt = attempt_of(id);
     (critique_spawn_id(hash, attempt) == id).then_some(attempt)
 }
 
@@ -477,6 +494,18 @@ pub struct Critique {
 pub fn critique_of(event: &Event, hash: &str) -> Result<Critique, String> {
     let result = SpawnResult::from_event(event)
         .map_err(|e| format!("the recorded result is unreadable: {e}"))?;
+    let (attempt, verdict, findings) = judged(&result, hash)?;
+    Ok(Critique {
+        position: event.position,
+        attempt,
+        verdict,
+        findings,
+    })
+}
+
+/// The authority's judgment of one decoded result: its attempt, verdict and findings when it is a
+/// critique of `hash`, else why it is not one.
+fn judged(result: &SpawnResult, hash: &str) -> Result<(u32, String, Vec<CritiqueFinding>), String> {
     let attempt = critique_attempt(&result.id, hash)
         .ok_or_else(|| format!("{} is not a critique spawn of {hash}", result.id))?;
     if !result.error.is_empty() {
@@ -491,12 +520,7 @@ pub fn critique_of(event: &Event, hash: &str) -> Result<Critique, String> {
              BLOCKING finding line"
         ));
     }
-    Ok(Critique {
-        position: event.position,
-        attempt,
-        verdict,
-        findings,
-    })
+    Ok((attempt, verdict, findings))
 }
 
 /// The critique of `hash` among `events`: its latest critique (highest position), or `None`.
@@ -508,15 +532,73 @@ pub fn latest_critique(events: &[Event], hash: &str) -> Option<Critique> {
         .max_by_key(|c| c.position)
 }
 
-/// Read the critique of `hash` from `store` (the critique's own store): one typed read of the
-/// `SpawnResult` events of its run stream, materializing no other event.
-pub fn read_critique(store: &dyn EventStore, hash: &str) -> Result<Option<Critique>, StoreError> {
-    let results = store.read_stream_typed(
+/// The `SpawnResult` events of `store`'s run stream (the critique's own store): one typed read,
+/// materializing no other event.
+fn critique_results(store: &dyn EventStore) -> Result<Vec<Event>, StoreError> {
+    store.read_stream_typed(
         crate::run::STREAM,
         0,
         TypeSelection::Only(&[TYPE_SPAWN_RESULT]),
+    )
+}
+
+/// Read the critique of `hash` from `store` (the critique's own store): one typed read of the
+/// `SpawnResult` events of its run stream, materializing no other event.
+pub fn read_critique(store: &dyn EventStore, hash: &str) -> Result<Option<Critique>, StoreError> {
+    Ok(latest_critique(&critique_results(store)?, hash))
+}
+
+/// What `store` (the critique's own store) answers for `hash` once the critic's spawn at
+/// `attempt` returned, from one typed read: the hash's critique ([`latest_critique`]) when one is
+/// recorded, else why there is none - the spawn's own latest result read by the authority, or
+/// `None` when the spawn recorded no result.
+pub fn read_spawned_critique(
+    store: &dyn EventStore,
+    hash: &str,
+    attempt: u32,
+) -> Result<Result<Critique, Option<String>>, StoreError> {
+    let results = critique_results(store)?;
+    Ok(latest_critique(&results, hash).ok_or_else(|| why_no_critique(&results, hash, attempt)))
+}
+
+/// Why the critic's spawn of `hash` at `attempt` is no critique: its latest result among
+/// `results` ([`result_of`]) judged by the authority, `None` when it recorded none. A result on
+/// the stream that cannot be read is the why, since the spawn's own result cannot be told apart.
+fn why_no_critique(results: &[Event], hash: &str, attempt: u32) -> Option<String> {
+    match result_of(results, &critique_spawn_id(hash, attempt)) {
+        Ok(result) => result.and_then(|result| judged(&result, hash).err()),
+        Err(e) => Some(format!(
+            "a result recorded on the critique stream is unreadable: {e}"
+        )),
+    }
+}
+
+/// The attempt the next critic spawn of `hash` runs at: how many `SpawnRequested` events `store`
+/// (the critique's own store) already records for the hash, read by type. A request with no
+/// result, or with a result that is no critique, still counts, so the next call runs the next
+/// attempt; a request that cannot be read fails the count, so an attempt id is never reused.
+pub fn next_critique_attempt(store: &dyn EventStore, hash: &str) -> Result<u32, StoreError> {
+    let requests = store.read_stream_typed(
+        crate::run::STREAM,
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_REQUESTED]),
     )?;
-    Ok(latest_critique(&results, hash))
+    critique_requests(&requests, hash).map_err(|e| {
+        StoreError::Backend(format!(
+            "a spawn request recorded on the critique stream is unreadable: {e}"
+        ))
+    })
+}
+
+/// How many of the `SpawnRequested` events among `events` request a critic spawn of `hash`.
+fn critique_requests(events: &[Event], hash: &str) -> Result<u32, serde_json::Error> {
+    let mut requested = 0;
+    for event in events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED) {
+        if critique_attempt(&SpawnRequest::from_event(event)?.id, hash).is_some() {
+            requested += 1;
+        }
+    }
+    Ok(requested)
 }
 
 /// The `ReviewFinding` payload that copies a critique finding into the graph, about the spec.

@@ -7,6 +7,7 @@
 use serde_json::Value;
 
 use crate::config::AgentDef;
+use crate::spawn::SpawnRequest;
 
 /// The event a planning stage's agent emits to add a unit to the run DAG at
 /// runtime (the living-DAG / spawnUnit mechanic).
@@ -142,6 +143,39 @@ pub struct SpawnOpts {
     /// resuming a held session is spec 105's hold-release concern. The cli/workflow
     /// drivers ignore this field.
     pub resumed_from: String,
+}
+
+/// The [`SpawnRequest`] a spawn parks, derived from the spawn's arguments alone - the ONE mapping
+/// from a spawn's options to its recorded request, shared by every caller that parks one (the
+/// replay driver, `rigger critique`): its deterministic id, unit, stage, persona, dir,
+/// blast-radius, work-line and review roster come from `opts`; its granted tools from the agent
+/// (already fan-out-stripped by [`AgentDef::allowed_tools`]); and its task prompt from `prompt`.
+/// Its model is the cascade rung this attempt resolves ([`AgentDef::model_for_attempt`], spec 10
+/// unit 4), so a `model_ladder` agent parks a request naming the rung it escalated to for
+/// `opts.attempt` - the same rung the conductor stamps as the requested alias. Its
+/// `max_wall_clock` (resolved from `defaults.max_wall_clock` at config load) rides along too, so
+/// the parked spawn also carries its per-role liveness bound (spec 10, unit 3).
+pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnRequest {
+    SpawnRequest {
+        id: opts.id.clone(),
+        unit: opts.unit.clone(),
+        stage: opts.stage.clone(),
+        prompt: prompt.to_string(),
+        system_prompt: opts.system_prompt.clone(),
+        model: agent.model_for_attempt(opts.attempt),
+        tools: agent.allowed_tools(),
+        dir: opts.dir.clone(),
+        blast_radius: opts.blast_radius.clone(),
+        max_wall_clock: agent.max_wall_clock,
+        // The live work-line (spec 19a, c4): copy the conductor-threaded unit criterion onto
+        // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
+        // prints from it - carry the WORK the thin driver narrates.
+        title: opts.title.clone(),
+        // The routed review roster (spec 67, criterion 4): copy the conductor-threaded
+        // adversary/adjudicator roster onto the parked request, the same additive seam
+        // `title` establishes, so the wave carries it for `workflows/rigger.js` to render.
+        reviews: opts.reviews.clone(),
+    }
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -320,5 +354,59 @@ pub fn strip_failure_marker(e: &Error) -> String {
     match rest.find(FAILURE_MARKER) {
         Some(end) => rest[end + FAILURE_MARKER.len_utf8()..].to_string(),
         None => e.0.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The request a spawn parks is derived from its options and its agent alone: every field the
+    /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
+    /// wall-clock bound - and nothing else of the options (isolation, env, settings, launch).
+    #[test]
+    fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
+        let agent = AgentDef {
+            id: "critic".into(),
+            model_ladder: vec!["sonnet".into(), "opus".into()],
+            tools: vec!["Read".into(), "Agent".into(), "Glob".into()],
+            max_wall_clock: Some(900),
+            prompt: "the persona".into(),
+            ..AgentDef::default()
+        };
+        let opts = SpawnOpts {
+            id: "u/adversary#1".into(),
+            unit: "u".into(),
+            stage: "review".into(),
+            attempt: 1,
+            system_prompt: "the system prompt".into(),
+            dir: "/work/u".into(),
+            isolation: true,
+            blast_radius: vec!["src/a.rs".into()],
+            run_id: "run-1".into(),
+            title: "the criterion".into(),
+            env: vec![("K".into(), "V".into())],
+            reviews: vec!["lens:sdet".into()],
+            settings_json: "{}".into(),
+            launch: 2,
+            ..SpawnOpts::default()
+        };
+        assert_eq!(
+            spawn_request(&agent, "the task", &opts),
+            SpawnRequest {
+                id: "u/adversary#1".into(),
+                unit: "u".into(),
+                stage: "review".into(),
+                prompt: "the task".into(),
+                system_prompt: "the system prompt".into(),
+                model: "opus".into(),
+                tools: vec!["Read".into(), "Glob".into()],
+                dir: "/work/u".into(),
+                blast_radius: vec!["src/a.rs".into()],
+                max_wall_clock: Some(900),
+                title: "the criterion".into(),
+                reviews: vec!["lens:sdet".into()],
+            }
+        );
     }
 }

@@ -12,7 +12,6 @@ use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::review::{self, Critique};
-use rigger::spawn::{SpawnRequest, SpawnResult, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 
 /// The command, as its refusals and notices name it.
 const COMMAND: &str = "rigger critique";
@@ -49,16 +48,7 @@ fn parse_critique_args(args: &[String]) -> Result<CritiqueArgs, Box<dyn std::err
         match arg.as_str() {
             "--eventstore" => store = Some(eventstore_flag(it.next(), "critique")?),
             "--conn" => conn = Some(conn_flag(it.next(), "critique")?),
-            flag if flag.starts_with("--") => {
-                return Err(format!("critique: unknown flag {flag:?}").into())
-            }
-            positional if spec.is_some() => {
-                return Err(format!(
-                    "critique: unexpected second positional argument {positional:?}"
-                )
-                .into())
-            }
-            positional => spec = Some(positional.to_string()),
+            other => spec_positional(other, &mut spec, "critique")?,
         }
     }
     let spec = spec.ok_or(
@@ -90,17 +80,9 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             rigger::wave::NO_CRITIC_CLAUSE
         )
     })?;
-    let scratch_root = if repo.is_empty() {
-        String::new()
-    } else {
-        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-    };
-    refuse_unless_one_root(
-        &cwd,
-        &repo,
-        Some(scratch_root.as_str()).filter(|root| !root.is_empty()),
-        COMMAND,
-    )?;
+    let scratch = project_scratch_root(&repo, &cfg);
+    refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), COMMAND)?;
+    let scratch_root = scratch.unwrap_or_default();
     let root = review::spec_root(&cwd, &repo);
     let spec = review::normalize_spec_path(&root, &parsed.spec).ok_or_else(|| {
         format!(
@@ -184,33 +166,35 @@ impl CriticHost<'_> {
                 self.critic
             )
         })?;
-        // The critic reads and looks things up; it can neither build nor record.
+        // The critic reads and looks things up; it can neither build nor record: its tools are
+        // replaced, and every tool that builds, records or edits is denied whatever the
+        // checkout's own settings allow.
         let critic = config::AgentDef {
             tools: review::CRITIC_TOOLS.map(String::from).to_vec(),
             ..persona.clone()
         };
+        let attempt = review::next_critique_attempt(self.critiques, hash)?;
         let unit = review::critique_unit(hash);
-        let attempt = critique_requests(self.critiques, hash)?;
-        let id = review::critique_spawn_id(hash, attempt);
         let prompt = review::spec_critique_prompt(spec, text);
-        let system_prompt = conductor::build_system_prompt(&critic.prompt, &self.cfg.instructions);
-        let dir = self.root.to_string_lossy().into_owned();
+        let opts = SpawnOpts {
+            id: review::critique_spawn_id(hash, attempt),
+            unit: unit.clone(),
+            stage: CRITIQUE_STAGE.to_string(),
+            attempt,
+            system_prompt: conductor::build_system_prompt(&critic.prompt, &self.cfg.instructions),
+            dir: self.root.to_string_lossy().into_owned(),
+            run_id: unit,
+            title: spec.to_string(),
+            settings_json: serde_json::json!({
+                "permissions": { "deny": review::CRITIC_DENIED_TOOLS }
+            })
+            .to_string(),
+            ..SpawnOpts::default()
+        };
         spawn_store::park_in_run(
             self.critiques,
-            &SpawnRequest {
-                id: id.clone(),
-                unit: unit.clone(),
-                stage: CRITIQUE_STAGE.to_string(),
-                prompt: prompt.clone(),
-                system_prompt: system_prompt.clone(),
-                model: critic.model_for_attempt(attempt),
-                tools: critic.allowed_tools(),
-                dir: dir.clone(),
-                max_wall_clock: critic.max_wall_clock,
-                title: spec.to_string(),
-                ..SpawnRequest::default()
-            },
-            &unit,
+            &conductor::spawn_request(&critic, &prompt, &opts),
+            &opts.run_id,
             self.scratch_root,
         )?;
         let progress_backend = Store::open(&db_path("progress.db"))?;
@@ -227,69 +211,15 @@ impl CriticHost<'_> {
             "{COMMAND}: {spec} (hash {hash}): critiquing with {} at attempt {attempt}",
             self.critic
         );
-        let spawned = host.spawn(
-            &critic,
-            &prompt,
-            &SpawnOpts {
-                id: id.clone(),
-                unit: unit.clone(),
-                stage: CRITIQUE_STAGE.to_string(),
-                attempt,
-                system_prompt,
-                dir,
-                isolation: false,
-                run_id: unit,
-                title: spec.to_string(),
-                ..SpawnOpts::default()
-            },
-            &|_, _| Ok(()),
-        );
+        let spawned = host.spawn(&critic, &prompt, &opts, &|_, _| Ok(()));
         remove_critique_scratch(self.scratch_root);
-        if let Some(critique) = review::read_critique(self.critiques, hash)? {
-            return Ok(critique);
-        }
-        let why = recorded_result(self.critiques, &id)?
-            .and_then(|result| review::critique_of(&result, hash).err())
-            .or_else(|| spawned.err().map(|e| e.to_string()))
-            .unwrap_or_else(|| "the critic's session recorded no result".to_string());
-        Err(format!("{COMMAND}: {spec} (hash {hash}): no critique was recorded - {why}").into())
+        review::read_spawned_critique(self.critiques, hash, attempt)?.map_err(|why| {
+            let why = why
+                .or_else(|| spawned.err().map(|e| e.to_string()))
+                .unwrap_or_else(|| "the critic's session recorded no result".to_string());
+            format!("{COMMAND}: {spec} (hash {hash}): no critique was recorded - {why}").into()
+        })
     }
-}
-
-/// How many critic spawns of `hash` were already requested: the attempt the next one runs at. A
-/// request with no result (a crash) still counts, so the next call spawns the next attempt.
-fn critique_requests(
-    store: &dyn EventStore,
-    hash: &str,
-) -> Result<u32, Box<dyn std::error::Error>> {
-    let unit = review::critique_unit(hash);
-    let mut requested = 0;
-    for event in store.read_stream_typed(
-        conductor::STREAM,
-        0,
-        TypeSelection::Only(&[TYPE_SPAWN_REQUESTED]),
-    )? {
-        if SpawnRequest::from_event(&event)?.unit == unit {
-            requested += 1;
-        }
-    }
-    Ok(requested)
-}
-
-/// The latest recorded result event of spawn `id` on the critique store.
-fn recorded_result(
-    store: &dyn EventStore,
-    id: &str,
-) -> Result<Option<Event>, Box<dyn std::error::Error>> {
-    let results = store.read_stream_typed(
-        conductor::STREAM,
-        0,
-        TypeSelection::Only(&[TYPE_SPAWN_RESULT]),
-    )?;
-    Ok(results
-        .into_iter()
-        .rev()
-        .find(|event| SpawnResult::from_event(event).is_ok_and(|result| result.id == id)))
 }
 
 /// Remove the liveness and transcript directories of every critique run (`critique-<hash>`, any

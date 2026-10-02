@@ -288,6 +288,25 @@ fn conn_flag(value: Option<&String>, verb: &str) -> Result<String, Box<dyn std::
         .ok_or_else(|| format!("{verb}: --conn expects a connection url").into())
 }
 
+/// One argument of `verb`'s argv that none of its flag arms claimed, under the single-positional
+/// spec rule every spec-taking verb's parser shares (`rigger run`, `rigger workflow`, `rigger
+/// critique`): a `--` argument is an unknown flag, the first positional is the spec path, and a
+/// second positional is refused.
+fn spec_positional(
+    arg: &str,
+    spec: &mut Option<String>,
+    verb: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if arg.starts_with("--") {
+        return Err(format!("{verb}: unknown flag {arg:?}").into());
+    }
+    if spec.is_some() {
+        return Err(format!("{verb}: unexpected second positional argument {arg:?}").into());
+    }
+    *spec = Some(arg.to_string());
+    Ok(())
+}
+
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
 /// criterion 6), and a single positional spec path. Unknown flags and a second positional
@@ -332,18 +351,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
                 i += 1;
                 conn = Some(conn_flag(args.get(i), "run")?);
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("run: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "run: unexpected second positional argument {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "run")?,
         }
         i += 1;
     }

@@ -281,6 +281,17 @@ pub(crate) fn refuse_unless_one_root(
     Ok(())
 }
 
+/// The project scratch root a run entry (`rigger step`, `rigger serve`) and `rigger critique`
+/// work under: `None` in a project with no git repository, where nothing keys a scratch root and
+/// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
+/// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
+/// sweeps, a served run hands its MCP server and a critique writes under, and that
+/// [`refuse_unless_one_root`] checks, can never disagree.
+pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
+    (!repo.is_empty())
+        .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
+}
+
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
 /// integration-gate stall (spec 18, unit 2). This is the single load seam every run entry
 /// (`cmd_step`, `run_cli`, `run_workflow`) shares, so the run-start refusal cannot be present
@@ -449,14 +460,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // changes no answer it was ever going to give, only how early that answer is available. Kept
     // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
     // HALT's own reclaim both still need it (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg);
 
     // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
     // mutation - not merely before the terminal sweep - when the store this step is about to
@@ -1672,11 +1676,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
     // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
     // than a second `git_repo()` re-read.
-    let scratch_root = if repo.is_empty() {
-        String::new()
-    } else {
-        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg).unwrap_or_default();
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
     // whole MCP session, so an active harness is never invisible. Held here (not inside the
@@ -1750,18 +1750,7 @@ fn parse_workflow_args(
                     None => return Err("workflow: --base expects a ref".into()),
                 };
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("workflow: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "workflow: expected at most one spec path, got a second {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "workflow")?,
         }
         i += 1;
     }

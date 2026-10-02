@@ -24,13 +24,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::agent::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::agent::{parked_spawn, spawn_request, AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 #[cfg(test)]
 use crate::eventstore::Direction;
 use crate::eventstore::EventStore;
 use crate::run::STREAM;
-use crate::spawn::{self, SpawnRequest};
+use crate::spawn;
 use crate::spawn_store;
 
 /// The scratch subdirectory a spawn's dedicated per-spawn scratch lives under, a sibling of
@@ -249,39 +249,6 @@ impl<'a> ReplayDriver<'a> {
     /// `marker_root` (a re-drive with no worker to touch a marker) records none.
     pub fn new(store: &'a dyn EventStore, marker_root: &'a str) -> ReplayDriver<'a> {
         ReplayDriver { store, marker_root }
-    }
-}
-
-/// Reconstruct the full [`SpawnRequest`] this call would park, from the trait's spawn
-/// arguments: its deterministic id, unit, and stage come from `opts` (the conductor
-/// set them from the run structure); its persona, dir, and blast-radius from `opts`;
-/// its granted tools from the agent (already fan-out-stripped by
-/// [`AgentDef::allowed_tools`]); and its task prompt from `prompt`. Its model is the
-/// cascade rung this attempt resolves ([`AgentDef::model_for_attempt`], spec 10 unit 4),
-/// so a `model_ladder` agent parks a request naming the rung it escalated to for
-/// `opts.attempt` - the same rung the conductor stamps as the requested alias. Its
-/// `max_wall_clock` (resolved from `defaults.max_wall_clock` at config load) rides along
-/// too, so the parked spawn also carries its per-role liveness bound (spec 10, unit 3).
-fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnRequest {
-    SpawnRequest {
-        id: opts.id.clone(),
-        unit: opts.unit.clone(),
-        stage: opts.stage.clone(),
-        prompt: prompt.to_string(),
-        system_prompt: opts.system_prompt.clone(),
-        model: agent.model_for_attempt(opts.attempt),
-        tools: agent.allowed_tools(),
-        dir: opts.dir.clone(),
-        blast_radius: opts.blast_radius.clone(),
-        max_wall_clock: agent.max_wall_clock,
-        // The live work-line (spec 19a, c4): copy the conductor-threaded unit criterion onto
-        // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
-        // prints from it - carry the WORK the thin driver narrates.
-        title: opts.title.clone(),
-        // The routed review roster (spec 67, criterion 4): copy the conductor-threaded
-        // adversary/adjudicator roster onto the parked request, the same additive seam
-        // `title` establishes, so the wave carries it for `workflows/rigger.js` to render.
-        reviews: opts.reviews.clone(),
     }
 }
 
