@@ -1091,12 +1091,20 @@ mod tests {
         (dir, g)
     }
 
-    /// The tree behind the gap-104 ranking tests: a trait, two product impls of it, a test double
-    /// implementing it, the one store opener every impl calls, and unrelated names that merely
-    /// contain a query word (`for`, `open`) in files that sort first.
+    /// The tree behind the gap-104 ranking tests: a trait, two product impls of it, two test doubles
+    /// implementing it (one in a `#[cfg(test)]` module, one under a `tests/` directory), the one
+    /// store opener every impl calls, an unrelated impl in the trait's own file, and unrelated
+    /// names that merely contain a query word (`for`, `open`) in files that sort first.
     fn store_tree() -> (tempfile::TempDir, Symbols) {
         grounder_over(&[
-            ("domain/eventstore.rs", "pub trait EventStore { fn append(&self); }\n"),
+            (
+                "domain/eventstore.rs",
+                "pub trait EventStore { fn append(&self); }\nstruct Guard;\nimpl Drop for Guard { fn drop(&mut self) {} }\n",
+            ),
+            (
+                "tests/doubles.rs",
+                "struct Double;\nimpl EventStore for Double { fn append(&self) {} }\n",
+            ),
             (
                 "store/sqlite.rs",
                 "pub struct Store;\npub fn open_connection() {}\nimpl EventStore for Store { fn append(&self) { open_connection(); } }\n",
@@ -1134,9 +1142,18 @@ mod tests {
         let sqlite = position_of(&ranked, "store/sqlite.rs", "impl EventStore for Store");
         let kurrent = position_of(&ranked, "store/kurrentdb.rs", "impl EventStore for Store");
         let double = position_of(&ranked, "conductor.rs", "impl EventStore for Fake");
+        let tests_dir_double =
+            position_of(&ranked, "tests/doubles.rs", "impl EventStore for Double");
         assert!(
-            sqlite.max(kurrent) < double,
-            "a product impl ranks above a test double; got {ranked:?}"
+            sqlite.max(kurrent) < double.min(tests_dir_double),
+            "a product impl ranks above a test double, in a test module or a tests directory; \
+             got {ranked:?}"
+        );
+        let other_impl = position_of(&ranked, "domain/eventstore.rs", "impl Drop for Guard");
+        assert!(
+            other_impl > double.max(tests_dir_double),
+            "an impl of another trait matches the query's words only through its file path, so \
+             it ranks below every impl the query names; got {ranked:?}"
         );
         for incidental in ["malformed_input_for_op", "formatter_for_display"] {
             if let Some(p) = ranked.iter().position(|r| r.loc.text == incidental) {
