@@ -19911,9 +19911,9 @@ mod tests {
     /// unit whose worker writes `feature.rs`, over a store whose first group lookup of that file
     /// goes unanswered, WHEN the unit lands and the integration's reindex fails on that lookup,
     /// THEN the step fails with the store's error, and the step that resumes the landed unit
-    /// records exactly one `FileTouched` and one per-artifact `GateVerdict` for the file and
-    /// exactly one `UnitIntegrated` - the failed reindex left no unkeyed edge for the resume to
-    /// append a second time.
+    /// records exactly one `FileTouched` for the file, no per-file `GateVerdict`, and exactly one
+    /// `UnitIntegrated` - the failed reindex left no unkeyed edge for the resume to append a
+    /// second time.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_landed_unit_whose_reindex_lookup_fails_resumes_to_one_file_touched_and_one_integration() {
@@ -19967,8 +19967,82 @@ mod tests {
                 about_feature(contextgraph::TYPE_GATE_VERDICT, "artifact"),
                 count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             ),
-            (1, 1, 1),
-            "one FileTouched and one GateVerdict for the landed file, and one UnitIntegrated"
+            (1, 0, 1),
+            "one FileTouched and no per-file GateVerdict for the landed file, and one UnitIntegrated"
+        );
+    }
+
+    /// Gap 111 (A LANDING RECORDS ITS GATES ONCE): GIVEN a merging unit with two gates whose
+    /// worker commits three files, WHEN it lands, THEN the only `GateVerdict`s after its
+    /// `integrate-landed` row are its two keyed post-merge verdicts - the merged tree's record -
+    /// and no unkeyed verdict per touched file and gate.
+    #[test]
+    fn a_landing_appends_only_its_keyed_post_merge_verdicts() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g1".into(), gate_def("true"));
+        cfg.workflow.gates.insert("g2".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g1".into(), "g2".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let files = ["a.rs", "b.rs", "c.rs"];
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "worker".to_string(),
+                files
+                    .iter()
+                    .map(|f| (f.to_string(), format!("// {f}\n")))
+                    .collect(),
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+
+        run_isolated(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let touched: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_FILE_TOUCHED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["path"].clone())
+            .collect();
+        assert_eq!(
+            touched,
+            files.map(|f| json!(f)),
+            "premise: the landing touched the worker's three files"
+        );
+        let landed = events
+            .iter()
+            .position(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["status"]
+                        == json!(STATUS_INTEGRATE_LANDED)
+            })
+            .expect("the unit records its landing");
+        let verdicts_after_landing: Vec<Option<&String>> = events[landed..]
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+            .map(|e| e.meta.get(META_REPLAY_KEY))
+            .collect();
+        assert_eq!(
+            verdicts_after_landing,
+            [
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, "g1")),
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, "g2")),
+            ],
+            "the landing records each gate once, keyed by unit and attempt"
         );
     }
 
