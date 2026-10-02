@@ -786,12 +786,7 @@ mod tests {
                     resolved_model: self.resolved_model.clone(),
                 });
             }
-            // The anchor the review header names, between the first pair of backticks.
-            let anchor = prompt
-                .split_once('`')
-                .and_then(|(_, rest)| rest.split_once('`'))
-                .map(|(a, _)| a.to_string())
-                .unwrap_or_default();
+            let anchor = crate::test_support::anchor_of(prompt);
             let my_tier = if a.id == "adv" {
                 TIER_ADVERSARY
             } else {

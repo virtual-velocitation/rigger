@@ -798,16 +798,6 @@ fn criterion_sentences(text: &str) -> Vec<(usize, Vec<Sentence>)> {
         .collect()
 }
 
-/// The text strictly inside each backtick pair of `sentence` ([`backtick_spans`]), in order;
-/// an unpaired last backtick names no span.
-fn code_spans(sentence: &str) -> Vec<String> {
-    let chars: Vec<char> = sentence.chars().collect();
-    backtick_spans(&chars)
-        .into_iter()
-        .filter_map(|(open, close)| Some(chars[open + 1..close?].iter().collect()))
-        .collect()
-}
-
 /// F10 twin measured surface: criteria `i < j` each hold a sentence carrying the same
 /// backtick span and a [`MEASURE_WORDS`] word, so whichever lands first is asserted over a
 /// surface the other changes. One advisory per pair and shared span, on criterion `j`,
@@ -1033,6 +1023,19 @@ fn backtick_spans(chars: &[char]) -> Vec<(usize, Option<usize>)> {
     mark_positions(chars, '`')
         .chunks(2)
         .map(|pair| (pair[0], pair.get(1).copied()))
+        .collect()
+}
+
+/// The text strictly inside each backtick pair of `text` ([`backtick_spans`]), in order: the
+/// one backtick code-span reader, so every reader of a Markdown code span pairs marks by the
+/// rule [`strip_inline_code`] masks with. An unpaired last backtick names no span, and neither
+/// does an empty pair, so a double-backtick span (two empty pairs) names none.
+pub fn code_spans(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    backtick_spans(&chars)
+        .into_iter()
+        .filter_map(|(open, close)| Some(chars[open + 1..close?].iter().collect::<String>()))
+        .filter(|span| !span.is_empty())
         .collect()
 }
 

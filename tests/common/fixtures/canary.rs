@@ -92,11 +92,10 @@ pub fn emit_review_finding(
     })
 }
 
-/// The anchor a canary review prompt names: the text between its first pair of backticks.
+/// The anchor a canary review prompt names: the review header's first code span.
 pub fn anchor_of(prompt: &str) -> String {
-    prompt
-        .split_once('`')
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(anchor, _)| anchor.to_string())
+    rigger::spec::code_spans(prompt)
+        .into_iter()
+        .next()
         .unwrap_or_default()
 }
