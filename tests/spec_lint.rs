@@ -13,6 +13,12 @@
 //! slow) rather than driving the compiled binary. NOT owned: the pure lint heuristics
 //! themselves (ownership/disposition/hygiene detection, Notes/fence/inline-code exclusion),
 //! which carry their own unit tests beside their implementation in `src/spec.rs`.
+//!
+//! Spec 112, criterion 3 (VALIDATE NAMES THE PREFLIGHT TELLS) adds the three preflight tells
+//! at the same seam: `rigger validate <spec>` warns with the criterion number on a twin
+//! measured surface (F10), an identity claim naming no comparison surface (F11) and an
+//! identity claim whose Design and Notes never decide removal (F11), and the corpus snapshot
+//! pins the F10 and F11 totals.
 
 mod common;
 
@@ -860,13 +866,11 @@ rigger::test_cases! {
         ],
     );
 
-    /// The backtick twin of the double-quote case above: `strip_inline_code` shares ONE
-    /// open-delimiter toggle between `` ` `` and `"` (keyed on whichever delimiter opened the
-    /// current span), so the round-10 fix that carries quote state across a hard-wrapped line
-    /// carries backtick state the same way - but had no coverage at any layer (unit or
-    /// periphery) proving it, since the implementer's own regression test exercises only the
-    /// double-quote fixture. Proves the fix is not an accident of the one fixture it was
-    /// written against.
+    /// The backtick twin of the double-quote case above: F4 joins the paragraph's lines before
+    /// `strip_inline_code` masks it, and backticks pair span by span (specs/112, *The one
+    /// masker*), so a backtick pair whose closing mark falls on the hard-wrapped continuation
+    /// line still blanks everything between its two marks, the wrap included. Proves the join
+    /// carries a code span across a wrap, not only a quoted one.
     validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -912,11 +916,11 @@ rigger::test_cases! {
         ],
     );
 
-    /// The backtick twin of the test above, for the same reason
-    /// `validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line` exists beside its
-    /// double-quote sibling: `strip_inline_code` runs the identical even/odd rule per kind
-    /// (`for kind in ['`', '"']`), so proving balanced-pair recall for `"` alone would leave the
-    /// backtick arm an accident of the one fixture it was never written against.
+    /// The backtick twin of the test above: backticks pair span by span (specs/112, *The one
+    /// masker*), so a backtick pair blanks only from its opening mark through its closing
+    /// one, and an unquoted smell after the pair is still linted on the real binary. The
+    /// backtick rule is its own rule, not the quote kind's, so its recall is proven on its
+    /// own fixture.
     validate_still_flags_a_smell_outside_a_balanced_backtick_pair: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -958,10 +962,10 @@ rigger::test_cases! {
         ],
     );
 
-    /// The backtick twin of the fail-closed case above: each delimiter kind computes its own
-    /// span independently under the one-span-per-kind rule, so an odd backtick count fails
-    /// closed exactly as an odd quote count does - proven at the CLI seam so the rule is not
-    /// an accident of the one double-quote fixture it was written against.
+    /// The backtick twin of the fail-closed case above: under the pair rule (specs/112, *The
+    /// one masker*) an unpaired last backtick blanks from itself to the end of the paragraph,
+    /// so the later unquoted smell is not reported - proven at the CLI seam, beside the quote
+    /// kind's own fail-closed case.
     validate_fails_closed_after_a_stray_unmatched_backtick_earlier_in_the_paragraph: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -1010,23 +1014,12 @@ rigger::test_cases! {
         ],
     );
 
-    /// Round-12 fix (`impl-u66c3-r12-candidate-delimiter-exclusion-fix`) excludes a `"`
-    /// immediately preceded by a digit from delimiter candidacy, but DELIBERATELY scopes the
-    /// exclusion to `"` only - `is_candidate` (`src/spec.rs`) guards it with `ch == '"'`, so a
-    /// backtick keeps its old unconditional candidacy regardless of what precedes it. The
-    /// commit's own stated reason is that this repo's corpus routinely closes real inline-code
-    /// spans immediately after a digit (an IP address, a version number), so a digit-adjacent
-    /// CLOSING backtick must keep pairing. Nothing at any layer proved that: the implementer's
-    /// own round-12 tests (`disposition_check_a_stray_unmatched_quote_does_not_unmask_a_later_
-    /// real_quoted_phrase`, `validate_a_stray_unmatched_quote_does_not_unmask_a_later_real_
-    /// quoted_disposition_phrase`, this file above) exercise only the `"` fixture, so a future
-    /// slip that widened the `ch == '"'` guard to cover both delimiters (e.g. dropping it, or
-    /// copying the digit check onto the shared `is_candidate` prefix) would silently break
-    /// backtick-masked code spans and reopen the same quoted-or-named-text-can-never-
-    /// false-positive class this unit has been REJECTed for six times (rounds 4, 5, 6, 9, 10,
-    /// 11) - just for the sibling delimiter. Drives the real compiled binary; the fixture's
-    /// closing backtick sits immediately after `127`, a digit, with no separating whitespace,
-    /// the same shape the commit message names.
+    /// A code span that closes right after a digit stays masked: the pair rule (specs/112,
+    /// *The one masker*) pairs the 1st backtick with the 2nd with no test of what precedes
+    /// either mark, and this repo's corpus routinely closes a real inline-code span
+    /// immediately after a digit (an IP address, a version number). Drives the real compiled
+    /// binary; the fixture's closing backtick sits immediately after `127`, a digit, with no
+    /// separating whitespace, so the "could instead" inside the pair is never linted.
     validate_ignores_a_backtick_span_whose_closing_mark_is_immediately_after_a_digit: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -1311,6 +1304,65 @@ fn validate_spec_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere
     );
 }
 
+rigger::test_cases! {
+    /// Spec 112, criterion 3 - VALIDATE NAMES THE PREFLIGHT TELLS. Given a spec whose
+    /// criteria 1 and 2 each assert a measure over `rigger step` (criterion 1's measure word
+    /// sitting between two code spans, which the backtick pair rule leaves visible), whose
+    /// criterion 3 claims a byte-identical rebuild naming no comparison surface, and whose
+    /// Design never decides removal: `rigger validate` warns on each tell with its criterion
+    /// number and class label, and still exits 0.
+    validate_names_the_preflight_tells_with_their_criterion_numbers: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\nThe step reads the store once.\n\n## Done when\n\n\
+             - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
+             - [ ] `rigger step` costs at most one read. This criterion OWNS the query.\n\
+             - [ ] the rebuilt graph is byte-identical to the original. This criterion OWNS \
+             the rebuild.\n",
+        ),
+        &[
+            Lint::Fires(
+                &[
+                    "F10 landing-order circularity (criterion 2): twin measured surface \
+                     `rigger step` with criterion 1;",
+                    "F11 undecided removal (criterion 3): identity claim names no comparison \
+                     surface;",
+                    "F11 undecided removal (criterion 3): identity claim while no Design or \
+                     Notes line decides removal;",
+                ],
+                "each preflight tell must warn with its class label and criterion number",
+            ),
+            Lint::Silent(
+                &[
+                    "F10 landing-order circularity (criterion 1)",
+                    "F11 undecided removal (criterion 1)",
+                    "F11 undecided removal (criterion 2)",
+                ],
+                "a twin warns on the later criterion only, and a criterion with no identity \
+                 claim draws no F11",
+            ),
+        ],
+    );
+
+    /// The decided counterpart: the same shape with the twin split onto two surfaces, the
+    /// identity claim naming its comparison surface and the Design deciding removal draws no
+    /// preflight tell.
+    validate_draws_no_preflight_tell_on_a_spec_that_decides_them: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\nA link dropped by a later generation is decided \
+             here.\n\n## Done when\n\n\
+             - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
+             - [ ] `rigger graph` costs at most one read. This criterion OWNS the query.\n\
+             - [ ] the rebuilt graph is byte-identical to the original, compared on the live \
+             projection. This criterion OWNS the rebuild.\n",
+        ),
+        &[Lint::Silent(
+            &["F10 landing-order circularity", "F11 undecided removal"],
+            "a spec that splits its surfaces, names its comparison surface and decides \
+             removal draws no preflight tell",
+        )],
+    );
+}
+
 /// Round-6 sharpening (`specs/66-ship-the-planning-discipline.md`'s Design bullet,
 /// "the acceptance property, made precise") replaced the original, machine-unjudgeable
 /// "zero false findings over all historical specs" bar with two narrower, precise
@@ -1347,6 +1399,8 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
     let mut f1_total = 0usize;
     let mut shape_total = 0usize;
     let mut hygiene_total = 0usize;
+    let mut f10_total = 0usize;
+    let mut f11_total = 0usize;
     let mut f4_hits: Vec<String> = Vec::new();
 
     for path in &entries {
@@ -1359,6 +1413,8 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
                 "F2 bundling" | "F6 copyability" => shape_total += 1,
                 "hygiene" => hygiene_total += 1,
                 "F4 disposition" => f4_hits.push(name.clone()),
+                "F10 landing-order circularity" => f10_total += 1,
+                "F11 undecided removal" => f11_total += 1,
                 other => panic!("unknown lint class {other:?} on {name}; got: {a}"),
             }
         }
@@ -1377,34 +1433,53 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
     // either KILLED ... or JUSTIFIED") that became visible when F4 gained the cross-line
     // paragraph join (adv-u66c3-r6-crossline-hedge-invisible-to-f4): mechanically
     // hedge-shaped, semantically decided - tolerated advisory noise on historical prose
-    // by the Design's own rule. specs/74 DROPPED from this snapshot this round
-    // (`impl-u66c3-r14-mask-to-last-occurrence`): its lone hedge-shaped phrase ("either
-    // side is `+unversioned`" beside a faraway "or") sits between two independent
-    // backtick-delimited code spans in the same paragraph (`` `rigger validate` `` earlier,
-    // `` `+unversioned` `` right at the hedge itself); the round-14 mask-to-last-occurrence
-    // closer fix (mandated by `adv-u66c3-r13-standing-remedy-direction-unsound` to close
-    // the 8th recurrence of the quoted-text-can-never-false-positive class) now pairs the
-    // FIRST backtick with the LAST remaining backtick in the paragraph, fusing those two
-    // independent spans into one and masking the enclosed hedge along with them - an
-    // accepted, deliberate RECALL loss (over-masking can only ever mask MORE, never
-    // produce a false positive; the spec's own invariant is recall is expendable, a false
-    // positive is not), not a heuristic regression. The snapshot keeps the net taut both
-    // ways: a NEW name here is a false-positive regression to investigate, and 57
-    // vanishing is a recall regression on the one KNOWN-genuine hedge - either way this
-    // assertion fails loudly rather than drifting.
+    // by the Design's own rule. specs/74, 78, 93 and 101 joined the set with spec 112's
+    // backtick pair rule (specs/112, *The one masker*): `strip_inline_code` now blanks
+    // backtick spans pair by pair, so prose between two code spans of one paragraph is
+    // linted where the earlier one-span-per-kind rule masked it from the first backtick
+    // through the last. Each is mechanically hedge-shaped prose between two code spans:
+    // 74's criterion 2 ("when either side is unversioned ... or any other reason"), 78's
+    // audit-test paragraph ("if either sanctioned file contains a shell-out, `--` separator
+    // or ..."), 93's module rule ("either wholly in `core` or wholly behind `store`") and
+    // 101's rebuild paragraph ("a racing open of either kind sees the old file ... or the
+    // complete rebuilt one") - advisory output on historical prose, not vetted for precision.
+    // The snapshot keeps the net taut both ways: a NEW name here is a false-positive
+    // regression to investigate, and 57 vanishing is a recall regression on the one
+    // KNOWN-genuine hedge - either way this assertion fails loudly rather than drifting.
     assert_eq!(
         f4_hits,
         vec![
+            "101-a-one-shot-command-folds-only-the-run-it-serves.md".to_string(),
             "18-fail-fast-validation.md".to_string(),
             "57-retire-turbovec.md".to_string(),
             "73-mutation-testing-implementer-efficacy.md".to_string(),
+            "74-version-increments-with-the-tree.md".to_string(),
+            "78-no-os-level-kills.md".to_string(),
+            "93-the-console-core-compiles-to-webassembly.md".to_string(),
         ],
-        "F4's committed-corpus fire set must match the reviewed snapshot (57 genuine; \
-         18/73 decided-enumeration advisory noise per the Design's \
-         historical-specs-are-advisory rule; 74 dropped this round by the accepted \
-         mask-to-last-occurrence over-masking trade-off, see comment above); a new name is \
-         a false-positive regression, a missing one (other than 74, already accounted for) \
-         a recall regression; got: {f4_hits:?}"
+        "F4's committed-corpus fire set must match the snapshot (57 genuine; 18/73 \
+         decided-enumeration advisory noise per the Design's historical-specs-are-advisory \
+         rule; 74/78/93/101 hedge-shaped prose between two code spans, linted since spec \
+         112's backtick pair rule, see comment above); a new name is a false-positive \
+         regression, a missing one a recall regression; got: {f4_hits:?}"
+    );
+    // Spec 112's preflight tells, pinned at their observed corpus totals as a regression
+    // snapshot (specs/112 Design, *The corpus snapshot*): advisory output on historical
+    // specs, no precision claimed or vetted. F10 fires on specs/22 (criteria 1 and 2 both
+    // measure `Store` and `emit_event`) and specs/101 (criteria 2 and 3 both measure
+    // `rigger step`); F11 counts both of its tells, the identity claim naming no comparison
+    // surface and the identity claim whose spec decides no removal in Design or Notes. A
+    // changed total means a real spec edit (re-pin after reviewing the hits) or a regression
+    // in a tell; a Design amendment to spec 112 that moves a total re-pins it in the same
+    // commit.
+    assert_eq!(
+        f10_total, 3,
+        "F10 landing-order circularity's corpus-wide total is pinned to its observed count"
+    );
+    assert_eq!(
+        f11_total, 43,
+        "F11 undecided removal's corpus-wide total (both tells) is pinned to its observed \
+         count"
     );
     assert_eq!(
         f1_total, 215,

@@ -1931,6 +1931,13 @@ mod tests {
             "a     then            ",
             "each delimiter kind computes its own span independently"
         );
+        // Backticks pair span by span (specs/112, *The one masker*): two code spans blank
+        // pair by pair, and the prose between them stays visible to the scan.
+        assert_eq!(
+            strip_inline_code("`x` could instead `y` end"),
+            "    could instead     end",
+            "two backtick spans blank pair by pair, never first-through-last"
+        );
     }
 
     /// Mutation-efficacy gap (round-14 accounting): the loop-continuation index
@@ -2283,5 +2290,311 @@ mod tests {
             - [ ] the store passes the contract suite\n\
             - [ ] either it retries or it escalates \u{2014} immediately\n";
         assert_eq!(spec_lint_advisories(text), spec_lint_advisories(text));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 112 (unit c3): THE VALIDATE TELLS - F10 twin measured surface, F11 identity claim
+    // without a comparison surface, F11 identity claim with no removal corner - and the
+    // backtick pair rule of the one masker they read through. Pinned at the pure
+    // `spec_lint_advisories` seam, each tell read back through its class label.
+    // -----------------------------------------------------------------------------------
+
+    /// The rendered advisories of `class` that `spec_lint_advisories` reports on `text`.
+    fn tells(text: &str, class: &str) -> Vec<String> {
+        spec_lint_advisories(text)
+            .into_iter()
+            .filter(|a| a.class == class)
+            .map(|a| a.to_string())
+            .collect()
+    }
+
+    const F10: &str = "F10 landing-order circularity";
+    const F11: &str = "F11 undecided removal";
+
+    /// The rendered F10 advisory on criterion `later` naming `earlier` and `span`.
+    fn twin(later: usize, span: &str, earlier: usize) -> String {
+        format!(
+            "F10 landing-order circularity (criterion {later}): twin measured surface `{span}` \
+             with criterion {earlier}; if either lands first without the other, does its own \
+             text hold? simulate the landing order and split ownership at the seam in Design"
+        )
+    }
+
+    /// The rendered F11 comparison-surface advisory on criterion `n`.
+    fn no_surface(n: usize) -> String {
+        format!(
+            "F11 undecided removal (criterion {n}): identity claim names no comparison \
+             surface; name the bytes, projection or ordering it is compared on"
+        )
+    }
+
+    /// The rendered F11 removal-corner advisory on criterion `n`.
+    fn no_removal(n: usize) -> String {
+        format!(
+            "F11 undecided removal (criterion {n}): identity claim while no Design or Notes \
+             line decides removal; decide in Design what a later generation that drops a fact \
+             does to it"
+        )
+    }
+
+    /// A spec whose Design decides removal, so only `criteria` can draw a tell.
+    fn decided_spec(criteria: &[&str]) -> String {
+        let mut text =
+            String::from("# W\n\n## Design\n\nA dropped link is decided here.\n\n## Done when\n\n");
+        for c in criteria {
+            text.push_str(&format!("- [ ] {c} This criterion OWNS it.\n"));
+        }
+        text
+    }
+
+    #[test]
+    fn strip_inline_code_blanks_an_unpaired_last_backtick_to_the_end_after_a_pair() {
+        assert_eq!(
+            strip_inline_code("`a` mid `b tail"),
+            "    mid        ",
+            "the 1st and 2nd backticks pair; the unpaired 3rd blanks to the end"
+        );
+    }
+
+    #[test]
+    fn twin_tell_names_the_later_criterion_the_earlier_one_and_the_shared_span() {
+        // Criterion 1's measure word ("reads no") sits between two backtick spans: the pair
+        // rule leaves it visible, where one span from first to last mark would mask it.
+        let text = decided_spec(&[
+            "`rigger step` reads no `derived` event.",
+            "`rigger step` costs at most one read.",
+        ]);
+        assert_eq!(tells(&text, F10), [twin(2, "rigger step", 1)]);
+    }
+
+    #[test]
+    fn twin_tell_reports_one_advisory_per_pair_of_criteria_sharing_a_span() {
+        let text = decided_spec(&[
+            "`store` appends one event.",
+            "`store` appends two events.",
+            "`store` appends three events.",
+        ]);
+        assert_eq!(
+            tells(&text, F10),
+            [
+                twin(2, "store", 1),
+                twin(3, "store", 1),
+                twin(3, "store", 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn twin_tell_reports_each_shared_span_once_in_byte_order() {
+        let text = decided_spec(&[
+            "`b` and `a` costs one read, and `b` appends once.",
+            "`a` and `b` and `c` costs one read.",
+        ]);
+        assert_eq!(tells(&text, F10), [twin(2, "a", 1), twin(2, "b", 1)]);
+    }
+
+    #[test]
+    fn twin_tell_needs_the_measure_word_in_the_spans_own_sentence() {
+        let text = decided_spec(&[
+            "`store` appends one event.",
+            "`store` is opened. It costs one read.",
+        ]);
+        assert_eq!(tells(&text, F10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn twin_tell_matches_every_measure_word_whole_word_and_case_insensitively() {
+        for word in [
+            "exactly",
+            "ZERO",
+            "At Most",
+            "no more than",
+            "reads no",
+            "Costs",
+            "materializes",
+            "APPENDS",
+        ] {
+            let first = format!("`s` {word} one.");
+            let second = format!("`s` {word} two.");
+            let text = decided_spec(&[&first, &second]);
+            assert_eq!(
+                tells(&text, F10),
+                [twin(2, "s", 1)],
+                "measure word {word:?}"
+            );
+        }
+        let text = decided_spec(&["`s` zeroed one.", "`s` zeroed two."]);
+        assert_eq!(
+            tells(&text, F10),
+            Vec::<String>::new(),
+            "a measure word inside a longer word is no measure word"
+        );
+    }
+
+    #[test]
+    fn twin_tell_does_not_see_a_measure_word_inside_a_code_or_quoted_span() {
+        let text = decided_spec(&["`s` sets `exactly` one.", "`s` sets `exactly` two."]);
+        assert_eq!(tells(&text, F10), Vec::<String>::new());
+        let text = decided_spec(&[
+            "`s` sets \"a\" exactly \"b\".",
+            "`s` sets \"a\" exactly \"b\".",
+        ]);
+        assert_eq!(
+            tells(&text, F10),
+            Vec::<String>::new(),
+            "a measure word between two quoted spans is masked (accepted)"
+        );
+    }
+
+    #[test]
+    fn twin_tell_names_no_span_for_an_unpaired_last_backtick() {
+        let text = decided_spec(&["it appends `tail one.", "it appends `tail one."]);
+        assert_eq!(tells(&text, F10), Vec::<String>::new());
+    }
+
+    #[test]
+    fn identity_tell_fires_once_per_criterion_on_a_claim_naming_no_comparison_surface() {
+        let text = decided_spec(&[
+            "the rebuild is identical to the original. The log equals the copy.",
+            "the daemon starts.",
+            "the export is the same as the import.",
+        ]);
+        assert_eq!(tells(&text, F11), [no_surface(1), no_surface(3)]);
+    }
+
+    #[test]
+    fn identity_tell_matches_every_identity_word_whole_word_and_case_insensitively() {
+        for word in [
+            "IDENTICAL",
+            "Byte-Identical",
+            "equal to",
+            "equals",
+            "The Same As",
+        ] {
+            let claim = format!("the rebuild is {word} the original.");
+            let text = decided_spec(&[&claim]);
+            assert_eq!(tells(&text, F11), [no_surface(1)], "identity word {word:?}");
+        }
+        for near_miss in [
+            "the rebuild is unequal to the original.",
+            "the rebuild is the same asset.",
+            "the rebuild is near-identical.",
+        ] {
+            let text = decided_spec(&[near_miss]);
+            assert_eq!(tells(&text, F11), Vec::<String>::new(), "{near_miss:?}");
+        }
+    }
+
+    #[test]
+    fn identity_tell_is_silenced_by_each_comparison_surface_word_in_the_same_sentence() {
+        for surface in [
+            "projection",
+            "Wire Form",
+            "compared on",
+            "COMPARISON SURFACE",
+            "bytes of",
+            "ordered by",
+        ] {
+            let claim = format!("the rebuild is identical, its {surface} pinned.");
+            let text = decided_spec(&[&claim]);
+            assert_eq!(
+                tells(&text, F11),
+                Vec::<String>::new(),
+                "surface {surface:?}"
+            );
+        }
+        let text = decided_spec(&["the rebuild is identical. Its projection is pinned."]);
+        assert_eq!(
+            tells(&text, F11),
+            [no_surface(1)],
+            "a comparison surface in another sentence does not name this claim's surface"
+        );
+    }
+
+    #[test]
+    fn identity_tell_does_not_see_an_identity_word_inside_a_code_span() {
+        let text = decided_spec(&["the `identical` flag is set."]);
+        assert_eq!(tells(&text, F11), Vec::<String>::new());
+    }
+
+    #[test]
+    fn removal_tell_fires_on_every_identity_criterion_when_no_design_or_notes_line_decides_removal()
+    {
+        let text = "# W\n\n## Design\n\nThe rebuild reads the log.\n\n\
+            ## Done when\n\n\
+            - [ ] the rebuild is identical, compared on the projection. This criterion OWNS it.\n\
+            - [ ] the daemon starts and no longer stops. This criterion OWNS it.\n\
+            - [ ] the export equals the import, compared on its bytes. The copy equals it, \
+            compared on the projection. This criterion OWNS it.\n\n\
+            ## Global constraints\n\n- A dropped fact is out of scope here.\n";
+        assert_eq!(tells(text, F11), [no_removal(1), no_removal(3)]);
+    }
+
+    #[test]
+    fn removal_tell_is_silenced_by_each_removal_word_on_a_design_or_notes_line() {
+        for word in [
+            "drop",
+            "DROPS",
+            "dropped",
+            "Removed",
+            "removal",
+            "absent",
+            "deleted",
+            "No Longer",
+        ] {
+            for section in ["## Design", "## Notes (non-criteria)", "### DESIGN"] {
+                let text = format!(
+                    "# W\n\n{section}\n\nA fact `{word}` here.\n\n## Done when\n\n\
+                     - [ ] the rebuild is identical, compared on the projection. This \
+                     criterion OWNS it.\n"
+                );
+                assert_eq!(
+                    tells(&text, F11),
+                    Vec::<String>::new(),
+                    "{word:?} under {section:?}"
+                );
+            }
+        }
+        let fenced = "# W\n\n## Design\n\n```\ndeleted\n```\n\n## Done when\n\n\
+            - [ ] the rebuild is identical, compared on the projection. This criterion OWNS it.\n";
+        assert_eq!(
+            tells(fenced, F11),
+            Vec::<String>::new(),
+            "a fenced Design line decides removal too"
+        );
+    }
+
+    #[test]
+    fn removal_tell_reads_a_design_section_to_the_next_heading_of_its_own_level() {
+        let claim = "## Done when\n\n- [ ] the rebuild is identical, compared on the projection. \
+            This criterion OWNS it.\n";
+        let fires = |design: &str| tells(&format!("# W\n\n{design}\n\n{claim}"), F11);
+        assert_eq!(
+            fires("## Design\n\nok.\n\n### Notes on it\n\nok.\n\n### Later\n\nA dropped fact."),
+            Vec::<String>::new(),
+            "a subsection after a nested Notes heading is still the Design section's"
+        );
+        assert_eq!(
+            fires("## Design\n\n### Sub\n\nA dropped fact."),
+            Vec::<String>::new(),
+            "a deeper heading stays inside the Design section"
+        );
+        assert_eq!(
+            fires("## Design\n\nok.\n\n## Other\n\nA dropped fact."),
+            [no_removal(1)],
+            "a heading of the same level ends the Design section"
+        );
+        assert_eq!(
+            fires("### Design\n\nok.\n\n## Other\n\nA dropped fact."),
+            [no_removal(1)],
+            "a shallower heading ends the Design section"
+        );
+    }
+
+    #[test]
+    fn the_tells_are_silent_on_a_spec_with_no_criteria() {
+        let text = "# W\n\n## Design\n\n`s` costs exactly one read and is identical.\n";
+        assert_eq!(tells(text, F10), Vec::<String>::new());
+        assert_eq!(tells(text, F11), Vec::<String>::new());
     }
 }
