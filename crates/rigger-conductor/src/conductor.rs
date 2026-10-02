@@ -38,8 +38,7 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, verdict_rejects_without_required, verdict_required,
-    TierRouting,
+    route_review_tier, verdict_compensates, TierRouting,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -4761,7 +4760,9 @@ impl RunCtx<'_> {
         round: Option<&ReviewRound>,
         reason: String,
     ) -> Result<(bool, String, Vec<RequiredItem>), Error> {
-        let required = verdict_required(&reason);
+        let required = spawn::Adjudication::parse(&reason)
+            .map(|a| a.required)
+            .unwrap_or_default();
         let Some(round) = round else {
             return Ok((false, reason, required));
         };
@@ -7327,9 +7328,7 @@ impl RunCtx<'_> {
         result: &AgentResult,
         findings_emitted: u32,
     ) -> Result<bool, Error> {
-        if output == ReviewerOutput::RoundVerdict
-            && verdict_rejects_without_required(&result.output)
-        {
+        if output == ReviewerOutput::RoundVerdict && rejects_without_required(&result.output) {
             // A later round's reject that names no REQUIRED item is no verdict the next
             // round can hold the unit to.
             return Ok(true);
@@ -12191,6 +12190,14 @@ impl ReviewRound {
              and never blocks. A reject this round names every item it requires in `required`.\n"
         )
     }
+}
+
+/// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
+/// a reject a later review round cannot hold the next attempt to.
+fn rejects_without_required(output: &str) -> bool {
+    !verdict_approves(output)
+        && spawn::Adjudication::parse(output)
+            .is_some_and(|a| a.verdict.is_some() && a.required.is_empty())
 }
 
 /// The `reviewed` evidence of a later round's reject that converged: every item it required

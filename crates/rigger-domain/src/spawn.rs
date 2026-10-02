@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eventstore::Event;
-use crate::ledger::{AttentionEntry, RunState};
+use crate::ledger::{AttentionEntry, RequiredItem, RunState};
 
 /// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
 /// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
@@ -287,6 +287,10 @@ pub struct Adjudication {
     /// colour) reads this directly instead of inferring it from `cause`'s presence, which
     /// is silent on a reject that declared no cause.
     pub verdict: Option<String>,
+    /// The items a reject requires the next attempt to fix (its `required` array): what the
+    /// next attempt is handed and the next review round holds the unit to. Empty when the
+    /// line names none, or names them in any other shape.
+    pub required: Vec<RequiredItem>,
 }
 
 /// The adjudicator's reject `cause` blaming a gate, tool or harness failure rather than the
@@ -330,11 +334,16 @@ impl Adjudication {
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty());
             let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
+            let required = v
+                .get("required")
+                .and_then(|r| serde_json::from_value(r.clone()).ok())
+                .unwrap_or_default();
             return Some(Adjudication {
                 upheld: str_array("upheld"),
                 discarded: str_array("discarded"),
                 cause,
                 verdict,
+                required,
             });
         }
         None

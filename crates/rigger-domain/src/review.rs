@@ -3,8 +3,6 @@
 
 use serde_json::Value;
 
-use crate::ledger::RequiredItem;
-
 use crate::spawn::{lens_role, ROLE_ADVERSARY};
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
@@ -182,42 +180,22 @@ pub fn verdict_approves(output: &str) -> bool {
 /// letting it silently drift from the gate.
 pub const VERDICT_APPROVE: &str = "approve";
 
-/// The VERDICT LINE of `output`: its LAST JSON line that carries a top-level `verdict`
-/// string field, or `None` when `output` has none (no JSON, or JSON without a `verdict`
-/// string). This is the SINGLE place a verdict line is recognized on the result channel:
-/// [`verdict_approves`] reads its value for the fail-closed approval, the runtime
-/// verdict-channel-mismatch backstop (spec 18, unit 3, [`has_verdict_line`]) reads its
-/// PRESENCE to tell a gating spawn that DECIDED a verdict on the result channel (approve or
-/// reject) from one that returned none at all, and [`verdict_required`] reads the items a
-/// reject requires fixed.
-fn verdict_line(output: &str) -> Option<Value> {
-    output.lines().rev().find_map(|line| {
-        serde_json::from_str::<Value>(line.trim())
-            .ok()
-            .filter(|v| v.get("verdict").is_some_and(Value::is_string))
-    })
-}
-
-/// The verdict value on `output`'s [`verdict_line`], or `None` when it has none.
+/// The verdict value on the LAST JSON line of `output` that carries a top-level
+/// `verdict` string field, or `None` when `output` has NO parseable verdict line (no
+/// JSON, or JSON without a `verdict` string). This is the SINGLE place a verdict line is
+/// recognized on the result channel: [`verdict_approves`] reads its VALUE for the
+/// fail-closed approval, and the runtime verdict-channel-mismatch backstop (spec 18,
+/// unit 3, [`has_verdict_line`]) reads its PRESENCE to tell a gating spawn that DECIDED a
+/// verdict on the result channel (approve or reject) from one that returned none at all.
 fn last_verdict(output: &str) -> Option<String> {
-    verdict_line(output)?
-        .get("verdict")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-/// The items `output`'s [`verdict_line`] requires fixed: empty when there is no verdict line,
-/// it carries no `required` list, or the list holds anything but items.
-pub fn verdict_required(output: &str) -> Vec<RequiredItem> {
-    verdict_line(output)
-        .and_then(|v| serde_json::from_value(v.get("required")?.clone()).ok())
-        .unwrap_or_default()
-}
-
-/// Whether `output`'s verdict line rejects without naming a single item it requires fixed:
-/// a reject a later review round cannot hold the next attempt to.
-pub fn verdict_rejects_without_required(output: &str) -> bool {
-    has_verdict_line(output) && !verdict_approves(output) && verdict_required(output).is_empty()
+    for line in output.lines().rev() {
+        if let Ok(v) = serde_json::from_str::<Value>(line.trim()) {
+            if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
+                return Some(verdict.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Whether `output` carries ANY parseable verdict line - a JSON line with a top-level
