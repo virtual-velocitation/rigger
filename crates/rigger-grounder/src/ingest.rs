@@ -721,7 +721,10 @@ mod scoped_reindex_tests {
     //! INTEGRATION): the scoped-reindex entry an integration's own graph freshening calls, and the
     //! sampled staleness check `rigger validate`'s graph index-lag advisory calls.
 
-    use super::{graph_index_lag, graph_index_lag_sample, ingest_files_batched, META_REPLAY_KEY};
+    use super::{
+        graph_index_lag, graph_index_lag_sample, ingest_files_batched,
+        ingest_project_batched_paced, META_REPLAY_KEY,
+    };
     use crate::eventstore::Event;
 
     /// Record `files`' CURRENT generation into a fresh `prior` stream, exactly as
@@ -773,13 +776,63 @@ mod scoped_reindex_tests {
         );
     }
 
+    /// Item I (AN INTEGRATION'S INGEST CARRIES THE DESIGN HALF): a NAMED design doc lowers into
+    /// exactly the `gd/` batch the whole-project walk gives it, while an unnamed design doc and a
+    /// named doc the walk scope excludes (rigger's own `.rigger` runtime dir) lower into none.
+    #[test]
+    fn ingest_files_batched_lowers_a_named_design_doc() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".rigger")).unwrap();
+        let doc = "# Architecture\n\n## The store\n\nThe `src/store.rs` module owns the log.\n";
+        std::fs::write(dir.path().join("docs/architecture.md"), doc).unwrap();
+        std::fs::write(dir.path().join("docs/unnamed.md"), doc).unwrap();
+        std::fs::write(dir.path().join(".rigger/persona.md"), doc).unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut walked: Vec<String> = Vec::new();
+        ingest_project_batched_paced(root, 1, |keyed| {
+            walked.extend(keyed.iter().map(|(k, _)| k.clone()))
+        });
+        let mut named: Vec<String> = Vec::new();
+        ingest_files_batched(
+            root,
+            &["docs/architecture.md".into(), ".rigger/persona.md".into()],
+            |keyed| named.extend(keyed.iter().map(|(k, _)| k.clone())),
+        );
+        let design = |keys: &[String], prefix: &str| -> Vec<String> {
+            keys.iter()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect()
+        };
+
+        assert!(
+            !design(&walked, "gd/docs/architecture.md@").is_empty()
+                && !design(&walked, "gd/docs/unnamed.md@").is_empty()
+                && design(&walked, "gd/.rigger/").is_empty(),
+            "premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"
+        );
+        assert_eq!(
+            design(&named, "gd/"),
+            design(&walked, "gd/docs/architecture.md@"),
+            "the named design doc lowers into the whole walk's own batch, and the unnamed and the \
+             excluded docs into none"
+        );
+    }
+
     /// [`graph_index_lag`] finds a file the graph's own recorded generation no longer matches, and
     /// leaves an unchanged sibling alone - the core "the graph agrees with the tree, or it does not"
-    /// comparison the validate advisory reports from.
+    /// comparison the validate advisory reports from. The unchanged sibling carries a `WHY:`
+    /// rationale, so it has a design batch beside its code batch: the lag reads the code
+    /// generation alone.
     #[test]
     fn graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("stable.rs"), "fn stable() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("stable.rs"),
+            "fn stable() {}\n// WHY: the unchanged sibling carries design intent too\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("churn.rs"), "fn original() {}\n").unwrap();
         let root = dir.path().to_str().unwrap();
         let files = vec!["stable.rs".to_string(), "churn.rs".to_string()];
