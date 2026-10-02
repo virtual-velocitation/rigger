@@ -1253,6 +1253,15 @@ mod tests {
             Vec::<String>::new(),
             "a critique with no BLOCKING finding has none open"
         );
+        let approving = Critique {
+            verdict: VERDICT_APPROVE.to_string(),
+            ..critique_at_ten(&[("b1", true), ("n2", false)])
+        };
+        assert_eq!(
+            open_findings(&approving, &[], spec, root),
+            ["b1"],
+            "an approve beside a BLOCKING line still counts as blocking: the verdict is never read"
+        );
     }
 
     #[test]

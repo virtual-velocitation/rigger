@@ -59,6 +59,12 @@ const REJECT: &str = "Read it.\n\
      S | BLOCKING | criterion 3 | rests is undecided when empty | decide it in Design\n\
      {\"verdict\":\"reject\"}";
 
+/// The critic's answer: finding 1 NON-BLOCKING, finding 2 BLOCKING, an approve.
+const APPROVE_BESIDE_BLOCKING: &str = "Read it.\n\
+     S | NON-BLOCKING | Design | spins names no surface | name it\n\
+     S | BLOCKING | criterion 2 | stops names no bound | bound it in Design\n\
+     {\"verdict\":\"approve\"}";
+
 /// The personas every workflow here names: a planner, the `skeptic` critic and the `arbiter`.
 const PERSONAS: [(&str, &str); 3] = [
     ("planner", PLANNER),
@@ -292,6 +298,9 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
     );
 }
 
+/// Each run entry refuses a new run on the uncritiqued spec under its own command name: on an
+/// empty store, and with `--fresh` beside the spec's existing run, which begins a new run though
+/// the run it would otherwise adopt is in the store.
 #[test]
 fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_name() {
     let dir = temp_git_project_with_commit();
@@ -300,22 +309,59 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
     // A stand-in `claude` first on PATH, so a run the refusal missed never reaches a real agent.
     let work = tempfile::tempdir().unwrap();
     let path = stub_path(work.path(), "claude", Some("fake-agent.sh"));
-    for (args, command) in [
+    let entries = [
         (&["run", SPEC_REL][..], "rigger run"),
         (&["serve", SPEC_REL][..], "rigger serve"),
         (
             &["run", "--driver", "workflow", SPEC_REL][..],
             "rigger run --driver workflow",
         ),
-    ] {
-        let args: Vec<&str> = args.iter().copied().chain(["--base", "HEAD"]).collect();
-        assert_refused(
-            root,
-            run_rigger_envs(root, &args, &[("PATH", path.as_str())]),
-            (command, SPEC_REL, None),
-            0,
-        );
-    }
+    ];
+    let refuse_each = |extra: &[&str], runs_before: usize| {
+        for (args, command) in entries {
+            let args: Vec<&str> = args
+                .iter()
+                .chain(extra)
+                .copied()
+                .chain(["--base", "HEAD"])
+                .collect();
+            assert_refused(
+                root,
+                run_rigger_envs(root, &args, &[("PATH", path.as_str())]),
+                (command, SPEC_REL, None),
+                runs_before,
+            );
+        }
+    };
+    refuse_each(&[], 0);
+
+    let criteria = rigger::spec::extract_criteria(SPEC);
+    let started = json!({"run": "r-spec", "criteria": criteria, "spec": SPEC_REL}).to_string();
+    seed_run_events(root, &[("RunStarted", started.as_str())]);
+    refuse_each(&["--fresh"], 1);
+}
+
+/// THE AUTHORITY, an approve beside a BLOCKING line: the line counts as blocking whatever the
+/// verdict, so a new run on a text whose only critique approves while holding one is refused on
+/// that finding's id alone.
+#[test]
+fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_finding() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let out = record_critique(root, SPEC_REL, APPROVE_BESIDE_BLOCKING);
+    assert!(
+        out.ends_with("\n{\"verdict\":\"approve\"}\n"),
+        "the recorded critique approves; stdout:\n{out}"
+    );
+    let blocking = format!("sc-{}-0-2", critique_hash(SPEC));
+    assert_step_refused(
+        root,
+        (SPEC_REL, &[]),
+        SPEC_REL,
+        Some(&[blocking.as_str()]),
+        0,
+    );
 }
 
 #[test]
