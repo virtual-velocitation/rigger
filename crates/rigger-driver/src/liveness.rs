@@ -662,6 +662,55 @@ pub fn unended_spawns(events: &[Event]) -> Result<UnendedSpawns, Error> {
     })
 }
 
+/// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
+/// criterion 3): true when the current run has NO worker that may still be alive under the shared
+/// scratch AND no unit still awaiting a human. Both run-teardown sites - the definition-drift
+/// early-return in `rigger step` and the terminal-fixpoint teardown after `conductor::run` - gate on
+/// THIS function, so every still-advancing condition is inherited by both and none can drift into a
+/// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
+/// frontier ALONE - first omitting the hung check, then the manual-review check).
+///
+/// Three conditions, all required:
+/// - the step is DONE (`step.done`, the one value [`spawn::step_of_pass`] prints): every recorded
+///   spawn has a result AND the pass that printed it parked nothing - a result a courier records
+///   after the pass parked its spawn leaves the log answered while the run still owes the work
+///   it unlocks, so the run is not terminal; and
+/// - EVERY spawn has ENDED ([`unended_spawns`] is empty, the one authority `reset --runs` closes
+///   on too): no in-flight wave and no obviously-live worker, and NO spawn is HUNG - a
+///   liveness-fault result answers the frontier yet leaves a worker that may still be alive and
+///   writing under the shared scratch, and which the operator may yet recover, so it still
+///   blocks reclamation; and
+/// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
+///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
+///   WITHOUT parking any spawn, so it leaves no unended spawn - the spawn core alone reads
+///   terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
+///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
+///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
+///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
+///   full stream (which already carries a prior step's `ManualReview`), so it needs the exclusion
+///   too. Folding it into this shared core keeps a single authority for "no still-advancing work"
+///   and closes the never-delete-live breach a per-caller guard re-opened.
+///
+/// The drift early-return runs no pass, so it hands in the log-only [`spawn::step_result`].
+///
+/// Scoped to the CURRENT run only ([`crate::run::current_run`]), so a prior run's unanswered
+/// spawns or paused units never gate this run's teardown. Errs only if a malformed stored event
+/// cannot be replayed; callers treat an `Err` as "not safe to reclaim" (never delete on
+/// uncertainty).
+pub fn terminal_and_no_live_worker(events: &[Event], step: &spawn::Step) -> Result<bool, Error> {
+    let scoped = crate::run::current_run(events);
+    let spawns_ended = unended_spawns(scoped)?.is_empty();
+    // The manual-review inbox, projected from the SAME scoped slice - the single authority for
+    // which units still await a human. A non-terminal manual-review PAUSE leaves no unended spawn
+    // (it parks no spawn), so the spawn core alone reads terminal even though the run is still
+    // advancing.
+    let no_manual_review = rigger_domain::ledger::project(scoped)
+        .map_err(|e| Error::Backend(e.to_string()))?
+        .manual_review
+        .is_empty();
+    Ok(step.done && spawns_ended && no_manual_review)
+}
+
 /// The step halt reason for a non-empty set of hung spawns (spec 10, unit 3). Surfaced on
 /// the `Step`'s `halted` channel so the driver stops LOUDLY - a hung agent halts the wave
 /// VISIBLY rather than stalling it invisibly - naming each hung spawn and the recovery.

@@ -712,8 +712,9 @@ fn live_writer_refusal(reasons: &[String]) -> String {
 ///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
 ///     marker inside its bound needs it read) propagates as a command error rather than folding
 ///     into "no in-flight spawns" - this guard may only REFUSE a prune, never approve one it
-///     could not actually verify was safe (mirrors [`terminal_and_no_live_worker`]'s convention
-///     on the opposite rail: an unreadable stream is never read as "nobody is here").
+///     could not actually verify was safe (mirrors
+///     [`rigger::liveness::terminal_and_no_live_worker`]'s convention on the opposite rail: an
+///     unreadable stream is never read as "nobody is here").
 ///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
 ///     fault) also propagates as a command error rather than being misread as "a step is
 ///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held lock,

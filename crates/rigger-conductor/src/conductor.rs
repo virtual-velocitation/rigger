@@ -2360,6 +2360,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // halt reason distinct from convergence and the thin driver stops loudly on it.
     let mut rs = ledger::project(current_events).map_err(|e| Error(e.to_string()))?;
     rs.budget_halt = ctx.halt_reason();
+    rs.parked = ctx.parked.load(Ordering::SeqCst);
     // Spec 69, criterion 5 (the step wire carries attention): a before/after diff of THIS
     // call's window, `prior` (this call's own resume seed, already projected above) against
     // `rs` - see [`compute_attention`] for why the diff, not a persisting-state read, is

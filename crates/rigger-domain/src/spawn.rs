@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eventstore::Event;
-use crate::ledger::AttentionEntry;
+use crate::ledger::{AttentionEntry, RunState};
 
 /// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
 /// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
@@ -835,7 +835,9 @@ pub struct Step {
     /// [`SpawnResult`], so the conductor replayed the whole log and parked nothing that
     /// still awaits a courier (all units integrated, or the run terminated). Another
     /// step would change nothing. A non-empty `wave` always implies `done == false`,
-    /// since a freshly parked spawn has no result yet.
+    /// since a freshly parked spawn has no result yet. `rigger step` also requires its own
+    /// pass to have parked nothing ([`step_of_pass`]), since a result can land after the
+    /// pass parked its spawn and before the step reads the log back.
     pub done: bool,
     /// The halt reason when the run STOPPED on the spawn-budget breaker rather than
     /// converging (Gap 13): e.g. `"budget exhausted: 200/200 spawns"`. `None` on a clean
@@ -927,6 +929,24 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         // it empty too (like `halted` and `escalated`).
         attention: Vec::new(),
     })
+}
+
+/// The [`Step`] `rigger step` prints after one conductor pass: [`step_result`]'s pending
+/// frontier over the log read AFTER the pass, with the pass's own live state `rs` stamped on
+/// it - the budget `halted` reason, the `escalated` units and the `attention` entries, each a
+/// fact of this process's run that the log alone cannot give (see those [`Step`] fields).
+///
+/// `done` also needs the pass to have PARKED nothing ([`RunState::parked`]). A courier can
+/// record a result between the pass parking that spawn and the step reading the log back, so
+/// every request then holds a result while the pass never folded it - the work that result
+/// unlocks (a unit's next reviewer) is still owed, and printing `done` would end the run.
+pub fn step_of_pass(events: &[Event], rs: RunState) -> Result<Step, serde_json::Error> {
+    let mut step = step_result(events)?;
+    step.done = step.done && !rs.parked;
+    step.escalated = rs.escalated_units();
+    step.attention = rs.attention;
+    step.halted = rs.budget_halt;
+    Ok(step)
 }
 
 /// The full prompt a worker fetches for its parked spawn: the persona (when the spawn
