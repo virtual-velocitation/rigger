@@ -36877,6 +36877,46 @@ mod tests {
         assert_eq!(verdict_compensates("no json here"), None);
     }
 
+    /// A reject's verdict line names the items it requires fixed - each one's finding, the
+    /// file it is in, whether it is a correctness defect, and the shape of a defect that
+    /// recurs across sites - read from the same last verdict line the approval is read from;
+    /// a line that names none, or names them in another shape, requires nothing.
+    #[test]
+    fn required_items_parse_from_the_verdict_line() {
+        let line = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"src/a.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"reword the doc","path":"docs/b.md"}]}"#;
+        assert_eq!(
+            verdict_required(&format!("the reasoning\n{line}")),
+            vec![
+                RequiredItem {
+                    finding: "scope the log read".into(),
+                    path: "src/a.rs".into(),
+                    correctness: true,
+                    pattern: "unscoped log reads".into(),
+                },
+                RequiredItem {
+                    finding: "reword the doc".into(),
+                    path: "docs/b.md".into(),
+                    correctness: false,
+                    pattern: String::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            verdict_required(&format!("{line}\n{{\"verdict\":\"approve\"}}")),
+            Vec::new(),
+            "the last verdict line is the one read"
+        );
+        for none in [
+            r#"{"verdict":"reject"}"#,
+            r#"{"verdict":"reject","required":"fix it"}"#,
+            r#"{"verdict":"reject","required":["fix it"]}"#,
+            r#"{"required":[{"finding":"not a verdict line"}]}"#,
+            "no json here",
+        ] {
+            assert_eq!(verdict_required(none), Vec::new(), "{none}");
+        }
+    }
+
     /// A driver for the compensation e2e test (spec 12, unit 4): each unit's IMPLEMENTER
     /// writes its OWN file (so the two units touch disjoint paths and revert cleanly), and
     /// the driver records every implementer prompt per unit so the test can prove the
