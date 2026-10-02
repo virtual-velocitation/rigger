@@ -1474,14 +1474,14 @@ rigger::test_cases! {
 
 /// sdet-author gap: `a_cfg_test_impl_block_excludes_its_methods_through_the_public_api` above only
 /// exercises the OUTER attribute form (`#[cfg(test)] impl Widget { .. }`, a sibling BEFORE the
-/// `impl_item`). `collect_self_attributed_impl_regions` calls the SAME shared
-/// `node_preceded_by_test_attribute` the round-5 inner-module fix already made check
-/// `leading_inner_test_attribute` first - so an `impl` block gated by the INNER form
-/// (`impl Widget { #![cfg(test)] .. }`, the attribute as the body's own first child rather than a
-/// sibling before the `impl` keyword) should already be caught by construction, but no test
-/// anywhere - implementer's own `extract.rs` unit tests or this file - poses that exact
-/// node-kind/attribute-direction COMBINATION. Proving it independently rather than inferring it
-/// from the two mechanisms each working in isolation.
+/// `impl_item`). Every impl block's range is one of `extract.rs`'s `def_ranges`, so `test_regions`
+/// judges it through the SAME shared `node_preceded_by_test_attribute` every other definition
+/// goes through, which checks `leading_inner_test_attribute` first - so an `impl` block gated by
+/// the INNER form (`impl Widget { #![cfg(test)] .. }`, the attribute as the body's own first child
+/// rather than a sibling before the `impl` keyword) is caught by construction, but no other test -
+/// neither `extract.rs`'s own unit tests nor the rest of this file - poses that exact
+/// node-kind/attribute-direction COMBINATION. This proves it independently rather than inferring
+/// it from the two mechanisms each working in isolation.
 #[cfg(feature = "symbols")]
 const INNER_ATTR_IMPL_SRC: &str = "\
 struct Widget;
