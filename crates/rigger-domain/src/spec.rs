@@ -833,32 +833,44 @@ fn twin_surface_advisories(text: &str) -> Vec<LintAdvisory> {
     out
 }
 
-/// F11 identity claim without a comparison surface: a criterion holding a sentence that
-/// carries an [`IDENTITY_WORDS`] word and no [`COMPARISON_SURFACE_WORDS`] word. Once per
-/// criterion however many of its sentences offend.
-fn comparison_surface_advisories(text: &str) -> Vec<LintAdvisory> {
+/// The one F11 rule both identity-claim tells share: a criterion holding a sentence that
+/// carries an [`IDENTITY_WORDS`] word and whose masked words also satisfy `offends` draws
+/// one advisory carrying `detail`, once per criterion however many of its sentences offend.
+fn identity_claim_advisories(
+    text: &str,
+    offends: impl Fn(&str) -> bool,
+    detail: &str,
+) -> Vec<LintAdvisory> {
     criterion_sentences(text)
         .into_iter()
         .filter(|(_, sentences)| {
-            sentences.iter().any(|s| {
-                carries_any(&s.words, &IDENTITY_WORDS)
-                    && !carries_any(&s.words, &COMPARISON_SURFACE_WORDS)
-            })
+            sentences
+                .iter()
+                .any(|s| carries_any(&s.words, &IDENTITY_WORDS) && offends(&s.words))
         })
         .map(|(n, _)| LintAdvisory {
             class: F11_UNDECIDED_REMOVAL,
             criterion: Some(n),
-            detail: "identity claim names no comparison surface; name the bytes, projection \
-                     or ordering it is compared on"
-                .to_string(),
+            detail: detail.to_string(),
         })
         .collect()
 }
 
+/// F11 identity claim without a comparison surface: an identity sentence
+/// ([`identity_claim_advisories`]) carrying no [`COMPARISON_SURFACE_WORDS`] word.
+fn comparison_surface_advisories(text: &str) -> Vec<LintAdvisory> {
+    identity_claim_advisories(
+        text,
+        |words| !carries_any(words, &COMPARISON_SURFACE_WORDS),
+        "identity claim names no comparison surface; name the bytes, projection or ordering it \
+         is compared on",
+    )
+}
+
 /// F11 identity claim with no removal corner: while no line of a Design or Notes section
 /// ([`section_lines`]), read unmasked with fenced lines included, carries a
-/// [`REMOVAL_WORDS`] word, every criterion holding a sentence that carries an
-/// [`IDENTITY_WORDS`] word draws one advisory.
+/// [`REMOVAL_WORDS`] word, every criterion holding an identity sentence
+/// ([`identity_claim_advisories`]) draws one advisory.
 fn removal_corner_advisories(text: &str) -> Vec<LintAdvisory> {
     let decided = text
         .lines()
@@ -867,21 +879,12 @@ fn removal_corner_advisories(text: &str) -> Vec<LintAdvisory> {
     if decided {
         return Vec::new();
     }
-    criterion_sentences(text)
-        .into_iter()
-        .filter(|(_, sentences)| {
-            sentences
-                .iter()
-                .any(|s| carries_any(&s.words, &IDENTITY_WORDS))
-        })
-        .map(|(n, _)| LintAdvisory {
-            class: F11_UNDECIDED_REMOVAL,
-            criterion: Some(n),
-            detail: "identity claim while no Design or Notes line decides removal; decide in \
-                     Design what a later generation that drops a fact does to it"
-                .to_string(),
-        })
-        .collect()
+    identity_claim_advisories(
+        text,
+        |_| true,
+        "identity claim while no Design or Notes line decides removal; decide in Design what a \
+         later generation that drops a fact does to it",
+    )
 }
 
 /// The full mechanical spec lint (spec 66): every shape advisory ([`spec_shape_advisories`]
