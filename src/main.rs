@@ -194,7 +194,8 @@ of whether a spawn reported yet; the death courier records\n                    
 atomically instead via `rigger result --if-absent`\n  \
 rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
 The step wave is a slim manifest; each worker fetches its\n                              \
-own prompt from the log by spawn id (spawn-by-reference)\n  \
+own prompt from the log by spawn id (spawn-by-reference);\n                              \
+it refuses a spawn that already ended on a real result\n  \
 rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\n                              \
 (the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
 a worker points agent-created scratch and manual\n                              \
@@ -276,7 +277,10 @@ observer can see what a working agent is doing between\n                        
 milestones - `rigger status` and the dash present it\n  \
 rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
 step advances past it: <out> (or stdin) is the agent's output\n                              \
-(with --error, its failure message); --if-absent records only\n                              \
+(with --error, its failure message). It refuses to replace\n                              \
+the result of a spawn that already ended unless\n                              \
+--supersede (the explicit repair); a step's liveness\n                              \
+fault is always replaceable. --if-absent records only\n                              \
 if the id has no result; --meta <json> adds bookkeeping\n  \
 rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
 context graph, scoped to the given files (the CLI form of\n                              \

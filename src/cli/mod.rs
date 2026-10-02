@@ -1544,8 +1544,9 @@ fn store_file(dir: &Path, name: &str) -> String {
 /// stream, BEFORE it records (spec 05, done-when: "`rigger result` prints stderr
 /// advisories for an orphan id and for superseding an existing result"). Two independent
 /// notes, both purely advisory - the record still lands, because pre-recording a result
-/// before its spawn request is parked is legitimate and re-recording deliberately
-/// supersedes (results are last-write-wins). ORPHAN: no `SpawnRequested` with this id is
+/// before its spawn request is parked is legitimate, and a record that reaches here over a
+/// standing result is a deliberate `--supersede` or replaces the step's liveness fault
+/// ([`result_refusal`] refuses every other). ORPHAN: no `SpawnRequested` with this id is
 /// in the stream, so nothing is parked under it - a typoed id would otherwise silently
 /// strand the real spawn while the orphan result records against an id the run never
 /// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N),
@@ -1577,16 +1578,10 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
             )
         });
     }
-    // The LATEST already-recorded result for this id (last-write-wins), and the log
-    // position it currently sits at, so the advisory can name it.
-    let prior = events.iter().rev().find(|e| {
-        e.type_ == spawn::TYPE_SPAWN_RESULT
-            && spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == id)
-    });
     if !will_supersede {
         return notes;
     }
-    if let Some(e) = prior {
+    if let Some(e) = latest_result_event(events, id) {
         notes.push(format!(
             "result: note: {id:?} already has a recorded result at position {}; this \
              record supersedes it",
@@ -1594,6 +1589,49 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
         ));
     }
     notes
+}
+
+/// The LATEST recorded result event for spawn `id` (results fold last-write-wins), so a note or
+/// a refusal can name the log position it sits at.
+fn latest_result_event<'a>(events: &'a [Event], id: &str) -> Option<&'a Event> {
+    events.iter().rev().find(|e| {
+        e.type_ == spawn::TYPE_SPAWN_RESULT
+            && spawn::SpawnResult::from_event(e).is_ok_and(|r| r.id == id)
+    })
+}
+
+/// Why spawn `id` must not run or record again, once it has ENDED ([`spawn::ended_by`]: a real
+/// result, never the step's liveness fault): `spawn <id> already ended (result at position N)`,
+/// naming the result that ended it; `None` while it has not ended. A driver resume replays its
+/// cached courier steps and re-spawns their wave's workers, so this is the one predicate both
+/// `rigger prompt` and `rigger result` refuse on - a stale worker can neither fetch its task
+/// again nor overwrite the result that stands.
+fn ended_refusal(events: &[Event], id: &str) -> Result<Option<String>, serde_json::Error> {
+    if spawn::ended_by(events, id)?.is_none() {
+        return Ok(None);
+    }
+    Ok(latest_result_event(events, id).map(|e| {
+        format!(
+            "spawn {id} already ended (result at position {})",
+            e.position
+        )
+    }))
+}
+
+/// Why a plain `rigger result` for spawn `id` must not record: the spawn already ENDED
+/// ([`ended_refusal`]) and the operator did not pass `--supersede`, the explicit repair that
+/// replaces a standing result. `None` when it may record: nothing ended the spawn yet, only the
+/// step's liveness fault answers it (the real result replaces that), or `supersede`.
+fn result_refusal(
+    events: &[Event],
+    id: &str,
+    supersede: bool,
+) -> Result<Option<String>, serde_json::Error> {
+    if supersede {
+        return Ok(None);
+    }
+    Ok(ended_refusal(events, id)?
+        .map(|refusal| format!("result: {refusal}; pass --supersede to replace it")))
 }
 
 /// `rigger step [--spec <path>]` - advance the run one frontier (§4, spec 04).
@@ -2567,10 +2605,10 @@ fn started_units(events: &[Event]) -> std::collections::HashSet<String> {
 ///   fail-safe (a fresh verdict, also for a declared gate, so counted), a removed/renamed gate
 ///   drops out - exactly the set the re-drive reaches.
 ///
-/// A verdict whose replay key carries no `/gate:` infix (an integrate-time GATED_BY artifact
-/// verdict, already excluded by [`metrics::project`]; or a post-merge re-gate keyed apart -
-/// the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is left as
-/// recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
+/// A verdict whose replay key carries no `/gate:` infix (a legacy per-file artifact verdict
+/// older logs hold, already excluded by [`metrics::project`]; or a post-merge re-gate keyed
+/// apart - the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is
+/// left as recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
 /// planner-proposed unit whose gate list cannot be re-scoped from the config) is likewise kept
 /// as recorded - the re-scoping never over-drops a verdict it cannot confidently place.
 fn candidate_reaches_gate(
@@ -2581,8 +2619,8 @@ fn candidate_reaches_gate(
     if e.type_ != contextgraph::TYPE_GATE_VERDICT {
         return true;
     }
-    // A verdict with no gate-RUN replay key (artifact / post-merge / skip) is not a re-scopable
-    // pre-merge gate run; leave it as recorded.
+    // A verdict with no gate-RUN replay key (legacy artifact / post-merge / skip) is not a
+    // re-scopable pre-merge gate run; leave it as recorded.
     let Some(stage) = e
         .meta
         .get(conductor::META_REPLAY_KEY)
@@ -8113,6 +8151,49 @@ mod tests {
             .iter()
             .any(|n| n.contains("no spawn request is recorded")));
         assert!(notes.iter().any(|n| n.contains("at position 3")));
+    }
+
+    // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
+
+    /// Gap 108: once a spawn has ENDED on a real result, a plain `rigger result` for it is refused,
+    /// naming the standing result's position and the `--supersede` override, so a replayed stale
+    /// worker can never overwrite it; `--supersede` (an explicit operator repair) records.
+    #[test]
+    fn result_refuses_a_second_result_without_supersede() {
+        let req = test_request("u", "impl", "implementer", 0, "do it");
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let events = [req.to_event().unwrap(), res_ev];
+
+        let refused = result_refusal(&events, &req.id, false)
+            .unwrap()
+            .expect("a second result for an ended spawn is refused");
+        assert!(
+            refused.contains("already ended (result at position 7)")
+                && refused.contains("--supersede"),
+            "the refusal names the standing result and the override; got {refused}"
+        );
+        assert_eq!(
+            result_refusal(&events, &req.id, true).unwrap(),
+            None,
+            "--supersede records over the standing result"
+        );
+    }
+
+    /// Gap 108 guard: the step's liveness fault is the sweep's diagnosis of a silent worker, never
+    /// its end, so the worker's real result still replaces it with no override.
+    #[test]
+    fn a_real_result_still_replaces_a_recorded_liveness_fault() {
+        let req = test_request("u", "impl", "implementer", 0, "do it");
+        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
+            .to_event()
+            .unwrap();
+        fault.position = 4;
+        assert_eq!(
+            result_refusal(&[req.to_event().unwrap(), fault], &req.id, false).unwrap(),
+            None,
+            "a real result replaces a liveness fault"
+        );
     }
 
     /// The two checked-in workflows that ship with the repo - the self-hosted

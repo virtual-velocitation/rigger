@@ -2895,6 +2895,21 @@ mod tests {
         }
     }
 
+    /// A persona is prompt text that reaches every spawn of its role verbatim, so no committed
+    /// persona or scaffold seed carries a stray tool-call markup token left by the editor that
+    /// wrote it.
+    #[test]
+    fn no_persona_carries_stray_tool_markup() {
+        for (at, text) in every_shipped_persona() {
+            for token in ["</content>", "</invoke>", "<parameter", "<invoke"] {
+                assert!(
+                    !text.contains(token),
+                    "{at} carries the stray tool markup {token:?}"
+                );
+            }
+        }
+    }
+
     /// The roles that write or judge tests carry the mutation-proof test block exactly once;
     /// no other role does.
     #[test]

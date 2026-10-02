@@ -20,11 +20,12 @@
 //      single `rigger result <id> --if-absent --error <why>`, which writes the `--error`
 //      ONLY when the spawn has no result yet and leaves an existing result untouched. A
 //      worker (or a reviewer that already emitted an approve verdict) that self-reported and
-//      THEN ran on to max-turns must not have its result clobbered - `rigger result` is
-//      last-write-wins - so `--if-absent` honors the "dies WITHOUT reporting" clause in ONE
-//      atomic step (closing the read-then-write TOCTOU window a two-process `rigger reported
-//      <id> || rigger result <id> --error` guard would leave open) while still guaranteeing
-//      every parked spawn ends with a result and the run can never hang.
+//      THEN ran on to max-turns must keep its result - a plain `rigger result` refuses over it
+//      only after a separate read, so a self-report landing in between would be clobbered - so
+//      `--if-absent` honors the "dies WITHOUT reporting" clause in ONE atomic step (closing
+//      the read-then-write TOCTOU window a two-process `rigger reported <id> || rigger result
+//      <id> --error` guard would leave open) while still guaranteeing every parked spawn ends
+//      with a result and the run can never hang.
 //   4. LOOPS until a step reports `done`. Every anomalous exit - a courier agent that itself
 //      dies, `rigger step` failing, a failure that could not be recorded, or a stall - stops
 //      the loop LOUDLY (throws with a clear message) rather than aborting mid-agent or being
@@ -572,11 +573,11 @@ async function raceOuterWallClock(ran, boundSec) {
 // a dead worker whose agent() rejected, and an UNBOUNDED worker that blew the outer wall-clock.
 // It runs `rigger result <id> --if-absent --error "<why>"` (plus an optional `--meta`), so the
 // fault lands ONLY when the spawn has no result yet and a worker that self-reported at the last
-// moment is never clobbered (`rigger result` is otherwise last-write-wins). If the courier ITSELF
-// dies we can no longer guarantee the fault was recorded (the conductor's replay could hang on
-// resume), so - exactly as the worker path must - we neither swallow it nor re-throw mid-wave
-// (which would reject parallel() and abort sibling workers): we push it into the shared `fatal`
-// sink so the loop stops LOUDLY once the wave has drained. `why` MUST be shell-safe (the caller
+// moment is never clobbered (a plain `rigger result` checks and writes in two steps). If the
+// courier ITSELF dies we can no longer guarantee the fault was recorded (the conductor's replay
+// could hang on resume), so - exactly as the worker path must - we neither swallow it nor
+// re-throw mid-wave (which would reject parallel() and abort sibling workers): we push it into
+// the shared `fatal` sink so the loop stops LOUDLY once the wave has drained. `why` MUST be shell-safe (the caller
 // neutralizes any untrusted text before passing it); `meta`, when given, is a single-quote-safe
 // JSON string appended as `--meta '<meta>'` (e.g. the `liveness_class` an infra fault carries).
 async function recordFaultCourier(req, ph, why, meta, label, fatal) {
@@ -658,6 +659,7 @@ async function runWorker(req, fatal) {
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
     `  cd ${REPO} && rigger prompt '${req.id}'\n` +
+    `If that command instead refuses because spawn ${req.id} already ended, STOP at once: its result is already recorded (a resumed driver re-ran a finished wave), so do nothing and record nothing - no edits, no \`rigger emit\`, no \`rigger result\`.\n` +
     `Everything it prints (a persona above a \`---\` line when present, then the task) IS your assignment - follow it as if it were this message. Then:\n\n` +
     `--- rigger driver instructions ---\n` +
     `${workdir}\n` +
@@ -755,12 +757,13 @@ async function runWorker(req, fatal) {
     // an approve verdict) can self-report and THEN run on to max-turns. So record its failure
     // ON ITS BEHALF via a single ATOMIC `rigger result <id> --if-absent --error <why>`: the
     // `--error` lands ONLY when the spawn has no result yet, leaving an existing result
-    // untouched. `rigger result` is last-write-wins, so an unconditional --error would CLOBBER
-    // a self-reported success/approve and force-fail an approved unit on the next replay;
-    // `--if-absent` prevents exactly that in ONE step - closing the read-then-write TOCTOU
-    // window a two-process `rigger reported <id> || rigger result <id> --error` guard leaves
-    // open (a self-report landing between the check and the record) - while still ensuring
-    // every parked spawn ends with a result (the run can never hang).
+    // untouched. A plain `rigger result --error` refuses once a result stands, but it checks and
+    // writes in two steps, so a self-reported success/approve landing in between would be
+    // CLOBBERED and an approved unit force-failed on the next replay; `--if-absent` prevents
+    // exactly that in ONE step - closing the read-then-write TOCTOU window a two-process
+    // `rigger reported <id> || rigger result <id> --error` guard leaves open (a self-report
+    // landing between the check and the record) - while still ensuring every parked spawn ends
+    // with a result (the run can never hang).
     // The --error message must be non-empty (a blank error would replay AS a success). Neutralize
     // shell metacharacters (`"`, backtick, `$`, `\`) so it can never break out of - or trigger
     // substitution inside - the double-quoted --error arg in the courier command.

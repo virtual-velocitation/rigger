@@ -514,9 +514,9 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
 
 /// Given the same poisoned project with a spawn parked and a unit escalated in the current run,
 /// when a worker's couriers run - `rigger prompt`, `rigger scratch`, `rigger reported`, `rigger
-/// hook stop-failure`, `rigger result` (plain and `--if-absent`) - and the operator runs `rigger
-/// resume-unit`, then each answers from the current run: a courier that read past the run's
-/// slice would have materialized a poisoned event and failed.
+/// hook stop-failure`, `rigger result` (`--if-absent`, and `--supersede` over the standing
+/// result) - and the operator runs `rigger resume-unit`, then each answers from the current run:
+/// a courier that read past the run's slice would have materialized a poisoned event and failed.
 #[test]
 fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_superseded_event() {
     let dir = temp_store_project();
@@ -588,7 +588,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
         rigger_ok(root, &["reported", spawn]),
         "u/implementer#0 ok\n"
     );
-    let rerecorded = rigger_ok(root, &["result", spawn, "done again"]);
+    let rerecorded = rigger_ok(root, &["result", spawn, "--supersede", "done again"]);
     assert!(
         rerecorded.starts_with("recorded result for u/implementer#0"),
         "{rerecorded}"

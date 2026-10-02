@@ -285,7 +285,7 @@ fn actor_tier(actor: &str) -> &'static str {
 /// Pass/fail tallies for one gate id across a run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GateCounts {
-    /// `GateVerdict` events with `pass:true` (artifact-tagged ones excluded).
+    /// `GateVerdict` events with `pass:true` (legacy artifact-tagged ones excluded).
     pub pass: u64,
     /// `GateVerdict` events with `pass:false` - the remediation signal.
     pub fail: u64,
@@ -314,8 +314,8 @@ pub struct Metrics {
     /// a first-green-wins unit whose review rejected one candidate is not a clean pass,
     /// exactly as a single-lane unit that rejected then re-implemented is not.
     pub first_pass_clean: u64,
-    /// Per-gate pass/fail tallies, excluding the artifact-tagged integrate-time
-    /// `GateVerdict`s. Sorted by gate id (`BTreeMap`) for stable reporting.
+    /// Per-gate pass/fail tallies, excluding the legacy artifact-tagged `GateVerdict`s
+    /// older logs hold. Sorted by gate id (`BTreeMap`) for stable reporting.
     pub gates: BTreeMap<String, GateCounts>,
     /// Distinct units that emitted `UnitEscalated`. The numerator of the
     /// escalation rate.
@@ -886,9 +886,9 @@ pub fn project(events: &[Event]) -> Metrics {
             }
             TYPE_GATE_VERDICT => {
                 // Decode only the three fields this read-model needs. Artifact-tagged
-                // verdicts are the integrate-time GATED_BY bookkeeping (one per
-                // changed file), NOT real gate runs, so exclude them - the count
-                // must reflect gate noise, not how many files a unit touched.
+                // verdicts are legacy landing bookkeeping older logs hold (one per
+                // landed file and gate), NOT real gate runs, so exclude them - the
+                // count must reflect gate noise, not how many files a unit touched.
                 let Some(v) = e.decode::<GateVerdictView>() else {
                     continue;
                 };
@@ -1128,7 +1128,7 @@ struct GateVerdictView {
     artifact: String,
     /// A blast-radius SKIP verdict (spec 12, unit 3): the inner loop logged that it did NOT
     /// run this gate (its `inputs:` miss the blast radius). A skip is not a gate run, so it is
-    /// excluded from the pass/fail counts exactly like the artifact-tagged bookkeeping below.
+    /// excluded from the pass/fail counts exactly like the legacy artifact-tagged bookkeeping.
     #[serde(default)]
     skipped: bool,
 }
@@ -1752,7 +1752,7 @@ mod tests {
             status("a", "verified"),
             status("a", "reviewed"),
             integrated("a"),
-            artifact_verdict("build", "src/a.rs"), // GATED_BY bookkeeping - excluded
+            artifact_verdict("build", "src/a.rs"), // legacy bookkeeping - excluded
             started("b", "impl"),
             verdict("build", false),
             failed("b"),
@@ -1800,7 +1800,7 @@ mod tests {
             status("clean", "verified"),
             status("clean", "reviewed"),
             integrated("clean"),
-            artifact_verdict("build", "src/clean.rs"), // GATED_BY bookkeeping - excluded
+            artifact_verdict("build", "src/clean.rs"), // legacy bookkeeping - excluded
             // `reject`: per-unit review reject (verified then UnitFailed), retries,
             // then integrates - failed once so NOT a clean first pass.
             started("reject", "impl"),
@@ -2028,8 +2028,8 @@ mod tests {
 
     #[test]
     fn artifact_tagged_verdicts_are_excluded_from_gate_counts() {
-        // Only the real (artifact-free) gate runs count; the per-file GATED_BY
-        // verdicts emitted at integrate time are bookkeeping, not gate noise.
+        // Only the real (artifact-free) gate runs count; the legacy per-file
+        // verdicts older logs hold are bookkeeping, not gate noise.
         let events = vec![
             verdict("clippy", true),
             artifact_verdict("clippy", "src/a.rs"),

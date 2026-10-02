@@ -159,6 +159,9 @@
 # nothing to rerun, not a failure. The map carries forward every earlier entry for a mutant
 # this sweep did not examine, whichever run recorded it, so a catch recorded three sweeps ago -
 # by this spec or an earlier one - still re-runs when this spec changes its catching test.
+# By that carry rule a record's misses and its map are disjoint (a carried entry names a mutant
+# its sweep did not examine, a new one a mutant it caught), and the map is `sort -u`-ed as it
+# is written, so the by-name rerun list joins the two with a plain sort and lists each once.
 #
 # THE RERUN EXITS WITH CARGO-MUTANTS' OWN CODE (2026-09-19: under xargs a one-miss rerun exited
 # 123 and broke the chain before the promotion). The names are loaded into the positional
@@ -236,7 +239,7 @@ rerun="$({
     test -z "$owned" || cat "$last/missed.txt" 2>/dev/null
     changed="$(changed_binaries "$since")"
     test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) { print $1 }' "$last/caught.map" 2>/dev/null
-} | sort -u)"
+} | sort)"
 
 git diff "$since" -- '*.rs' > unit.diff || exit 1
 

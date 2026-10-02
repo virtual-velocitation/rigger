@@ -345,28 +345,29 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
 /// INTEGRATION), rather than walking the whole project: the property an integration's OWN reindex
 /// needs, bounded by the merge's OWN file list (Design/Constraints Walk: "the reindex is bounded by
 /// the merge's file list"), never the project's total file count. Reuses the SAME per-file lowering
-/// and keying as the whole-project walk (`crate::grounder::symbols::events::file_batches` and
-/// [`key_batch`], the identical authority [`walk_batches`]'s code half calls) - never a second
-/// lowering path - so a named file's scoped batch is byte-identical to what a full walk would
-/// produce for it, and the content key an event is deduped under can never drift between the two
-/// entries.
+/// and keying as the whole-project walk (`crate::grounder::symbols::events::file_batches` for the
+/// code half, `crate::grounder::design::events::named_batches` for the design half, and
+/// [`key_batch`], the identical authorities [`walk_batches`] calls) - never a second lowering path -
+/// so a named file's scoped batch is byte-identical to what a full walk would produce for it, and
+/// the content key an event is deduped under can never drift between the two entries.
 ///
-/// CODE ONLY (the `gc/` prefix): the design-intent half (`gd/`, spec 29b) stays with the
-/// whole-project walk - this scoped entry exists for the code-graph freshness an integration's
-/// reindex is answerable for, mirroring the EXISTING `Grounder::reindex` it runs alongside (which is
-/// also code-only), not a second, independently-scoped design-intent freshness this spec does not
-/// own.
+/// Both halves: the code (`gc/`) batch of every named file, then the design-intent (`gd/`, spec
+/// 29b) batch of every named file the walk scope admits that carries design intent - so a doc an
+/// integration edits or regenerates reaches the graph as its code does.
 #[cfg(feature = "symbols")]
 pub fn ingest_files_batched(
     root: &str,
     files: &[String],
     mut on_batch: impl BatchSink,
 ) -> IngestStats {
-    let batches = crate::grounder::symbols::events::file_batches(root, files);
+    let code_batches = crate::grounder::symbols::events::file_batches(root, files);
+    let design_batches = crate::grounder::design::events::named_batches(root, files);
     let mut batches_emitted = 0usize;
-    for (file, batch) in &batches {
-        key_batch("gc", file, batch, &mut on_batch);
-        batches_emitted += 1;
+    for (prefix, batches) in [("gc", &code_batches), ("gd", &design_batches)] {
+        for (file, batch) in batches {
+            key_batch(prefix, file, batch, &mut on_batch);
+            batches_emitted += 1;
+        }
     }
     IngestStats {
         batches_emitted,
@@ -391,8 +392,8 @@ pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl Batc
 /// too; this reads the graph's own recording directly.
 ///
 /// A file is FRESH when re-extracting it (through the SAME [`ingest_files_batched`] authority the
-/// live conductor reindexes through) yields EXACTLY the key set `graph.db`'s latest `gc/<file>`
-/// generation already recorded - same content, same event count, same order (the walk is
+/// live conductor reindexes through, reading its code batch alone) yields EXACTLY the key set
+/// `graph.db`'s latest `gc/<file>` generation already recorded - same content, same event count, same order (the walk is
 /// deterministic by construction, so an honest match is exact, never approximate). A file the graph
 /// has NEVER recorded a generation for at all counts as lagging only when its current extraction is
 /// non-empty (a genuinely new file the graph has not yet ingested - the coverage question criterion
@@ -406,10 +407,16 @@ pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<Str
         .iter()
         .filter(|file| {
             let identity = format!("gc/{file}");
+            let generation = format!("{identity}@");
             let mut current_keys: Vec<String> = Vec::new();
             let scoped = std::slice::from_ref(*file);
             let _ = ingest_files_batched(root, scoped, |keyed| {
-                current_keys.extend(keyed.iter().map(|(k, _)| k.clone()));
+                current_keys.extend(
+                    keyed
+                        .iter()
+                        .map(|(k, _)| k.clone())
+                        .filter(|k| k.starts_with(&generation)),
+                );
             });
             match latest.get(&identity) {
                 None => !current_keys.is_empty(),
@@ -721,7 +728,10 @@ mod scoped_reindex_tests {
     //! INTEGRATION): the scoped-reindex entry an integration's own graph freshening calls, and the
     //! sampled staleness check `rigger validate`'s graph index-lag advisory calls.
 
-    use super::{graph_index_lag, graph_index_lag_sample, ingest_files_batched, META_REPLAY_KEY};
+    use super::{
+        graph_index_lag, graph_index_lag_sample, ingest_files_batched,
+        ingest_project_batched_paced, META_REPLAY_KEY,
+    };
     use crate::eventstore::Event;
 
     /// Record `files`' CURRENT generation into a fresh `prior` stream, exactly as
@@ -773,13 +783,63 @@ mod scoped_reindex_tests {
         );
     }
 
+    /// Item I (AN INTEGRATION'S INGEST CARRIES THE DESIGN HALF): a NAMED design doc lowers into
+    /// exactly the `gd/` batch the whole-project walk gives it, while an unnamed design doc and a
+    /// named doc the walk scope excludes (rigger's own `.rigger` runtime dir) lower into none.
+    #[test]
+    fn ingest_files_batched_lowers_a_named_design_doc() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("docs")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".rigger")).unwrap();
+        let doc = "# Architecture\n\n## The store\n\nThe `src/store.rs` module owns the log.\n";
+        std::fs::write(dir.path().join("docs/architecture.md"), doc).unwrap();
+        std::fs::write(dir.path().join("docs/unnamed.md"), doc).unwrap();
+        std::fs::write(dir.path().join(".rigger/persona.md"), doc).unwrap();
+        let root = dir.path().to_str().unwrap();
+        let mut walked: Vec<String> = Vec::new();
+        ingest_project_batched_paced(root, 1, |keyed| {
+            walked.extend(keyed.iter().map(|(k, _)| k.clone()))
+        });
+        let mut named: Vec<String> = Vec::new();
+        ingest_files_batched(
+            root,
+            &["docs/architecture.md".into(), ".rigger/persona.md".into()],
+            |keyed| named.extend(keyed.iter().map(|(k, _)| k.clone())),
+        );
+        let design = |keys: &[String], prefix: &str| -> Vec<String> {
+            keys.iter()
+                .filter(|k| k.starts_with(prefix))
+                .cloned()
+                .collect()
+        };
+
+        assert!(
+            !design(&walked, "gd/docs/architecture.md@").is_empty()
+                && !design(&walked, "gd/docs/unnamed.md@").is_empty()
+                && design(&walked, "gd/.rigger/").is_empty(),
+            "premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"
+        );
+        assert_eq!(
+            design(&named, "gd/"),
+            design(&walked, "gd/docs/architecture.md@"),
+            "the named design doc lowers into the whole walk's own batch, and the unnamed and the \
+             excluded docs into none"
+        );
+    }
+
     /// [`graph_index_lag`] finds a file the graph's own recorded generation no longer matches, and
     /// leaves an unchanged sibling alone - the core "the graph agrees with the tree, or it does not"
-    /// comparison the validate advisory reports from.
+    /// comparison the validate advisory reports from. The unchanged sibling carries a `WHY:`
+    /// rationale, so it has a design batch beside its code batch: the lag reads the code
+    /// generation alone.
     #[test]
     fn graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("stable.rs"), "fn stable() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("stable.rs"),
+            "fn stable() {}\n// WHY: the unchanged sibling carries design intent too\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("churn.rs"), "fn original() {}\n").unwrap();
         let root = dir.path().to_str().unwrap();
         let files = vec!["stable.rs".to_string(), "churn.rs".to_string()];

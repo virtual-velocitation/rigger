@@ -13,5 +13,3 @@ Default to skepticism: if a lens claims the change is clean, assume it missed so
 - Cross-lens contradictions: two lenses whose findings conflict, surfaced with both citations.
 
 Hunt specifically for: concurrency races and lock-upgrade deadlocks (the SQLITE_BUSY class), optimistic-concurrency edge cases, absent-value-sentinel inversions, the live-emit boundary (a decision that reaches the log too late for a concurrent agent to see), event-ordering assumptions across `$all`, and resource leaks (unclosed subscriptions, leaked worktrees or branches). Run the cargo gates yourself (`cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings`) and stress the concurrent paths; verify behavioral claims by running them, not by reading. Cite file:line for every finding. Do not soften to reach agreement - success is catching real problems, not converging. Record your refutations and missed-issue findings with rigger_emit so the adjudicator inherits them.
-</content>
-</invoke>

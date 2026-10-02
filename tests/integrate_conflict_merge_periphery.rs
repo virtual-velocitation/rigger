@@ -44,6 +44,8 @@
 //! regenerable path is placeholder-resolved just enough to unblock the commit, and the FINAL
 //! landed content is the real regenerated output (not the incoming placeholder silently
 //! standing in for it forever, which is exactly what a retry-1-then-done drive cannot observe).
+//! It also pins that the paths of BOTH of unit-b's landings (the source resolution, then the
+//! regeneration) reach `FileTouched`.
 //!
 //! GAP 3, `a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo`. This
 //! diff's OWN new code comment states the failure mode precisely: "its NEXT attempt would
@@ -662,6 +664,21 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
         log.contains("resolve source conflict"),
         "the implementer's own resolution commit must land as its own distinct commit too; \
          log:\n{log}"
+    );
+    // unit-b's call lands twice - its source resolution, then the regeneration - and the paths
+    // of BOTH landings reach `FileTouched`, so each path is touched once by each unit.
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let touched = |path: &str| {
+        events
+            .iter()
+            .filter(|e| e.type_ == rigger::contextgraph::TYPE_FILE_TOUCHED)
+            .filter(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["path"] == path)
+            .count()
+    };
+    assert_eq!(
+        (touched("c.rs"), touched("docs/audit/report.md")),
+        (2, 2),
+        "every path of every landing in one integration is touched"
     );
     drop(repo);
 }

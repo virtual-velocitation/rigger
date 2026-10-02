@@ -526,13 +526,12 @@ fn a_worker_settling_during_the_courier_step_wakes_the_loop_and_never_reads_as_a
     );
 }
 
-/// Node harness for the worker's LIVENESS HEARTBEAT instruction (spec 101: every spawn carries a
-/// liveness marker, so the live-writer guard sees every worker). One wave parks a BOUNDED spawn,
-/// an UNBOUNDED spawn and a spawn whose step resolved no marker path; the harness records the
-/// prompt the real driver body hands each worker and asserts the bounded one keeps its bounded
-/// heartbeat, the unbounded one is told to keep its marker fresh anyway (never hung, read as live
-/// until its result), and the unmarked one is told no heartbeat at all.
-const HEARTBEAT_HARNESS: &str = r#"
+/// Node harness for what the driver tells each WORKER: one wave parks a BOUNDED spawn, an
+/// UNBOUNDED spawn and a spawn whose step resolved no marker path, and the harness records the
+/// prompt the real driver body hands each worker, then passes them to `check(prompts)` - a
+/// function declaration each test appends (see [`worker_prompts_harness`]) that asserts on them
+/// and prints its ok token.
+const WORKER_PROMPTS_HARNESS: &str = r#"
 "use strict";
 const vm = require("vm");
 const fs = require("fs");
@@ -581,13 +580,34 @@ const sandbox = {
 };
 vm.createContext(sandbox);
 
-vm.runInContext("(async () => {\n" + driverBody + "\n})()", sandbox, { filename: "rigger-driver-heartbeat-harness.js" })
+vm.runInContext("(async () => {\n" + driverBody + "\n})()", sandbox, { filename: "rigger-driver-worker-prompts-harness.js" })
   .then(function () {
+    for (const item of WAVE) {
+      if (!prompts[item.id]) fail("every wave item must reach a worker; got prompts for " + Object.keys(prompts));
+    }
+    check(prompts);
+  })
+  .catch(function (err) {
+    fail("the driver body rejected: " + String((err && err.stack) || err));
+  });
+"#;
+
+/// The [`WORKER_PROMPTS_HARNESS`] completed by `check`, a JS `function check(prompts)`
+/// declaration that asserts on the prompt each worker received and prints its ok token.
+fn worker_prompts_harness(check: &str) -> String {
+    format!("{WORKER_PROMPTS_HARNESS}\n{check}")
+}
+
+/// The LIVENESS HEARTBEAT check (spec 101: every spawn carries a liveness marker, so the
+/// live-writer guard sees every worker): the bounded spawn keeps its bounded heartbeat, the
+/// unbounded one is told to keep its marker fresh anyway (never hung, read as live until its
+/// result), and the unmarked one is told no heartbeat at all.
+const HEARTBEAT_CHECK: &str = r#"
+function check(prompts) {
     const touch = function (marker) { return 'mkdir -p "$(dirname "' + marker + '")" && touch "' + marker + '"'; };
     const bounded = prompts["b/implementer#1"];
     const unbounded = prompts["u/implementer#1"];
     const unmarked = prompts["n/implementer#1"];
-    if (!bounded || !unbounded || !unmarked) fail("every wave item must reach a worker; got prompts for " + Object.keys(prompts));
     if (!bounded.includes("LIVENESS HEARTBEAT (spec 10): your spawn carries a 60s wall-clock bound.") || !bounded.includes(touch(BOUNDED_MARKER))) {
       fail("the BOUNDED spawn keeps its bounded heartbeat over its own marker:\n" + bounded);
     }
@@ -604,10 +624,7 @@ vm.runInContext("(async () => {\n" + driverBody + "\n})()", sandbox, { filename:
       fail("a spawn with no resolved marker path has nothing to touch and gets no heartbeat:\n" + unmarked);
     }
     console.log("OK every-marked-spawn-is-told-to-heartbeat");
-  })
-  .catch(function (err) {
-    fail("the driver body rejected: " + String((err && err.stack) || err));
-  });
+}
 "#;
 
 /// RUNTIME guard (spec 101): the driver hands every spawn that carries a marker path the
@@ -618,8 +635,42 @@ vm.runInContext("(async () => {\n" + driverBody + "\n})()", sandbox, { filename:
 fn every_spawn_with_a_marker_path_is_told_to_keep_it_fresh() {
     assert_driver_harness_holds(
         "every_spawn_with_a_marker_path_is_told_to_keep_it_fresh",
-        HEARTBEAT_HARNESS,
+        &worker_prompts_harness(HEARTBEAT_CHECK),
         "OK every-marked-spawn-is-told-to-heartbeat",
         "every spawn carrying a marker path must be told to keep it fresh",
+    );
+}
+
+/// The ENDED-SPAWN check (gap 108): a driver resume replays its cached courier steps and
+/// re-spawns their waves' workers, and `rigger prompt` refuses a spawn that already ended - so
+/// every worker is told, right after its prompt fetch and before any driver instruction, to stop
+/// there on that refusal, doing nothing and recording nothing.
+const ENDED_SPAWN_CHECK: &str = r#"
+function check(prompts) {
+  for (const id of Object.keys(prompts)) {
+    const prompt = prompts[id];
+    const fetch = prompt.indexOf("rigger prompt '" + id + "'");
+    const stop = prompt.indexOf("If that command instead refuses because spawn " + id + " already ended");
+    const instructions = prompt.indexOf("--- rigger driver instructions ---");
+    if (stop < 0 || !prompt.includes("do nothing and record nothing")) {
+      fail("worker " + id + " must be told to stop, recording nothing, when its spawn already ended:\n" + prompt);
+    }
+    if (!(fetch < stop && stop < instructions)) {
+      fail("worker " + id + "'s stop clause must follow its prompt fetch and precede every driver instruction:\n" + prompt);
+    }
+  }
+  console.log("OK every-worker-stops-on-an-ended-spawn");
+}
+"#;
+
+/// RUNTIME guard (gap 108): every worker the driver spawns is told to stop - no edits, no emits,
+/// no result - when `rigger prompt` refuses because its spawn already ended.
+#[test]
+fn the_worker_preamble_stops_on_an_ended_spawn() {
+    assert_driver_harness_holds(
+        "the_worker_preamble_stops_on_an_ended_spawn",
+        &worker_prompts_harness(ENDED_SPAWN_CHECK),
+        "OK every-worker-stops-on-an-ended-spawn",
+        "every worker must be told to stop on an ended spawn before any driver instruction",
     );
 }

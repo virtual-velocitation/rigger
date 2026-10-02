@@ -432,8 +432,8 @@ fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
 /// Also the one authority `rigger replay` reuses to re-scope the candidate "gate runs"
 /// column to the gates the re-drive actually reaches: it recovers the STAGE a seeded
 /// gate verdict ran under so the composition root can ask whether the candidate config
-/// still declares that gate (a post-merge / skip / artifact key carries no `/gate:` infix,
-/// so it yields `None` and is left as recorded).
+/// still declares that gate (a post-merge or skip key carries no `/gate:` infix, so it
+/// yields `None` and is left as recorded).
 pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
@@ -445,7 +445,7 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
 /// read it to tell attempts apart. The run segment AFTER `/gate:` (never the whole key) is read
 /// by [`spawn::attempt_of`], the one owner of the `#{attempt}~retry{n}` tail, so neither a `#` in
 /// the unit portion nor an infra rerun's retry ordinal is mis-read as the attempt. A key with no
-/// `/gate:` infix (a skip / post-merge / artifact key) or no `#` yields `None`.
+/// `/gate:` infix (a skip or post-merge key) or no `#` yields `None`.
 fn gate_key_attempt(key: &str) -> Option<u32> {
     let (_, run) = key.split_once("/gate:")?;
     run.contains('#').then(|| spawn::attempt_of(run))
@@ -492,8 +492,9 @@ struct GateVerdictData {
 /// position (`Grounding`, gates not yet run), so inferring the gate outcome from it fabricates
 /// gate failures that never happened.
 ///
-/// Only gate-RUN verdicts contribute: the integrate-time GATED_BY artifact verdicts carry no
-/// replay key, a blast-radius SKIP is keyed under `gate-skip:`, a post-merge re-gate under
+/// Only gate-RUN verdicts contribute: a legacy per-file artifact verdict (older logs hold one per
+/// file and gate of each landing) carries no replay key, a blast-radius SKIP is keyed under
+/// `gate-skip:`, a post-merge re-gate under
 /// `postmerge-gate:`, and a deferred phase gate under `deferred/gate:` - none of which
 /// [`unit_of_gate_key`] resolves to `unit` - so none is mistaken for the unit's own gate run.
 ///
@@ -1401,8 +1402,9 @@ const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
 /// RECOVERY (the honest one, not the dead "just re-run"): reviewer spawn results are
 /// LAST-WRITE-WINS ([`spawn::result_of`] - a corrected re-record supersedes an earlier
 /// one), so the operator recovers by re-driving the reviewer and recording a SUBSTANTIVE
-/// result for one of its deterministic retry ids; the loop then replays that non-
-/// degenerate result and folds normally. Re-running WITHOUT a corrected result just
+/// result for one of its deterministic retry ids with `rigger result --supersede` (a plain
+/// record refuses to replace the result of a spawn that already ended); the loop then
+/// replays that non-degenerate result and folds normally. Re-running WITHOUT a corrected result just
 /// replays the recorded empties and halts here again - which is why the message names the
 /// re-record, not a bare re-run.
 fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt: u32) -> Error {
@@ -1412,9 +1414,9 @@ fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt
          on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate \
          reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is \
          NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a \
-         SUBSTANTIVE result for one of its spawn ids (results are last-write-wins, so a corrected \
-         re-record supersedes the empty one), e.g. `rigger result {latest:?} <substantive output>`; \
-         then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
+         SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` \
+         (results are last-write-wins, and a plain record refuses to replace an ended spawn's \
+         result), e.g. `rigger result {latest:?} --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
          here again.",
         REVIEWER_RESPAWN_BOUND + 1
     ))
@@ -1675,8 +1677,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // key -> (pass, evidence) map ONCE here from the same prior log, so re-reaching an
     // already-run inline/deferred gate replays its verdict via an O(1) map lookup rather
     // than re-scanning the whole stream per gate per step. Only keyed GateVerdict events
-    // (the gate runs) carry a replay key; the integrate-time GATED_BY artifact verdicts
-    // do not, so they never seed a gate-run key.
+    // (the gate runs) carry a replay key; the legacy per-file artifact verdicts older logs
+    // hold do not, so they never seed a gate-run key.
     let gate_verdicts: HashMap<String, (bool, String)> = prior_events
         .iter()
         .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
@@ -1692,8 +1694,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // that position. prior_events is ascending by position, and we insert only-if-absent, so
     // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
     // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
-    // integrate-time GATED_BY artifact verdicts carry no replay key / digest so they never
-    // seed the cache. The unit is recovered once from the verdict's replay key.
+    // legacy per-file artifact verdicts older logs hold carry no replay key / digest so they
+    // never seed the cache. The unit is recovered once from the verdict's replay key.
     let mut green_digests: HashMap<String, (u64, String)> = HashMap::new();
     for e in prior_events
         .iter()
@@ -3306,9 +3308,9 @@ impl RunCtx<'_> {
     /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
     /// vocabulary), under the distinct [`gate_key`] so it never shadows the gate-RUN key
     /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
-    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
-    /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
-    /// a stepwise resume re-appends it exactly once.
+    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the legacy
+    /// per-file artifact verdicts older logs hold, so a skip is never counted as a gate pass.
+    /// Keyed so a stepwise resume re-appends it exactly once.
     fn emit_gate_skip(
         &self,
         unit: &str,
@@ -4244,6 +4246,30 @@ impl RunCtx<'_> {
         Ok(sha)
     }
 
+    /// THE ROUND DELTA: what unit `unit`'s worktree `wt` changed since its reviewers last
+    /// judged it, as `(base, paths)` - `None` when no review round judged the unit before
+    /// `attempt` (a first round has no delta: the whole unit is new). `base` is
+    /// [`round_delta_base`]'s round-start sha; `paths` are the direct two-dot diff from it
+    /// ([`crate::worktree::DiffMode::Direct`]: `base` is a sha this same worktree's branch
+    /// already passed through) plus whatever the worktree holds uncommitted, so a delta read
+    /// at the build seam, before the pre-gate commit, still sees the implementer's edits.
+    fn round_delta(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+    ) -> Result<Option<(String, Vec<String>)>, Error> {
+        let events = self.read_current_run()?;
+        let Some(base) = round_delta_base(&events, unit, attempt) else {
+            return Ok(None);
+        };
+        let mut paths = wt.diff_names(&base, crate::worktree::DiffMode::Direct)?;
+        paths.extend(wt.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(Some((base, paths)))
+    }
+
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
     /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
@@ -4638,7 +4664,17 @@ impl RunCtx<'_> {
     /// frontier); the caller unwinds per its own discipline - the single lane propagates it
     /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
     /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
-    fn spawn_sdet_author(&self, st: &Stage, dir: &str, attempt: u32) -> Result<(), Error> {
+    ///
+    /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
+    /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
+    /// needle instead of growing the suite.
+    fn spawn_sdet_author(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        dir: &str,
+        attempt: u32,
+    ) -> Result<(), Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
         // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
@@ -4666,11 +4702,18 @@ impl RunCtx<'_> {
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
-        let sdet_prompt = self.build_prompt_with_failure(
+        let mut sdet_prompt = self.build_prompt_with_failure(
             st,
             &PriorFailure::default(),
             GroundingSlice::Implement,
         )?;
+        // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
+        // prompt without it, so this seam still errs only on a park.
+        let delta = wt.and_then(|w| self.round_delta(w, &st.name, attempt).ok().flatten());
+        if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
+            sdet_prompt.push_str("\n\n");
+            sdet_prompt.push_str(DOC_ONLY_ROUND);
+        }
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -5250,7 +5293,7 @@ impl RunCtx<'_> {
                     // crash disposition are the next unit's - so only the replay-safe parked arm
                     // acts here: `?` propagates it, holding the unit with no commit until a later
                     // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, dir, attempts)?;
+                    self.spawn_sdet_author(st, wt, dir, attempts)?;
                     // Commit the implementer's worktree BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
@@ -5707,7 +5750,7 @@ impl RunCtx<'_> {
                     // this step and a later step replays the sdet and commits the candidate
                     // WITH its periphery. The lane dir persists across the park (dropping `wt`
                     // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, &dir, lane) {
+                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane) {
                         debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
                         any_parked = true;
                         continue;
@@ -6948,9 +6991,9 @@ impl RunCtx<'_> {
         // noise) but it DOES run `isolation: false` in the unit's own real worktree
         // exactly like a lens or the adversary, and its own spawn is the historically
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
-        // driven) - so it carries the SAME worktree-discipline sentence those two tiers
-        // get via `review_protocol` (spec 103, criterion 6), appended directly here.
-        let prompt = format!("{}{REVIEWER_WORKTREE_DISCIPLINE}", self.build_prompt(st)?);
+        // driven) - so it carries the SAME reviewer discipline those two tiers get via
+        // `review_protocol` (spec 103, criterion 6), appended directly here.
+        let prompt = format!("{}{REVIEWER_DISCIPLINE}", self.build_prompt(st)?);
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -8541,8 +8584,8 @@ impl RunCtx<'_> {
         // so staleness measures against every current unit, not just the authored config.
         stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
-        // The unit being integrated: its name, agent, and gate library drive the FILE_TOUCHED
-        // / GATED_BY edges AND the post-merge re-gate (spec 12, unit 5), which re-runs the full
+        // The unit being integrated: its name and agent drive the FILE_TOUCHED records, and its
+        // gate library drives the post-merge re-gate (spec 12, unit 5), which re-runs the full
         // library `st.gates` against the merged tree.
         st: &Stage,
         // The unit's current attempt: the post-merge re-gate records its verdicts at this
@@ -8574,9 +8617,10 @@ impl RunCtx<'_> {
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
-        // so the FILE_TOUCHED / GATED_BY edges and the reindex see the real artifact
-        // set whether or not the unit was pre-committed.
-        let mut files = wt.changed_since_base()?;
+        // so the landing decisions below see whether the unit has anything left to land,
+        // whether or not it was pre-committed. The tail after the landing reads the range
+        // that actually landed instead (`landed`, below).
+        let files = wt.changed_since_base()?;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
         // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
         // genuinely never had anything to land AND for one whose `Worktree::land` already
@@ -8622,27 +8666,20 @@ impl RunCtx<'_> {
                         // the true no-op short circuit.
                         match cached(&self.landed, &conflict_regenerate_key(&st.name, attempt)) {
                             Some((landed_pass, sha, pre_merge)) => {
-                                files = wt
-                                    .diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
                                 already_landed = Some((landed_pass, sha, pre_merge));
                             }
                             None => return Ok(Integration::default()),
                         }
                     } else {
                         // The catch-up made a real regenerate commit on the worktree's own
-                        // branch, still unlanded - recompute `files` and fall through to the
-                        // ordinary merge/land loop below (`already_landed` stays `None`),
-                        // which will merge and land this commit for real (a trivial fast-
-                        // forward, since nothing else changed base-side) and re-check owed
-                        // once more (now empty) before breaking.
-                        files = wt.changed_since_base()?;
+                        // branch, still unlanded - fall through to the ordinary merge/land
+                        // loop below (`already_landed` stays `None`), which will merge and land
+                        // this commit for real (a trivial fast-forward, since nothing else
+                        // changed base-side) and re-check owed once more (now empty) before
+                        // breaking.
                     }
                 }
                 Some((pass, unit_tip, run_tip)) => {
-                    // Recompute the ACTUAL files this already-landed merge touched from the
-                    // OLDER base it merged FROM (the current base has since absorbed them,
-                    // which is exactly why `changed_since_base` read empty above).
-                    files = wt.diff_names(&run_tip, crate::worktree::DiffMode::MergeBase)?;
                     // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
                     // root cause: "row 4 closed" was treated as "fully integrated" without
                     // ever consulting row 3): `Worktree::land` already fast-forwarded the
@@ -8666,7 +8703,6 @@ impl RunCtx<'_> {
                         self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
                         clear_attempt(&self.pending_landing, &st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
-                        files = wt.changed_since_base()?;
                     }
                 }
             }
@@ -8718,6 +8754,11 @@ impl RunCtx<'_> {
         // (unchanged from before this fix) through the post-merge gate suite and staleness
         // marking below.
         let mut lock = self.integrate_mu.lock().unwrap();
+        // The run branch's tip right before THIS call's first landing: a mixed conflict lands
+        // twice (the source resolution, then the owed regeneration), so the range that landed
+        // starts there, never at the last pass's `pre_merge`. `None` when the call itself
+        // landed nothing new (an already-landed resume), which then reads from `pre_merge`.
+        let mut landed_from: Option<String> = None;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `already_landed` is set ONLY
         // when `files` came back empty above AND a still-open landing-intent explained it -
         // together, proof `Worktree::land` already completed this exact landing for real in
@@ -8820,6 +8861,7 @@ impl RunCtx<'_> {
                             worktree::LandOutcome::Landed => {}
                         }
                         self.record_landed(&st.name, attempt, pass, &c, &pre_merge)?;
+                        landed_from.get_or_insert_with(|| pre_merge.clone());
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
                         // implementer's own commit lands, bundling in the ALREADY-staged
@@ -9059,12 +9101,21 @@ impl RunCtx<'_> {
         // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
         // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
         // tail. The reindex's own emits are keyed, so re-running it appends nothing twice, but the
-        // FILE_TOUCHED / GATED_BY emits below are not - so they come only after every fallible
-        // reindex step has succeeded, and a failed reindex leaves none of them for the resume to
-        // append a second time.
+        // FILE_TOUCHED emits below are not - so they come only after every fallible reindex step
+        // has succeeded, and a failed reindex leaves none of them for the resume to append a
+        // second time.
+        //
+        // Every one of them reads ONE file set: the range that landed, from the run branch's tip
+        // before this call's first landing to the landed tip. It holds the unit's own paths AND
+        // every path a regeneration committed at landing (which rewrites files beyond the
+        // conflicted one), and a fresh landing and a resumed one derive it alike.
+        let landed = wt.diff_names(
+            landed_from.as_deref().unwrap_or(&pre_merge),
+            crate::worktree::DiffMode::MergeBase,
+        )?;
         if !commit.is_empty() {
             if let Some(g) = self.deps.grounder {
-                g.reindex(&self.deps.repo, &files);
+                g.reindex(&self.deps.repo, &landed);
             }
             // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
             // what `graph --show`/`graph --around` read) used to populate only ONCE per process
@@ -9075,25 +9126,13 @@ impl RunCtx<'_> {
             // integration touched - bounded by the merge's own file list, never a whole-project
             // walk - right alongside the grounder's own (already-existing) reindex above, so the
             // two stay in lockstep from every integration on.
-            self.ingest_files_into_graph(&files)?;
+            self.ingest_files_into_graph(&landed)?;
         }
-        for f in &files {
+        for f in &landed {
             self.emit(
                 contextgraph::TYPE_FILE_TOUCHED,
                 json!({"path": f, "by": &st.agent}),
             )?;
-        }
-        // GATED_BY (§7): record which gates govern each artifact this unit changed. Each
-        // (file, gate) GateVerdict carries the artifact, which the projector folds into
-        // GATED_BY(artifact -> gate) - the edge a real run otherwise never produced (Phase 2
-        // carryover). `files` was captured before the merge, so it is the real artifact set.
-        for f in &files {
-            for gid in &st.gates {
-                self.emit(
-                    contextgraph::TYPE_GATE_VERDICT,
-                    json!({"gate": gid, "pass": true, "artifact": f}),
-                )?;
-            }
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
@@ -9101,7 +9140,7 @@ impl RunCtx<'_> {
         // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
         // resume seeding. Computed under the integrate lock so a concurrent integration's
         // staleness view is serialized with the merge it observes.
-        let staled = self.mark_stale_downstream(stages, &st.name, &files);
+        let staled = self.mark_stale_downstream(stages, &st.name, &landed);
         Ok(Integration {
             commit,
             staled,
@@ -9514,8 +9553,8 @@ impl RunCtx<'_> {
     /// `conflict_regenerate_pending` marker sat orphaned and the `accept_incoming` placeholder
     /// content shipped permanently. Mirrors that same loop check exactly (regenerate, record,
     /// clear) but does NOT land the resulting commit itself - the caller must still let the
-    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real,
-    /// so `files` is left for the caller to recompute once this returns. The episode tag
+    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real.
+    /// The episode tag
     /// (`record_regenerate_commit`'s pairing key with the ORIGINAL `record_regenerate_pending`
     /// before-record) can never be recovered here - the pending map holds only paths, not the
     /// episode string that produced them, and by construction this call is reached only from
@@ -9524,7 +9563,7 @@ impl RunCtx<'_> {
     /// no-op naturally reuses the same sha and so the same, correctly-deduplicated tag) is
     /// used instead of trying to reconstruct a value this call structurally cannot know.
     /// Returns whether anything was actually owed (and thus regenerated) so the caller can
-    /// decide whether to recompute `files` at all.
+    /// decide whether anything is left to land.
     fn catch_up_owed_regeneration(
         &self,
         wt: &Worktree,
@@ -11520,20 +11559,22 @@ pub fn review_protocol(actor: &str) -> String {
         "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_WORKTREE_DISCIPLINE}"
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_DISCIPLINE}"
     )
 }
 
-/// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the ONE sentence
-/// every review-tier prompt carries, spelling out in prose what [`RunCtx::
+/// The discipline every review-tier prompt carries. A REVIEW ROUND LEAVES THE TREE IT
+/// REVIEWED (spec 103, criterion 6): its first sentences spell out in prose what [`RunCtx::
 /// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
-/// exists to catch, name in a lesson, and restore. Shared by [`review_protocol`] (the lens
+/// exists to catch, name in a lesson, and restore. A REVIEW NEVER MUTATES: its last sentence
+/// keeps cargo-mutants out of every review, since the check-in gate owns mutation testing and
+/// a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
 /// and adversary tiers, which also record findings through it) and [`RunCtx::
 /// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_WORKTREE_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it.";
+const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run cargo-mutants, directly or through a verify helper: mutation testing belongs to the check-in gate, never to a review.";
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -12630,28 +12671,65 @@ fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
     )
 }
 
-/// The durable [`STATUS_REVIEW_ROUND_START`] sha [`RunCtx::review_round_start_sha`]
-/// stamped the FIRST time `review_unit` was entered for this EXACT `(unit, attempt)`, if
-/// any (spec 103, criterion 6, round 3) - mirrors [`recorded_adoption`]'s own read shape
-/// (whole-stream-scoped find, matching on the event's own `id`/`status`/`attempt` fields
-/// rather than trusting the caller's replay key alone). `None` when this exact
-/// `(unit, attempt)` was never stamped - the caller's own first-entry path handles that
-/// case by stamping fresh rather than calling this at all.
-fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
-    events.iter().find_map(|e| {
+/// Every durable [`STATUS_REVIEW_ROUND_START`] mark [`RunCtx::review_round_start_sha`]
+/// stamped for `unit`, in log order, as `(attempt, sha)` - matching on the event's own
+/// `id`/`status`/`attempt` fields rather than trusting a caller's replay key alone, the
+/// read shape [`recorded_adoption`] shares. A mark carrying no sha is skipped.
+fn review_round_starts<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+) -> impl Iterator<Item = (u64, String)> + 'a {
+    events.iter().filter_map(move |e| {
         if e.type_ != ledger::TYPE_UNIT_STATUS {
             return None;
         }
         let v: Value = serde_json::from_slice(&e.data).ok()?;
         if v.get("id").and_then(Value::as_str) != Some(unit)
             || v.get("status").and_then(Value::as_str) != Some(STATUS_REVIEW_ROUND_START)
-            || v.get("attempt").and_then(Value::as_u64) != Some(u64::from(attempt))
         {
             return None;
         }
-        e.meta.get(META_WORKTREE_SHA).cloned()
+        let attempt = v.get("attempt").and_then(Value::as_u64)?;
+        Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?))
     })
 }
+
+/// The durable [`STATUS_REVIEW_ROUND_START`] sha [`RunCtx::review_round_start_sha`]
+/// stamped the FIRST time `review_unit` was entered for this EXACT `(unit, attempt)`, if
+/// any (spec 103, criterion 6, round 3). `None` when this exact `(unit, attempt)` was
+/// never stamped - the caller's own first-entry path handles that case by stamping fresh
+/// rather than calling this at all.
+fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    review_round_starts(events, unit)
+        .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
+}
+
+/// The base of `unit`'s ROUND DELTA at `attempt` (see [`RunCtx::round_delta`]): the
+/// round-start sha of its latest review round at an EARLIER attempt - the round whose
+/// verdict sent the unit back to build again. `None` when no review round judged the unit
+/// before `attempt`, or the latest one recorded no sha (a repo-less unit).
+fn round_delta_base(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    review_round_starts(events, unit)
+        .filter(|(stamped, _)| *stamped < u64::from(attempt))
+        .max_by_key(|(stamped, _)| *stamped)
+        .map(|(_, sha)| sha)
+        .filter(|sha| !sha.is_empty())
+}
+
+/// Whether a round delta's `paths` changed documentation only: at least one path, and every
+/// one a `*.md` file or under `docs/`.
+fn is_documentation_only(paths: &[String]) -> bool {
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|p| p.ends_with(".md") || p.starts_with("docs/"))
+}
+
+/// The rule the sdet-author's prompt carries on a round whose delta changed documentation
+/// only ([`is_documentation_only`]): a reworded sentence moves an existing pin's needle at
+/// most, and a fresh test for every wording round only grows the suite the next round must
+/// keep green. The rule lives here alone, never copied into a persona.
+const DOC_ONLY_ROUND: &str = "This round changed documentation only: extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.";
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
 /// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
@@ -13484,8 +13562,8 @@ mod tests {
             "a re-gated-green latest attempt reads passed even though an earlier attempt failed"
         );
 
-        // A blast-radius SKIP (keyed under `gate-skip:`) and an integrate-time GATED_BY artifact
-        // verdict (no replay key) are NOT the unit's own gate run, so neither contributes.
+        // A blast-radius SKIP (keyed under `gate-skip:`) and a legacy per-file artifact verdict
+        // (no replay key) are NOT the unit's own gate run, so neither contributes.
         let skip = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({
@@ -14672,6 +14750,12 @@ mod tests {
         /// worktree BEFORE the pre-gate commit (asserting mere presence in the merged tree
         /// would NOT distinguish placement, since integrate sweeps any dirty file in).
         write_file_by_agent: HashMap<String, String>,
+        /// Per-SPAWN-ID file writes: the spawn whose deterministic id ([`SpawnOpts::id`])
+        /// matches writes each named path (its parent dirs created) into its worktree dir.
+        /// Lets a test give ONE attempt's implementer a different change than another
+        /// attempt's - which `write_file` and `write_file_by_agent` (identical on every
+        /// attempt of the same agent) cannot. Isolation-guarded like `write_file`.
+        write_files_by_spawn_id: HashMap<String, Vec<String>>,
         emits: Vec<(String, Value)>,
         /// Per-agent emits, in addition to the shared `emits`: lets one test give a
         /// single lens a ReviewFinding to emit so the test can assert the finding
@@ -14784,6 +14868,7 @@ mod tests {
             Stub {
                 write_file: None,
                 write_file_by_agent: HashMap::new(),
+                write_files_by_spawn_id: HashMap::new(),
                 emits: Vec::new(),
                 emits_by_agent: HashMap::new(),
                 output: String::new(),
@@ -14940,6 +15025,17 @@ mod tests {
             if let Some(f) = self.write_file_by_agent.get(&a.id) {
                 if !opts.dir.is_empty() {
                     let _ = std::fs::write(Path::new(&opts.dir).join(f), "periphery\n");
+                }
+            }
+            if let Some(paths) = self.write_files_by_spawn_id.get(&opts.id) {
+                if !opts.dir.is_empty() {
+                    for path in paths {
+                        let full = Path::new(&opts.dir).join(path);
+                        if let Some(parent) = full.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&full, "work\n");
+                    }
                 }
             }
             // Spec 88 criterion 4 (PLAN AMENDMENTS LAND): a producer's own git commits,
@@ -19934,9 +20030,9 @@ mod tests {
     /// unit whose worker writes `feature.rs`, over a store whose first group lookup of that file
     /// goes unanswered, WHEN the unit lands and the integration's reindex fails on that lookup,
     /// THEN the step fails with the store's error, and the step that resumes the landed unit
-    /// records exactly one `FileTouched` and one per-artifact `GateVerdict` for the file and
-    /// exactly one `UnitIntegrated` - the failed reindex left no unkeyed edge for the resume to
-    /// append a second time.
+    /// records exactly one `FileTouched` for the file, no per-file `GateVerdict`, and exactly one
+    /// `UnitIntegrated` - the failed reindex left no unkeyed edge for the resume to append a
+    /// second time.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_landed_unit_whose_reindex_lookup_fails_resumes_to_one_file_touched_and_one_integration() {
@@ -19990,8 +20086,150 @@ mod tests {
                 about_feature(contextgraph::TYPE_GATE_VERDICT, "artifact"),
                 count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             ),
-            (1, 1, 1),
-            "one FileTouched and one GateVerdict for the landed file, and one UnitIntegrated"
+            (1, 0, 1),
+            "one FileTouched and no per-file GateVerdict for the landed file, and one UnitIntegrated"
+        );
+    }
+
+    /// Gap 111 (A LANDING RECORDS ITS GATES ONCE): GIVEN a merging unit with two gates whose
+    /// worker commits three files, WHEN it lands, THEN the only `GateVerdict`s after its
+    /// `integrate-landed` row are its two keyed post-merge verdicts - the merged tree's record -
+    /// and no unkeyed verdict per touched file and gate.
+    #[test]
+    fn a_landing_appends_only_its_keyed_post_merge_verdicts() {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g1".into(), gate_def("true"));
+        cfg.workflow.gates.insert("g2".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g1".into(), "g2".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let files = ["a.rs", "b.rs", "c.rs"];
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "worker".to_string(),
+                files
+                    .iter()
+                    .map(|f| (f.to_string(), format!("// {f}\n")))
+                    .collect(),
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+
+        run_isolated(&cfg, &deps).unwrap();
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let touched: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_FILE_TOUCHED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["path"].clone())
+            .collect();
+        assert_eq!(
+            touched,
+            files.map(|f| json!(f)),
+            "premise: the landing touched the worker's three files"
+        );
+        let landed = events
+            .iter()
+            .position(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["status"]
+                        == json!(STATUS_INTEGRATE_LANDED)
+            })
+            .expect("the unit records its landing");
+        let verdicts_after_landing: Vec<Option<&String>> = events[landed..]
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
+            .map(|e| e.meta.get(META_REPLAY_KEY))
+            .collect();
+        assert_eq!(
+            verdicts_after_landing,
+            [
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, 0, "g1")),
+                Some(&gate_key(GateKey::PostMergeVerdict, "unit-a", 0, 0, "g2")),
+            ],
+            "the landing records each gate once, keyed by unit and attempt"
+        );
+    }
+
+    /// Item I (A LANDING RECORDS EVERY PATH IT LANDED): GIVEN a reviewed unit whose landing
+    /// conflicts on a registered regenerable path whose command also writes a second file, WHEN
+    /// the unit lands through that regeneration commit, THEN the second file reaches `FileTouched`
+    /// and the graph's scoped ingest like every other path the landed range changed.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_regeneration_committed_at_landing_reaches_file_touched_and_the_graph() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let st = Store::open(":memory:").unwrap();
+        seed_prior_window_s(
+            &repo_path,
+            &st,
+            vec![
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "verified")),
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "reviewed")),
+            ],
+        );
+        // The run branch independently adds its own `feature.rs`: an add/add conflict on the
+        // regenerable path.
+        std::fs::write(repo.path().join("feature.rs"), "fn other() {}\n").unwrap();
+        run_git(&repo_path, &["add", "feature.rs"]);
+        run_git(
+            &repo_path,
+            &["commit", "-q", "-m", "a batch-mate's feature.rs"],
+        );
+        let mut cfg = reviewed_merge_cfg(false);
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["feature.rs".into()],
+            run: "printf 'fn feature() {}\\n' > feature.rs && \
+                  printf 'pub fn regenerated() {}\\n' > gen.rs"
+                .into(),
+        }];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            graph: Some(&graph),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert!(
+            repo.path().join("gen.rs").exists(),
+            "premise: the regeneration commit landed its second file"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let touched: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_FILE_TOUCHED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["path"].clone())
+            .collect();
+        assert_eq!(
+            touched,
+            [json!("feature.rs"), json!("gen.rs")],
+            "every path the landed range changed is touched, the regenerated one included"
+        );
+        assert!(
+            events.iter().any(|e| e
+                .meta
+                .get(META_REPLAY_KEY)
+                .is_some_and(|k| k.starts_with("gc/gen.rs@"))),
+            "the graph's scoped ingest lowers the regenerated file"
         );
     }
 
@@ -23475,10 +23713,12 @@ mod tests {
             "the operator-facing halt must not carry the internal sentinel marker: {:?}",
             err.0
         );
-        // It names the REAL recovery (re-record a substantive result; last-write-wins), not
-        // the dead "just re-run" promise the adjudicator rejected at adj-u2gap18.
+        // It names the REAL recovery (re-record a substantive result over the empty one with
+        // `--supersede`, since `rigger result` refuses to replace an ended spawn's result
+        // without it), not the dead "just re-run" promise the adjudicator rejected at
+        // adj-u2gap18.
         assert!(
-            err.0.contains("rigger result") && err.0.contains("last-write-wins"),
+            err.0.contains("rigger result") && err.0.contains("--supersede"),
             "the halt must name the working recovery (a corrected re-record), not a bare re-run: {}",
             err.0
         );
@@ -34063,11 +34303,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_agents_emit_findings_via_the_review_protocol() {
-        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
-        // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
-        // ends with its verdict line, not a finding emit).
+    /// The prompts one approving review round hands its three tiers, `(lens, adversary,
+    /// adjudicator)`: a single `review` stage with one lens, run in isolation on a stub that
+    /// approves.
+    fn review_tier_prompts() -> (String, String, String) {
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
@@ -34086,7 +34325,16 @@ mod tests {
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
-        let lens_prompt = driver.prompts_for("lens").pop().unwrap();
+        let last = |id: &str| driver.prompts_for(id).pop().unwrap();
+        (last("lens"), last("adversary"), last("adj"))
+    }
+
+    #[test]
+    fn review_agents_emit_findings_via_the_review_protocol() {
+        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
+        // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
+        // ends with its verdict line, not a finding emit).
+        let (lens_prompt, adv_prompt, adj_prompt) = review_tier_prompts();
         assert!(
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
@@ -34098,7 +34346,6 @@ mod tests {
             lens_prompt.contains(r#""by":"lens:lens""#),
             "a lens must be told to attribute each finding to its role via `by`; prompt was:\n{lens_prompt}"
         );
-        let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
             adv_prompt.contains("ReviewFinding"),
             "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
@@ -34109,11 +34356,28 @@ mod tests {
             adv_prompt.contains(r#""by":"adversary""#),
             "the adversary must be told to attribute each finding to `adversary` via `by`; prompt was:\n{adv_prompt}"
         );
-        let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(
             !adj_prompt.contains("ReviewFinding"),
             "the adjudicator emits a verdict, not findings; prompt was:\n{adj_prompt}"
         );
+    }
+
+    /// Mutation testing belongs to the check-in gate, never to a review: every review tier -
+    /// lens, adversary and adjudicator - is told never to run cargo-mutants, itself or through
+    /// a verify helper.
+    #[test]
+    fn every_reviewer_prompt_forbids_cargo_mutants() {
+        let (lens, adversary, adjudicator) = review_tier_prompts();
+        for (tier, prompt) in [
+            ("lens", lens),
+            ("adversary", adversary),
+            ("adjudicator", adjudicator),
+        ] {
+            assert!(
+                prompt.contains("Never run cargo-mutants, directly or through a verify helper"),
+                "the {tier} must be told never to run cargo-mutants; prompt was:\n{prompt}"
+            );
+        }
     }
 
     #[test]
@@ -40042,6 +40306,122 @@ mod tests {
              implementer's diff (proving the spawn ran BEFORE the pre-gate commit); move the spawn \
              below that commit and it lands only at integrate - a later, different commit - failing this"
         );
+    }
+
+    /// The prompts the sdet-author gets, in attempt order, on a `per_unit_panel_cfg` unit
+    /// in a real repository whose adjudicator rejects round 0 and approves round 1: round 0's
+    /// implementer writes `feature.rs`, round 1's writes `second_round` (worktree-relative
+    /// paths).
+    fn sdet_prompts_around_a_rejected_round(second_round: &[&str]) -> Vec<String> {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let implementer = |attempt| spawn_id("implement", ROLE_IMPLEMENTER, attempt);
+        let adjudicator = |attempt| spawn_id("implement", ROLE_ADJUDICATOR, attempt);
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: HashMap::from([
+                (
+                    adjudicator(0),
+                    r#"{"verdict":"reject","issues":[]}"#.to_string(),
+                ),
+                (adjudicator(1), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            write_files_by_spawn_id: HashMap::from([
+                (implementer(0), vec!["feature.rs".to_string()]),
+                (
+                    implementer(1),
+                    second_round.iter().map(|p| p.to_string()).collect(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        driver.prompts_for(ROLE_SDET_AUTHOR)
+    }
+
+    /// A round that changed documentation only - `*.md` files and paths under `docs/` -
+    /// since its reviewers rejected the unit tells the sdet-author to extend the existing
+    /// owner test's needle or add no pin, never a new test. The first round (no review has
+    /// judged the unit yet), a round that changed code beside its docs, and a round that
+    /// changed nothing are not told.
+    #[test]
+    fn a_doc_only_round_tells_the_sdet_author_to_extend_the_owner_needle() {
+        const NEEDLE: &str = "This round changed documentation only: extend the existing owner \
+                              test's needle for the changed sentence, or add no pin; never a new test.";
+        for (second_round, told, why) in [
+            (
+                &["docs/diagram.svg", "README.md"][..],
+                true,
+                "a round that changed only docs/ and *.md paths",
+            ),
+            (
+                &["README.md", "src/more.rs"][..],
+                false,
+                "a round that changed code beside its docs",
+            ),
+            (&[][..], false, "a round that changed nothing"),
+        ] {
+            let prompts = sdet_prompts_around_a_rejected_round(second_round);
+            assert_eq!(
+                prompts.len(),
+                2,
+                "{why}: the sdet-author runs once per round"
+            );
+            assert!(
+                !prompts[0].contains(NEEDLE),
+                "{why}: the first round has no reviewed base, so no doc-only rule:\n{}",
+                prompts[0]
+            );
+            assert_eq!(
+                prompts[1].contains(NEEDLE),
+                told,
+                "{why}: told the doc-only rule must be {told}:\n{}",
+                prompts[1]
+            );
+        }
+    }
+
+    /// A round delta's base is the round-start sha of the unit's latest review round at an
+    /// attempt BEFORE the one asking - never the asking attempt's own round, never an earlier
+    /// round, never another unit's - and there is none before any round or when that round
+    /// recorded no sha.
+    #[test]
+    fn round_delta_base_is_the_latest_review_round_before_the_attempt() {
+        let start = |unit: &str, attempt: u32, sha: &str| {
+            let mut e = Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": unit,
+                    "status": STATUS_REVIEW_ROUND_START,
+                    "attempt": attempt,
+                }))
+                .unwrap(),
+            );
+            e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
+            e
+        };
+        let events = [
+            start("u", 0, "sha0"),
+            start("u", 1, "sha1"),
+            start("other", 1, "decoy"),
+            start("u", 2, ""),
+        ];
+        let base = |attempt| round_delta_base(&events, "u", attempt);
+        assert_eq!(base(0), None, "no round judged the unit before attempt 0");
+        assert_eq!(base(1).as_deref(), Some("sha0"));
+        assert_eq!(
+            base(2).as_deref(),
+            Some("sha1"),
+            "the latest earlier round wins"
+        );
+        assert_eq!(base(3), None, "the latest earlier round recorded no sha");
     }
 
     #[test]

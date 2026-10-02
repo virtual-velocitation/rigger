@@ -1199,13 +1199,21 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
-        Some(p) => {
-            println!("{p}");
-            Ok(())
-        }
-        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
+    println!("{}", prompt_reply(&events, id)?);
+    Ok(())
+}
+
+/// What `rigger prompt <id>` answers from the run's `events`: the spawn's full prompt
+/// ([`spawn::prompt_for`]), or a refusal - for an id no request is recorded under, and for a spawn
+/// that already ended ([`ended_refusal`]), so a worker a resumed driver re-spawns for a replayed
+/// wave stops before doing any work.
+fn prompt_reply(events: &[Event], id: &str) -> Result<String, String> {
+    if let Some(refusal) = ended_refusal(events, id).map_err(|e| e.to_string())? {
+        return Err(format!("prompt: {refusal}"));
     }
+    spawn::prompt_for(events, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("prompt: no spawn request recorded for {id:?}"))
 }
 
 /// `rigger scratch <spawn-id>` - print spawn `<id>`'s own rigger-assigned scratch
@@ -2458,17 +2466,19 @@ fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
 
 /// A parsed `rigger result` invocation (see [`cmd_result`]): the spawn `id`, the
 /// optional outcome `text` (`None` means "read it from stdin"), whether `--error`
-/// marks it a failure, whether `--if-absent` makes the record conditional, and the
-/// optional `--meta` courier bookkeeping.
+/// marks it a failure, whether `--if-absent` makes the record conditional, whether
+/// `--supersede` replaces the result of a spawn that already ended, and the optional
+/// `--meta` courier bookkeeping.
 struct ResultArgs {
     id: String,
     text: Option<String>,
     is_error: bool,
     if_absent: bool,
+    supersede: bool,
     meta: Option<serde_json::Value>,
 }
 
-/// Parse `rigger result <id> [<output>] [--error] [--if-absent] [--meta '<json>']`.
+/// Parse `rigger result <id> [<output>] [--error] [--if-absent] [--supersede] [--meta '<json>']`.
 ///
 /// `<id>` is the required deterministic spawn id (`{unit}/{role}#{attempt}`). The
 /// outcome payload is an OPTIONAL second positional; when omitted, [`cmd_result`]
@@ -2477,6 +2487,8 @@ struct ResultArgs {
 /// agent's output. `--if-absent` is a bare flag that makes the record CONDITIONAL: the
 /// outcome is written only when the spawn has no result yet, atomically and without
 /// clobbering an existing one (the thin driver's death courier uses it - spec 05).
+/// `--supersede` is a bare flag: the explicit operator repair that replaces the result of
+/// a spawn that already ended, which a plain record refuses ([`result_refusal`]).
 /// `--meta` takes a JSON OBJECT (mirroring `rigger emit`'s payload contract) carrying
 /// courier bookkeeping (e.g. the resolved model id, spec 05). Unknown flags, a
 /// missing/empty id, a third positional, and a non-object/invalid `--meta` are all
@@ -2486,12 +2498,14 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
     let mut text: Option<String> = None;
     let mut is_error = false;
     let mut if_absent = false;
+    let mut supersede = false;
     let mut meta: Option<serde_json::Value> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--error" => is_error = true,
             "--if-absent" => if_absent = true,
+            "--supersede" => supersede = true,
             "--meta" => {
                 let raw = args.get(i + 1).ok_or(
                     "result: --meta needs a JSON object: rigger result <id> --meta '<json>'",
@@ -2537,6 +2551,7 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
         text,
         is_error,
         if_absent,
+        supersede,
         meta,
     })
 }
@@ -2614,9 +2629,10 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
 /// A recorded failure replays AS a failure - the conductor remediates it just as it would
 /// a live one. The store is RESOLVED by walking up to the project's existing `.rigger`
 /// (refusing to fabricate one in the wrong cwd, spec 05 - see [`require_store_dir`]); and
-/// before recording, a single pre-write read of the stream prints stderr advisories for
-/// an ORPHAN id (no matching spawn request) or for SUPERSEDING an existing result (see
-/// [`result_advisories`]).
+/// before recording, a single pre-write read of the stream refuses to replace the result of
+/// a spawn that already ended unless `--supersede` (see [`result_refusal`]), then prints
+/// stderr advisories for an ORPHAN id (no matching spawn request) or for SUPERSEDING an
+/// existing result (see [`result_advisories`]).
 pub(crate) fn cmd_result(args: &[String]) -> Res {
     let parsed = parse_result_args(args)?;
     // The outcome text comes from the positional arg when given, else stdin. Resolving
@@ -2640,13 +2656,20 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
 
-    // One cheap pre-write read of the run stream, to advise (on stderr) about an orphan
-    // id or about superseding an existing result BEFORE the append. Advisory only: the
-    // record still lands, since pre-recording and deliberate re-recording are both
-    // legitimate (see [`result_advisories`]). Weave with unit-10: under `--if-absent`
-    // nothing can supersede (the CAS refuses), so the supersede note is suppressed -
-    // the "left it untouched" line below reports that case honestly.
+    // One cheap pre-write read of the run stream. A plain record over the result of a spawn
+    // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
+    // replayed wave, and a stale one must never overwrite the result that stands) unless
+    // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
+    // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
+    // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
+    // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
+    // suppressed - the "left it untouched" line below reports that case honestly.
     let (prior, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
+    if !parsed.if_absent {
+        if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
+            return Err(refusal.into());
+        }
+    }
     for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
         eprintln!("{note}");
     }
@@ -3819,6 +3842,51 @@ mod tests {
             assert!(a.is_error);
             assert!(a.if_absent, "--if-absent must parse regardless of position");
         }
+    }
+
+    /// Gap 108 (A DRIVER RESUME REPLAYS CACHED COURIER STEPS): a resumed driver re-spawns the
+    /// workers of a replayed wave, so `rigger prompt` - the call every worker makes first -
+    /// refuses a spawn whose result is recorded, naming that result's position, while a parked
+    /// spawn and one answered only by the step's liveness fault still get their task.
+    #[test]
+    fn prompt_refuses_a_spawn_whose_result_is_recorded() {
+        let req = crate::test_support::test_request("u", "impl", "implementer", 0, "do it");
+        let parked = req.to_event().unwrap();
+        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
+            .to_event()
+            .unwrap();
+        fault.position = 4;
+        let mut ended = spawn::SpawnResult::ok(&req.id, "done").to_event().unwrap();
+        ended.position = 7;
+
+        assert_eq!(
+            prompt_reply(std::slice::from_ref(&parked), &req.id),
+            Ok("do it".to_string())
+        );
+        assert_eq!(
+            prompt_reply(&[parked.clone(), fault.clone()], &req.id),
+            Ok("do it".to_string()),
+            "a liveness fault never ends a spawn"
+        );
+        let refused = prompt_reply(&[parked, fault, ended], &req.id).unwrap_err();
+        assert!(
+            refused.contains("u/implementer#0") && refused.contains("already ended (result at position 7)"),
+            "the refusal names the spawn and the position of the result that ended it; got {refused}"
+        );
+    }
+
+    #[test]
+    fn parse_result_supersede_is_off_by_default_and_a_bare_flag() {
+        let plain = parse_result_args(&["u/implementer#0".into(), "done".into()]).unwrap();
+        assert!(!plain.supersede, "--supersede defaults off");
+        let a = parse_result_args(&[
+            "u/implementer#0".into(),
+            "--supersede".into(),
+            "corrected".into(),
+        ])
+        .unwrap();
+        assert_eq!(a.text.as_deref(), Some("corrected"));
+        assert!(a.supersede, "--supersede is a bare flag");
     }
 
     #[test]
