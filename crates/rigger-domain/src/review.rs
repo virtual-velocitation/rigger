@@ -1,9 +1,16 @@
 //! The review-verdict logic: the fail-closed verdict-line reading on the result channel, the
-//! risk-tiered review-depth routing, and the review rosters.
+//! risk-tiered review-depth routing, the review rosters, and the spec critique (spec 112): its
+//! prompt, its finding lines and the record keyed on a spec's content hash.
+
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::spawn::{lens_role, ROLE_ADVERSARY};
+use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
+use crate::playbooks::fnv1a_64;
+use crate::spawn::{
+    lens_role, spawn_id, SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_RESULT,
+};
 
 /// The two review-depth tiers a unit routes to: `TIER_LIGHT` runs the reduced roster,
 /// `TIER_FULL` the whole panel (spec 03 / spec 13 unit 4).
@@ -261,6 +268,310 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     roster
 }
 
+/// The plan-critique rules both critique prompts read (spec 112): the Rule 7 and Rule 8 bullets
+/// and the note on shared blast radius, exactly as the DAG critique has always pushed them. The
+/// DAG critique pushes them after its opener; the spec critique pushes them after its stance,
+/// which tells the critic a unit reads as a criterion and a reject as a BLOCKING finding.
+pub const PLAN_CRITIQUE_RULES: &str =
+    "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
+     exactly one unit, with the exclusion named on its neighbors; an unassigned or \
+     ambiguously-owned mitigation - two units that will fight over the same concern \
+     through the shared context graph - is a reject.\n\
+     - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
+     reviewer to re-litigate; an undecided disposition is a reject.\n\
+     NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
+     defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
+     (each branches off the prior batch's integrated tree), and per-unit worktree \
+     isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
+     and reviews independently. Do NOT reject merely because two units touch the \
+     same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
+     COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
+     not for mechanical overlap the partitioner already serializes.\n\n";
+
+/// Section (i) of the spec critique prompt: the stance, and the persona and discipline duties a
+/// spec critique voids.
+const CRITIQUE_STANCE: &str = "This is a critique of a SPEC, not code: the text below is a design \
+     and its Done-when criteria, written before any run builds them. Default to skepticism: \
+     assume the author missed something, and try to prove the spec self-contradictory or \
+     undecided; never soften a finding to converge. Cite the criterion number or Design block \
+     title for every finding. In the rules below a unit reads as a criterion, and a reject as a \
+     BLOCKING finding. Every persona or discipline duty that conflicts with a spec critique is \
+     void for this task: reviewing lenses and a diff, the rule against rendering a verdict, \
+     running gates or any build or test command, editing a file, and recording through \
+     `rigger_emit`, `rigger_progress` or `rigger_scratch`. Read the spec and the repository; the \
+     finding lines and the verdict line of your final message are the only output.\n\nThe rules:\n";
+
+/// Section (iii): the two ownership defects a spec can carry.
+const CRITIQUE_OWNERSHIP: &str = "Ownership defects in a spec: twin criteria (two checkboxes \
+     claiming one concern) and bundling (one checkbox carrying two mitigations) are each a \
+     BLOCKING finding.\n\n";
+
+/// Section (iv): the two named hunts.
+const CRITIQUE_HUNTS: &str = "Run two hunts, and name the hunt in each finding it produces:\n\
+     - LANDING ORDER: for every ordered pair of criteria (A, B) sharing a command, a store read, \
+     a file or a counter, ask \"if A lands first on a tree without B, does A's own text hold?\"; \
+     every no is a finding.\n\
+     - UNDECIDED CORNER: for every criterion's mechanism, walk the corners empty, repeated, \
+     reverted, DROPPED (a fact present in an earlier generation and absent in a later one), \
+     concurrent, crash-resume, cold start and existing data; each corner no Design sentence \
+     decides is a finding.\n\n";
+
+/// Section (v): the ban on criterion edits.
+const CRITIQUE_BAN: &str = "The ban: a fix is a Design or Global-constraint change, never a \
+     criterion edit.\n\n";
+
+/// Section (vi): the critic's output contract.
+const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per line, then the \
+     verdict as the last line:\n\n\
+     <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that breaks> \
+     | <smallest Design change that closes it>\n\
+     <critic id> | NON-BLOCKING | ...\n\
+     {\"verdict\":\"reject\"}\n\n\
+     A finding line has five `|`-separated fields whose second is exactly BLOCKING or \
+     NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
+     finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
+
+/// The spec critique prompt (spec 112): the stance, [`PLAN_CRITIQUE_RULES`], the ownership
+/// defects, the two hunts, the ban on criterion edits, the output contract, and the spec text
+/// verbatim as its tail - in that order, from the spec path and text alone.
+pub fn spec_critique_prompt(spec_path: &str, spec_text: &str) -> String {
+    format!(
+        "{CRITIQUE_STANCE}{PLAN_CRITIQUE_RULES}{CRITIQUE_OWNERSHIP}{CRITIQUE_HUNTS}{CRITIQUE_BAN}\
+         {CRITIQUE_OUTPUT_CONTRACT}The spec under critique, `{spec_path}`, verbatim:\n\n{spec_text}"
+    )
+}
+
+/// The tools the critic runs with, in place of its persona's own: it reads and looks things up
+/// in the graph, and can neither build nor record.
+pub const CRITIC_TOOLS: [&str; 5] = [
+    "Read",
+    "Glob",
+    "mcp__rigger__rigger_graph",
+    "mcp__rigger__rigger_ground",
+    "mcp__rigger__rigger_peers",
+];
+
+/// The `by` a critique finding's graph copy carries.
+pub const SPEC_CRITIC: &str = "spec-critic";
+
+/// The prefix of a critique run's id; the hash follows it.
+const CRITIQUE_RUN_PREFIX: &str = "critique-";
+
+/// A spec text's content hash: [`fnv1a_64`] over its raw bytes, as 16 lowercase hex digits. Any
+/// byte change is new text. The only place a critique hash is rendered.
+pub fn critique_hash(text: &str) -> String {
+    format!("{:016x}", fnv1a_64(text.as_bytes()))
+}
+
+/// The critique run (and unit) of a hash: `critique-<hash>`.
+pub fn critique_unit(hash: &str) -> String {
+    format!("{CRITIQUE_RUN_PREFIX}{hash}")
+}
+
+/// The critic's spawn id for a hash at `attempt`: the adversary of the hash's critique run.
+pub fn critique_spawn_id(hash: &str, attempt: u32) -> String {
+    spawn_id(&critique_unit(hash), ROLE_ADVERSARY, attempt)
+}
+
+/// Whether a scratch directory name is a critique run's: `critique-` and a 16-lowercase-hex-digit
+/// hash, the shape [`critique_unit`] renders.
+pub fn is_critique_run(name: &str) -> bool {
+    name.strip_prefix(CRITIQUE_RUN_PREFIX).is_some_and(|hash| {
+        hash.len() == 16
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// The attempt a critique spawn id of `hash` carries, or `None` when `id` is not exactly
+/// [`critique_spawn_id`] of the hash at some attempt.
+fn critique_attempt(id: &str, hash: &str) -> Option<u32> {
+    let attempt: u32 = id
+        .strip_prefix(&format!("{}/{ROLE_ADVERSARY}#", critique_unit(hash)))?
+        .parse()
+        .ok()?;
+    (critique_spawn_id(hash, attempt) == id).then_some(attempt)
+}
+
+/// One finding line of a critique, as the critic wrote it, with the id the record gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CritiqueFinding {
+    /// `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of the finding line.
+    pub id: String,
+    /// Whether the line's severity is `BLOCKING` (else `NON-BLOCKING`).
+    pub blocking: bool,
+    /// The critic's own label for the finding (the first field).
+    pub critic: String,
+    /// The criterion number or Design block title the finding cites.
+    pub location: String,
+    /// The exact reading that breaks.
+    pub reading: String,
+    /// The smallest Design change that closes it.
+    pub fix: String,
+}
+
+impl CritiqueFinding {
+    /// The finding without its critic label: `<severity> | <location> | <reading> | <fix>`.
+    pub fn summary(&self) -> String {
+        let severity = if self.blocking {
+            "BLOCKING"
+        } else {
+            "NON-BLOCKING"
+        };
+        format!(
+            "{severity} | {} | {} | {}",
+            self.location, self.reading, self.fix
+        )
+    }
+}
+
+/// The finding lines of a critic's `output`, in order, with their record ids. A line is a finding
+/// when, once trimmed and stripped of one leading and one trailing pipe, it splits on `|` into at
+/// least five fields whose trimmed second is exactly `BLOCKING` or `NON-BLOCKING`; the fields past
+/// the fourth are joined back with `|` into the fix. Every other line is prose.
+pub fn critique_findings(output: &str, hash: &str, attempt: u32) -> Vec<CritiqueFinding> {
+    let mut findings = Vec::new();
+    for line in output.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix('|').unwrap_or(line);
+        let line = line.strip_suffix('|').unwrap_or(line);
+        let fields: Vec<&str> = line.split('|').collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let blocking = match fields[1].trim() {
+            "BLOCKING" => true,
+            "NON-BLOCKING" => false,
+            _ => continue,
+        };
+        findings.push(CritiqueFinding {
+            id: format!("sc-{hash}-{attempt}-{}", findings.len() + 1),
+            blocking,
+            critic: fields[0].trim().to_string(),
+            location: fields[2].trim().to_string(),
+            reading: fields[3].trim().to_string(),
+            fix: fields[4..].join("|").trim().to_string(),
+        });
+    }
+    findings
+}
+
+/// A spec's critique: a recorded critic result that passed the authority ([`critique_of`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Critique {
+    /// The global log position of its `SpawnResult`.
+    pub position: Position,
+    /// The attempt the critic ran at.
+    pub attempt: u32,
+    /// The verdict value as the critic wrote it.
+    pub verdict: String,
+    /// Its finding lines, in order.
+    pub findings: Vec<CritiqueFinding>,
+}
+
+/// THE AUTHORITY over one recorded `SpawnResult` event: it is a critique of `hash` when its id is
+/// the hash's critic spawn at some attempt, its error is empty, its output carries a verdict line,
+/// and a verdict that does not approve comes with at least one BLOCKING finding. `Err` says why
+/// it is not one.
+pub fn critique_of(event: &Event, hash: &str) -> Result<Critique, String> {
+    let result = SpawnResult::from_event(event)
+        .map_err(|e| format!("the recorded result is unreadable: {e}"))?;
+    let attempt = critique_attempt(&result.id, hash)
+        .ok_or_else(|| format!("{} is not a critique spawn of {hash}", result.id))?;
+    if !result.error.is_empty() {
+        return Err(format!("the critic's spawn failed: {}", result.error));
+    }
+    let verdict = last_verdict(&result.output)
+        .ok_or_else(|| "the critic's output carries no verdict line".to_string())?;
+    let findings = critique_findings(&result.output, hash, attempt);
+    if !verdict_approves(&result.output) && !findings.iter().any(|f| f.blocking) {
+        return Err(format!(
+            "the critic's verdict {verdict:?} does not approve, yet its output carries no \
+             BLOCKING finding line"
+        ));
+    }
+    Ok(Critique {
+        position: event.position,
+        attempt,
+        verdict,
+        findings,
+    })
+}
+
+/// The critique of `hash` among `events`: its latest critique (highest position), or `None`.
+pub fn latest_critique(events: &[Event], hash: &str) -> Option<Critique> {
+    events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+        .filter_map(|e| critique_of(e, hash).ok())
+        .max_by_key(|c| c.position)
+}
+
+/// Read the critique of `hash` from `store` (the critique's own store): one typed read of the
+/// `SpawnResult` events of its run stream, materializing no other event.
+pub fn read_critique(store: &dyn EventStore, hash: &str) -> Result<Option<Critique>, StoreError> {
+    let results = store.read_stream_typed(
+        crate::run::STREAM,
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_RESULT]),
+    )?;
+    Ok(latest_critique(&results, hash))
+}
+
+/// The `ReviewFinding` payload that copies a critique finding into the graph, about the spec.
+pub fn finding_copy(finding: &CritiqueFinding, spec: &str) -> Value {
+    serde_json::json!({
+        "id": finding.id,
+        "by": SPEC_CRITIC,
+        "summary": finding.summary(),
+        "about": [spec],
+    })
+}
+
+/// The root a spec path is made relative to: the repository (`repo`, the main worktree's root)
+/// when there is one, else `cwd`, the project root holding `.rigger/`.
+pub fn spec_root(cwd: &Path, repo: &str) -> PathBuf {
+    if repo.is_empty() {
+        cwd.to_path_buf()
+    } else {
+        PathBuf::from(repo)
+    }
+}
+
+/// `path`'s components resolved lexically: `.` dropped, `..` popping its parent, `None` when a
+/// `..` climbs above the start. No filesystem access.
+fn lexical_parts(path: &Path) -> Option<Vec<String>> {
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    Some(parts)
+}
+
+/// A spec path made relative to `root`, lexically (no filesystem access, so a symlinked absolute
+/// spelling reads as outside): `.` components dropped, `..` resolved, an absolute path stripped
+/// of `root` component by component, the rest joined with `/`. `None` is the outside verdict: an
+/// absolute path not under `root`, or a `..` that climbs above it.
+pub fn normalize_spec_path(root: &Path, path: &str) -> Option<String> {
+    let path = Path::new(path);
+    let parts = lexical_parts(path)?;
+    let relative = if path.is_absolute() {
+        parts
+            .strip_prefix(lexical_parts(root)?.as_slice())?
+            .to_vec()
+    } else {
+        parts
+    };
+    Some(relative.join("/"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,7 +667,12 @@ mod tests {
                 finding(
                     "sc-0123456789abcdef-3-3",
                     true,
-                    ["C3", "criterion 1", "the fix has a pipe", "use `a | b` | here"]
+                    [
+                        "C3",
+                        "criterion 1",
+                        "the fix has a pipe",
+                        "use `a | b` | here"
+                    ]
                 ),
             ],
             "the fields past the fourth join back into the fix; every other line is prose"
@@ -367,9 +683,15 @@ mod tests {
     #[test]
     fn a_finding_summary_is_its_severity_and_its_last_three_fields() {
         let blocking = finding("sc-x-0-1", true, ["C1", "criterion 2", "reads A", "fix A"]);
-        assert_eq!(blocking.summary(), "BLOCKING | criterion 2 | reads A | fix A");
+        assert_eq!(
+            blocking.summary(),
+            "BLOCKING | criterion 2 | reads A | fix A"
+        );
         let advisory = finding("sc-x-0-2", false, ["C2", "Design", "reads B", "fix B"]);
-        assert_eq!(advisory.summary(), "NON-BLOCKING | Design | reads B | fix B");
+        assert_eq!(
+            advisory.summary(),
+            "NON-BLOCKING | Design | reads B | fix B"
+        );
     }
 
     #[test]
@@ -391,8 +713,8 @@ mod tests {
     }
 
     #[test]
-    fn a_result_is_a_critique_only_with_no_error_a_verdict_and_a_blocking_finding_behind_a_reject(
-    ) {
+    fn a_result_is_a_critique_only_with_no_error_a_verdict_and_a_blocking_finding_behind_a_reject()
+    {
         let id = critique_spawn_id(HASH, 0);
         let why = |output: &str, error: &str| {
             critique_of(&result_at(1, &id, output, error), HASH).unwrap_err()
@@ -406,7 +728,10 @@ mod tests {
             "the critic's output carries no verdict line"
         );
         assert_eq!(
-            why("C1 | NON-BLOCKING | c | r | f\n{\"verdict\":\"reject\"}", ""),
+            why(
+                "C1 | NON-BLOCKING | c | r | f\n{\"verdict\":\"reject\"}",
+                ""
+            ),
             "the critic's verdict \"reject\" does not approve, yet its output carries no \
              BLOCKING finding line"
         );
@@ -430,7 +755,8 @@ mod tests {
     #[test]
     fn an_approve_beside_a_blocking_line_is_a_critique_whose_finding_still_blocks() {
         let id = critique_spawn_id(HASH, 4);
-        let output = "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}\nprose after the verdict";
+        let output =
+            "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}\nprose after the verdict";
         assert_eq!(
             critique_of(&result_at(7, &id, output, ""), HASH),
             Ok(Critique {
@@ -539,7 +865,10 @@ mod tests {
             "sections (i) to (vii) appear in that order: {order:?}"
         );
         assert!(prompt.ends_with(text), "the spec text is the verbatim tail");
-        assert!(!prompt.contains("Unit size"), "no unit-size line in a spec critique");
+        assert!(
+            !prompt.contains("Unit size"),
+            "no unit-size line in a spec critique"
+        );
     }
 
     #[test]
@@ -562,8 +891,15 @@ mod tests {
         ] {
             assert!(CRITIQUE_STANCE.contains(duty), "the stance names {duty:?}");
         }
-        for defect in ["twin criteria", "two checkboxes claiming one concern", "bundling"] {
-            assert!(CRITIQUE_OWNERSHIP.contains(defect), "ownership names {defect:?}");
+        for defect in [
+            "twin criteria",
+            "two checkboxes claiming one concern",
+            "bundling",
+        ] {
+            assert!(
+                CRITIQUE_OWNERSHIP.contains(defect),
+                "ownership names {defect:?}"
+            );
         }
         for hunt in [
             "LANDING ORDER",

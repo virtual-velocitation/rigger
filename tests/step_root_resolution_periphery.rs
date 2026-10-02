@@ -58,8 +58,10 @@
 //!   - `rigger run`/`rigger workflow` NOT gaining an "exactly one root" check - EXEMPT by
 //!     the spec's own scoping ("a STEP whose git toplevel, store parent and scratch-root
 //!     parent differ refuses before any sweep"; only `cmd_step` performs a terminal sweep).
-//!     Matches the implementation: `refuse_unless_one_root` has exactly one call site,
-//!     inside `cmd_step`.
+//!     Matches the implementation: `refuse_unless_one_root` is never called from `rigger
+//!     run`/`rigger workflow`. Its call sites are `cmd_step` and, since spec 112, the
+//!     `rigger critique` verb, which writes into the scratch root and the store in the same
+//!     shape; each passes its own command name, which the refusal text leads with.
 //!   - `rigger step`'s "exactly one root" refusal, at round 1, firing ONLY before the
 //!     terminal sweep while the run-branch ANCHOR (`Worktree::ensure_run_branch`, which checks
 //!     out a branch - a real mutation - in whatever repository `repo` resolved to) ran BEFORE

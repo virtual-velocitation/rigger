@@ -46,6 +46,7 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, su
 
 use rigger::config::RIGGER_DIR;
 
+mod critique;
 mod dashboard;
 mod eval;
 mod graph;
@@ -55,6 +56,7 @@ mod observe;
 mod run;
 mod setup;
 mod validate;
+pub(crate) use critique::*;
 pub(crate) use dashboard::*;
 pub(crate) use eval::*;
 pub(crate) use graph::*;
@@ -264,6 +266,28 @@ struct RunArgs {
     base: Option<String>,
 }
 
+/// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
+/// and `rigger critique`'s, which select their store the same way.
+fn eventstore_flag(
+    value: Option<&String>,
+    verb: &str,
+) -> Result<StoreKind, Box<dyn std::error::Error>> {
+    match value.map(String::as_str) {
+        Some("sqlite") => Ok(StoreKind::Sqlite),
+        Some("kurrentdb") => Ok(StoreKind::KurrentDb),
+        other => {
+            Err(format!("{verb}: --eventstore expects sqlite|kurrentdb, got {other:?}").into())
+        }
+    }
+}
+
+/// The connection url a `--conn` flag's `value` carries, for `verb`'s flag parser.
+fn conn_flag(value: Option<&String>, verb: &str) -> Result<String, Box<dyn std::error::Error>> {
+    value
+        .cloned()
+        .ok_or_else(|| format!("{verb}: --conn expects a connection url").into())
+}
+
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
 /// criterion 6), and a single positional spec path. Unknown flags and a second positional
@@ -302,23 +326,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             }
             "--eventstore" => {
                 i += 1;
-                store = match args.get(i).map(String::as_str) {
-                    Some("sqlite") => Some(StoreKind::Sqlite),
-                    Some("kurrentdb") => Some(StoreKind::KurrentDb),
-                    other => {
-                        return Err(format!(
-                            "run: --eventstore expects sqlite|kurrentdb, got {other:?}"
-                        )
-                        .into())
-                    }
-                };
+                store = Some(eventstore_flag(args.get(i), "run")?);
             }
             "--conn" => {
                 i += 1;
-                conn = match args.get(i) {
-                    Some(c) => Some(c.clone()),
-                    None => return Err("run: --conn expects a connection url".into()),
-                };
+                conn = Some(conn_flag(args.get(i), "run")?);
             }
             flag if flag.starts_with("--") => {
                 return Err(format!("run: unknown flag {flag:?}").into());

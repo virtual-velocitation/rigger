@@ -15,3 +15,8 @@ pub use rigger_domain::contextgraph::*;
 // `lib.rs`'s own doc).
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_graph_sqlite::contextgraph::sqlite;
+
+/// The fold's own payload judge, for an emit surface that appends a fold-read event outside the
+/// MCP emit path (`rigger critique`'s finding copies, spec 112).
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_graph_sqlite::contextgraph::check_fold_payload;

@@ -61,6 +61,7 @@ const SUBCOMMANDS: &[&str] = &[
     "result",
     "peers",
     "reset",
+    "critique",
     "validate",
     "init",
     "setup",
@@ -137,6 +138,7 @@ fn main() {
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
         "reset" => cmd_reset(&args[2..]),
+        "critique" => cmd_critique(&args[2..]),
         "validate" => cmd_validate(&args[2..]),
         "init" => cmd_init(),
         "setup" => cmd_setup(&args[2..]),
@@ -335,6 +337,12 @@ test fixture's tempdir has no owner left to reclaim it.\n                       
 Rigger does this itself whenever it creates a default-\n                              \
 placed root; this is the explicit on-demand form. Reports\n                              \
 the number of roots reclaimed; composes with the others\n  \
+rigger critique <spec>      critique the spec before any run: the workflow's critic\n                              \
+(the plan-critique gate's adversary, else\n                              \
+defaults.review.adversary) reads the spec text and its\n                              \
+findings and verdict are recorded keyed on the text's\n                              \
+content hash, so unchanged text is answered from the\n                              \
+record with no spawn; takes --eventstore/--conn as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \

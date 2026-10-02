@@ -989,7 +989,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1278df3e854bf5a1"
+    "content_hash": "24bf047970b0296d"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6889,6 +6889,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "77f41265fcdda25e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -7057,11 +7065,27 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "eventstore_flag",
+    "is_test": false,
+    "proposed_module": "main::store",
+    "reason": "name contains \"store_\" (store hygiene); grouped under `main::store`.",
+    "content_hash": "1c99e9a3c1df2e2c"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "conn_flag",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "507f1715dc741c2d"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "parse_run_args",
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"parse_\" (argument/input parsing); grouped under `main::support`.",
-    "content_hash": "ccf2b9af461364c6"
+    "content_hash": "61bc31311ad3c27c"
   },
   {
     "file": "src/cli/mod.rs",

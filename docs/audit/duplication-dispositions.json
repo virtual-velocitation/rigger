@@ -920,9 +920,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-31c9f1cd288f",
+    "id": "dup-95d708ab4d02",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -970,9 +970,9 @@
     "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
   },
   {
-    "id": "dup-5e40086810a8",
+    "id": "dup-c125d5c0c392",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text) over different inputs."
   },
   {
     "id": "dup-e10b6988960c",
