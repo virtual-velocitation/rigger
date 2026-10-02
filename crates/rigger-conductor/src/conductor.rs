@@ -34000,11 +34000,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn review_agents_emit_findings_via_the_review_protocol() {
-        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
-        // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
-        // ends with its verdict line, not a finding emit).
+    /// The prompts one approving review round hands its three tiers, `(lens, adversary,
+    /// adjudicator)`: a single `review` stage with one lens, run in isolation on a stub that
+    /// approves.
+    fn review_tier_prompts() -> (String, String, String) {
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adversary".into(), agent("adversary"));
@@ -34023,7 +34022,16 @@ mod tests {
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = stub_deps(&st, &driver, Vec::new());
         run_isolated(&cfg, &deps).unwrap();
-        let lens_prompt = driver.prompts_for("lens").pop().unwrap();
+        let last = |id: &str| driver.prompts_for(id).pop().unwrap();
+        (last("lens"), last("adversary"), last("adj"))
+    }
+
+    #[test]
+    fn review_agents_emit_findings_via_the_review_protocol() {
+        // Item 3: a lens / adversary prompt must carry the review_protocol telling it
+        // to record each finding as a ReviewFinding; the adjudicator's must NOT (it
+        // ends with its verdict line, not a finding emit).
+        let (lens_prompt, adv_prompt, adj_prompt) = review_tier_prompts();
         assert!(
             lens_prompt.contains("ReviewFinding"),
             "a lens must be told to emit findings as ReviewFindings; prompt was:\n{lens_prompt}"
@@ -34035,7 +34043,6 @@ mod tests {
             lens_prompt.contains(r#""by":"lens:lens""#),
             "a lens must be told to attribute each finding to its role via `by`; prompt was:\n{lens_prompt}"
         );
-        let adv_prompt = driver.prompts_for("adversary").pop().unwrap();
         assert!(
             adv_prompt.contains("ReviewFinding"),
             "the adversary must be told to emit its findings as ReviewFindings; prompt was:\n{adv_prompt}"
@@ -34046,11 +34053,28 @@ mod tests {
             adv_prompt.contains(r#""by":"adversary""#),
             "the adversary must be told to attribute each finding to `adversary` via `by`; prompt was:\n{adv_prompt}"
         );
-        let adj_prompt = driver.prompts_for("adj").pop().unwrap();
         assert!(
             !adj_prompt.contains("ReviewFinding"),
             "the adjudicator emits a verdict, not findings; prompt was:\n{adj_prompt}"
         );
+    }
+
+    /// Mutation testing belongs to the check-in gate, never to a review: every review tier -
+    /// lens, adversary and adjudicator - is told never to run cargo-mutants, itself or through
+    /// a verify helper.
+    #[test]
+    fn every_reviewer_prompt_forbids_cargo_mutants() {
+        let (lens, adversary, adjudicator) = review_tier_prompts();
+        for (tier, prompt) in [
+            ("lens", lens),
+            ("adversary", adversary),
+            ("adjudicator", adjudicator),
+        ] {
+            assert!(
+                prompt.contains("Never run cargo-mutants, directly or through a verify helper"),
+                "the {tier} must be told never to run cargo-mutants; prompt was:\n{prompt}"
+            );
+        }
     }
 
     #[test]
