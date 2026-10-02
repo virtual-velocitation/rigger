@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
 store = ["rigger-domain/store", "rigger-store-sqlite/store"]
-core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-root/core"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-process/core", "rigger-root/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
@@ -35,7 +35,9 @@ rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 tempfile = "3"
 # The shared host fixtures the rebuild-lock tests use read a process's open files through the
 # process adapters' reader (`holders::open_files`) and name the reaper; a test is its own
-# composition root, so it reaches them through this workspace dev-dependency edge.
+# composition root, so it reaches them through this workspace dev-dependency edge. `core` above
+# forwards to it, so this crate's core-lane tests build it in the same lane as every other
+# dependency.
 rigger-process = { path = "../rigger-process", default-features = false }
 # Three fold tests name root-crate vocabulary that has no inner home yet: the conductor's
 # `META_SPAWN` meta key, the `TYPE_BLAST_RADIUS_COMPUTED` event type and `metrics::project`

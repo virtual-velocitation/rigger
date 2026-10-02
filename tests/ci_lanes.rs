@@ -249,6 +249,50 @@ fn core_lane_runs_its_gate_battery() {
     );
 }
 
+/// Every lane names the whole workspace: each `cargo fmt` line carries `--all`, and each `cargo
+/// clippy`, `cargo build` and `cargo test` line of the default and grep-only lanes carries
+/// `--workspace`. At the repository root a bare `cargo clippy`, `cargo build` or `cargo test`
+/// reaches the root package alone, so a lane that drops the flag still passes while no member
+/// crate's own tests run and none of its clippy targets are linted. The core lane is exempt by
+/// construction: Cargo refuses `--features` across several packages, so its lines name one
+/// package each (the root's `--lib`, or `-p <crate>`), and every one of them carries
+/// `--features core`. Flags are matched as whole tokens, so `--all-targets` never passes for
+/// `--all`. Together with the per-lane tests above, which require each lane's commands to be
+/// present, this pins every lane to the workspace.
+#[test]
+fn every_lane_names_the_whole_workspace() {
+    let wf = workflow_yaml();
+    let script = job_run_scripts(&wf, "build-test");
+    let unscoped = lines_missing_the_workspace_scope(&script);
+    assert!(
+        unscoped.is_empty(),
+        "every `cargo fmt` line of the build-test job must carry `--all`, and every `cargo \
+         clippy`/`cargo build`/`cargo test` line outside the core lane must carry `--workspace` \
+         (a bare command at the repository root reaches the root package alone). Unscoped: \
+         {unscoped:#?}"
+    );
+}
+
+/// The lines of `script` that run a lane command without naming the whole workspace: a `cargo
+/// fmt` without the `--all` token, or a `cargo clippy`/`cargo build`/`cargo test` that is not a
+/// core-lane line (`--features core`) and lacks the `--workspace` token.
+fn lines_missing_the_workspace_scope(script: &str) -> Vec<&str> {
+    script
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            let has = |flag: &str| line.split_whitespace().any(|token| token == flag);
+            if line.starts_with("cargo fmt") {
+                return !has("--all");
+            }
+            let lane = ["cargo clippy", "cargo build", "cargo test"]
+                .iter()
+                .any(|command| line.starts_with(command));
+            lane && !line.contains("--features core") && !has("--workspace")
+        })
+        .collect()
+}
+
 /// The `install-nolock` job must run `cargo install --path .` WITHOUT `--locked` and then
 /// execute the resulting binary. That job is the regression guard for dependency skew on a
 /// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
