@@ -1071,10 +1071,82 @@ mod tests {
     fn grounder_over(files: &[(&str, &str)]) -> (tempfile::TempDir, Symbols) {
         let dir = tempfile::tempdir().unwrap();
         for (name, source) in files {
-            std::fs::write(dir.path().join(name), source).unwrap();
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
         }
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
         (dir, g)
+    }
+
+    /// The tree behind the gap-104 ranking tests: a trait, two product impls of it, a test double
+    /// implementing it, the one store opener every impl calls, and unrelated names that merely
+    /// contain a query word (`for`, `open`) in files that sort first.
+    fn store_tree() -> (tempfile::TempDir, Symbols) {
+        grounder_over(&[
+            ("domain/eventstore.rs", "pub trait EventStore { fn append(&self); }\n"),
+            (
+                "store/sqlite.rs",
+                "pub struct Store;\npub fn open_connection() {}\nimpl EventStore for Store { fn append(&self) { open_connection(); } }\n",
+            ),
+            (
+                "store/kurrentdb.rs",
+                "pub struct Store;\nimpl EventStore for Store { fn append(&self) { open_connection(); } }\n",
+            ),
+            (
+                "conductor.rs",
+                "#[cfg(test)]\nmod tests {\n    struct Fake;\n    impl EventStore for Fake { fn append(&self) {} }\n}\n",
+            ),
+            (
+                "a_console/lib.rs",
+                "fn malformed_input_for_op() {}\nfn formatter_for_display() {}\nfn reopen_window() {}\n",
+            ),
+        ])
+    }
+
+    /// The row position of the first ranked entity named `text` in `file`, failing loudly when
+    /// the page does not carry it.
+    fn position_of(ranked: &[RankedRef], file: &str, text: &str) -> usize {
+        ranked
+            .iter()
+            .position(|r| r.loc.file == file && r.loc.text == text)
+            .unwrap_or_else(|| panic!("no row {file}: {text} in {ranked:?}"))
+    }
+
+    /// Gap 104: `impl EventStore for` names the impl sites - each impl block ranks above names
+    /// that merely contain `for`, and a product impl ranks above a test double.
+    #[test]
+    fn ground_ranked_puts_the_impl_sites_of_an_impl_shaped_query_above_incidental_word_matches() {
+        let (_dir, g) = store_tree();
+        let ranked = g.ground_ranked("impl EventStore for", 10);
+        let sqlite = position_of(&ranked, "store/sqlite.rs", "impl EventStore for Store");
+        let kurrent = position_of(&ranked, "store/kurrentdb.rs", "impl EventStore for Store");
+        let double = position_of(&ranked, "conductor.rs", "impl EventStore for Fake");
+        assert!(
+            sqlite.max(kurrent) < double,
+            "a product impl ranks above a test double; got {ranked:?}"
+        );
+        for incidental in ["malformed_input_for_op", "formatter_for_display"] {
+            if let Some(p) = ranked.iter().position(|r| r.loc.text == incidental) {
+                assert!(
+                    p > double,
+                    "{incidental} merely contains `for`, so it ranks below every impl site; got {ranked:?}"
+                );
+            }
+        }
+    }
+
+    /// Gap 104: a query naming an entity by its name AND its module path (`sqlite store open`)
+    /// finds the entity in that module first, above a rarer name that matches one word alone.
+    #[test]
+    fn ground_ranked_puts_the_entity_matching_the_most_query_words_across_name_and_path_first() {
+        let (_dir, g) = store_tree();
+        let ranked = g.ground_ranked("sqlite store open", 3);
+        assert_eq!(
+            (ranked[0].loc.file.as_str(), ranked[0].loc.text.as_str()),
+            ("store/sqlite.rs", "open_connection"),
+            "got {ranked:?}"
+        );
     }
 
     #[test]
