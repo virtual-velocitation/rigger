@@ -69,19 +69,16 @@
 //!    `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`), which mandates round 5 close
 //!    every remaining test-shape item in one round, not one per round. Item 1 (the inner-attribute
 //!    module form) is covered above; item 4 (`#[cfg_attr(test, ..)]` staying product) was already
-//!    covered since round 1/2. The remaining two are periphery-tested here, empirically confirmed
-//!    (probe-then-revert, `sdet-u86c1-r5-two-confirmed-live-gaps`) as LIVE, currently-open gaps -
-//!    these two tests are EXPECTED TO FAIL until a future round's fix lands, exactly like the
-//!    round-3 sdet commit's own URL-bearing-attribute case did before round 4 closed it:
+//!    covered since round 1/2. The remaining two are periphery-tested here:
 //!    - item 2, an OUT-OF-LINE `#[cfg(test)] mod name;` declaration whose declared FILE carries no
 //!      attribute of its own (the attribute lives in a different file's tree entirely) - LIVE in
 //!      this repo today (`src/eventstore/mod.rs`'s `mod contract`, `src/lib.rs`'s `mod
 //!      blast_radius_eval`) - must exclude the declared file in full
 //!      (`an_out_of_line_cfg_test_module_declaration_excludes_its_declared_file_through_the_public_api`).
-//!    - item 3's `impl_item` case: `tags.scm` never tags an `impl_item` as a definition (only
-//!      `@reference.implementation`), so a `#[cfg(test)]`-attributed impl block never becomes a
-//!      test-region container the way an attributed `mod` already is, and an unattributed method
-//!      inside it leaks as product code
+//!    - item 3's `impl_item` case: a `#[cfg(test)]`-attributed impl block must exclude every
+//!      method inside it, an unattributed one included, the way an attributed `mod` excludes its
+//!      contents - every impl block is a definition of its own, so its range is a test region
+//!      whenever its own attribute stack names `test`
 //!      (`a_cfg_test_impl_block_excludes_its_methods_through_the_public_api`).
 //!
 //!    Item 3's remaining kinds (`struct_item`, `enum_item`, `trait_item`, `type_item`,
@@ -656,12 +653,12 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
-    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, `predicate_group_names_test`'s `not`
-    /// arm): `not(P)`'s test-only-ness is only answerable by inverting P's answer when P is built
-    /// PURELY from `test` - inverting a MIXED predicate like `feature = "x"` (independent of `test`
-    /// altogether) is unsound and wrongly marked this ordinary product function as test code,
-    /// independently proved here through the SAME public API as the sibling `not(test)` fixture
-    /// above.
+    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, the `not` arm of `extract.rs`'s
+    /// `predicate_group_facts`): `not(P)`'s test-only-ness is only answerable by inverting P's
+    /// answer when P is built PURELY from `test` - inverting a MIXED predicate like `feature = "x"`
+    /// (independent of `test` altogether) is unsound and wrongly marked this ordinary product
+    /// function as test code, independently proved here through the SAME public API as the
+    /// sibling `not(test)` fixture above.
     #[cfg(feature = "symbols")]
     a_not_wrapping_a_non_test_atom_graphs_as_product_through_the_public_api: assert_ingested_graph(
         &[(
@@ -1388,25 +1385,18 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
 
 /// Round-5 mandated surface (`op-u86c1-r5-close-every-remaining-test-shape` item 3): "any item
 /// kind" names `impl_item` explicitly among the node kinds an excluding attribute may sit on.
-/// Rust's own `tags.scm` (`tree-sitter-rust` 0.24.2) captures an `impl_item` ONLY as
-/// `@reference.implementation` - never as a `@definition.*` - so it never enters `def_ranges` and
-/// [`test_regions`] (which only ever considers SELF-ATTRIBUTED items from `def_ranges`) can never
-/// treat a `#[cfg(test)] impl Widget { .. }` block itself as a test region the way it already does
-/// for a `#[cfg(test)] mod tests { .. }` (a `mod_item` IS a `@definition.module`). A method nested
-/// inside such an impl - a plain `fn helper()` with no attribute of its own, or even a `#[test] fn
-/// it_works()` calling it - is a real `@definition.method`/`function_item` and so IS covered by
-/// [`preceded_by_test_attribute`]'s generic, kind-agnostic sibling walk when the attribute sits
-/// directly on the method itself; but nothing propagates the ENCLOSING impl's own `#[cfg(test)]`
-/// onto a plain sibling method that carries no attribute of its own.
+/// `extract.rs` reads every `impl_item` off the parsed tree and records it as a definition of its
+/// own, so the impl block's whole range is one of its `def_ranges`, and [`test_regions`] judges
+/// that range through the SAME shared `node_preceded_by_test_attribute` every other definition
+/// goes through. A `#[cfg(test)] impl Widget { .. }` block is therefore itself a test region,
+/// exactly as a `#[cfg(test)] mod tests { .. }` is, and every method nested inside it is test code
+/// by CONTAINMENT, whether or not it carries an attribute of its own.
 ///
-/// SURFACE CONFIRMED STILL OPEN (`sdet-u86c1-r5-two-confirmed-live-gaps`): probed empirically
-/// through `extract()` directly before writing this test - for this exact fixture shape, `helper`
-/// (no attribute of its own) came back `is_test=false` while `it_works` (its own direct `#[test]`)
-/// came back `is_test=true`, confirming the leak is specifically the impl-level attribute failing
-/// to propagate onto its unattributed sibling, not a defect in the sibling walk itself. This test
-/// is expected to FAIL until a future round extends test-region detection to also treat a
-/// `#[cfg(test)]`/`#[cfg(any(..test..))]`-attributed `impl_item` as a container whose ENTIRE body
-/// is a test region, mirroring what already happens for `mod_item`.
+/// `helper` is the discriminating case: it carries no attribute of its own, so only the impl
+/// block's own `#[cfg(test)]` reaching it through containment keeps it out of the graph, while
+/// `it_works` would self-exclude through its own `#[test]` even if the impl-level attribute were
+/// ignored. A regression that stopped treating the attributed impl block as a test region would
+/// leak `helper` - a test-only method on a product type - into the graph as ordinary product code.
 #[cfg(feature = "symbols")]
 const CFG_TEST_IMPL_SRC: &str = "\
 struct Widget;
@@ -1453,15 +1443,15 @@ rigger::test_cases! {
                  treats the attributed impl block as a test-region container the way a \
                  mod_item already is",
             ),
-            // Mutation-efficacy pin (round 6 `cargo mutants` finding, extract.rs
-            // `collect_self_attributed_ impl_regions`): an ORDINARY (non-`#[cfg(test)]`) impl
-            // block's method must NOT be swept up as test code merely because SOME OTHER impl
-            // block in the file is self-attributed test - the check is `node.kind() == "impl_item"
-            // && node_preceded_by_test_attribute(..)`, both conjuncts required. Mutating that `&&`
-            // to `||` would treat EVERY `impl_item` in the file as a test region regardless of its
-            // own attribution (the first disjunct alone is enough), which every assertion above is
-            // blind to (`product`/`helper`/`it_works` are never themselves inside an ordinary impl
-            // block) - only a method inside a genuinely ordinary impl block catches it.
+            // Mutation-efficacy pin: an ORDINARY (non-`#[cfg(test)]`) impl block's method must
+            // NOT be swept up as test code merely because SOME OTHER impl block in the file is
+            // self-attributed test. `test_regions` judges each impl block's range on its OWN
+            // attribute stack (`node_preceded_by_test_attribute`), so only the attributed block
+            // becomes a test region. A regression that let an impl block's kind alone make it a
+            // test region - every `impl_item` treated as test whatever its own attributes - is
+            // invisible to every assertion above (`product`/`helper`/`it_works` never sit inside
+            // an ordinary impl block); only a method inside a genuinely ordinary impl block
+            // catches it.
             Graphed(
                 "widgetimpl.rs::ordinary_method",
                 "a method inside an ORDINARY (non-test) impl block must stay graphed even \
