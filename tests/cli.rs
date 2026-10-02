@@ -5167,8 +5167,8 @@ stages:
 };
 
 /// The verdict `judge` renders on every attempt: a reject naming a REQUIRED item, so a prompt
-/// that carries the ruling names it.
-const REQUIRED_REJECT: &str = r#"{"verdict":"reject","issues":["REQUIRED: gap61 names the fix"]}"#;
+/// that carries the ruling names it, and a later round's reject is a verdict it can act on.
+const REQUIRED_REJECT: &str = r#"{"verdict":"reject","issues":["REQUIRED: gap61 names the fix"],"required":[{"finding":"gap61 names the fix","path":"work.rs","correctness":true}]}"#;
 
 /// The prior-failure block a parked implementer's prompt opens with: everything before the
 /// first blank line, which separates the block from the task block that follows it.

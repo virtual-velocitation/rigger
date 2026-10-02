@@ -23,7 +23,7 @@ use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
 use crate::instructions::Instruction;
-use crate::ledger::{self, RunState};
+use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
 use crate::safety;
@@ -793,11 +793,14 @@ struct ReviewOutcome {
     /// live-re-read bug class criterion 6 already closed for the single-lane stamp. Empty
     /// when the emit was not deferred, or no adjudicator rendered the verdict.
     round_start_sha: String,
+    /// A reject's REQUIRED list: the items the next attempt must fix and the next review
+    /// round holds it to. Empty on an approve.
+    required: Vec<RequiredItem>,
 }
 
 impl ReviewOutcome {
     /// The one constructor: a bare `approved` verdict carrying `reason`, with no rollback, no
-    /// adjudicator resolution and no round-start sha.
+    /// adjudicator resolution, no round-start sha and no REQUIRED list.
     fn verdict(approved: bool, reason: String) -> Self {
         ReviewOutcome {
             approved,
@@ -805,6 +808,7 @@ impl ReviewOutcome {
             compensate: None,
             adj_resolved: String::new(),
             round_start_sha: String::new(),
+            required: Vec::new(),
         }
     }
     fn approved(reason: String) -> Self {
@@ -1165,6 +1169,9 @@ struct PriorFailure {
     gate_evidence: Vec<String>,
     /// The adjudicator's rejection reasoning (its raw output) when review rejected.
     review_reason: String,
+    /// The REQUIRED list: the review items the next attempt must fix. It stays open across a
+    /// failure no review round ruled on (a crash, a red gate), until the next round judges it.
+    required: Vec<RequiredItem>,
     /// A later unit's review proved this unit's ALREADY-INTEGRATED change wrong (spec 12,
     /// unit 4): the contradiction reason, threaded into the RE-ENTERED unit's next prompt so
     /// it fixes the specific defect its (now reverted) integrating commit introduced, rather
@@ -1178,8 +1185,8 @@ struct PriorFailure {
 }
 
 impl PriorFailure {
-    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence and review
-    /// reason, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
+    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence, review
+    /// reason and REQUIRED list, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
     /// stage in a LATER process than the one that saw the failure - an operator's `rigger
     /// resume-unit` grant, or any step that picks up a mid-remediation unit - is prompted from
     /// these, so its block is the one the in-process retry built from the same facts.
@@ -1187,6 +1194,7 @@ impl PriorFailure {
         PriorFailure {
             gate_evidence: u.gate_evidence.clone(),
             review_reason: u.review_reason.clone(),
+            required: u.required.clone(),
             contradiction: String::new(),
             halted_commit: String::new(),
         }
@@ -1203,12 +1211,14 @@ impl PriorFailure {
             "cause": cause,
             "gate_evidence": self.gate_evidence,
             "review_reason": self.review_reason,
+            "required": self.required,
         })
     }
 
     fn is_empty(&self) -> bool {
         self.gate_evidence.is_empty()
             && self.review_reason.trim().is_empty()
+            && self.required.is_empty()
             && self.contradiction.trim().is_empty()
             && self.halted_commit.trim().is_empty()
     }
@@ -1237,8 +1247,9 @@ impl PriorFailure {
 
     /// The first-class, clearly-delimited prior-failure block prepended to a retry
     /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
-    /// byte-identical to the historical prompt.
-    fn block(&self) -> String {
+    /// byte-identical to the historical prompt. A REQUIRED pattern item asks unit `unit`'s
+    /// attempt `attempt` for one whole-tree audit, recorded under [`audit_id`].
+    fn block(&self, unit: &str, attempt: u32) -> String {
         if self.is_empty() {
             return String::new();
         }
@@ -1256,6 +1267,7 @@ impl PriorFailure {
         }
         if !self.gate_evidence.is_empty()
             || !self.review_reason.trim().is_empty()
+            || !self.required.is_empty()
             || !self.contradiction.trim().is_empty()
         {
             b.push_str(
@@ -1271,6 +1283,16 @@ impl PriorFailure {
             b.push_str("Your previous attempt was rejected by review: ");
             b.push_str(self.review_reason.trim());
             b.push('\n');
+        }
+        if !self.required.is_empty() {
+            let audit = audit_id(unit, attempt);
+            b.push_str("REQUIRED - review holds the next round to each of these:\n");
+            b.push_str(&required_lines(&self.required, |shape| {
+                format!(
+                    "  PATTERN: {shape}. Audit the whole tree, fix every site, and record \
+                     DecisionMade `{audit}` listing every site checked.\n"
+                )
+            }));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
@@ -1426,6 +1448,19 @@ const REVIEWER_RESPAWN_BOUND: u32 = 2;
 fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
     let first = ordinal * (REVIEWER_RESPAWN_BOUND + 1);
     first..=first + REVIEWER_RESPAWN_BOUND
+}
+
+/// What a review-tier spawn's stdout carries, which decides when
+/// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewerOutput {
+    /// Findings go to the graph and stdout is discarded: a lens or the adversary.
+    Findings,
+    /// Stdout is the gating verdict: an adjudicator.
+    Verdict,
+    /// Stdout is the gating verdict of a later review round ([`ReviewRound`]), whose reject
+    /// must name the items it requires fixed.
+    RoundVerdict,
 }
 
 /// The sentinel a degenerate-reviewer HALT (Gap 18, spec 07) embeds in its error so
@@ -4400,26 +4435,31 @@ impl RunCtx<'_> {
 
     /// THE ROUND DELTA: what unit `unit`'s worktree `wt` changed since its reviewers last
     /// judged it, as `(base, paths)` - `None` when no review round judged the unit before
-    /// `attempt` (a first round has no delta: the whole unit is new). `base` is
-    /// [`round_delta_base`]'s round-start sha; `paths` are the direct two-dot diff from it
-    /// ([`crate::worktree::DiffMode::Direct`]: `base` is a sha this same worktree's branch
-    /// already passed through) plus whatever the worktree holds uncommitted, so a delta read
-    /// at the build seam, before the pre-gate commit, still sees the implementer's edits.
+    /// `attempt` (a first round has no delta: the whole unit is new), when that round judged
+    /// a sha this worktree's branch never passed through (a sibling speculation lane's tip),
+    /// when the unit has no worktree, or when the delta cannot be read: every reader then
+    /// treats the round as a first one, reviewed whole. `base` is [`round_delta_base`]'s
+    /// round-start sha; `paths` are the direct two-dot diff from it
+    /// ([`crate::worktree::DiffMode::Direct`]: `base` is in this branch's history) plus
+    /// whatever the worktree holds uncommitted, so a delta read at the build seam, before the
+    /// pre-gate commit, still sees the implementer's edits.
     fn round_delta(
         &self,
-        wt: &Worktree,
+        wt: Option<&Worktree>,
         unit: &str,
         attempt: u32,
-    ) -> Result<Option<(String, Vec<String>)>, Error> {
-        let events = self.read_current_run()?;
-        let Some(base) = round_delta_base(&events, unit, attempt) else {
-            return Ok(None);
-        };
-        let mut paths = wt.diff_names(&base, crate::worktree::DiffMode::Direct)?;
-        paths.extend(wt.changed_files()?);
+    ) -> Option<(String, Vec<String>)> {
+        let wt = wt?;
+        let events = self.read_current_run().ok()?;
+        let base = round_delta_base(&events, unit, attempt)
+            .filter(|base| worktree::is_ancestor(&wt.dir, base, "HEAD"))?;
+        let mut paths = wt
+            .diff_names(&base, crate::worktree::DiffMode::Direct)
+            .ok()?;
+        paths.extend(wt.changed_files().ok()?);
         paths.sort();
         paths.dedup();
-        Ok(Some((base, paths)))
+        Some((base, paths))
     }
 
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
@@ -4484,11 +4524,17 @@ impl RunCtx<'_> {
     /// read the signal back (an Err from ANY tier here already propagates out of its phase-B
     /// loop via `?` without touching any candidate's worktree, so it is already conservative);
     /// it passes a throwaway `AtomicBool` to satisfy this shared signature.
+    ///
+    /// `prior_required` is the REQUIRED list this attempt's implementer was handed. On a LATER
+    /// review round - one whose unit an earlier round of the same branch judged
+    /// ([`Self::round_delta`]) - every tier reviews the delta since that round against it
+    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome.
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
     // attempt, the two routing/deferral flags, the blast-radius view, the caller's
-    // any-parked out-param, and now the unit worktree object itself for the ensure-on-park
-    // re-assert) - the same primitive-argument shape `reviewer_spawn_opts` and
-    // `run_reviewer` carry, allowed for the same reason.
+    // any-parked out-param, the unit worktree object itself for the ensure-on-park
+    // re-assert, and the REQUIRED list the round holds the unit to) - the same
+    // primitive-argument shape `reviewer_spawn_opts` and `run_reviewer` carry, allowed for
+    // the same reason.
     #[allow(clippy::too_many_arguments)]
     fn review_unit(
         &self,
@@ -4508,6 +4554,7 @@ impl RunCtx<'_> {
         // read again immediately before this function's own `reviewed`-sha stamp -
         // never inferred or reconstructed here.
         wt: Option<&Worktree>,
+        prior_required: &[RequiredItem],
     ) -> Result<ReviewOutcome, Error> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
@@ -4532,6 +4579,16 @@ impl RunCtx<'_> {
         // doc comment for why a live re-read here would silently adopt an earlier tier's
         // already-committed residue as this round's new baseline.
         let round_start_sha = self.review_round_start_sha(&st.name, attempt, dir)?;
+        // A LATER REVIEW ROUND reviews the delta since the round that sent the unit back,
+        // against the REQUIRED list that round left open; a first round reviews the whole unit.
+        let round = self
+            .round_delta(wt, &st.name, attempt)
+            .map(|(base, delta)| ReviewRound {
+                base,
+                delta,
+                required: prior_required.to_vec(),
+                audit: audit_id(&st.name, attempt),
+            });
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
@@ -4548,20 +4605,38 @@ impl RunCtx<'_> {
             // (spec 103, criterion 6, adv-u103c6-guard-skipped-on-tier-err): a lens tier
             // has no LATER tier to guard the tree on its behalf if ITS OWN spawn is what
             // errors, so this site guards itself via `map_err` before the `?` unwinds.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempt, ordinal, any_parked, wt)
-                .map_err(|e| {
-                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-                })?;
+            self.run_review_agents_concurrently(
+                st,
+                &lenses,
+                dir,
+                attempt,
+                ordinal,
+                any_parked,
+                wt,
+                round.as_ref(),
+            )
+            .map_err(|e| {
+                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+            })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
-            self.run_adversary(st, &adversary, dir, attempt, ordinal, wt, &lenses)
-                .map_err(|e| {
-                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-                })?;
+            self.run_adversary(
+                st,
+                &adversary,
+                dir,
+                attempt,
+                ordinal,
+                wt,
+                &lenses,
+                round.as_ref(),
+            )
+            .map_err(|e| {
+                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+            })?;
         }
         if adjudicator.is_empty() {
             // The round's last real result was the adversary's (or the lenses', if the
@@ -4581,6 +4656,7 @@ impl RunCtx<'_> {
                 wt,
                 &lenses,
                 &adversary,
+                round.as_ref(),
             )
             .map_err(|e| {
                 self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
@@ -4594,6 +4670,11 @@ impl RunCtx<'_> {
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
         let compensate = verdict_compensates(&reason);
+        let (approved, reason, required) = if approved {
+            (true, reason, Vec::new())
+        } else {
+            self.split_reject(&st.name, attempt, ordinal, round.as_ref(), reason)?
+        };
         if approved {
             if defer_reviewed {
                 // Speculation DEFERS the `reviewed` status to the winning candidate (see
@@ -4661,8 +4742,60 @@ impl RunCtx<'_> {
         } else {
             let mut outcome = ReviewOutcome::rejected(reason);
             outcome.compensate = compensate;
+            outcome.required = required;
             Ok(outcome)
         }
+    }
+
+    /// Split a review round's reject (`reason`, the adjudicator's output) into what still holds
+    /// the unit back and what goes to the operator. On a LATER round, each REQUIRED item
+    /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
+    /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
+    /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
+    /// next round holds the unit to. A first round's reject keeps every item, and so does a
+    /// reject blaming infrastructure. `ordinal` is the stage run's infra retry ordinal, so an
+    /// infra rerun's review records its own lessons.
+    fn split_reject(
+        &self,
+        unit: &str,
+        attempt: u32,
+        ordinal: u32,
+        round: Option<&ReviewRound>,
+        reason: String,
+    ) -> Result<(bool, String, Vec<RequiredItem>), Error> {
+        let adjudication = spawn::Adjudication::parse(&reason).unwrap_or_default();
+        // A reject blaming infrastructure judged no code (F3): it reaches the stage's failure
+        // cause whole, so the stage reruns uncharged.
+        let Some(round) = round.filter(|_| !adjudication.is_infra_fault()) else {
+            return Ok((false, reason, adjudication.required));
+        };
+        let (kept, dropped): (Vec<_>, Vec<_>) = adjudication
+            .required
+            .into_iter()
+            .partition(|item| round.blocks(item));
+        for (n, item) in dropped.iter().enumerate() {
+            // Replay-keyed on unit + attempt + infra retry ordinal + item: a re-run review over
+            // the recorded verdict records each lesson once, and an infra rerun's fresh review
+            // records its own.
+            self.emit_keyed(
+                &format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}"),
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({
+                    "id": format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
+                    "summary": format!(
+                        "For the operator: review of unit {unit:?} at attempt {attempt} found, \
+                         outside the delta it reviewed, an item that is no correctness defect, \
+                         so it no longer holds the unit back - {}: {}",
+                        item.path, item.finding
+                    ),
+                    "about": [item.path],
+                }),
+            )?;
+        }
+        if kept.is_empty() && !dropped.is_empty() {
+            return Ok((true, CONVERGED.to_string(), kept));
+        }
+        Ok((false, reason, kept))
     }
 
     /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): reviewers never
@@ -4869,11 +5002,12 @@ impl RunCtx<'_> {
         let mut sdet_prompt = self.build_prompt_with_failure(
             st,
             &PriorFailure::default(),
+            attempt,
             GroundingSlice::Implement,
         )?;
         // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
-        let delta = wt.and_then(|w| self.round_delta(w, &st.name, attempt).ok().flatten());
+        let delta = self.round_delta(wt, &st.name, attempt);
         if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
             sdet_prompt.push_str("\n\n");
             sdet_prompt.push_str(DOC_ONLY_ROUND);
@@ -5317,7 +5451,8 @@ impl RunCtx<'_> {
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
-                let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st))?;
+                let prompt =
+                    self.build_prompt_with_failure(st, &prior, attempts, implement_slice(st))?;
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -5446,8 +5581,13 @@ impl RunCtx<'_> {
                 }
             }
 
-            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5).
-            let mut next = PriorFailure::default();
+            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
+            // REQUIRED list stays open until a review round rules on it, so a crash or a red
+            // gate before the review carries it to the next attempt.
+            let mut next = PriorFailure {
+                required: prior.required.clone(),
+                ..PriorFailure::default()
+            };
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
@@ -5619,7 +5759,7 @@ impl RunCtx<'_> {
                         // structural width forces the full panel for a beyond-cap high-risk file, and a
                         // wide structural change earns the full panel by size. On the non-symbols
                         // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                        let review = self.review_unit(
+                        let mut review = self.review_unit(
                             st,
                             dir,
                             attempts,
@@ -5629,7 +5769,11 @@ impl RunCtx<'_> {
                             &radius.safe,
                             any_parked,
                             wt,
+                            &prior.required,
                         )?;
+                        // The round has ruled on the REQUIRED list: what stays open is what
+                        // its verdict requires (nothing, on an approve).
+                        next.required = std::mem::take(&mut review.required);
                         // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                         // adjudicator named another, already-integrated unit as the real defect
                         // source. QUEUE the rollback for the run loop to drain after this wave
@@ -5963,7 +6107,8 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt = self.build_prompt_with_failure(st, &logged, GroundingSlice::Implement)?;
+            let prompt =
+                self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
@@ -6108,6 +6253,8 @@ impl RunCtx<'_> {
                 &radius.safe,
                 &lane_any_parked,
                 Some(&candidates[i].wt),
+                // A candidate is a parallel first attempt: no REQUIRED list is open on it.
+                &[],
             )?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
@@ -6597,9 +6744,10 @@ impl RunCtx<'_> {
                 0,
                 any_lens_parked,
                 None,
+                None,
             )?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, 0, None, &lenses)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, 0, None, &lenses, None)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -6616,6 +6764,7 @@ impl RunCtx<'_> {
                     None,
                     &lenses,
                     &st.adversary,
+                    None,
                 )?
             };
 
@@ -6772,8 +6921,9 @@ impl RunCtx<'_> {
     /// somewhere else - `any_parked` is that somewhere else, read by `run_fan_out_stage`
     /// separately from the propagated Err.
     // Each argument is a distinct review input - the stage, its lens ids, the worktree dir,
-    // the attempt and its infra retry ordinal, the any-parked out-param, the unit worktree -
-    // the same primitive-argument shape `run_reviewer` carries this allow for.
+    // the attempt and its infra retry ordinal, the any-parked out-param, the unit worktree,
+    // the later-round block - the same primitive-argument shape `run_reviewer` carries this
+    // allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
@@ -6784,6 +6934,7 @@ impl RunCtx<'_> {
         ordinal: u32,
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -6792,7 +6943,9 @@ impl RunCtx<'_> {
             let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt, ordinal, wt)))
+                    .map(|a| {
+                        s.spawn(move || self.run_lens(st, a, dir, attempt, ordinal, wt, round))
+                    })
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -6840,6 +6993,10 @@ impl RunCtx<'_> {
     /// adjudicator, and its fellow lenses retrieve it. Its stdout is no longer captured
     /// to thread into another agent's prompt - the graph is the channel. Budget-refused
     /// spawns (item 9) surface as an error so the run halts.
+    // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
+    // retry ordinal, the ensure-on-park worktree, the later-round block) - the same
+    // primitive-argument shape `run_reviewer` carries this allow for.
+    #[allow(clippy::too_many_arguments)]
     fn run_lens(
         &self,
         st: &Stage,
@@ -6848,12 +7005,13 @@ impl RunCtx<'_> {
         attempt: u32,
         ordinal: u32,
         wt: Option<&Worktree>,
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id))?;
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
         self.run_reviewer(
             st,
             "lens",
@@ -6865,7 +7023,7 @@ impl RunCtx<'_> {
             true,
             // A lens's stdout is NOT its verdict - it emits findings to the graph - so an
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
-            false,
+            ReviewerOutput::Findings,
             &prompt,
             wt,
             // A lens judges the diff directly, not another tier's output - it carries no
@@ -6904,7 +7062,7 @@ impl RunCtx<'_> {
     /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
     /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
     /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
-    /// in parallel); `stdout_is_verdict` selects the tier-specific degeneracy signal (see
+    /// in parallel); `output` selects the tier-specific degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
     /// sentinel exactly like the original spawn. `reviews` is the routed review roster
@@ -6924,7 +7082,7 @@ impl RunCtx<'_> {
         // [`review_retry_window`], so an infra rerun's review is fresh work.
         ordinal: u32,
         parallel: bool,
-        stdout_is_verdict: bool,
+        output: ReviewerOutput,
         prompt: &str,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit
         // worktree this tier's spawn runs in, or `None` when the caller has none to
@@ -7031,14 +7189,9 @@ impl RunCtx<'_> {
             };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
-            if !self.reviewer_result_is_degenerate(
-                stdout_is_verdict,
-                &id,
-                &result,
-                findings.get(),
-            )? {
+            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
                 // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
-                // spawn (`stdout_is_verdict`) that returned a non-degenerate result with NO
+                // spawn (a verdict `output`) that returned a non-degenerate result with NO
                 // parseable verdict line, yet emitted an approve-shaped verdict via
                 // rigger_emit during the spawn, mistook the event channel for the gate. The
                 // gate reads ONLY the result channel, so folding this empty verdict as a
@@ -7056,7 +7209,7 @@ impl RunCtx<'_> {
                 // ReplayDriver (rigger step) and workflow::Driver (rigger serve) too, not only
                 // the cli stdout bridge. The result-channel check is FIRST, so the store read
                 // is taken only for a genuinely empty verdict.
-                if stdout_is_verdict
+                if output != ReviewerOutput::Findings
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
                 {
@@ -7154,12 +7307,14 @@ impl RunCtx<'_> {
     /// fault the conductor respawns/halts on rather than folding into the review. The
     /// signal DIFFERS by tier because each tier's WORK lands in a different channel:
     ///
-    /// - The ADJUDICATOR's stdout IS its verdict (`stdout_is_verdict`), so an empty or
+    /// - The ADJUDICATOR's stdout IS its verdict (a verdict `output`), so an empty or
     ///   whitespace-only stdout is degenerate on EVERY path - including a recorded empty
     ///   result replayed on the stepwise path. That is the wedge Gap 18 must catch (and
     ///   let recover): `build_result` records an empty success with no non-empty check, so
     ///   an infra-broken adjudicator's empty result would otherwise fold as a silent
-    ///   reject.
+    ///   reject. On a later review round ([`ReviewerOutput::RoundVerdict`]) a verdict line
+    ///   that rejects without naming a REQUIRED item is degenerate too: the next round
+    ///   could hold the unit to nothing.
     /// - A LENS/ADVERSARY emits its findings to the GRAPH and its stdout is discarded, so
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
@@ -7174,15 +7329,20 @@ impl RunCtx<'_> {
     ///   fragile per-spawn actor attribution of the recorded findings.
     fn reviewer_result_is_degenerate(
         &self,
-        stdout_is_verdict: bool,
+        output: ReviewerOutput,
         id: &str,
         result: &AgentResult,
         findings_emitted: u32,
     ) -> Result<bool, Error> {
+        if output == ReviewerOutput::RoundVerdict && rejects_without_required(&result.output) {
+            // A later round's reject that names no REQUIRED item is no verdict the next
+            // round can hold the unit to.
+            return Ok(true);
+        }
         if !result.output.trim().is_empty() {
             return Ok(false);
         }
-        if stdout_is_verdict {
+        if output != ReviewerOutput::Findings {
             // The adjudicator's verdict IS its stdout: empty is degenerate on both the
             // live and the replay path.
             return Ok(true);
@@ -7217,8 +7377,8 @@ impl RunCtx<'_> {
     /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
     /// [`review_roster`].
     // Each argument is a distinct review input (stage, agent id, dir, attempt and its infra
-    // retry ordinal, the ensure-on-park worktree, the routed lens roster) - the same
-    // primitive-argument shape `run_reviewer` carries this allow for.
+    // retry ordinal, the ensure-on-park worktree, the routed lens roster, the later-round
+    // block) - the same primitive-argument shape `run_reviewer` carries this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adversary(
         &self,
@@ -7229,12 +7389,13 @@ impl RunCtx<'_> {
         ordinal: u32,
         wt: Option<&Worktree>,
         lenses: &[String],
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY)?;
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
         self.run_reviewer(
             st,
             "adversary",
@@ -7246,7 +7407,7 @@ impl RunCtx<'_> {
             false,
             // Like a lens, the adversary's stdout is discarded (findings go to the graph),
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
-            false,
+            ReviewerOutput::Findings,
             &prompt,
             wt,
             &review_roster(lenses),
@@ -7265,9 +7426,12 @@ impl RunCtx<'_> {
     /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
     /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
     /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
+    /// Its prompt says how a reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
+    /// a later review round, ends with that round's block, where a reject naming no
+    /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
-    // attempt, the ensure-on-park worktree, and now the routed lens/adversary roster
-    // inputs) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
+    // attempt, the ensure-on-park worktree, the routed lens/adversary roster inputs and the
+    // review round) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
     // already carry this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
@@ -7280,6 +7444,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         lenses: &[String],
         adversary_id: &str,
+        round: Option<&ReviewRound>,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -7293,7 +7458,11 @@ impl RunCtx<'_> {
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
         // driven) - so it carries the SAME reviewer discipline those two tiers get via
         // `review_protocol` (spec 103, criterion 6), appended directly here.
-        let prompt = format!("{}{REVIEWER_DISCIPLINE}", self.build_prompt(st)?);
+        let prompt = format!(
+            "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
+            self.build_prompt(st)?,
+            round.map(ReviewRound::block).unwrap_or_default()
+        );
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7304,8 +7473,13 @@ impl RunCtx<'_> {
             ordinal,
             false,
             // The adjudicator's stdout IS the gating verdict, so an empty/whitespace-only
-            // stdout is degenerate on every path (including a replayed recorded result).
-            true,
+            // stdout is degenerate on every path (including a replayed recorded result), and
+            // on a later round so is a reject that names no REQUIRED item.
+            if round.is_some() {
+                ReviewerOutput::RoundVerdict
+            } else {
+                ReviewerOutput::Verdict
+            },
             &prompt,
             wt,
             &adjudicator_roster(lenses, adversary_id),
@@ -7365,7 +7539,8 @@ impl RunCtx<'_> {
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
     /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
+    /// ownership, open dispositions), plus the unit size cap ([`unit_size_cap`]) as a
+    /// blocking rule. On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
     /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
@@ -7392,8 +7567,16 @@ impl RunCtx<'_> {
              ambiguously-owned mitigation - two units that will fight over the same concern \
              through the shared context graph - is a reject.\n\
              - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-             reviewer to re-litigate; an undecided disposition is a reject.\n\n\
-             NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
+             reviewer to re-litigate; an undecided disposition is a reject.\n",
+        );
+        b.push_str(&format!(
+            "- Unit size (blocking): {} A unit over the cap is a reject with \
+             \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
+             split it into ordered units.\n\n",
+            unit_size_cap()
+        ));
+        b.push_str(
+            "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
              defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
              (each branches off the prior batch's integrated tree), and per-unit worktree \
              isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
@@ -7445,7 +7628,8 @@ impl RunCtx<'_> {
             "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
              release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
              back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect - never for mechanical blast-radius overlap alone.\n",
+             (open disposition) defect, or a unit over the size cap - never for mechanical \
+             blast-radius overlap alone.\n",
         );
         b
     }
@@ -7688,7 +7872,7 @@ impl RunCtx<'_> {
                     attempts,
                     0,
                     false,
-                    false,
+                    ReviewerOutput::Findings,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
                     // The DAG-level critique names no lens tier of its own (spec 67, c4): an
@@ -7709,7 +7893,7 @@ impl RunCtx<'_> {
                     attempts,
                     0,
                     false,
-                    true,
+                    ReviewerOutput::Verdict,
                     &prompt,
                     None,
                     // No lens tier at the DAG level, so the shared helper's roster reduces to
@@ -10335,6 +10519,7 @@ impl RunCtx<'_> {
         format!(
             "\n\n{}\n",
             PLAN_PROTOCOL
+                .replace("{unit_size_cap}", &unit_size_cap())
                 .replace("{implementer}", &self.implementer_agent())
                 .replace("{criteria}", &criteria)
         )
@@ -10489,7 +10674,7 @@ impl RunCtx<'_> {
         // (via `build_review_prompt`) and the planner re-spawn (`re_plan`). Spec 36 trims ONLY the
         // implement stage, so `build_prompt` renders the FULL grounding slice - the review tiers and
         // the producer/planner keep the decisions/lessons/findings bulk the implement slice drops.
-        self.build_prompt_with_failure(st, &PriorFailure::default(), GroundingSlice::Full)
+        self.build_prompt_with_failure(st, &PriorFailure::default(), 0, GroundingSlice::Full)
     }
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
@@ -10500,12 +10685,19 @@ impl RunCtx<'_> {
     /// emits findings, the adversary and adjudicator (which ground after it) read them back
     /// from the graph, and a reviewer who emits its own findings feeds the next tier the
     /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
-    /// finding on the out-of-process path (see [`review_protocol`]).
-    fn build_review_prompt(&self, st: &Stage, actor: &str) -> Result<String, Error> {
+    /// finding on the out-of-process path (see [`review_protocol`]). On a later review round
+    /// it ends with that round's block ([`ReviewRound::block`]).
+    fn build_review_prompt(
+        &self,
+        st: &Stage,
+        actor: &str,
+        round: Option<&ReviewRound>,
+    ) -> Result<String, Error> {
         Ok(format!(
-            "{}{}",
+            "{}{}{}",
             self.build_prompt(st)?,
-            review_protocol(actor)
+            review_protocol(actor),
+            round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
 
@@ -10517,15 +10709,17 @@ impl RunCtx<'_> {
     /// [`task_block`] (its name and verbatim acceptance criterion, for every non-producer
     /// stage that owns one - implementers and the review tiers alike); the grounding
     /// context; the emit protocol; and, for the producer/planner only, the refine protocol
-    /// carrying every criterion.
+    /// carrying every criterion. `attempt` is the attempt the prompt is for, which names the
+    /// audit record a REQUIRED pattern item asks for ([`audit_id`]).
     fn build_prompt_with_failure(
         &self,
         st: &Stage,
         prior: &PriorFailure,
+        attempt: u32,
         slice: GroundingSlice,
     ) -> Result<String, Error> {
         let mut b = String::new();
-        b.push_str(&prior.block());
+        b.push_str(&prior.block(&st.name, attempt));
         b.push_str(&task_block(st));
         // Spec 29c criterion 5: ensure the unified graph reflects the LIVE project before the
         // traversal below reads it. Exercising this grounding path is what makes the run itself
@@ -11826,6 +12020,21 @@ fn gate_failure_cause(evidence: &[String]) -> String {
     format!("gate:{name}")
 }
 
+/// The unit size cap: a unit is too large for one review round when it is expected to add
+/// more than this many lines. It measures review scope, never code shape - no file or
+/// function size limit exists - and no gate measures it: the planner splits a criterion by it
+/// ([`PLAN_PROTOCOL`]) and the plan critique rejects a unit over it.
+const MAX_UNIT_ADDED_LINES: usize = 3000;
+
+/// The one sentence stating [`MAX_UNIT_ADDED_LINES`], carried by both the plan protocol and
+/// the plan critique.
+fn unit_size_cap() -> String {
+    format!(
+        "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} lines. \
+         The cap measures review scope - how much one review round must read - never code shape."
+    )
+}
+
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
 /// The protocol a PLANNER (a `produces: dag`) stage follows. The conductor has ALREADY
@@ -11834,9 +12043,10 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// several units, or add a necessary sub-unit or dependency the baseline missed. Each
 /// refinement is a `UnitProposed` carrying the spec criterion it serves; a proposed
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
-/// placeholder is filled with the run's actual acceptance criteria, and
-/// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+/// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with
+/// the implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with
+/// the one unit size cap sentence ([`unit_size_cap`]) that says when a criterion splits.
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- {unit_size_cap} Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part: every one echoes that criterion's id and ends its `criterion` text with an OWNS sentence naming its part.\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -11928,6 +12138,102 @@ pub fn review_protocol(actor: &str) -> String {
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
 const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run cargo-mutants, directly or through a verify helper: mutation testing belongs to the check-in gate, never to a review.";
+
+/// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
+/// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
+/// the next review round holds it to ([`ReviewRound::block`]). Appended to every
+/// adjudicator's prompt by [`RunCtx::run_adjudicator`].
+const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
+
+/// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
+/// worktree has since changed `delta` ([`RunCtx::round_delta`]), and `required` is the
+/// REQUIRED list that round left open - the one this attempt's implementer was handed. A
+/// round no earlier round of the same branch preceded is a first round and has none.
+struct ReviewRound {
+    base: String,
+    delta: Vec<String>,
+    required: Vec<RequiredItem>,
+    /// The DecisionMade id ([`audit_id`]) this attempt's implementer was asked to record a
+    /// whole-tree audit under, for each REQUIRED pattern item.
+    audit: String,
+}
+
+impl ReviewRound {
+    /// Whether `item` holds the unit back on this round: a correctness defect anywhere, or any
+    /// finding in the delta this round reviewed. Every other item is the operator's.
+    fn blocks(&self, item: &RequiredItem) -> bool {
+        item.correctness || self.delta.contains(&item.path)
+    }
+
+    /// The block every review tier's prompt ends with on this round: what it reviews (the
+    /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
+    fn block(&self) -> String {
+        let base = &self.base;
+        let delta = if self.delta.is_empty() {
+            "nothing".to_string()
+        } else {
+            self.delta.join(", ")
+        };
+        let required = if self.required.is_empty() {
+            "That round required no item.\n".to_string()
+        } else {
+            let audit = &self.audit;
+            format!(
+                "The items that round REQUIRED:\n{}",
+                required_lines(&self.required, |shape| format!(
+                    "  PATTERN: {shape}. The implementer was asked to audit the whole tree and \
+                     record DecisionMade `{audit}` listing every site checked; check it names \
+                     every site.\n"
+                ))
+            )
+        };
+        format!(
+            "\n\nLATER REVIEW ROUND: an earlier round judged this unit at {base} and sent it back. \
+             Review what changed since - `git diff {base}..HEAD`, which changed {delta} - and \
+             whether each item that round required is now fixed.\n{required}\
+             A finding outside that delta blocks only as a correctness defect \
+             (`\"correctness\":true`); any other finding outside it is recorded for the operator \
+             and never blocks. A reject this round names every item it requires in `required`.\n"
+        )
+    }
+}
+
+/// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
+/// a reject a later review round cannot hold the next attempt to. A reject blaming
+/// infrastructure judged no code, so it requires nothing and is never this (F3).
+fn rejects_without_required(output: &str) -> bool {
+    !verdict_approves(output)
+        && spawn::Adjudication::parse(output)
+            .is_some_and(|a| a.verdict.is_some() && a.required.is_empty() && !a.is_infra_fault())
+}
+
+/// The `reviewed` evidence of a later round's reject that converged: every item it required
+/// was a finding outside its delta and no correctness defect, so each went to the operator.
+const CONVERGED: &str = "converged";
+
+/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
+/// `pattern`'s clause for its shape: the one rendering the implementer's prior-failure block
+/// and a later round's review block share, each with its own pattern clause.
+fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> String {
+    items
+        .iter()
+        .map(|item| {
+            let mut line = format!("- {}: {}\n", item.path, item.finding);
+            let shape = item.pattern.trim();
+            if !shape.is_empty() {
+                line.push_str(&pattern(shape));
+            }
+            line
+        })
+        .collect()
+}
+
+/// The DecisionMade id unit `unit`'s attempt `attempt` records its whole-tree audit of a
+/// REQUIRED pattern item under: the one id the implementer is asked for and the next review
+/// round checks.
+fn audit_id(unit: &str, attempt: u32) -> String {
+    format!("audit-{unit}-{attempt}")
+}
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -14954,7 +15260,7 @@ mod tests {
             "deadbeef"
         );
         assert_eq!(
-            prior.block(),
+            prior.block("u", 1),
             expected,
             "block() must contain exactly the halted-commit sentence, with no \
              gate/review preamble, when halted_commit is the only field set"
@@ -14984,21 +15290,51 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            review_only.block().starts_with(PREAMBLE),
+            review_only.block("u", 1).starts_with(PREAMBLE),
             "block() must open with the generic preamble when review_reason alone \
              failed (kills the line-1283 `||`-to-`&&` mutant); got:\n{}",
-            review_only.block()
+            review_only.block("u", 1)
         );
         let contradiction_only = PriorFailure {
             contradiction: "a later unit proved this wrong".into(),
             ..Default::default()
         };
         assert!(
-            contradiction_only.block().starts_with(PREAMBLE),
+            contradiction_only.block("u", 1).starts_with(PREAMBLE),
             "block() must open with the generic preamble when contradiction alone \
              failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
-            contradiction_only.block()
+            contradiction_only.block("u", 1)
         );
+    }
+
+    /// A pattern finding - one defect shape recurring across sites - is REQUIRED as a
+    /// whole-tree audit: the next attempt's implementer is told to audit the whole tree, fix
+    /// every site and record its audit as DecisionMade `audit-<unit>-<attempt>` listing every
+    /// site checked, and the next review round is pointed at that same record.
+    #[test]
+    fn a_pattern_item_asks_the_implementer_for_a_whole_tree_audit_record() {
+        let (_, _, driver) = run_review_rounds(&[
+            (
+                adjudicator_at(0, 0),
+                r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"}]}"#,
+            ),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        let ask = "PATTERN: unscoped log reads. Audit the whole tree, fix every site, and record \
+                   DecisionMade `audit-implement-1` listing every site checked.";
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            !implementer[0].contains("PATTERN:") && implementer[1].contains(ask),
+            "the attempt after the pattern finding is asked for the audit:\n{}",
+            implementer[1]
+        );
+        for agent in ["lens", "adversary", "adj"] {
+            let round = &driver.prompts_for(agent)[1];
+            assert!(
+                round.contains("unscoped log reads") && round.contains("`audit-implement-1`"),
+                "{agent}'s next round names the pattern and the audit record:\n{round}"
+            );
+        }
     }
 
     #[test]
@@ -18265,7 +18601,12 @@ mod tests {
         // (a)+(b) First attempt: the prompt OPENS with the unit's name and its verbatim criterion,
         // ahead of the code neighborhood.
         let first = ctx
-            .build_prompt_with_failure(&unit, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &unit,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
         assert!(
             first.starts_with(header),
@@ -18288,9 +18629,9 @@ mod tests {
             ..Default::default()
         };
         let retry = ctx
-            .build_prompt_with_failure(&unit, &prior, GroundingSlice::Implement)
+            .build_prompt_with_failure(&unit, &prior, 1, GroundingSlice::Implement)
             .unwrap();
-        let lead = prior.block();
+        let lead = prior.block(&unit.name, 1);
         assert!(
             retry.starts_with(&lead),
             "the prior-failure block must lead a retry prompt; prompt was:\n{retry}"
@@ -18311,7 +18652,7 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens").unwrap();
+        let review = ctx.build_review_prompt(&unit, "lens", None).unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -18331,7 +18672,12 @@ mod tests {
             ..Default::default()
         };
         let bare_prompt = ctx
-            .build_prompt_with_failure(&bare, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &bare,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
         assert!(
             !bare_prompt.contains("UNIT: "),
@@ -19399,7 +19745,7 @@ mod tests {
         // the implement slice); the code-neighborhood-from-traversal claim holds on both, so this
         // exercises the full slice to keep both halves of the claim in one assembly.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Full)
+            .build_prompt_with_failure(&stage, &PriorFailure::default(), 0, GroundingSlice::Full)
             .unwrap();
 
         assert!(
@@ -19499,7 +19845,12 @@ mod tests {
         // This asserts only the code neighborhood, which BOTH slices keep; drive the implement slice
         // (this is a plain implement stage) so it exercises the production doer path.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &stage,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
 
         // (1) The RUN emitted all four extraction event types into the store - it ingested the
@@ -21667,7 +22018,12 @@ mod tests {
         // Design intent is on BOTH slices (spec 36 keeps the intent layer on the trimmed implement
         // prompt); drive the implement slice so this exercises the production doer path.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &stage,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
 
         // (1) RENDERED: the handbook rule that GOVERNS the file and the RA section that SPECIFIES it
@@ -23155,7 +23511,7 @@ mod tests {
         let driver = Stub {
             write_file: Some("feature.rs".into()),
             output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                ("judge".to_string(), REJECT_FEATURE.to_string()),
                 (
                     "lens".to_string(),
                     "reviewed: a blocker remains".to_string(),
@@ -27967,6 +28323,297 @@ mod tests {
         cfg
     }
 
+    /// Round 0's reject of the `per_unit_panel_cfg` unit: one correctness item, in the file
+    /// round 0 wrote.
+    const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
+
+    /// The `per_unit_panel_cfg` adjudicator's spawn id at `attempt`, or its `retry`-th
+    /// respawn.
+    fn adjudicator_at(attempt: u32, retry: u32) -> String {
+        spawn_retry_id("implement", ROLE_ADJUDICATOR, attempt, retry)
+    }
+
+    /// Run the `per_unit_panel_cfg` unit in a real repository: its implementer writes
+    /// `feature.rs` on attempt 0 and `fix<attempt>.rs` on every later attempt, so each review
+    /// round has a delta; each adjudicator spawn named in `verdicts` answers its verdict and
+    /// every other spawn answers prose. Returns the run's state, its log and the driver.
+    fn run_review_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: verdicts
+                .iter()
+                .map(|(id, verdict)| (id.clone(), verdict.to_string()))
+                .collect(),
+            write_files_by_spawn_id: (0..4)
+                .map(|attempt| {
+                    let file = match attempt {
+                        0 => "feature.rs".to_string(),
+                        n => format!("fix{n}.rs"),
+                    };
+                    (spawn_id("implement", ROLE_IMPLEMENTER, attempt), vec![file])
+                })
+                .collect(),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&per_unit_panel_cfg(None), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (rs, events, driver)
+    }
+
+    /// A later review round reviews what changed since the round that sent the unit back,
+    /// and the items that round required: every tier's round-1 prompt names the round-0 sha
+    /// its delta is read from, the `git diff` that is its scope, and each REQUIRED item, which
+    /// the round-1 implementer was also handed as its REQUIRED list. Round 0 carries none.
+    #[test]
+    fn the_round_two_review_prompt_carries_the_prior_required_list_and_the_delta_base() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let base = recorded_review_round_start_sha(&events, "implement", 0)
+            .expect("round 0 stamps the sha it judged");
+        let item = "- feature.rs: close the unscoped read";
+        for agent in ["lens", "adversary", "adj"] {
+            let prompts = driver.prompts_for(agent);
+            assert_eq!(prompts.len(), 2, "{agent} reviews both rounds");
+            assert!(
+                !prompts[0].contains(item) && !prompts[0].contains("..HEAD"),
+                "{agent}'s first round has no earlier round to read a delta from:\n{}",
+                prompts[0]
+            );
+            for needle in [&format!("git diff {base}..HEAD"), "fix1.rs", item] {
+                assert!(
+                    prompts[1].contains(needle),
+                    "{agent}'s second round must carry {needle:?}:\n{}",
+                    prompts[1]
+                );
+            }
+        }
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            implementer[1].contains(item),
+            "the round-1 implementer is handed the REQUIRED list:\n{}",
+            implementer[1]
+        );
+    }
+
+    /// A later round's reject must name the items it requires fixed: one that names none is
+    /// no verdict the next round can be held to, so it is degenerate - the adjudicator is
+    /// respawned under its retry id and the unit is charged nothing for it.
+    #[test]
+    fn a_later_round_reject_naming_no_required_item_respawns_the_adjudicator() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"reject"}"#),
+            (adjudicator_at(1, 1), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            driver.spawn_ids().contains(&adjudicator_at(1, 1)),
+            "the bare reject is respawned; spawns: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+    }
+
+    /// The bodies of the lessons recorded about exactly `path`.
+    fn lessons_about(events: &[Event], path: &str) -> Vec<Value> {
+        events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .filter(|b| b["about"] == json!([path]))
+            .collect()
+    }
+
+    /// A later round's reject whose every item is a non-correctness finding outside the delta
+    /// that round reviewed converges: each item is recorded as a lesson for the operator about
+    /// its file, and the unit lands on that round, approved "converged", charged nothing more.
+    #[test]
+    fn a_round_two_reject_on_only_out_of_delta_wording_lands_and_records_operator_lessons() {
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+        let lessons = lessons_about(&events, "feature.rs");
+        assert_eq!(lessons.len(), 1, "one operator lesson: {lessons:?}");
+        let summary = lessons[0]["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("operator") && summary.contains("reword the doc comment"),
+            "the lesson tells the operator the finding: {summary}"
+        );
+        let reviewed: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+            .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
+            .filter(|b| b["status"] == "reviewed")
+            .collect();
+        assert_eq!(
+            reviewed.last().map(|b| b["evidence"]["review"].clone()),
+            Some(json!("converged")),
+            "the converged round's approve says so: {reviewed:?}"
+        );
+    }
+
+    /// Only a non-correctness item outside the delta converges: a correctness item outside it
+    /// still rejects and is the next round's REQUIRED list, while the wording item beside it
+    /// goes to the operator and leaves that list.
+    #[test]
+    fn a_correctness_item_outside_the_delta_still_rejects() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","required":[{"finding":"bound the retry loop","path":"feature.rs","correctness":true},{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+            (adjudicator_at(2, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            2,
+            "the correctness item outside the delta charges round 1 an attempt"
+        );
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            implementer[2].contains("- feature.rs: bound the retry loop")
+                && !implementer[2].contains("- feature.rs: reword the doc comment"),
+            "round 2's REQUIRED list is the correctness item alone:\n{}",
+            implementer[2]
+        );
+        assert_eq!(
+            lessons_about(&events, "feature.rs").len(),
+            1,
+            "the wording item went to the operator"
+        );
+    }
+
+    /// A later round's reject blaming infrastructure judged no code (F3), so naming no item
+    /// does not make it degenerate: the stage reruns at the same attempt uncharged, under the
+    /// next retry ordinal's reviewers, and the adjudicator is never respawned for it.
+    #[test]
+    fn a_later_round_infra_fault_reject_naming_no_item_reruns_uncharged() {
+        let rerun = *review_retry_window(1).start();
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","cause":"infra-fault"}"#,
+            ),
+            (adjudicator_at(1, rerun), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            !driver.spawn_ids().contains(&adjudicator_at(1, 1)),
+            "the infra-fault reject is not respawned; spawns: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["implement/infra-retry#1~0"],
+            "round 1's infra-fault reject reruns its stage once"
+        );
+    }
+
+    /// A reject blaming infrastructure is never split (F3): even one whose only item is a
+    /// wording finding outside the delta reaches the stage's failure cause whole, so the stage
+    /// reruns uncharged instead of converging, and nothing goes to the operator.
+    #[test]
+    fn a_later_round_infra_fault_reject_is_never_split() {
+        let rerun = *review_retry_window(1).start();
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","cause":"infra-fault","required":[{"finding":"reword the doc comment","path":"feature.rs","correctness":false}]}"#,
+            ),
+            (adjudicator_at(1, rerun), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["implement/infra-retry#1~0"],
+            "the infra-fault reject reruns its stage rather than converging"
+        );
+        assert_eq!(
+            lessons_about(&events, "feature.rs"),
+            Vec::<Value>::new(),
+            "an infra-fault reject sends nothing to the operator"
+        );
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+    }
+
+    /// An infra rerun at the same attempt is a fresh review (F3): the operator lessons its
+    /// reject records are its own, never swallowed as replays of the earlier ordinal's.
+    #[test]
+    fn an_infra_rerun_records_its_own_operator_lessons() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let round = ReviewRound {
+            base: "base".into(),
+            delta: vec!["fix1.rs".into()],
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        for (ordinal, finding) in [(0, "reword the doc comment"), (1, "rename the helper")] {
+            let reject = format!(
+                r#"{{"verdict":"reject","required":[{{"finding":"{finding}","path":"feature.rs","correctness":false}}]}}"#
+            );
+            let (approved, _, _) = ctx
+                .split_reject("implement", 1, ordinal, Some(&round), reject)
+                .unwrap();
+            assert!(
+                approved,
+                "ordinal {ordinal}'s wording-only reject converges"
+            );
+        }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let summaries: Vec<String> = lessons_about(&events, "feature.rs")
+            .iter()
+            .map(|l| l["summary"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            summaries.len() == 2
+                && summaries[0].contains("reword the doc comment")
+                && summaries[1].contains("rename the helper"),
+            "each ordinal records its own lesson: {summaries:?}"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
@@ -31399,10 +32046,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some(work.into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"reject"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([("judge".to_string(), REJECT_FEATURE.to_string())]),
             delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
             ..Stub::new()
         };
@@ -40871,30 +41515,33 @@ mod tests {
         }
     }
 
+    /// The mark a review round of `unit` at `attempt` stamps on entry, naming the `sha` it
+    /// judges.
+    fn round_start(unit: &str, attempt: u32, sha: &str) -> Event {
+        let mut e = Event::new(
+            ledger::TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({
+                "id": unit,
+                "status": STATUS_REVIEW_ROUND_START,
+                "attempt": attempt,
+            }))
+            .unwrap(),
+        );
+        e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
+        e
+    }
+
     /// A round delta's base is the round-start sha of the unit's latest review round at an
     /// attempt BEFORE the one asking - never the asking attempt's own round, never an earlier
     /// round, never another unit's - and there is none before any round or when that round
     /// recorded no sha.
     #[test]
     fn round_delta_base_is_the_latest_review_round_before_the_attempt() {
-        let start = |unit: &str, attempt: u32, sha: &str| {
-            let mut e = Event::new(
-                ledger::TYPE_UNIT_STATUS,
-                serde_json::to_vec(&json!({
-                    "id": unit,
-                    "status": STATUS_REVIEW_ROUND_START,
-                    "attempt": attempt,
-                }))
-                .unwrap(),
-            );
-            e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
-            e
-        };
         let events = [
-            start("u", 0, "sha0"),
-            start("u", 1, "sha1"),
-            start("other", 1, "decoy"),
-            start("u", 2, ""),
+            round_start("u", 0, "sha0"),
+            round_start("u", 1, "sha1"),
+            round_start("other", 1, "decoy"),
+            round_start("u", 2, ""),
         ];
         let base = |attempt| round_delta_base(&events, "u", attempt);
         assert_eq!(base(0), None, "no round judged the unit before attempt 0");
@@ -40905,6 +41552,51 @@ mod tests {
             "the latest earlier round wins"
         );
         assert_eq!(base(3), None, "the latest earlier round recorded no sha");
+    }
+
+    /// A round delta takes its base only from the unit branch's own history: the branch's
+    /// earlier round yields the delta since it, while a round-start sha the branch never
+    /// passed through - a sibling speculation lane's tip - leaves the round without a delta,
+    /// so it is reviewed whole, as a first round.
+    #[test]
+    fn a_round_delta_takes_no_base_outside_the_unit_branch_history() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let committed = |unit: &str, file: &str| {
+            let dir = unit_worktree_dir(&scratch, unit);
+            let wt = Worktree::create(&repo_path, &dir, &unit_branch(unit), &scratch).unwrap();
+            std::fs::write(Path::new(&wt.dir).join(file), "work\n").unwrap();
+            wt.commit_checkpoint(file).unwrap();
+            wt
+        };
+        let wt = committed("u", "reviewed.rs");
+        let own = worktree::head_sha_of(&wt.dir);
+        let sibling = worktree::head_sha_of(&committed("u-spec1", "sibling.rs").dir);
+        std::fs::write(Path::new(&wt.dir).join("fix.rs"), "work\n").unwrap();
+        wt.commit_checkpoint("fix").unwrap();
+        let driver = Stub::new();
+        let cfg = Config::default();
+        let delta_from = |base: &str| {
+            let st = Store::open(":memory:").unwrap();
+            st.append(STREAM, ExpectedRevision::Any, &[round_start("u", 0, base)])
+                .unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            RunCtx::for_test(&cfg, &deps).round_delta(Some(&wt), "u", 1)
+        };
+        assert_eq!(
+            delta_from(&own),
+            Some((own.clone(), vec!["fix.rs".to_string()])),
+            "the branch's own earlier round is the base of the delta since it"
+        );
+        assert_eq!(
+            delta_from(&sibling),
+            None,
+            "a sibling lane's round-start sha is not in this branch's history, so no delta"
+        );
     }
 
     #[test]
@@ -41464,10 +42156,7 @@ mod tests {
         // rejects, so the unit retries to the bound and escalates.
         let driver = Stub {
             write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"reject","reason":"adversarial review refuses this"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([("judge".to_string(), REJECT_FEATURE.to_string())]),
             ..Stub::new()
         };
         let deps = Deps {
@@ -41941,11 +42630,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
-        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
-        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
-        // (informational - the partitioner serializes overlap; not a reject trigger).
+    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
+    /// which recorded the planner's and the adjudicator's prompts.
+    fn one_unit_critique() -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
         let criterion = "the widget renderer is implemented";
         std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
@@ -41969,7 +42656,15 @@ mod tests {
             log: &|_| {},
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
+        driver
+    }
 
+    #[test]
+    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
+        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
+        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
+        // (informational - the partitioner serializes overlap; not a reject trigger).
+        let driver = one_unit_critique();
         let prompts = driver.adj_prompts.lock().unwrap();
         let prompt = prompts
             .first()
@@ -41980,6 +42675,36 @@ mod tests {
                 "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
             );
         }
+    }
+
+    /// One unit size cap, measuring review scope and never code shape, reaches both the
+    /// planner and the plan critique: the plan protocol splits a criterion whose unit would
+    /// exceed it into ordered units, and the critique rejects a unit over it with the
+    /// `decomposition-conflict` cause that sends the DAG back to the planner.
+    #[test]
+    fn the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap() {
+        let driver = one_unit_critique();
+        let planner = driver.planner_prompts.lock().unwrap()[0].clone();
+        let critique = driver.adj_prompts.lock().unwrap()[0].clone();
+        let cap = format!(
+            "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} \
+             lines. The cap measures review scope - how much one review round must read - never \
+             code shape."
+        );
+        for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
+            assert!(
+                prompt.contains(&cap),
+                "the {who} prompt carries the one cap sentence:\n{prompt}"
+            );
+        }
+        assert!(
+            planner.contains("ordered units") && planner.contains("OWNS"),
+            "the planner splits an oversize criterion into ordered units, each owning a part:\n{planner}"
+        );
+        assert!(
+            critique.contains(r#""cause":"decomposition-conflict""#),
+            "the critique rejects an oversize unit as a decomposition conflict:\n{critique}"
+        );
     }
 
     #[test]

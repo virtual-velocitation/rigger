@@ -1503,8 +1503,8 @@ tools: [Read, Grep, Glob, Agent]\n\
 isolation: none\n\
 recurse: true\n\
 ---\n\
-You decompose the spec into a DAG of small, independently-verifiable units, one\n\
-per acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
+You decompose the spec into a DAG of small, independently-verifiable units, each\n\
+serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
     ),
     (
         "rust-engineer.md",
@@ -2905,6 +2905,40 @@ mod tests {
                 assert!(
                     !text.contains(token),
                     "{at} carries the stray tool markup {token:?}"
+                );
+            }
+        }
+    }
+
+    /// The plan protocol in the binary is the one source of the rule that splits a criterion too
+    /// large for one unit into ordered units: no shipped planner persona restates the rule or
+    /// forbids the split.
+    #[test]
+    fn the_planner_persona_never_contradicts_the_plan_protocol_split_rule() {
+        let planners: Vec<(String, String)> = every_shipped_persona()
+            .into_iter()
+            .filter(|(at, _)| at.ends_with("planner.md"))
+            .collect();
+        assert_eq!(
+            planners.len(),
+            2,
+            "the committed planner and its scaffold seed"
+        );
+        for (at, text) in planners {
+            let text = text
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            for claim in [
+                "split",
+                "exactly one unit",
+                "one unit per criterion",
+                "one per acceptance criterion",
+            ] {
+                assert!(
+                    !text.contains(claim),
+                    "{at} restates the split rule the plan protocol owns: {claim:?}"
                 );
             }
         }

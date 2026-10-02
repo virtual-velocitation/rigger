@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eventstore::Event;
-use crate::ledger::{AttentionEntry, RunState};
+use crate::ledger::{AttentionEntry, RequiredItem, RunState};
 
 /// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
 /// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
@@ -287,6 +287,10 @@ pub struct Adjudication {
     /// colour) reads this directly instead of inferring it from `cause`'s presence, which
     /// is silent on a reject that declared no cause.
     pub verdict: Option<String>,
+    /// The items a reject requires the next attempt to fix (its `required` array): what the
+    /// next attempt is handed and the next review round holds the unit to. Empty when the
+    /// line names none, or names them in any other shape.
+    pub required: Vec<RequiredItem>,
 }
 
 /// The adjudicator's reject `cause` blaming a gate, tool or harness failure rather than the
@@ -330,11 +334,16 @@ impl Adjudication {
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty());
             let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
+            let required = v
+                .get("required")
+                .and_then(|r| serde_json::from_value(r.clone()).ok())
+                .unwrap_or_default();
             return Some(Adjudication {
                 upheld: str_array("upheld"),
                 discarded: str_array("discarded"),
                 cause,
                 verdict,
+                required,
             });
         }
         None
@@ -972,7 +981,52 @@ pub(crate) use crate::test_support::test_request;
 mod tests {
     use super::*;
     use crate::eventstore::Event;
-    use crate::ledger::AttentionEntry;
+    use crate::ledger::{AttentionEntry, RequiredItem};
+
+    /// A reject's verdict line names the items it requires fixed - each one's finding, the
+    /// file it is in, whether it is a correctness defect, and the shape of a defect that
+    /// recurs across sites - read by the one verdict-line parse beside the rest of the
+    /// disposition; a line that names none, or names them in another shape, requires nothing.
+    #[test]
+    fn required_items_parse_from_the_verdict_line() {
+        let required = |output: &str| {
+            Adjudication::parse(output)
+                .map(|a| a.required)
+                .unwrap_or_default()
+        };
+        let line = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"src/a.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"reword the doc","path":"docs/b.md"}]}"#;
+        assert_eq!(
+            required(&format!("the reasoning\n{line}")),
+            vec![
+                RequiredItem {
+                    finding: "scope the log read".into(),
+                    path: "src/a.rs".into(),
+                    correctness: true,
+                    pattern: "unscoped log reads".into(),
+                },
+                RequiredItem {
+                    finding: "reword the doc".into(),
+                    path: "docs/b.md".into(),
+                    correctness: false,
+                    pattern: String::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            required(&format!("{line}\n{{\"verdict\":\"approve\"}}")),
+            Vec::new(),
+            "the last verdict line is the one read"
+        );
+        for none in [
+            r#"{"verdict":"reject"}"#,
+            r#"{"verdict":"reject","required":"fix it"}"#,
+            r#"{"verdict":"reject","required":["fix it"]}"#,
+            r#"{"required":[{"finding":"not a verdict line"}]}"#,
+            "no json here",
+        ] {
+            assert_eq!(required(none), Vec::new(), "{none}");
+        }
+    }
 
     #[test]
     fn adjudication_parses_the_verdict_line_only_for_an_adjudicator_result() {

@@ -1468,8 +1468,7 @@ pub fn landed_branch_tip(repo: &str, branch: &str, run_branch: &str) -> Option<S
     )
     .ok()?;
     let created = reflog.lines().map(str::trim).rfind(|l| !l.is_empty())?;
-    let landed =
-        created != tip && run_git(repo, &["merge-base", "--is-ancestor", &tip, run_branch]).is_ok();
+    let landed = created != tip && is_ancestor(repo, &tip, run_branch);
     landed.then_some(tip)
 }
 
@@ -1966,8 +1965,7 @@ pub fn sweep_terminal_logged(
             if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
                 continue;
             }
-            let merged =
-                run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
+            let merged = is_ancestor(repo, branch, run_branch);
             if merged {
                 // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
                 // between this sweep and `run_single_stage`'s halted-commit recovery
@@ -2420,6 +2418,12 @@ pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
 /// it", never "safe to remove".
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
+}
+
+/// Whether commit `ancestor` is in `descendant`'s history (either names any rev) in the
+/// repository at `dir`; `false` when it is not, or when git cannot tell.
+pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
+    run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
 pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
@@ -6705,11 +6709,7 @@ mod tests {
         // The release target is an ANCESTOR of the run branch, so a PR from the run branch to
         // the base applies cleanly (the disjoint-history failure this criterion prevents).
         assert!(
-            run_git(
-                &p,
-                &["merge-base", "--is-ancestor", &base_tip, "rigger-run"]
-            )
-            .is_ok(),
+            is_ancestor(&p, &base_tip, "rigger-run"),
             "the release target must be an ancestor of the run branch (an applicable PR diff)"
         );
     }
