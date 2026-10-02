@@ -479,10 +479,11 @@ fn denied_owner_positions(lower: &str) -> Vec<usize> {
 /// or a double-quoted span (the field guide's own convention for NAMING these exact
 /// phrases, e.g. this spec's own Design bullet) can carry any of these words as literal
 /// quoted text, so all three are excluded too, through the one masker
-/// [`strip_inline_code`]: backtick spans blank pair by pair, so prose between two code
-/// spans is linted, and an unpaired last backtick blanks to the paragraph end; quoted text
-/// blanks from the first quote mark through the last, or to the paragraph end on an odd
-/// count, so quoted text can never false-positive.
+/// [`strip_inline_code`]: backtick spans pair by backtick run, as Markdown delimits a code
+/// span, so a double-backtick span blanks as one span, prose between two code spans is
+/// linted, and a run that no later run of its length closes blanks to the paragraph end;
+/// quoted text blanks from the first quote mark through the last, or to the paragraph end
+/// on an odd count, so quoted text can never false-positive.
 pub fn disposition_advisories(text: &str) -> Vec<LintAdvisory> {
     let notes = section_lines(text, &["notes"]);
     let fenced = fenced_code_lines(text);
@@ -772,9 +773,10 @@ fn carries_any(lower: &str, list: &[&str]) -> bool {
     list.iter().any(|w| find_word(lower, w).is_some())
 }
 
-/// One sentence of a criterion: its raw text, whose backtick pairs name its code spans, and
-/// `words`, that text masked by [`strip_inline_code`] and lowercased - the haystack every
-/// word list of the tells matches on through [`carries_any`].
+/// One sentence of a criterion: its raw text, whose backtick spans ([`code_spans`]) name the
+/// surfaces it measures, and `words`, that text masked by [`strip_inline_code`] and
+/// lowercased - the haystack every word list of the tells matches on through
+/// [`carries_any`].
 struct Sentence {
     raw: String,
     words: String,
@@ -979,12 +981,14 @@ fn fenced_code_lines(text: &str) -> Vec<bool> {
 /// [`disposition_advisories`]), so a span may cross an original hard-wrap boundary, and the
 /// spec 112 tells run it over one criterion sentence (see [`criterion_sentences`]).
 ///
-/// BACKTICKS PAIR, span by span (specs/112 Design, *The one masker*): a code span is a
-/// paired Markdown construct, so [`backtick_spans`] pairs the 1st mark with the 2nd, the
-/// 3rd with the 4th, and so on, and each pair is blanked through both marks; prose between
-/// two code spans stays visible to the scan. An unpaired last backtick blanks from itself
-/// to the end of the masked text. A stray backtick pairs with the opener of a real span
-/// after it, so that span's text is linted - a Markdown defect the rendered spec shows.
+/// BACKTICKS PAIR BY RUN (specs/112 Design, *The one masker*, `d112-op-backtick-run-pairing`):
+/// a code span is a paired Markdown construct, delimited as CommonMark delimits one, so
+/// [`backtick_spans`] opens a span at a run of n consecutive backticks and closes it at the
+/// next run of exactly n, and each span is blanked through both runs: a double-backtick
+/// span masks as one span, and prose between two code spans stays visible to the scan. A
+/// run that no later run of its length closes blanks from itself to the end of the masked
+/// text. A stray backtick run pairs with the opener of the next real span of its length, so
+/// that span's text is linted - a Markdown defect the rendered spec shows.
 ///
 /// DOUBLE QUOTES KEEP ONE SPAN (specs/66 Design, `d66-mask-one-span-per-kind`, narrowed to
 /// the quote kind by `d112-mask-narrows-d66-one-span-to-quotes`): a stray quote is common
@@ -1018,27 +1022,52 @@ fn mark_positions(chars: &[char], mark: char) -> Vec<usize> {
         .collect()
 }
 
-/// The backtick spans of `chars`, in order, as `(open, close)` char indices: consecutive
-/// marks pair (the 1st with the 2nd, the 3rd with the 4th), and an unpaired last mark opens
-/// a span with no close (`None`). The one pairing [`strip_inline_code`] masks with and
-/// [`code_spans`] reads spans from, so the two never disagree on which marks pair.
-fn backtick_spans(chars: &[char]) -> Vec<(usize, Option<usize>)> {
-    mark_positions(chars, '`')
-        .chunks(2)
-        .map(|pair| (pair[0], pair.get(1).copied()))
-        .collect()
+/// The maximal runs of consecutive backticks in `chars`, in order, as `(first, last)` char
+/// indices of each run's first and last mark.
+fn backtick_runs(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for at in mark_positions(chars, '`') {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == at => *last = at,
+            _ => runs.push((at, at)),
+        }
+    }
+    runs
 }
 
-/// The text strictly inside each backtick pair of `text` ([`backtick_spans`]), in order: the
-/// one backtick code-span reader, so every reader of a Markdown code span pairs marks by the
-/// rule [`strip_inline_code`] masks with. An unpaired last backtick names no span, and neither
-/// does an empty pair, so a double-backtick span (two empty pairs) names none.
+/// The backtick code spans of `chars`, in order, as `(open, close)` char indices, paired as
+/// CommonMark delimits a code span: a run of n backticks ([`backtick_runs`]) opens a span
+/// that the next run of exactly n closes, every run between them being the span's text, and
+/// `close` is the closing run's last mark. An opening run that no later run of its length
+/// closes yields no close (`None`) and ends the scan, its blank running to the end of the
+/// masked text. The one pairing [`strip_inline_code`] masks with and [`code_spans`] reads
+/// spans from, so the two never disagree on which runs pair.
+fn backtick_spans(chars: &[char]) -> Vec<(usize, Option<usize>)> {
+    let mut runs = backtick_runs(chars).into_iter();
+    let mut spans = Vec::new();
+    while let Some((open, opened)) = runs.next() {
+        let close = runs
+            .find(|&(first, last)| last - first == opened - open)
+            .map(|(_, last)| last);
+        spans.push((open, close));
+    }
+    spans
+}
+
+/// The text of each closed backtick code span of `text` ([`backtick_spans`]), in order, its
+/// delimiting runs trimmed off: the one backtick code-span reader, so every reader of a
+/// Markdown code span pairs runs by the rule [`strip_inline_code`] masks with. An unclosed
+/// run names no span. No span is empty: runs are maximal, so a closing run never directly
+/// follows its opener, and the trimmed text, which neither starts nor ends with a backtick,
+/// is exactly the span's content - never an empty surface.
 pub fn code_spans(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     backtick_spans(&chars)
         .into_iter()
-        .filter_map(|(open, close)| Some(chars[open + 1..close?].iter().collect::<String>()))
-        .filter(|span| !span.is_empty())
+        .filter_map(|(open, close)| {
+            let span: String = chars[open..=close?].iter().collect();
+            Some(span.trim_matches('`').to_string())
+        })
         .collect()
 }
 

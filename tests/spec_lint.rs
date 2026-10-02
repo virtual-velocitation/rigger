@@ -877,10 +877,10 @@ rigger::test_cases! {
     );
 
     /// The backtick twin of the double-quote case above: F4 joins the paragraph's lines before
-    /// `strip_inline_code` masks it, and backticks pair span by span (specs/112, *The one
-    /// masker*), so a backtick pair whose closing mark falls on the hard-wrapped continuation
-    /// line still blanks everything between its two marks, the wrap included. Proves the join
-    /// carries a code span across a wrap, not only a quoted one.
+    /// `strip_inline_code` masks it, and backtick spans pair by backtick run (specs/112, *The
+    /// one masker*), so a code span whose closing run falls on the hard-wrapped continuation
+    /// line still blanks everything from its opening run through its closing one, the wrap
+    /// included. Proves the join carries a code span across a wrap, not only a quoted one.
     validate_ignores_a_backtick_span_that_crosses_a_hard_wrapped_line: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -926,9 +926,9 @@ rigger::test_cases! {
         ],
     );
 
-    /// The backtick twin of the test above: backticks pair span by span (specs/112, *The one
-    /// masker*), so a backtick pair blanks only from its opening mark through its closing
-    /// one, and an unquoted smell after the pair is still linted on the real binary. The
+    /// The backtick twin of the test above: backtick spans pair by backtick run (specs/112,
+    /// *The one masker*), so a code span blanks only from its opening run through its closing
+    /// one, and an unquoted smell after the span is still linted on the real binary. The
     /// backtick rule is its own rule, not the quote kind's, so its recall is proven on its
     /// own fixture.
     validate_still_flags_a_smell_outside_a_balanced_backtick_pair: validate_and_summarize(
@@ -973,9 +973,9 @@ rigger::test_cases! {
     );
 
     /// The backtick twin of the fail-closed case above: under the pair rule (specs/112, *The
-    /// one masker*) an unpaired last backtick blanks from itself to the end of the paragraph,
-    /// so the later unquoted smell is not reported - proven at the CLI seam, beside the quote
-    /// kind's own fail-closed case.
+    /// one masker*) a backtick run that no later run of its length closes blanks from itself
+    /// to the end of the paragraph, so the later unquoted smell is not reported - proven at
+    /// the CLI seam, beside the quote kind's own fail-closed case.
     validate_fails_closed_after_a_stray_unmatched_backtick_earlier_in_the_paragraph: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -1025,11 +1025,11 @@ rigger::test_cases! {
     );
 
     /// A code span that closes right after a digit stays masked: the pair rule (specs/112,
-    /// *The one masker*) pairs the 1st backtick with the 2nd with no test of what precedes
-    /// either mark, and this repo's corpus routinely closes a real inline-code span
-    /// immediately after a digit (an IP address, a version number). Drives the real compiled
-    /// binary; the fixture's closing backtick sits immediately after `127`, a digit, with no
-    /// separating whitespace, so the "could instead" inside the pair is never linted.
+    /// *The one masker*) closes a backtick run at the next run of its length with no test of
+    /// what precedes either run, and this repo's corpus routinely closes a real inline-code
+    /// span immediately after a digit (an IP address, a version number). Drives the real
+    /// compiled binary; the fixture's closing backtick sits immediately after `127`, a digit,
+    /// with no separating whitespace, so the "could instead" inside the span is never linted.
     validate_ignores_a_backtick_span_whose_closing_mark_is_immediately_after_a_digit: validate_and_summarize(
         Spec::Fixture(
             "# Widget\n\n## Design\n\n\
@@ -1856,9 +1856,9 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
     // hedge-shaped, semantically decided - tolerated advisory noise on historical prose
     // by the Design's own rule. specs/74, 78, 93 and 101 joined the set with spec 112's
     // backtick pair rule (specs/112, *The one masker*): `strip_inline_code` now blanks
-    // backtick spans pair by pair, so prose between two code spans of one paragraph is
-    // linted where the earlier one-span-per-kind rule masked it from the first backtick
-    // through the last. Each is mechanically hedge-shaped prose between two code spans:
+    // backtick spans paired by backtick run, so prose between two code spans of one
+    // paragraph is linted where the earlier one-span-per-kind rule masked it from the first
+    // backtick through the last. Each is mechanically hedge-shaped prose between two code spans:
     // 74's criterion 2 ("when either side is unversioned ... or any other reason"), 78's
     // audit-test paragraph ("if either sanctioned file contains a shell-out, `--` separator
     // or ..."), 93's module rule ("either wholly in `core` or wholly behind `store`") and
