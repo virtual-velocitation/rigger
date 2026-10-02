@@ -41,7 +41,9 @@ use rigger_domain::review::{
     route_review_tier, verdict_compensates, TierRouting,
 };
 #[cfg(test)]
-use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
+use rigger_domain::review::{
+    path_is_high_risk, verdict_required, RequiredItem, TIER_FULL, TIER_LIGHT,
+};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_stable_id, critique_gate_name, fan_out_lenses,
     first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
