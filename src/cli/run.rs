@@ -823,8 +823,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    // The conductor pass's own live state - its budget halt, its escalated units, its
-    // attention entries - is stamped on by the same seam (`spawn::step_of_pass`).
+    // The conductor pass's own live state - its halt (the budget breaker's, else a
+    // plan-critique spec-defect stop's), its escalated units, its attention entries - is
+    // stamped on by the same seam (`spawn::step_of_pass`).
     let mut step = spawn::step_of_pass(&events, rs).map_err(|e| e.to_string())?;
     // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
     // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
