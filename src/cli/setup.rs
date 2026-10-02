@@ -1503,8 +1503,8 @@ tools: [Read, Grep, Glob, Agent]\n\
 isolation: none\n\
 recurse: true\n\
 ---\n\
-You decompose the spec into a DAG of small, independently-verifiable units, one\n\
-per acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
+You decompose the spec into a DAG of small, independently-verifiable units, each\n\
+serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n",
     ),
     (
         "rust-engineer.md",
