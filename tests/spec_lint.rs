@@ -1577,6 +1577,54 @@ rigger::test_cases! {
              and an identity sentence after it still warns",
         )],
     );
+
+    /// The stray-run corner of the run rule (specs/112, *The one masker*: a stray backtick run
+    /// pairs with the opener of the next real span of its length). Given a Design paragraph
+    /// whose stray single backtick precedes a double-backtick span naming one smell, and one
+    /// whose stray single backtick precedes a single-backtick span naming another, when the
+    /// operator runs `rigger validate`, then F4 warns on the second smell only: the first stray
+    /// finds no later run of one backtick, so it blanks to its paragraph end and the
+    /// double-backtick span stays masked, while the second stray pairs with the real span's
+    /// opener, so that span's text is linted.
+    validate_pairs_a_stray_backtick_only_with_a_later_run_of_its_own_length: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\n\
+             The ` stray mark sits before ``could instead`` as the named phrase.\n\n\
+             The ` stray mark sits before `worth considering` as the named phrase.\n\n\
+             ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n",
+        ),
+        &[Lint::Exactly(
+            "F4 disposition",
+            &["F4 disposition: open disposition (\"worth considering\") outside Notes; decide it \
+               in Design or move it to Notes as an explicit deferral"],
+            "a stray single backtick never pairs into a double-backtick span, and pairs with a \
+             later single-backtick span's opener, whose text is then linted",
+        )],
+    );
+
+    /// The span reader past an unclosed run: given criterion 1 measuring `db`, criterion 2
+    /// measuring `store` before a double-backtick run that no later run of two closes, with
+    /// `db` delimited after that run, and criterion 3 measuring `store`, when the operator runs
+    /// `rigger validate`, then the one twin is criterion 3's with criterion 2 on `store`: the
+    /// span before the unclosed run is still a surface, and the span after it is not, since
+    /// the masker blanks it with the rest of the sentence and the one span reader reads no span
+    /// past a run it cannot close.
+    validate_names_no_twin_surface_past_an_unclosed_backtick_run: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] `db` appends one event. This criterion OWNS the log.\n\
+             - [ ] `store` appends the ``x `db` y rows. This criterion OWNS the rows.\n\
+             - [ ] `store` costs one read. This criterion OWNS the read.\n",
+        ),
+        &[Lint::Exactly(
+            "F10 landing-order circularity",
+            &["F10 landing-order circularity (criterion 3): twin measured surface `store` with \
+               criterion 2; if either lands first without the other, does its own text hold? \
+               simulate the landing order and split ownership at the seam in Design"],
+            "a span after an unclosed backtick run names no twin surface, and the span before it \
+             still twins",
+        )],
+    );
 }
 
 rigger::test_cases! {
