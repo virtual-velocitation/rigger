@@ -37,9 +37,9 @@ fn find_line<'a>(err: &'a str, needle: &str) -> &'a str {
 
 /// The spec a case lints: fixture text written into the fresh project, or a committed
 /// `specs/` file by name.
-enum Spec {
-    Fixture(&'static str),
-    Committed(&'static str),
+enum Spec<'a> {
+    Fixture(&'a str),
+    Committed(&'a str),
 }
 
 /// One expectation on `rigger validate`'s stderr, carrying why it must hold.
@@ -84,7 +84,7 @@ impl Lint {
 /// `rigger validate <spec>` through the compiled binary from a freshly `rigger init`ed
 /// project: it must exit 0 (spec-lint advisories are heuristic warnings, never a hard
 /// failure) and every `expect` must hold on its stderr. Returns its stdout.
-fn validate(spec: Spec, expect: &[Lint]) -> String {
+fn validate(spec: Spec<'_>, expect: &[Lint]) -> String {
     let dir = temp_project();
     let root = dir.path();
 
@@ -114,7 +114,7 @@ fn validate(spec: Spec, expect: &[Lint]) -> String {
 
 /// [`validate`], also asserting validate still prints its config summary alongside any
 /// advisory.
-fn validate_and_summarize(spec: Spec, expect: &[Lint]) {
+fn validate_and_summarize(spec: Spec<'_>, expect: &[Lint]) {
     let out = validate(spec, expect);
     assert!(
         out.contains("config valid"),
@@ -1500,6 +1500,210 @@ rigger::test_cases! {
             "prose between two backtick spans is linted, so the smell between them warns once",
         )],
     );
+}
+
+rigger::test_cases! {
+    /// The quote corners at the CLI seam: given an identity word after an odd quote mark
+    /// (criterion 1), the same odd quote in a first sentence followed by an identity sentence
+    /// (criterion 2), and a measure word between two quoted spans (criterion 3) beside two
+    /// criteria measuring the same span (4 and 5), when the operator runs `rigger validate`,
+    /// then the odd quote blanks only to its sentence end, the quoted measure word is never
+    /// seen, and the one twin is criterion 5's with criterion 4.
+    validate_masks_quoted_text_per_sentence_for_the_preflight_tells: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] the 12\" panel is byte-identical to the print. This criterion OWNS the panel.\n\
+             - [ ] the 12\" panel is shown. The rebuild equals the original. This criterion \
+             OWNS the rebuild.\n\
+             - [ ] `store` is named \"a\" exactly \"b\" in the log. This criterion OWNS the \
+             naming.\n\
+             - [ ] `store` appends one event. This criterion OWNS the append.\n\
+             - [ ] `store` costs one read. This criterion OWNS the read.\n",
+        ),
+        &[
+            Lint::Exactly(
+                "F10 landing-order circularity",
+                &["F10 landing-order circularity (criterion 5): twin measured surface `store` \
+                   with criterion 4; if either lands first without the other, does its own \
+                   text hold? simulate the landing order and split ownership at the seam in \
+                   Design"],
+                "a measure word between two quoted spans is masked, so criterion 3 twins with \
+                 nothing",
+            ),
+            Lint::Exactly(
+                "F11 undecided removal",
+                &[
+                    "F11 undecided removal (criterion 2): identity claim names no comparison \
+                     surface; name the bytes, projection or ordering it is compared on",
+                    "F11 undecided removal (criterion 2): identity claim while no Design or \
+                     Notes line decides removal; decide in Design what a later generation \
+                     that drops a fact does to it",
+                ],
+                "an odd quote masks its own sentence only, so criterion 2's next sentence warns",
+            ),
+        ],
+    );
+
+    /// A span three criteria measure: given criteria 1, 2 and 3 each measuring `store`, when
+    /// the operator runs `rigger validate`, then one twin warns per pair, each on the later
+    /// criterion of its pair and naming the earlier one, in criterion order.
+    validate_names_one_twin_per_pair_of_three_criteria_measuring_one_span: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] `store` appends one event. This criterion OWNS the append.\n\
+             - [ ] `store` costs one read. This criterion OWNS the read.\n\
+             - [ ] `store` materializes one view. This criterion OWNS the view.\n",
+        ),
+        &[Lint::Exactly(
+            "F10 landing-order circularity",
+            &[
+                "F10 landing-order circularity (criterion 2): twin measured surface `store` \
+                 with criterion 1; if either lands first without the other, does its own text \
+                 hold? simulate the landing order and split ownership at the seam in Design",
+                "F10 landing-order circularity (criterion 3): twin measured surface `store` \
+                 with criterion 1; if either lands first without the other, does its own text \
+                 hold? simulate the landing order and split ownership at the seam in Design",
+                "F10 landing-order circularity (criterion 3): twin measured surface `store` \
+                 with criterion 2; if either lands first without the other, does its own text \
+                 hold? simulate the landing order and split ownership at the seam in Design",
+            ],
+            "three criteria sharing one measured span make three pairs, one warning each",
+        )],
+    );
+}
+
+/// The removal tell's Design-or-Notes reading at the CLI seam: a spec whose one criterion
+/// claims a byte-identical rebuild naming no comparison surface, under `design`. Its
+/// comparison-surface tell always warns, so the claim is proven read; the removal tell warns
+/// exactly when `removal_decided` is false.
+fn validate_removal_corner(design: &str, removal_decided: bool) {
+    const COMPARISON: &str = "F11 undecided removal (criterion 1): identity claim names no \
+                              comparison surface; name the bytes, projection or ordering it is \
+                              compared on";
+    const REMOVAL: &str = "F11 undecided removal (criterion 1): identity claim while no Design \
+                           or Notes line decides removal; decide in Design what a later \
+                           generation that drops a fact does to it";
+    let text = format!(
+        "# Widget\n\n{design}\n## Done when\n\n\
+         - [ ] the rebuilt graph is byte-identical to the original. This criterion OWNS the \
+         rebuild.\n"
+    );
+    let expected: &'static [&'static str] = if removal_decided {
+        &[COMPARISON]
+    } else {
+        &[COMPARISON, REMOVAL]
+    };
+    validate(
+        Spec::Fixture(&text),
+        &[Lint::Exactly(
+            "F11 undecided removal",
+            expected,
+            "only a Design or Notes section line carrying a removal word decides removal",
+        )],
+    );
+}
+
+rigger::test_cases! {
+    /// Given a Design whose only removal word sits on a fenced line, then removal is decided:
+    /// the tell reads every Design line, fenced lines included.
+    validate_lets_a_fenced_design_line_decide_removal: validate_removal_corner(
+        "## Design\n\nThe rebuild reads the log.\n\n```\nold rows are deleted\n```\n",
+        true,
+    );
+    /// Given a Design whose only removal word sits inside a code span, then removal is decided:
+    /// the tell reads each Design line unmasked.
+    validate_lets_a_code_span_on_a_design_line_decide_removal: validate_removal_corner(
+        "## Design\n\nThe `dropped` flag is kept.\n",
+        true,
+    );
+    /// Given the removal word under a deeper heading inside Design, then removal is decided:
+    /// a Design section runs to the next heading of its own or a shallower level.
+    validate_lets_a_design_subsection_decide_removal: validate_removal_corner(
+        "## Design\n\nThe rebuild reads the log.\n\n### Storage\n\nOld rows are removed.\n",
+        true,
+    );
+    /// Given a section titled `Design decisions`, then removal is decided: a section counts
+    /// when its heading title starts with `Design`.
+    validate_lets_a_section_titled_design_decisions_decide_removal: validate_removal_corner(
+        "## Design decisions\n\nOld rows are removed.\n",
+        true,
+    );
+    /// Given a section titled `Redesign`, then removal is not decided: the title must start
+    /// with `Design`, not merely carry it.
+    validate_never_lets_a_section_titled_redesign_decide_removal: validate_removal_corner(
+        "## Redesign\n\nOld rows are removed.\n",
+        false,
+    );
+    /// Given the removal word under a shallower heading after a `### Design`, then removal is
+    /// not decided: the shallower heading closes the Design section.
+    validate_never_lets_a_section_after_a_closed_design_decide_removal: validate_removal_corner(
+        "### Design\n\nThe rebuild reads the log.\n\n## Background\n\nOld rows are removed.\n",
+        false,
+    );
+}
+
+/// Spec 112, *THE VALIDATE TELLS*: the in-run `load_criteria` prints the preflight tells
+/// through the same formatter `rigger validate` uses. Given a spec whose criteria 1 and 2
+/// measure `rigger step` and whose criterion 3 claims a byte-identical rebuild its Design
+/// never decides removal for, when the operator launches `rigger step --spec` on it, then
+/// stderr carries the twin and both F11 lines in full before the launch refuses for an
+/// unrelated reason (no reachable base), so no agent ever spawns.
+#[test]
+fn step_prints_the_preflight_tells_before_the_launch() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    std::fs::write(
+        root.join("spec.md"),
+        "# Widget\n\n## Design\n\nThe step reads the store once.\n\n## Done when\n\n\
+         - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
+         - [ ] `rigger step` costs at most one read. This criterion OWNS the query.\n\
+         - [ ] the rebuilt graph is byte-identical to the original. This criterion OWNS the \
+         rebuild.\n",
+    )
+    .unwrap();
+    let (_out, err, ok) = run_rigger(
+        root,
+        &[
+            "step",
+            "--spec",
+            "spec.md",
+            "--base",
+            "origin/does-not-exist",
+        ],
+    );
+    assert!(
+        !ok && err.contains("no reachable base"),
+        "the launch must still refuse on its unreachable base after the lint prints; \
+         stderr:\n{err}"
+    );
+    for lint in [
+        Lint::Exactly(
+            "warning: spec spec.md: F10",
+            &[
+                "warning: spec spec.md: F10 landing-order circularity (criterion 2): twin \
+               measured surface `rigger step` with criterion 1; if either lands first without \
+               the other, does its own text hold? simulate the landing order and split \
+               ownership at the seam in Design",
+            ],
+            "the in-run lint prints the twin tell in full",
+        ),
+        Lint::Exactly(
+            "warning: spec spec.md: F11",
+            &[
+                "warning: spec spec.md: F11 undecided removal (criterion 3): identity claim \
+                 names no comparison surface; name the bytes, projection or ordering it is \
+                 compared on",
+                "warning: spec spec.md: F11 undecided removal (criterion 3): identity claim \
+                 while no Design or Notes line decides removal; decide in Design what a later \
+                 generation that drops a fact does to it",
+            ],
+            "the in-run lint prints both F11 tells in full",
+        ),
+    ] {
+        lint.assert_on(&err);
+    }
 }
 
 /// Round-6 sharpening (`specs/66-ship-the-planning-discipline.md`'s Design bullet,
