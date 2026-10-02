@@ -17755,6 +17755,31 @@ rigger::test_cases! {
     #[should_panic(expected = "an absolute or home path")]
     home_path_check_fails_on_a_backtick_then_an_absolute_path:
         probe_no_absolute_or_home_path("Read spec`/repo/specs/112.md` first.\n");
+    /// The check fails on the project root named inside a token after a character that opens
+    /// no path, which only the name rule catches.
+    #[should_panic(expected = "line 1 names \"/a-project-root-no-probe-names\":\n")]
+    home_path_check_fails_on_the_project_root_named_inside_a_token:
+        probe_no_absolute_or_home_path("Read spec/a-project-root-no-probe-names/specs/112.md.\n");
+}
+
+/// The check fails on the operator's home directory named inside a token after a character
+/// that opens no path, which only the name rule catches; the failure names that home and the
+/// line holding it.
+#[test]
+fn home_path_check_fails_on_the_operator_home_named_inside_a_token() {
+    let home = std::env::var("HOME").expect("the test process has a HOME");
+    assert!(
+        home.len() > 1,
+        "a home of / or none is not looked for; got {home:?}"
+    );
+    let line = format!("Read spec{home}/specs/112.md.");
+    let failure = std::panic::catch_unwind(|| probe_no_absolute_or_home_path(&format!("{line}\n")))
+        .expect_err("a line naming the operator's home must fail the check");
+    assert_eq!(
+        failure.downcast_ref::<String>().map(String::as_str),
+        Some(format!("line 1 names {home:?}:\n{line}").as_str()),
+        "the failure names the operator's home and the line holding it"
+    );
 }
 
 /// Spec 112, criterion 4 (SETUP SHIPS THE PREFLIGHT SKILL). Given a project with no skills
