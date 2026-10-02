@@ -42677,6 +42677,25 @@ mod tests {
         }
     }
 
+    /// Spec 112, criterion 1: the DAG critique reads its rules from the one const the spec
+    /// critique prompt reads ([`rigger_domain::review::PLAN_CRITIQUE_RULES`]), pushed right
+    /// after its DAG opener and right before its unit-size line.
+    #[test]
+    fn the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size() {
+        let driver = one_unit_critique();
+        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+        let opener = "that per-unit review cannot see:\n";
+        let rules_at = prompt.find(opener).expect("the DAG opener") + opener.len();
+        let size_at = prompt
+            .find("- Unit size (blocking): ")
+            .expect("the unit-size line");
+        assert_eq!(
+            &prompt[rules_at..size_at],
+            rigger_domain::review::PLAN_CRITIQUE_RULES,
+            "the opener, then the shared rules byte for byte, then the unit-size line:\n{prompt}"
+        );
+    }
+
     /// One unit size cap, measuring review scope and never code shape, reaches both the
     /// planner and the plan critique: the plan protocol splits a criterion whose unit would
     /// exceed it into ordered units, and the critique rejects a unit over it with the

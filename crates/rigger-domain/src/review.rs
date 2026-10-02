@@ -260,3 +260,366 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     }
     roster
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event_fixtures::ev_at;
+    use crate::spawn::TYPE_SPAWN_RESULT;
+    use serde_json::json;
+    use std::path::{Path, PathBuf};
+
+    const HASH: &str = "0123456789abcdef";
+
+    /// A recorded `SpawnResult` for `id` at log position `position`.
+    fn result_at(position: u64, id: &str, output: &str, error: &str) -> Event {
+        ev_at(
+            position,
+            TYPE_SPAWN_RESULT,
+            json!({"id": id, "output": output, "error": error}),
+        )
+    }
+
+    /// The finding a test expects, its fields in finding-line order.
+    fn finding(id: &str, blocking: bool, fields: [&str; 4]) -> CritiqueFinding {
+        let [critic, location, reading, fix] = fields;
+        CritiqueFinding {
+            id: id.to_string(),
+            blocking,
+            critic: critic.to_string(),
+            location: location.to_string(),
+            reading: reading.to_string(),
+            fix: fix.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_critique_hash_is_fnv1a_64_of_the_raw_bytes_as_sixteen_lowercase_hex_digits() {
+        assert_eq!(critique_hash(""), "cbf29ce484222325");
+        assert_eq!(critique_hash("a"), "af63dc4c8601ec8c");
+        assert_ne!(
+            critique_hash("a\n"),
+            critique_hash("a"),
+            "a whitespace-only edit is new text"
+        );
+    }
+
+    #[test]
+    fn a_critique_spawn_is_the_adversary_of_the_hash_critique_run() {
+        assert_eq!(critique_unit(HASH), "critique-0123456789abcdef");
+        assert_eq!(
+            critique_spawn_id(HASH, 2),
+            "critique-0123456789abcdef/adversary#2"
+        );
+    }
+
+    #[test]
+    fn a_critique_run_directory_is_critique_and_sixteen_lowercase_hex_digits() {
+        assert!(is_critique_run("critique-0123456789abcdef"));
+        for other in [
+            "critique-0123456789abcde",
+            "critique-0123456789abcdef0",
+            "critique-0123456789ABCDEF",
+            "critique-0123456789abcdeg",
+            "run-0123456789abcdef",
+            "0123456789abcdef",
+            "critique-",
+        ] {
+            assert!(!is_critique_run(other), "{other:?} is not a critique run");
+        }
+    }
+
+    #[test]
+    fn a_finding_line_has_five_pipe_fields_with_the_severity_second() {
+        let output = "I read the spec.\n\
+            C1 | BLOCKING | criterion 2 | reads A | decide A in Design\n\
+            \x20 | C2 | NON-BLOCKING | THE STORE | reads B | add a sentence |  \n\
+            C3 | BLOCKING | criterion 1 | the fix has a pipe | use `a | b` | here\n\
+            C4 | blocking | criterion 3 | lowercase severity | is prose\n\
+            C5 | BLOCKING | criterion 4 | only four fields\n\
+            | id | severity | where | reading | fix |\n\
+            |---|---|---|---|---|\n\
+            {\"verdict\":\"reject\"}\n";
+        assert_eq!(
+            critique_findings(output, HASH, 3),
+            vec![
+                finding(
+                    "sc-0123456789abcdef-3-1",
+                    true,
+                    ["C1", "criterion 2", "reads A", "decide A in Design"]
+                ),
+                finding(
+                    "sc-0123456789abcdef-3-2",
+                    false,
+                    ["C2", "THE STORE", "reads B", "add a sentence"]
+                ),
+                finding(
+                    "sc-0123456789abcdef-3-3",
+                    true,
+                    ["C3", "criterion 1", "the fix has a pipe", "use `a | b` | here"]
+                ),
+            ],
+            "the fields past the fourth join back into the fix; every other line is prose"
+        );
+        assert_eq!(critique_findings("no findings at all", HASH, 0), vec![]);
+    }
+
+    #[test]
+    fn a_finding_summary_is_its_severity_and_its_last_three_fields() {
+        let blocking = finding("sc-x-0-1", true, ["C1", "criterion 2", "reads A", "fix A"]);
+        assert_eq!(blocking.summary(), "BLOCKING | criterion 2 | reads A | fix A");
+        let advisory = finding("sc-x-0-2", false, ["C2", "Design", "reads B", "fix B"]);
+        assert_eq!(advisory.summary(), "NON-BLOCKING | Design | reads B | fix B");
+    }
+
+    #[test]
+    fn a_finding_copy_is_a_spec_critic_review_finding_about_the_spec() {
+        let f = finding(
+            "sc-0123456789abcdef-0-1",
+            true,
+            ["C1", "criterion 2", "reads A", "fix A"],
+        );
+        assert_eq!(
+            finding_copy(&f, "specs/9-demo.md"),
+            json!({
+                "id": "sc-0123456789abcdef-0-1",
+                "by": "spec-critic",
+                "summary": "BLOCKING | criterion 2 | reads A | fix A",
+                "about": ["specs/9-demo.md"],
+            })
+        );
+    }
+
+    #[test]
+    fn a_result_is_a_critique_only_with_no_error_a_verdict_and_a_blocking_finding_behind_a_reject(
+    ) {
+        let id = critique_spawn_id(HASH, 0);
+        let why = |output: &str, error: &str| {
+            critique_of(&result_at(1, &id, output, error), HASH).unwrap_err()
+        };
+        assert_eq!(
+            why("{\"verdict\":\"approve\"}", "boom"),
+            "the critic's spawn failed: boom"
+        );
+        assert_eq!(
+            why("C1 | BLOCKING | c | r | f", ""),
+            "the critic's output carries no verdict line"
+        );
+        assert_eq!(
+            why("C1 | NON-BLOCKING | c | r | f\n{\"verdict\":\"reject\"}", ""),
+            "the critic's verdict \"reject\" does not approve, yet its output carries no \
+             BLOCKING finding line"
+        );
+        assert_eq!(
+            critique_of(
+                &result_at(1, "plan/adversary#0", "{\"verdict\":\"approve\"}", ""),
+                HASH
+            )
+            .unwrap_err(),
+            "plan/adversary#0 is not a critique spawn of 0123456789abcdef"
+        );
+        let unreadable = ev_at(1, TYPE_SPAWN_RESULT, json!({"output": "no id"}));
+        assert!(
+            critique_of(&unreadable, HASH)
+                .unwrap_err()
+                .starts_with("the recorded result is unreadable: "),
+            "a result body with no id is no critique"
+        );
+    }
+
+    #[test]
+    fn an_approve_beside_a_blocking_line_is_a_critique_whose_finding_still_blocks() {
+        let id = critique_spawn_id(HASH, 4);
+        let output = "C1 | BLOCKING | c | r | f\n{\"verdict\":\"approve\"}\nprose after the verdict";
+        assert_eq!(
+            critique_of(&result_at(7, &id, output, ""), HASH),
+            Ok(Critique {
+                position: 7,
+                attempt: 4,
+                verdict: "approve".to_string(),
+                findings: vec![finding(
+                    "sc-0123456789abcdef-4-1",
+                    true,
+                    ["C1", "c", "r", "f"]
+                )],
+            })
+        );
+        assert_eq!(
+            critique_of(
+                &result_at(3, &id, "No defects.\n{\"verdict\":\"approve\"}", ""),
+                HASH
+            ),
+            Ok(Critique {
+                position: 3,
+                attempt: 4,
+                verdict: "approve".to_string(),
+                findings: vec![],
+            }),
+            "an approving verdict and no finding line is a clean critique"
+        );
+    }
+
+    #[test]
+    fn the_critique_of_a_hash_is_its_highest_position_critique() {
+        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
+        let approve = "{\"verdict\":\"approve\"}";
+        let events = vec![
+            result_at(5, &critique_spawn_id(HASH, 0), reject, ""),
+            result_at(9, &critique_spawn_id(HASH, 1), approve, ""),
+            result_at(12, &critique_spawn_id("fedcba9876543210", 2), approve, ""),
+            result_at(14, &format!("critique-{HASH}/implementer#3"), approve, ""),
+            result_at(15, &format!("critique-{HASH}/adversary#04"), approve, ""),
+            result_at(16, &critique_spawn_id(HASH, 5), "", "the spawn failed"),
+            ev_at(17, "DecisionMade", json!({"id": "d", "summary": "s"})),
+        ];
+        assert_eq!(
+            latest_critique(&events, HASH),
+            Some(Critique {
+                position: 9,
+                attempt: 1,
+                verdict: "approve".to_string(),
+                findings: vec![],
+            })
+        );
+        assert_eq!(
+            latest_critique(&events[..1], HASH),
+            Some(Critique {
+                position: 5,
+                attempt: 0,
+                verdict: "reject".to_string(),
+                findings: vec![finding(
+                    "sc-0123456789abcdef-0-1",
+                    true,
+                    ["C1", "criterion 1", "r", "f"]
+                )],
+            })
+        );
+        assert_eq!(
+            latest_critique(&events[2..], HASH),
+            None,
+            "another hash, another role, a non-canonical attempt, an error and a non-result \
+             are no critique of the hash"
+        );
+    }
+
+    #[test]
+    fn the_plan_critique_rules_are_the_rule_seven_and_eight_bullets_and_the_overlap_note() {
+        assert!(PLAN_CRITIQUE_RULES.starts_with("- Rule 7 (mitigation ownership): "));
+        let rule_8 = PLAN_CRITIQUE_RULES
+            .find("\n- Rule 8 (open dispositions): ")
+            .expect("the Rule 8 bullet");
+        let note = PLAN_CRITIQUE_RULES
+            .find("\nNOTE on shared blast radius: ")
+            .expect("the shared blast radius note");
+        assert!(rule_8 < note, "Rule 8 precedes the note");
+        assert!(PLAN_CRITIQUE_RULES.ends_with("the partitioner already serializes.\n\n"));
+    }
+
+    #[test]
+    fn the_spec_critique_prompt_runs_its_sections_in_order_and_ends_with_the_spec_verbatim() {
+        let text = "# 9 - A spec\n\n## Done when\n\n- [ ] a test proves X\n";
+        let prompt = spec_critique_prompt("specs/9-a.md", text);
+        let at = |needle: &str| {
+            prompt
+                .find(needle)
+                .unwrap_or_else(|| panic!("the prompt carries {needle:?}:\n{prompt}"))
+        };
+        let order = [
+            at(CRITIQUE_STANCE),
+            at(PLAN_CRITIQUE_RULES),
+            at(CRITIQUE_OWNERSHIP),
+            at(CRITIQUE_HUNTS),
+            at(CRITIQUE_BAN),
+            at(CRITIQUE_OUTPUT_CONTRACT),
+            at("The spec under critique, `specs/9-a.md`, verbatim:\n\n"),
+        ];
+        assert_eq!(order[0], 0, "the stance opens the prompt");
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "sections (i) to (vii) appear in that order: {order:?}"
+        );
+        assert!(prompt.ends_with(text), "the spec text is the verbatim tail");
+        assert!(!prompt.contains("Unit size"), "no unit-size line in a spec critique");
+    }
+
+    #[test]
+    fn the_spec_critique_sections_carry_their_decided_duties() {
+        for duty in [
+            "critique of a SPEC, not code",
+            "skepticism",
+            "assume the author missed something",
+            "self-contradictory or undecided",
+            "never soften",
+            "criterion number or Design block title",
+            "a unit reads as a criterion",
+            "a reject as a BLOCKING finding",
+            "reviewing lenses and a diff",
+            "the rule against rendering a verdict",
+            "running gates or any build or test command",
+            "editing a file",
+            "`rigger_emit`, `rigger_progress` or `rigger_scratch`",
+            "the finding lines and the verdict line of your final message are the only output",
+        ] {
+            assert!(CRITIQUE_STANCE.contains(duty), "the stance names {duty:?}");
+        }
+        for defect in ["twin criteria", "two checkboxes claiming one concern", "bundling"] {
+            assert!(CRITIQUE_OWNERSHIP.contains(defect), "ownership names {defect:?}");
+        }
+        for hunt in [
+            "LANDING ORDER",
+            "if A lands first on a tree without B, does A's own text hold?",
+            "UNDECIDED CORNER",
+            "empty, repeated, reverted, DROPPED",
+            "a fact present in an earlier generation and absent in a later one",
+            "concurrent, crash-resume, cold start and existing data",
+        ] {
+            assert!(CRITIQUE_HUNTS.contains(hunt), "the hunts name {hunt:?}");
+        }
+        assert!(CRITIQUE_BAN
+            .contains("a fix is a Design or Global-constraint change, never a criterion edit"));
+        for line in [
+            "<critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that \
+             breaks> | <smallest Design change that closes it>\n",
+            "<critic id> | NON-BLOCKING | ...\n",
+            "{\"verdict\":\"reject\"}\n",
+        ] {
+            assert!(
+                CRITIQUE_OUTPUT_CONTRACT.contains(line),
+                "the output contract carries {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_spec_path_is_made_repo_relative_lexically_and_refused_outside_the_root() {
+        let root = Path::new("/work/repo");
+        let norm = |p: &str| normalize_spec_path(root, p);
+        assert_eq!(norm("specs/a.md").as_deref(), Some("specs/a.md"));
+        assert_eq!(norm("./specs/./a.md").as_deref(), Some("specs/a.md"));
+        assert_eq!(norm("/work/repo/specs/a.md").as_deref(), Some("specs/a.md"));
+        assert_eq!(
+            norm("/work/repo/specs/../docs/a.md").as_deref(),
+            Some("docs/a.md")
+        );
+        assert_eq!(norm("specs/../a.md").as_deref(), Some("a.md"));
+        for outside in [
+            "/work/other/a.md",
+            "/work/repository/a.md",
+            "/work/repo/../a.md",
+            "../repo/specs/a.md",
+            "specs/../../a.md",
+            "/../../a.md",
+        ] {
+            assert_eq!(norm(outside), None, "{outside:?} is outside {root:?}");
+        }
+    }
+
+    #[test]
+    fn the_spec_root_is_the_repository_else_the_project_directory() {
+        assert_eq!(
+            spec_root(Path::new("/proj"), "/work/repo"),
+            PathBuf::from("/work/repo")
+        );
+        assert_eq!(spec_root(Path::new("/proj"), ""), PathBuf::from("/proj"));
+    }
+}

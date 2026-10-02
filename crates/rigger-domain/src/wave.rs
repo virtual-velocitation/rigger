@@ -395,3 +395,57 @@ pub fn ready_stages(
     ready.sort();
     ready
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Workflow;
+
+    /// A workflow parsed from its YAML, as `workflow.yml` carries it.
+    fn workflow(yaml: &str) -> Workflow {
+        serde_yaml::from_str(yaml).expect("a well-formed workflow")
+    }
+
+    const PLAN: &str = "  plan:\n    agent: planner\n    produces: dag\n";
+
+    #[test]
+    fn the_critic_is_the_plan_critique_gates_adversary_first() {
+        let wf = workflow(&format!(
+            "defaults:\n  review:\n    adversary: fallback\nstages:\n{PLAN}  plan-critique:\n    \
+             needs: [plan]\n    adversary: critic\n    adjudicator: judge\n"
+        ));
+        assert_eq!(critic(&wf).as_deref(), Some("critic"));
+    }
+
+    #[test]
+    fn the_critic_falls_back_to_the_default_review_adversary() {
+        let gate_without_adversary = workflow(&format!(
+            "defaults:\n  review:\n    adversary: fallback\nstages:\n{PLAN}  plan-critique:\n    \
+             needs: [plan]\n    adjudicator: judge\n"
+        ));
+        assert_eq!(critic(&gate_without_adversary).as_deref(), Some("fallback"));
+        let no_gate = workflow(
+            "defaults:\n  review:\n    adversary: fallback\nstages:\n  a:\n    agent: worker\n",
+        );
+        assert_eq!(critic(&no_gate).as_deref(), Some("fallback"));
+    }
+
+    #[test]
+    fn a_workflow_naming_neither_key_has_no_critic() {
+        let review_stage_only = workflow(&format!(
+            "stages:\n{PLAN}  implement:\n    needs: [plan]\n    agent: worker\n  review:\n    \
+             needs: [implement]\n    adversary: lens-adversary\n    adjudicator: judge\n"
+        ));
+        assert_eq!(
+            critic(&review_stage_only),
+            None,
+            "a review stage that does not need the producer is not the plan-critique gate"
+        );
+        assert_eq!(critic(&workflow("stages:\n  a:\n    agent: worker\n")), None);
+        assert_eq!(
+            NO_CRITIC_CLAUSE,
+            "the workflow names neither the plan-critique gate's adversary nor \
+             defaults.review.adversary"
+        );
+    }
+}

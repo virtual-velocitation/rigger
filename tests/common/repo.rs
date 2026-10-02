@@ -35,6 +35,81 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
     )
 }
 
+/// The checked-in stand-in for the critic's `claude`, which [`write_critique_stub`] puts first on
+/// PATH.
+const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
+
+/// The files the critique stub reads and writes beside its PATH symlink (`<work>/bin`): the
+/// transcript it replays, its spawn count, its first stdin line and its argv.
+const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
+const CRITIQUE_SPAWNS: &str = "critique-spawns";
+const CRITIQUE_TASK: &str = "critique-task.jsonl";
+const CRITIQUE_ARGV: &str = "critique-argv";
+
+/// A PATH that runs the checked-in critique stub as `claude`, ahead of the ambient PATH, set on
+/// the one `rigger critique` command that should reach it. The stub replays a stream-json session
+/// whose `result` is `critique`: an init that reports the spawn's `rigger` server connected, then
+/// the result line, `critique` JSON-encoded so its finding lines and verdict line survive. Only
+/// data is written here, beside the stub's symlink in `<work>/bin`; the executable is the
+/// checked-in fixture. Each call takes a fresh `work` directory.
+pub fn write_critique_stub(work: &Path, critique: &str) -> String {
+    let path = stub_path(work, "claude", Some(CRITIQUE_STUB));
+    let session = "77777777-7777-4777-8777-777777777777";
+    let init = serde_json::json!({
+        "type": "system",
+        "subtype": "init",
+        "session_id": session,
+        "tools": ["Read", "Glob"],
+        "mcp_servers": [{"name": "rigger", "status": "connected"}],
+        "model": "claude-opus-stub",
+        "permissionMode": "default",
+        "apiKeySource": "none",
+    });
+    let result = serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "num_turns": 1,
+        "result": critique,
+        "session_id": session,
+        "total_cost_usd": 0.0,
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+        "permission_denials": [],
+    });
+    std::fs::write(
+        work.join("bin").join(CRITIQUE_TRANSCRIPT),
+        format!("{init}\n{result}\n"),
+    )
+    .unwrap();
+    path
+}
+
+/// How many times the critique stub under `work` was spawned.
+pub fn critique_stub_spawns(work: &Path) -> usize {
+    std::fs::read_to_string(work.join("bin").join(CRITIQUE_SPAWNS))
+        .map_or(0, |count| count.lines().count())
+}
+
+/// The task the critique stub under `work` was last handed: the `content` of the host's first
+/// stream-json user message.
+pub fn critique_stub_task(work: &Path) -> String {
+    let line = std::fs::read_to_string(work.join("bin").join(CRITIQUE_TASK)).unwrap();
+    let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    message["message"]["content"]
+        .as_str()
+        .expect("the first user message carries its task as text")
+        .to_string()
+}
+
+/// The argv the critique stub under `work` was last started with.
+pub fn critique_stub_argv(work: &Path) -> Vec<String> {
+    std::fs::read_to_string(work.join("bin").join(CRITIQUE_ARGV))
+        .unwrap()
+        .split_terminator('\0')
+        .map(str::to_string)
+        .collect()
+}
+
 /// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
 /// consumer relies on - failing loudly, naming both, when it does not decode.
 pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str) -> T {
