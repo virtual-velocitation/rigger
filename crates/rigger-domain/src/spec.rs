@@ -2528,6 +2528,12 @@ mod tests {
 
     const F10: &str = "F10 landing-order circularity";
     const F11: &str = "F11 undecided removal";
+    const NO_SURFACE: &str =
+        "identity claim names no comparison surface; name the bytes, projection or ordering it \
+         is compared on";
+    const NO_REMOVAL: &str =
+        "identity claim while no Design or Notes line decides removal; decide in Design what a \
+         later generation that drops a fact does to it";
 
     /// The rendered F10 advisory on criterion `later` naming `earlier` and `span`.
     fn twin(later: usize, span: &str, earlier: usize) -> String {
@@ -2538,21 +2544,10 @@ mod tests {
         )
     }
 
-    /// The rendered F11 comparison-surface advisory on criterion `n`.
-    fn no_surface(n: usize) -> String {
-        format!(
-            "F11 undecided removal (criterion {n}): identity claim names no comparison \
-             surface; name the bytes, projection or ordering it is compared on"
-        )
-    }
-
-    /// The rendered F11 removal-corner advisory on criterion `n`.
-    fn no_removal(n: usize) -> String {
-        format!(
-            "F11 undecided removal (criterion {n}): identity claim while no Design or Notes \
-             line decides removal; decide in Design what a later generation that drops a fact \
-             does to it"
-        )
+    /// The rendered F11 advisory on criterion `n` carrying `detail` ([`NO_SURFACE`] or
+    /// [`NO_REMOVAL`]).
+    fn f11(n: usize, detail: &str) -> String {
+        format!("F11 undecided removal (criterion {n}): {detail}")
     }
 
     /// A spec whose Design decides removal, so only `criteria` can draw a tell.
@@ -2565,59 +2560,82 @@ mod tests {
         text
     }
 
-    #[test]
-    fn strip_inline_code_blanks_an_unpaired_last_backtick_to_the_end_after_a_pair() {
-        assert_eq!(
-            strip_inline_code("`a` mid `b tail"),
-            "    mid        ",
-            "the 1st and 2nd backticks pair; the unpaired 3rd blanks to the end"
+    /// `spec_lint_advisories` on [`decided_spec`] over `criteria` reports exactly `expected`
+    /// (rendered, in order) under `class`.
+    fn assert_decided_tells(criteria: &[&str], class: &str, expected: &[String]) {
+        assert_eq!(tells(&decided_spec(criteria), class), expected);
+    }
+
+    crate::test_cases! {
+        /// Criterion 1's measure word ("reads no") sits between two backtick spans: the pair
+        /// rule leaves it visible, where one span from first to last mark would mask it.
+        twin_tell_names_the_later_criterion_the_earlier_one_and_the_shared_span: assert_decided_tells(
+            &["`rigger step` reads no `derived` event.", "`rigger step` costs at most one read."],
+            F10,
+            &[twin(2, "rigger step", 1)],
         );
-    }
-
-    #[test]
-    fn twin_tell_names_the_later_criterion_the_earlier_one_and_the_shared_span() {
-        // Criterion 1's measure word ("reads no") sits between two backtick spans: the pair
-        // rule leaves it visible, where one span from first to last mark would mask it.
-        let text = decided_spec(&[
-            "`rigger step` reads no `derived` event.",
-            "`rigger step` costs at most one read.",
-        ]);
-        assert_eq!(tells(&text, F10), [twin(2, "rigger step", 1)]);
-    }
-
-    #[test]
-    fn twin_tell_reports_one_advisory_per_pair_of_criteria_sharing_a_span() {
-        let text = decided_spec(&[
-            "`store` appends one event.",
-            "`store` appends two events.",
-            "`store` appends three events.",
-        ]);
-        assert_eq!(
-            tells(&text, F10),
-            [
-                twin(2, "store", 1),
-                twin(3, "store", 1),
-                twin(3, "store", 2)
-            ]
+        /// A span shared by three criteria yields one advisory per pair.
+        twin_tell_reports_one_advisory_per_pair_of_criteria_sharing_a_span: assert_decided_tells(
+            &[
+                "`store` appends one event.",
+                "`store` appends two events.",
+                "`store` appends three events.",
+            ],
+            F10,
+            &[twin(2, "store", 1), twin(3, "store", 1), twin(3, "store", 2)],
         );
-    }
-
-    #[test]
-    fn twin_tell_reports_each_shared_span_once_in_byte_order() {
-        let text = decided_spec(&[
-            "`b` and `a` costs one read, and `b` appends once.",
-            "`a` and `b` and `c` costs one read.",
-        ]);
-        assert_eq!(tells(&text, F10), [twin(2, "a", 1), twin(2, "b", 1)]);
-    }
-
-    #[test]
-    fn twin_tell_needs_the_measure_word_in_the_spans_own_sentence() {
-        let text = decided_spec(&[
-            "`store` appends one event.",
-            "`store` is opened. It costs one read.",
-        ]);
-        assert_eq!(tells(&text, F10), Vec::<String>::new());
+        /// Two shared spans draw one advisory each, in byte order, however often a criterion
+        /// repeats one.
+        twin_tell_reports_each_shared_span_once_in_byte_order: assert_decided_tells(
+            &[
+                "`b` and `a` costs one read, and `b` appends once.",
+                "`a` and `b` and `c` costs one read.",
+            ],
+            F10,
+            &[twin(2, "a", 1), twin(2, "b", 1)],
+        );
+        /// The measure word must sit in the span's own sentence (`. ` boundaries).
+        twin_tell_needs_the_measure_word_in_the_spans_own_sentence: assert_decided_tells(
+            &["`store` appends one event.", "`store` is opened. It costs one read."],
+            F10,
+            &[],
+        );
+        /// After a pair, an unpaired last backtick names no span: only the paired `s` is a
+        /// twin, never the unpaired tail.
+        twin_tell_names_no_span_for_an_unpaired_last_backtick: assert_decided_tells(
+            &["`s` appends `tail one.", "`s` appends `tail one."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// A measure word inside a code span is masked, so it measures nothing.
+        twin_tell_does_not_see_a_measure_word_inside_a_code_span: assert_decided_tells(
+            &["`s` sets `exactly` one.", "`s` sets `exactly` two."],
+            F10,
+            &[],
+        );
+        /// A measure word between two quoted spans is masked and not seen (accepted): quoted
+        /// text keeps one span from the first quote mark through the last.
+        twin_tell_does_not_see_a_measure_word_between_two_quoted_spans: assert_decided_tells(
+            &["`s` sets \"a\" exactly \"b\".", "`s` sets \"a\" exactly \"b\"."],
+            F10,
+            &[],
+        );
+        /// Two offending sentences in one criterion still draw one advisory.
+        identity_tell_fires_once_per_criterion_on_a_claim_naming_no_comparison_surface: assert_decided_tells(
+            &[
+                "the rebuild is identical to the original. The log equals the copy.",
+                "the daemon starts.",
+                "the export is the same as the import.",
+            ],
+            F11,
+            &[f11(1, NO_SURFACE), f11(3, NO_SURFACE)],
+        );
+        /// An identity word inside a code span is masked, so it claims nothing.
+        identity_tell_does_not_see_an_identity_word_inside_a_code_span: assert_decided_tells(
+            &["the `identical` flag is set."],
+            F11,
+            &[],
+        );
     }
 
     #[test]
@@ -2650,37 +2668,6 @@ mod tests {
     }
 
     #[test]
-    fn twin_tell_does_not_see_a_measure_word_inside_a_code_or_quoted_span() {
-        let text = decided_spec(&["`s` sets `exactly` one.", "`s` sets `exactly` two."]);
-        assert_eq!(tells(&text, F10), Vec::<String>::new());
-        let text = decided_spec(&[
-            "`s` sets \"a\" exactly \"b\".",
-            "`s` sets \"a\" exactly \"b\".",
-        ]);
-        assert_eq!(
-            tells(&text, F10),
-            Vec::<String>::new(),
-            "a measure word between two quoted spans is masked (accepted)"
-        );
-    }
-
-    #[test]
-    fn twin_tell_names_no_span_for_an_unpaired_last_backtick() {
-        let text = decided_spec(&["it appends `tail one.", "it appends `tail one."]);
-        assert_eq!(tells(&text, F10), Vec::<String>::new());
-    }
-
-    #[test]
-    fn identity_tell_fires_once_per_criterion_on_a_claim_naming_no_comparison_surface() {
-        let text = decided_spec(&[
-            "the rebuild is identical to the original. The log equals the copy.",
-            "the daemon starts.",
-            "the export is the same as the import.",
-        ]);
-        assert_eq!(tells(&text, F11), [no_surface(1), no_surface(3)]);
-    }
-
-    #[test]
     fn identity_tell_matches_every_identity_word_whole_word_and_case_insensitively() {
         for word in [
             "IDENTICAL",
@@ -2691,7 +2678,11 @@ mod tests {
         ] {
             let claim = format!("the rebuild is {word} the original.");
             let text = decided_spec(&[&claim]);
-            assert_eq!(tells(&text, F11), [no_surface(1)], "identity word {word:?}");
+            assert_eq!(
+                tells(&text, F11),
+                [f11(1, NO_SURFACE)],
+                "identity word {word:?}"
+            );
         }
         for near_miss in [
             "the rebuild is unequal to the original.",
@@ -2724,15 +2715,9 @@ mod tests {
         let text = decided_spec(&["the rebuild is identical. Its projection is pinned."]);
         assert_eq!(
             tells(&text, F11),
-            [no_surface(1)],
+            [f11(1, NO_SURFACE)],
             "a comparison surface in another sentence does not name this claim's surface"
         );
-    }
-
-    #[test]
-    fn identity_tell_does_not_see_an_identity_word_inside_a_code_span() {
-        let text = decided_spec(&["the `identical` flag is set."]);
-        assert_eq!(tells(&text, F11), Vec::<String>::new());
     }
 
     #[test]
@@ -2745,7 +2730,7 @@ mod tests {
             - [ ] the export equals the import, compared on its bytes. The copy equals it, \
             compared on the projection. This criterion OWNS it.\n\n\
             ## Global constraints\n\n- A dropped fact is out of scope here.\n";
-        assert_eq!(tells(text, F11), [no_removal(1), no_removal(3)]);
+        assert_eq!(tells(text, F11), [f11(1, NO_REMOVAL), f11(3, NO_REMOVAL)]);
     }
 
     #[test]
@@ -2799,12 +2784,12 @@ mod tests {
         );
         assert_eq!(
             fires("## Design\n\nok.\n\n## Other\n\nA dropped fact."),
-            [no_removal(1)],
+            [f11(1, NO_REMOVAL)],
             "a heading of the same level ends the Design section"
         );
         assert_eq!(
             fires("### Design\n\nok.\n\n## Other\n\nA dropped fact."),
-            [no_removal(1)],
+            [f11(1, NO_REMOVAL)],
             "a shallower heading ends the Design section"
         );
     }
