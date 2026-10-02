@@ -2910,6 +2910,36 @@ mod tests {
         }
     }
 
+    /// The plan protocol in the binary is the one source of the rule that splits a criterion too
+    /// large for one unit into ordered units: no shipped planner persona restates the rule or
+    /// forbids the split.
+    #[test]
+    fn the_planner_persona_never_contradicts_the_plan_protocol_split_rule() {
+        let planners: Vec<(String, String)> = every_shipped_persona()
+            .into_iter()
+            .filter(|(at, _)| at.ends_with("planner.md"))
+            .collect();
+        assert_eq!(
+            planners.len(),
+            2,
+            "the committed planner and its scaffold seed"
+        );
+        for (at, text) in planners {
+            let text = text.to_lowercase();
+            for claim in [
+                "split",
+                "exactly one unit",
+                "one unit per criterion",
+                "one per acceptance criterion",
+            ] {
+                assert!(
+                    !text.contains(claim),
+                    "{at} restates the split rule the plan protocol owns: {claim:?}"
+                );
+            }
+        }
+    }
+
     /// The roles that write or judge tests carry the mutation-proof test block exactly once;
     /// no other role does.
     #[test]

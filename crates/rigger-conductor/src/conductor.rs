@@ -41610,11 +41610,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
-        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
-        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
-        // (informational - the partitioner serializes overlap; not a reject trigger).
+    /// Run `critique_cfg` over one proposed unit serving one criterion; returns the driver,
+    /// which recorded the planner's and the adjudicator's prompts.
+    fn one_unit_critique() -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
         let criterion = "the widget renderer is implemented";
         std::fs::write(dir.path().join("feature.rs"), format!("// {criterion}\n")).unwrap();
@@ -41638,7 +41636,15 @@ mod tests {
             log: &|_| {},
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
+        driver
+    }
 
+    #[test]
+    fn the_plan_critique_prompt_names_the_cross_unit_rules() {
+        // The gate prompt must NAME its review targets: mitigation ownership (rule 7) and
+        // open dispositions (rule 8) as REJECT criteria, plus the shared-blast-radius note
+        // (informational - the partitioner serializes overlap; not a reject trigger).
+        let driver = one_unit_critique();
         let prompts = driver.adj_prompts.lock().unwrap();
         let prompt = prompts
             .first()
@@ -41649,6 +41655,36 @@ mod tests {
                 "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
             );
         }
+    }
+
+    /// One unit size cap, measuring review scope and never code shape, reaches both the
+    /// planner and the plan critique: the plan protocol splits a criterion whose unit would
+    /// exceed it into ordered units, and the critique rejects a unit over it with the
+    /// `decomposition-conflict` cause that sends the DAG back to the planner.
+    #[test]
+    fn the_plan_protocol_and_the_dag_critique_carry_one_unit_size_cap() {
+        let driver = one_unit_critique();
+        let planner = driver.planner_prompts.lock().unwrap()[0].clone();
+        let critique = driver.adj_prompts.lock().unwrap()[0].clone();
+        let cap = format!(
+            "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} \
+             lines. The cap measures review scope - how much one review round must read - never \
+             code shape."
+        );
+        for (who, prompt) in [("planner", &planner), ("plan critique", &critique)] {
+            assert!(
+                prompt.contains(&cap),
+                "the {who} prompt carries the one cap sentence:\n{prompt}"
+            );
+        }
+        assert!(
+            planner.contains("ordered units") && planner.contains("OWNS"),
+            "the planner splits an oversize criterion into ordered units, each owning a part:\n{planner}"
+        );
+        assert!(
+            critique.contains(r#""cause":"decomposition-conflict""#),
+            "the critique rejects an oversize unit as a decomposition conflict:\n{critique}"
+        );
     }
 
     #[test]
