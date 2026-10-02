@@ -2567,10 +2567,10 @@ fn started_units(events: &[Event]) -> std::collections::HashSet<String> {
 ///   fail-safe (a fresh verdict, also for a declared gate, so counted), a removed/renamed gate
 ///   drops out - exactly the set the re-drive reaches.
 ///
-/// A verdict whose replay key carries no `/gate:` infix (an integrate-time GATED_BY artifact
-/// verdict, already excluded by [`metrics::project`]; or a post-merge re-gate keyed apart -
-/// the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is left as
-/// recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
+/// A verdict whose replay key carries no `/gate:` infix (a legacy per-file artifact verdict
+/// older logs hold, already excluded by [`metrics::project`]; or a post-merge re-gate keyed
+/// apart - the git-merge-specific boundary the offline replay never reproduces, per d13-u2) is
+/// left as recorded. A gate verdict on a started unit that is NOT a static workflow stage (a
 /// planner-proposed unit whose gate list cannot be re-scoped from the config) is likewise kept
 /// as recorded - the re-scoping never over-drops a verdict it cannot confidently place.
 fn candidate_reaches_gate(
@@ -2581,8 +2581,8 @@ fn candidate_reaches_gate(
     if e.type_ != contextgraph::TYPE_GATE_VERDICT {
         return true;
     }
-    // A verdict with no gate-RUN replay key (artifact / post-merge / skip) is not a re-scopable
-    // pre-merge gate run; leave it as recorded.
+    // A verdict with no gate-RUN replay key (legacy artifact / post-merge / skip) is not a
+    // re-scopable pre-merge gate run; leave it as recorded.
     let Some(stage) = e
         .meta
         .get(conductor::META_REPLAY_KEY)

@@ -427,8 +427,8 @@ fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
 /// Also the one authority `rigger replay` reuses to re-scope the candidate "gate runs"
 /// column to the gates the re-drive actually reaches: it recovers the STAGE a seeded
 /// gate verdict ran under so the composition root can ask whether the candidate config
-/// still declares that gate (a post-merge / skip / artifact key carries no `/gate:` infix,
-/// so it yields `None` and is left as recorded).
+/// still declares that gate (a post-merge or skip key carries no `/gate:` infix, so it
+/// yields `None` and is left as recorded).
 pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
@@ -438,7 +438,7 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
 /// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
 /// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
 /// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
-/// the attempt. A key with no `/gate:` infix (a skip / post-merge / artifact key) yields `None`.
+/// the attempt. A key with no `/gate:` infix (a skip or post-merge key) yields `None`.
 fn gate_key_attempt(key: &str) -> Option<u32> {
     let (_, suffix) = key.split_once("/gate:")?;
     let (_, attempt) = suffix.rsplit_once('#')?;
@@ -486,8 +486,9 @@ struct GateVerdictData {
 /// position (`Grounding`, gates not yet run), so inferring the gate outcome from it fabricates
 /// gate failures that never happened.
 ///
-/// Only gate-RUN verdicts contribute: the integrate-time GATED_BY artifact verdicts carry no
-/// replay key, a blast-radius SKIP is keyed under `gate-skip:`, a post-merge re-gate under
+/// Only gate-RUN verdicts contribute: a legacy per-file artifact verdict (older logs hold one per
+/// file and gate of each landing) carries no replay key, a blast-radius SKIP is keyed under
+/// `gate-skip:`, a post-merge re-gate under
 /// `postmerge-gate:`, and a deferred phase gate under `deferred/gate:` - none of which
 /// [`unit_of_gate_key`] resolves to `unit` - so none is mistaken for the unit's own gate run.
 ///
@@ -1652,8 +1653,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // key -> (pass, evidence) map ONCE here from the same prior log, so re-reaching an
     // already-run inline/deferred gate replays its verdict via an O(1) map lookup rather
     // than re-scanning the whole stream per gate per step. Only keyed GateVerdict events
-    // (the gate runs) carry a replay key; the integrate-time GATED_BY artifact verdicts
-    // do not, so they never seed a gate-run key.
+    // (the gate runs) carry a replay key; the legacy per-file artifact verdicts older logs
+    // hold do not, so they never seed a gate-run key.
     let gate_verdicts: HashMap<String, (bool, String)> = prior_events
         .iter()
         .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
@@ -1669,8 +1670,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // that position. prior_events is ascending by position, and we insert only-if-absent, so
     // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
     // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
-    // integrate-time GATED_BY artifact verdicts carry no replay key / digest so they never
-    // seed the cache. The unit is recovered once from the verdict's replay key.
+    // legacy per-file artifact verdicts older logs hold carry no replay key / digest so they
+    // never seed the cache. The unit is recovered once from the verdict's replay key.
     let mut green_digests: HashMap<String, (u64, String)> = HashMap::new();
     for e in prior_events
         .iter()
@@ -3282,9 +3283,9 @@ impl RunCtx<'_> {
     /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
     /// vocabulary), under the distinct [`gate_key`] so it never shadows the gate-RUN key
     /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
-    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
-    /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
-    /// a stepwise resume re-appends it exactly once.
+    /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the legacy
+    /// per-file artifact verdicts older logs hold, so a skip is never counted as a gate pass.
+    /// Keyed so a stepwise resume re-appends it exactly once.
     fn emit_gate_skip(
         &self,
         unit: &str,
@@ -13488,8 +13489,8 @@ mod tests {
             "a re-gated-green latest attempt reads passed even though an earlier attempt failed"
         );
 
-        // A blast-radius SKIP (keyed under `gate-skip:`) and an integrate-time GATED_BY artifact
-        // verdict (no replay key) are NOT the unit's own gate run, so neither contributes.
+        // A blast-radius SKIP (keyed under `gate-skip:`) and a legacy per-file artifact verdict
+        // (no replay key) are NOT the unit's own gate run, so neither contributes.
         let skip = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({
