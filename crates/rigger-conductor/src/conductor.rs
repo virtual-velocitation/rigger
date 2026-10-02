@@ -4520,6 +4520,11 @@ impl RunCtx<'_> {
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
         let compensate = verdict_compensates(&reason);
+        let (approved, reason, required) = if approved {
+            (true, reason, Vec::new())
+        } else {
+            self.split_reject(&st.name, attempt, round.as_ref(), reason)?
+        };
         if approved {
             if defer_reviewed {
                 // Speculation DEFERS the `reviewed` status to the winning candidate (see
@@ -4585,12 +4590,54 @@ impl RunCtx<'_> {
             outcome.compensate = compensate;
             Ok(outcome)
         } else {
-            let required = verdict_required(&reason);
             let mut outcome = ReviewOutcome::rejected(reason);
             outcome.compensate = compensate;
             outcome.required = required;
             Ok(outcome)
         }
+    }
+
+    /// Split a review round's reject (`reason`, the adjudicator's output) into what still holds
+    /// the unit back and what goes to the operator. On a LATER round, each REQUIRED item
+    /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
+    /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
+    /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
+    /// next round holds the unit to. A first round's reject keeps every item.
+    fn split_reject(
+        &self,
+        unit: &str,
+        attempt: u32,
+        round: Option<&ReviewRound>,
+        reason: String,
+    ) -> Result<(bool, String, Vec<RequiredItem>), Error> {
+        let required = verdict_required(&reason);
+        let Some(round) = round else {
+            return Ok((false, reason, required));
+        };
+        let (kept, dropped): (Vec<_>, Vec<_>) =
+            required.into_iter().partition(|item| round.blocks(item));
+        for (n, item) in dropped.iter().enumerate() {
+            // Replay-keyed on unit + attempt + item: a re-run review over the recorded verdict
+            // records each lesson once.
+            self.emit_keyed(
+                &format!("{unit}/operator-lesson#{attempt}.{n}"),
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({
+                    "id": format!("lesson-{unit}-{attempt}-operator-{n}"),
+                    "summary": format!(
+                        "For the operator: review of unit {unit:?} at attempt {attempt} found, \
+                         outside the delta it reviewed, an item that is no correctness defect, \
+                         so it no longer holds the unit back - {}: {}",
+                        item.path, item.finding
+                    ),
+                    "about": [item.path],
+                }),
+            )?;
+        }
+        if kept.is_empty() && !dropped.is_empty() {
+            return Ok((true, CONVERGED.to_string(), kept));
+        }
+        Ok((false, reason, kept))
     }
 
     /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): reviewers never
@@ -11770,6 +11817,12 @@ struct ReviewRound {
 }
 
 impl ReviewRound {
+    /// Whether `item` holds the unit back on this round: a correctness defect anywhere, or any
+    /// finding in the delta this round reviewed. Every other item is the operator's.
+    fn blocks(&self, item: &RequiredItem) -> bool {
+        item.correctness || self.delta.contains(&item.path)
+    }
+
     /// The block every review tier's prompt ends with on this round: what it reviews (the
     /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
     fn block(&self) -> String {
@@ -11802,6 +11855,10 @@ impl ReviewRound {
         )
     }
 }
+
+/// The `reviewed` evidence of a later round's reject that converged: every item it required
+/// was a finding outside its delta and no correctness defect, so each went to the operator.
+const CONVERGED: &str = "converged";
 
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
 /// `pattern`'s clause for its shape: the one rendering the implementer's prior-failure block
