@@ -4009,7 +4009,8 @@ impl RunCtx<'_> {
                         // whose errors were dropped. Emit a lesson naming the stage
                         // and its error before the collapse, so the log accounts for
                         // each terminal stage. The error never propagated up
-                        // mid-stage, so `emit_lesson` is best-effort and infallible.
+                        // mid-stage, so the lesson is best-effort: its outcome is
+                        // discarded and the stage's own error is what returns.
                         //
                         // adj-u104c5 REQUIRED FIX 2
                         // (sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-
@@ -4022,7 +4023,7 @@ impl RunCtx<'_> {
                         // A no-op for every marker-free error (every other driver, or text
                         // a leaf site already cleaned).
                         let msg = strip_failure_marker(&e);
-                        self.emit_lesson(
+                        let _ = self.emit_lesson(
                             None,
                             &name,
                             &format!("stage {name:?} failed in its wave: {msg}"),
@@ -4966,7 +4967,7 @@ impl RunCtx<'_> {
         } else {
             "it is dirty".to_string()
         };
-        self.emit_lesson(
+        let _ = self.emit_lesson(
             wt,
             unit,
             &format!(
@@ -6059,7 +6060,7 @@ impl RunCtx<'_> {
                 } else {
                     next.summary()
                 };
-                self.emit_lesson(
+                let _ = self.emit_lesson(
                     wt,
                     &st.name,
                     &format!(
@@ -6513,7 +6514,7 @@ impl RunCtx<'_> {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
         }
-        self.emit_lesson(
+        let _ = self.emit_lesson(
             None,
             &st.name,
             &format!(
@@ -6983,7 +6984,7 @@ impl RunCtx<'_> {
                 } else {
                     format!("review rejected: {}", reason.trim())
                 };
-                self.emit_lesson(
+                let _ = self.emit_lesson(
                     None,
                     &st.name,
                     &format!(
@@ -7983,7 +7984,7 @@ impl RunCtx<'_> {
                     } else {
                         format!("plan-critique rejected: {}", prior_reason.trim())
                     };
-                    self.emit_lesson(
+                    let _ = self.emit_lesson(
                         None,
                         &gate_name,
                         &format!(
@@ -8147,7 +8148,7 @@ impl RunCtx<'_> {
             ),
             Some(&format!("{gate}/spec-defect-lesson#{k}")),
             Some(&about),
-        );
+        )?;
         self.emit_keyed(
             &format!("{gate}/spec-defect#{k}"),
             TYPE_SPEC_DEFECT,
@@ -9105,7 +9106,7 @@ impl RunCtx<'_> {
                         // A lesson records WHY for the next run's grounding. It is
                         // advisory (unlike the DeferredGateFailed below, which gates
                         // done), so it is emitted only on the fresh run.
-                        self.emit_lesson(
+                        let _ = self.emit_lesson(
                             None,
                             gid,
                             &format!(
@@ -11141,10 +11142,13 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// Record a `LessonLearned` about `unit_name`. `about` names what the lesson is about when
-    /// given (the spec-defect stop names the spec, spec 112 criterion 5); without it the lesson
-    /// is about the files `wt` touched. `key`, when given, records it under that replay key, so
-    /// a step re-reaching the same lesson appends nothing.
+    /// Record a `LessonLearned` about `unit_name`, answering its append's outcome. `about` names
+    /// what the lesson is about when given (the spec-defect stop names the spec, spec 112
+    /// criterion 5); without it the lesson is about the files `wt` touched. `key`, when given,
+    /// records it under that replay key, so a step re-reaching the same lesson appends nothing.
+    /// Every caller but the spec-defect stop records its lesson best-effort and discards the
+    /// outcome; the stop propagates it, since its later records must never stand over a lesson
+    /// that was not written.
     fn emit_lesson(
         &self,
         wt: Option<&Worktree>,
@@ -11152,7 +11156,7 @@ impl RunCtx<'_> {
         summary: &str,
         key: Option<&str>,
         about: Option<&[String]>,
-    ) {
+    ) -> Result<(), Error> {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
         // worktree before gating (§3.2, FIX 2), so a plain `git status` is clean by
         // the time a unit escalates - we use `changed_since_base` (the committed diff
@@ -11167,10 +11171,10 @@ impl RunCtx<'_> {
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
         let payload = json!({"id": id, "summary": summary, "about": about});
-        let _ = match key {
+        match key {
             Some(key) => self.emit_keyed(key, contextgraph::TYPE_LESSON_LEARNED, payload),
             None => self.emit(contextgraph::TYPE_LESSON_LEARNED, payload),
-        };
+        }
     }
 
     /// Handle [`worktree::LandOutcome::Blocked`] (spec 103, criterion 8: A REFUSED LANDING
@@ -11220,7 +11224,7 @@ impl RunCtx<'_> {
              the unit's own branch lands unchanged",
             named.join(", ")
         );
-        self.emit_lesson(Some(wt), unit, &summary, None, None);
+        let _ = self.emit_lesson(Some(wt), unit, &summary, None, None);
         Error(format!(
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
             paths.join(", ")
