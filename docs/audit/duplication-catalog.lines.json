@@ -90,7 +90,7 @@
     ]
   },
   {
-    "id": "dup-c125d5c0c392",
+    "id": "dup-8f6a4198293f",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -128,6 +128,11 @@
         "end_line": 5223
       },
       {
+        "file": "tests/new_run_critique_refusal_periphery.rs",
+        "start_line": 171,
+        "end_line": 173
+      },
+      {
         "file": "tests/no_os_kill_audit.rs",
         "start_line": 52,
         "end_line": 54
@@ -150,7 +155,7 @@
     ]
   },
   {
-    "id": "dup-32e823dcd1d8",
+    "id": "dup-95d708ab4d02",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -256,11 +261,6 @@
         "file": "tests/native_driver_pipelining_behavior.rs",
         "start_line": 597,
         "end_line": 599
-      },
-      {
-        "file": "tests/new_run_critique_refusal_periphery.rs",
-        "start_line": 161,
-        "end_line": 163
       },
       {
         "file": "tests/regate_landed_on_resume_periphery.rs",
