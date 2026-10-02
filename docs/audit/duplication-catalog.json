@@ -38,12 +38,32 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-dbe0ddeb0d1c",
+    "id": "dup-7afdebdbbc9e",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "review_round_start_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "failed_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "spec_defect_lesson_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "spec_defect_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "spec_defect_escalated_key",
         "content_hash": "7f40f97a5c856b17"
       },
       {
@@ -5513,6 +5533,25 @@
       }
     ],
     "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-4b3a37bb0a60",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "name": "is_infra_fault",
+        "content_hash": "780eac3a237ca19f"
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "name": "is_spec_ambiguity",
+        "content_hash": "780eac3a237ca19f"
+      }
+    ],
+    "proposed_home": "spawn::adjudication",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

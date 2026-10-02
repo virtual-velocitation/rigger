@@ -10,9 +10,14 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-dbe0ddeb0d1c",
+    "id": "dup-7afdebdbbc9e",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, the critique printout a spec-critique periphery case expects); the shared token shape is a one-line `format!`."
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, the critique printout a spec-critique periphery case expects); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+  },
+  {
+    "id": "dup-4b3a37bb0a60",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `Adjudication::has_cause`; each names a different adjudicator cause with a different consequence (`infra-fault` reruns the stage uncharged, `spec-ambiguity` can stop the run at plan-critique)."
   },
   {
     "id": "dup-088ec120e4ac",
