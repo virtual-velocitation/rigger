@@ -48,13 +48,6 @@ jobs:
     # same reason, so CI runs the battery a unit runs. The no-default and core lanes run through
     # .rigger/gates/lanes.sh, the script the check-in stage's `lanes` gate runs too, which names
     # the workspace (and, on the core lane, every member with a `core` feature) itself.
-    #
-    # The test steps raise the test runner's per-process address-space cap
-    # (RIGGER_TEST_AS_BYTES, .cargo/pidns-runner.sh, 4 GiB by default) to 16 GiB, spelled in
-    # bytes because prlimit reads "16G" as 16 bytes: the workspace's tests include
-    # crates/rigger-store-sqlite's KurrentDB contract test, which starts a real server through
-    # the runner's Docker and fails to spawn its threads under 4 GiB. The local test gate gets
-    # the same cap from .rigger/gates/container-env.sh whenever it finds a container runtime.
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
@@ -121,8 +114,6 @@ jobs:
       - name: build
         run: cargo build --workspace --verbose
       - name: test
-        env:
-          RIGGER_TEST_AS_BYTES: "17179869184"
         run: cargo test --workspace --no-fail-fast --verbose
       # The deliberate light opt-out: `--no-default-features` drops turbovec so the grep-only
       # build (no ONNX/OpenBLAS) stays green. The lanes script gives it the default lane's
@@ -132,8 +123,6 @@ jobs:
       # rotting. The loud "built without the turbovec feature" path is asserted by
       # select_grounder's no-feature test here.
       - name: no-default lane (grep-only, --no-default-features)
-        env:
-          RIGGER_TEST_AS_BYTES: "17179869184"
         run: sh .rigger/gates/lanes.sh no-default
       # Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
       # --features core`) gets the battery too, for every workspace member that declares a `core`
@@ -210,10 +199,8 @@ jobs:
       # turbovec/ONNX stack or its wasm32 cross-compile.
       - name: clippy
         run: cargo clippy -p rigger-store-sqlite --no-default-features --lib --tests -- -D warnings
-      # The contract needs more address space than the test runner's default 4 GiB cap
-      # (.cargo/pidns-runner.sh) allows, so the cap is raised to 16 GiB for this step,
-      # spelled in bytes because prlimit reads "16G" as 16 bytes.
+      # The contract runs under the test runner's default address-space cap
+      # (.cargo/pidns-runner.sh), like every other test: the store's runtime runs one worker,
+      # so the adapter's threads fit under it.
       - name: contract test (KurrentDB via testcontainers)
-        env:
-          RIGGER_TEST_AS_BYTES: "17179869184"
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb
