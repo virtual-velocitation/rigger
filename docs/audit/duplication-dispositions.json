@@ -420,7 +420,7 @@
     "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
   {
-    "id": "dup-9b727c38b8a1",
+    "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
     "disposition": "not-a-duplicate",
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
   },

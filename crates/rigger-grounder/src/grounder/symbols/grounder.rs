@@ -202,7 +202,23 @@ enum HitKind {
 /// `commonness_map` for nearly every CONTAINS hit and silently handed it the artificial rarest
 /// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
 /// tiebreaker ("then by the existing lexical score").
+///
+/// Gap 104 puts three keys ahead of that order, counting DISTINCT query terms case-insensitively.
+/// `name_coverage` - the terms the entity's name holds - ranks first, so a query that names an
+/// entity by its shape (`impl EventStore for` -> the impl blocks named `impl EventStore for
+/// Store`) finds it above a name that holds one incidental word (`for`). `test` - the location is
+/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file under a `tests` directory) - ranks
+/// next, so a test double never outranks the product code it stands in for. `coverage` - the
+/// terms the name OR the file path holds - ranks third, so the words that name the module narrow
+/// the match (`sqlite store open` -> `open_connection` in `store/sqlite.rs` above `reopen_window`
+/// elsewhere).
+///
+/// [`Def::is_test`]: crate::grounder::symbols::model::Def::is_test
+/// [`SymRef::is_test`]: crate::grounder::symbols::model::SymRef::is_test
 struct ScoredHit<'a> {
+    name_coverage: usize,
+    test: bool,
+    coverage: usize,
     tier: u8,
     commonness: usize,
     lexical: u8,
@@ -222,11 +238,27 @@ impl ScoredHit<'_> {
     fn entity(&self) -> (&str, Lang) {
         (self.name, self.lang)
     }
+
+    /// The ONE ranking order, best first: name coverage, then product before test code, then
+    /// name-and-path coverage, then tier, then rarest commonness, then definition over reference,
+    /// then file and line (a total, deterministic order). Both the per-location collapse and the
+    /// final sort in [`scored_hits`] compare by it, so the two can never disagree.
+    fn rank(&self) -> impl Ord + '_ {
+        (
+            std::cmp::Reverse(self.name_coverage),
+            self.test,
+            std::cmp::Reverse(self.coverage),
+            std::cmp::Reverse(self.tier),
+            self.commonness,
+            std::cmp::Reverse(self.lexical),
+            self.file,
+            self.line,
+        )
+    }
 }
 
-/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked
-/// tier-first, then rarest-commonness-first, then definition-over-reference, then by file/line
-/// (a total, deterministic order) - the ONE scored, sorted pass both [`Symbols::ground`] and
+/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked by
+/// [`ScoredHit::rank`] - the ONE scored, sorted pass both [`Symbols::ground`] and
 /// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
 /// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
 /// its BEST tier - commonness is a property of the matched entity's own name, so it never varies
@@ -234,9 +266,12 @@ impl ScoredHit<'_> {
 /// scorer already made.
 fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let commonness = commonness_map(idx);
+    let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
-        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8| {
+        let lower_path = path.to_lowercase();
+        let test_file = crate::grounder::symbols::events::is_under_tests_dir(path);
+        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
             // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `(name,
@@ -265,64 +300,47 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             if hit_tier == 0 {
                 return;
             }
-            let hit_commonness = commonness.get(&(name, fs.lang)).copied().unwrap_or(0);
-            best.entry((path.as_str(), line))
-                .and_modify(|slot| {
-                    // A third clause tie-breaking on `lexical` WITHIN this same (file, line)
-                    // slot would never fire: `scored_hits` scores every definition in a file
-                    // before any reference in it (`for d in &fs.defs { .. } for r in &fs.refs
-                    // { .. }`), so whichever candidate is already slotted here was always
-                    // inserted no later than any same-tier, same-commonness challenger could
-                    // reach it - an already-slotted reference (lexical 2) can only be
-                    // challenged by another reference (lexical 2, never greater), and an
-                    // already-slotted definition (lexical 3) can only be challenged by a
-                    // reference (lexical 2) or a later same-line definition (lexical 3, never
-                    // greater either). The definition wins by SCORING ORDER alone - the first
-                    // candidate to reach a tied (tier, commonness) slot stays. `lexical` still
-                    // decides definition-over-reference, but only ACROSS different slots, in
-                    // the final sort below.
-                    let better = hit_tier > slot.tier
-                        || (hit_tier == slot.tier && hit_commonness < slot.commonness);
-                    if better {
-                        *slot = ScoredHit {
-                            tier: hit_tier,
-                            commonness: hit_commonness,
-                            lexical,
-                            file: path.as_str(),
-                            line,
-                            name,
-                            lang: fs.lang,
-                            kind,
-                        };
+            let lower_name = name.to_lowercase();
+            let in_name = |t: &&String| lower_name.contains(t.as_str());
+            let hit = ScoredHit {
+                name_coverage: lower_terms.iter().filter(in_name).count(),
+                test: test || test_file,
+                coverage: lower_terms
+                    .iter()
+                    .filter(|t| in_name(t) || lower_path.contains(t.as_str()))
+                    .count(),
+                tier: hit_tier,
+                commonness: commonness.get(&(name, fs.lang)).copied().unwrap_or(0),
+                lexical,
+                file: path.as_str(),
+                line,
+                name,
+                lang: fs.lang,
+                kind,
+            };
+            // One row per (file, line): the better-ranked candidate keeps the slot - an impl
+            // block's definition, matching every word of an impl-shaped query, over the trait
+            // reference on its own header line.
+            match best.entry((path.as_str(), line)) {
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    if hit.rank() < slot.get().rank() {
+                        slot.insert(hit);
                     }
-                })
-                .or_insert(ScoredHit {
-                    tier: hit_tier,
-                    commonness: hit_commonness,
-                    lexical,
-                    file: path.as_str(),
-                    line,
-                    name,
-                    lang: fs.lang,
-                    kind,
-                });
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(hit);
+                }
+            }
         };
         for d in &fs.defs {
-            score_one(d.name.as_str(), d.line, HitKind::Def, 3);
+            score_one(d.name.as_str(), d.line, HitKind::Def, 3, d.is_test);
         }
         for r in &fs.refs {
-            score_one(r.name.as_str(), r.line, HitKind::Ref, 2);
+            score_one(r.name.as_str(), r.line, HitKind::Ref, 2, r.is_test);
         }
     }
     let mut hits: Vec<ScoredHit<'a>> = best.into_values().collect();
-    hits.sort_by(|a, b| {
-        b.tier
-            .cmp(&a.tier)
-            .then(a.commonness.cmp(&b.commonness))
-            .then(b.lexical.cmp(&a.lexical))
-            .then(a.file.cmp(b.file))
-            .then(a.line.cmp(&b.line))
-    });
+    hits.sort_by(|a, b| a.rank().cmp(&b.rank()));
     hits
 }
 
@@ -521,7 +539,7 @@ impl Grounder for Symbols {
         format!(
             "{}/{}",
             store::content_hash(&serialized),
-            crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION
+            crate::grounder::symbols::model::GRAMMAR_TAGS_VERSION
         )
     }
 
@@ -726,7 +744,7 @@ mod tests {
         );
         assert!(
             stamp.contains('/')
-                && stamp.ends_with(crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION),
+                && stamp.ends_with(crate::grounder::symbols::model::GRAMMAR_TAGS_VERSION),
             "the stamp is <index-content-hash>/<grammar-tags-version>; got {stamp:?}"
         );
         // A DIFFERENT index (different symbols) yields a different content-hash half, so a radius
@@ -1071,10 +1089,99 @@ mod tests {
     fn grounder_over(files: &[(&str, &str)]) -> (tempfile::TempDir, Symbols) {
         let dir = tempfile::tempdir().unwrap();
         for (name, source) in files {
-            std::fs::write(dir.path().join(name), source).unwrap();
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
         }
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
         (dir, g)
+    }
+
+    /// The tree behind the gap-104 ranking tests: a trait, two product impls of it, two test doubles
+    /// implementing it (one in a `#[cfg(test)]` module, one under a `tests/` directory), the one
+    /// store opener every impl calls, an unrelated impl in the trait's own file, and unrelated
+    /// names that merely contain a query word (`for`, `open`) in files that sort first.
+    fn store_tree() -> (tempfile::TempDir, Symbols) {
+        grounder_over(&[
+            (
+                "domain/eventstore.rs",
+                "pub trait EventStore { fn append(&self); }\nstruct Guard;\nimpl Drop for Guard { fn drop(&mut self) {} }\n",
+            ),
+            (
+                "tests/doubles.rs",
+                "struct Double;\nimpl EventStore for Double { fn append(&self) {} }\n",
+            ),
+            (
+                "store/sqlite.rs",
+                "pub struct Store;\npub fn open_connection() {}\nimpl EventStore for Store { fn append(&self) { open_connection(); } }\n",
+            ),
+            (
+                "store/kurrentdb.rs",
+                "pub struct Store;\nimpl EventStore for Store { fn append(&self) { open_connection(); } }\n",
+            ),
+            (
+                "conductor.rs",
+                "#[cfg(test)]\nmod tests {\n    struct Fake;\n    impl EventStore for Fake { fn append(&self) {} }\n}\n",
+            ),
+            (
+                "a_console/lib.rs",
+                "fn malformed_input_for_op() {}\nfn formatter_for_display() {}\nfn reopen_window() {}\n",
+            ),
+        ])
+    }
+
+    /// The row position of the first ranked entity named `text` in `file`, failing loudly when
+    /// the page does not carry it.
+    fn position_of(ranked: &[RankedRef], file: &str, text: &str) -> usize {
+        ranked
+            .iter()
+            .position(|r| r.loc.file == file && r.loc.text == text)
+            .unwrap_or_else(|| panic!("no row {file}: {text} in {ranked:?}"))
+    }
+
+    /// Gap 104: `impl EventStore for` names the impl sites - each impl block ranks above names
+    /// that merely contain `for`, and a product impl ranks above a test double.
+    #[test]
+    fn ground_ranked_puts_the_impl_sites_of_an_impl_shaped_query_above_incidental_word_matches() {
+        let (_dir, g) = store_tree();
+        let ranked = g.ground_ranked("impl EventStore for", 10);
+        let sqlite = position_of(&ranked, "store/sqlite.rs", "impl EventStore for Store");
+        let kurrent = position_of(&ranked, "store/kurrentdb.rs", "impl EventStore for Store");
+        let double = position_of(&ranked, "conductor.rs", "impl EventStore for Fake");
+        let tests_dir_double =
+            position_of(&ranked, "tests/doubles.rs", "impl EventStore for Double");
+        assert!(
+            sqlite.max(kurrent) < double.min(tests_dir_double),
+            "a product impl ranks above a test double, in a test module or a tests directory; \
+             got {ranked:?}"
+        );
+        let other_impl = position_of(&ranked, "domain/eventstore.rs", "impl Drop for Guard");
+        assert!(
+            other_impl > double.max(tests_dir_double),
+            "an impl of another trait matches the query's words only through its file path, so \
+             it ranks below every impl the query names; got {ranked:?}"
+        );
+        for incidental in ["malformed_input_for_op", "formatter_for_display"] {
+            if let Some(p) = ranked.iter().position(|r| r.loc.text == incidental) {
+                assert!(
+                    p > double,
+                    "{incidental} merely contains `for`, so it ranks below every impl site; got {ranked:?}"
+                );
+            }
+        }
+    }
+
+    /// Gap 104: a query naming an entity by its name AND its module path (`sqlite store open`)
+    /// finds the entity in that module first, above a rarer name that matches one word alone.
+    #[test]
+    fn ground_ranked_puts_the_entity_matching_the_most_query_words_across_name_and_path_first() {
+        let (_dir, g) = store_tree();
+        let ranked = g.ground_ranked("sqlite store open", 3);
+        assert_eq!(
+            (ranked[0].loc.file.as_str(), ranked[0].loc.text.as_str()),
+            ("store/sqlite.rs", "open_connection"),
+            "got {ranked:?}"
+        );
     }
 
     #[test]

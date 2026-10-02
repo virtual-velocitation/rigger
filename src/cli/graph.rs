@@ -48,7 +48,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
         return Err("graph: --around <id> or --show <entity> is required".into());
     }
     let gp = open_graph_to_read(&db_path("graph.db"), &project_identity())?;
-    let g = gp.subgraph(&[around.clone()], depth)?;
+    let g = contextgraph::around(&gp, &[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &around);
     Ok(())

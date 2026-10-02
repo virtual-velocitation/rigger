@@ -115,10 +115,11 @@ pub struct Def {
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
 /// reference occurs inside (the caller). `None` for a top-level reference outside every
-/// definition - an import or an `impl`-header trait bound that belongs to no function body. Set
-/// during extraction by attributing the reference to the innermost definition whose body contains
-/// it (spec 37). Serde-defaulted and omitted when `None` so a pre-37 persisted index folds as
-/// caller-less and a caller-less ref serializes byte-identically to before.
+/// definition - an import or a module-level call; an impl header's trait and type attribute
+/// to the impl block, a definition of its own. Set during extraction by attributing the reference
+/// to the innermost definition whose body contains it (spec 37). Serde-defaulted and omitted when
+/// `None` so a pre-37 persisted index folds as caller-less and a caller-less ref serializes
+/// byte-identically to before.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymRef {
     pub name: String,
@@ -157,12 +158,26 @@ pub struct FileSymbols {
     pub partial: bool,
 }
 
+/// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
+/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::index_stamp`) so a
+/// recorded radius names the tag-query generation that produced it. Bump it when a shipped
+/// grammar or an authored tags query changes, so a radius computed under an older grammar set
+/// is distinguishable on replay from one the current set would produce, and so a persisted
+/// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104). Parser-free,
+/// so it lives in the model both feature lanes compile.
+pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v2";
+
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
 /// serialization is stable across processes, unlike a `HashMap` whose iteration order is
 /// per-process randomized. That determinism-by-construction is what unit 3's persistence
 /// relies on, so the choice is made here, in the shared model.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymbolIndex {
+    /// The extraction generation ([`GRAMMAR_TAGS_VERSION`]) this index was built under. A new
+    /// index carries the current one; an index persisted before the field existed deserializes
+    /// with none, which is never current.
+    #[serde(default)]
+    grammar: String,
     /// rel-path -> that file's symbols.
     files: BTreeMap<String, FileSymbols>,
     /// rel-path -> the content hash (`symbols::store::content_hash`) of that file's source AT
@@ -179,7 +194,25 @@ pub struct SymbolIndex {
     hashes: BTreeMap<String, String>,
 }
 
+impl Default for SymbolIndex {
+    /// An empty index of the current extraction generation.
+    fn default() -> Self {
+        SymbolIndex {
+            grammar: GRAMMAR_TAGS_VERSION.to_string(),
+            files: BTreeMap::new(),
+            hashes: BTreeMap::new(),
+        }
+    }
+}
+
 impl SymbolIndex {
+    /// Whether this index was built under the current extraction generation - false for one
+    /// persisted by a build whose grammar or tags query has since changed, whose symbols the
+    /// current extractor would not reproduce.
+    pub fn is_current(&self) -> bool {
+        self.grammar == GRAMMAR_TAGS_VERSION
+    }
+
     /// Insert (or replace) a file's symbols under its normalized relative path.
     pub fn insert_file(&mut self, rel_path: String, fs: FileSymbols) {
         self.files.insert(rel_path, fs);

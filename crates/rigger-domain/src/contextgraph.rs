@@ -725,6 +725,37 @@ pub trait Projection: Send + Sync {
     }
 }
 
+/// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
+/// undirected [`Projection::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
+/// the same depth ([`Projection::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
+/// once. The subgraph alone never reaches a caller in another file - that caller's `CALLS` edge
+/// lands on a placeholder in its OWN file's namespace - so without the callers walk "who calls
+/// this" had no answer from the neighborhood (gap 104). The callers walk resolves those
+/// placeholders by name and stops at an ambiguous name rather than guessing.
+pub fn around(p: &dyn Projection, seed: &[String], depth: i64) -> Result<Graph, Error> {
+    let mut g = p.subgraph(seed, depth)?;
+    let callers = p.calls(seed, Direction::Up, depth, TIER_INFERRED)?;
+    let mut node_ids: std::collections::BTreeSet<String> =
+        g.nodes.iter().map(|n| n.id.clone()).collect();
+    for c in callers.nodes {
+        if node_ids.insert(c.node.id.clone()) {
+            g.nodes.push(c.node);
+        }
+    }
+    let mut edge_keys: std::collections::BTreeSet<(String, String, String)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
+        .collect();
+    for c in callers.edges {
+        let e = c.edge;
+        if edge_keys.insert((e.from.clone(), e.to.clone(), e.rel.clone())) {
+            g.edges.push(e);
+        }
+    }
+    Ok(g)
+}
+
 /// The `CodeEntityExtracted` payload (spec 29a): one definition the extraction pass emits. It
 /// is the ONE serialization contract shared by both sides of the log - the feature-gated emit
 /// pass (`grounder::symbols`) constructs and serializes it, and the always-compiled fold
@@ -793,7 +824,8 @@ pub struct EdgeInferred {
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
     /// caller's name, same-file. `None` for a top-level reference outside every definition (an
-    /// import or an `impl`-header bound). The emit pass carries what extraction attributed onto the
+    /// import or a module-level call; an impl header's trait and type attribute to the impl
+    /// block, a definition of its own). The emit pass carries what extraction attributed onto the
     /// `SymRef`; the fold, when it is present, adds a `<file>::<caller> --CALLS--> <callee>` edge
     /// ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns that fold).
     /// Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less and a
@@ -1244,6 +1276,97 @@ mod fold_outcome {
         assert_eq!(
             rebuild_owed_refusal("step"),
             format!("step: {REBUILD_OWED}")
+        );
+    }
+}
+
+/// Gap 104: the neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve
+/// carries the seed's callers resolved across files, not only the undirected subgraph (which never
+/// reaches a caller in another file: that caller's `CALLS` edge lands on a placeholder in its own
+/// file's namespace).
+#[cfg(test)]
+mod around_neighborhood {
+    use super::*;
+    use crate::test_support::{edge, plain as node};
+    use std::sync::Mutex;
+
+    /// A projection whose subgraph is the seed and its file, and whose `Up` walk finds one caller
+    /// in another file; it records every `calls` request.
+    struct CallerProjection {
+        requests: Mutex<Vec<(Direction, i64, String)>>,
+    }
+
+    impl Projection for CallerProjection {
+        fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), Error> {
+            Ok(())
+        }
+        fn rebuild_owed(&self) -> Result<bool, Error> {
+            Ok(false)
+        }
+        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
+            Ok(Graph {
+                nodes: vec![
+                    node("s.rs", KIND_FILE),
+                    node("s.rs::open", KIND_CODE_ENTITY),
+                ],
+                edges: vec![edge("s.rs", "s.rs::open", REL_CONTAINS, TIER_EXTRACTED)],
+            })
+        }
+        fn calls(
+            &self,
+            _seed: &[String],
+            direction: Direction,
+            depth: i64,
+            tier_floor: &str,
+        ) -> Result<CallGraph, Error> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((direction, depth, tier_floor.to_string()));
+            let seed = CallNode {
+                node: node("s.rs::open", KIND_CODE_ENTITY),
+                layer: 0,
+                frontier: None,
+            };
+            let caller = CallNode {
+                node: node("c.rs::run", KIND_CODE_ENTITY),
+                layer: 1,
+                frontier: None,
+            };
+            Ok(CallGraph {
+                nodes: vec![seed, caller],
+                edges: vec![CallEdge {
+                    edge: edge("c.rs::run", "s.rs::open", REL_CALLS, TIER_EXTRACTED),
+                    back: false,
+                }],
+                referenced_not_called: Vec::new(),
+            })
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn around_carries_the_cross_file_callers_beside_the_subgraph() {
+        let p = CallerProjection {
+            requests: Mutex::new(Vec::new()),
+        };
+        let g = around(&p, &["s.rs::open".to_string()], 2).unwrap();
+        let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["s.rs", "s.rs::open", "c.rs::run"], "got {ids:?}");
+        assert!(
+            g.edges
+                .iter()
+                .any(|e| e.from == "c.rs::run" && e.to == "s.rs::open" && e.rel == REL_CALLS),
+            "the caller's CALLS edge rides the neighborhood; got {:?}",
+            g.edges
+        );
+        assert_eq!(g.edges.len(), 2, "no edge is duplicated; got {:?}", g.edges);
+        assert_eq!(
+            *p.requests.lock().unwrap(),
+            vec![(Direction::Up, 2, TIER_INFERRED.to_string())],
+            "the callers walk runs up to the neighborhood's depth at the resolvable tier floor"
         );
     }
 }

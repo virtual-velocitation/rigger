@@ -189,10 +189,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Load the persisted index, or `None` when it is absent or unreadable (a cold start - the
 /// caller builds + persists it). A corrupt/partial file also yields `None`, so a stale artifact
-/// never crashes grounding; it is transparently rebuilt.
+/// never crashes grounding; it is transparently rebuilt. So does an index built under another
+/// extraction generation ([`SymbolIndex::is_current`]): its symbols are what an older extractor
+/// saw, and serving them would hide every fact the current one records.
 pub fn load(dir: &str) -> Option<SymbolIndex> {
     let bytes = std::fs::read(index_path(dir)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_slice::<SymbolIndex>(&bytes)
+        .ok()
+        .filter(SymbolIndex::is_current)
 }
 
 #[cfg(test)]
@@ -254,6 +258,32 @@ mod tests {
         // No index persisted yet -> None (the grounder then builds + persists one), never a panic.
         let dir = tempfile::tempdir().unwrap();
         assert!(load(dir.path().to_str().unwrap()).is_none());
+    }
+
+    /// Gap 104: an index persisted under an older extraction generation (a tags query or
+    /// extractor change since) loads as absent, so the grounder rebuilds it and the graph ingest
+    /// re-extracts every file rather than serving the old extraction forever.
+    #[test]
+    fn an_index_persisted_under_another_extraction_generation_loads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        save(&sample(), root).unwrap();
+        assert!(load(root).is_some(), "a current-generation index loads");
+        let path = index_path(root);
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grammar"] = serde_json::Value::String("ts-tags-v0".into());
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(
+            load(root).is_none(),
+            "an index from another extraction generation must load as absent"
+        );
+        persisted.as_object_mut().unwrap().remove("grammar");
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(
+            load(root).is_none(),
+            "an index predating the generation stamp must load as absent"
+        );
     }
 
     #[test]

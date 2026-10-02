@@ -139,13 +139,11 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::store;
     let dir = tempfile::tempdir().unwrap();
-    // `fn f` calls `G()`; the `impl Draw for Widget` header's `Draw` bound is a top-level reference
-    // belonging to no function body. (The Rust tags query captures an impl-header trait bound as a
-    // reference but not a plain `use` import, so the header bound is the faithful top-level
-    // no-caller case - the same shape the inside-out extract test relies on.)
+    // `fn f` calls `G()`; the `impl Draw for Widget` header's `Draw` bound attributes to the impl
+    // block (a definition of its own); the top-level `setup!()` call belongs to no definition.
     std::fs::write(
         dir.path().join("lib.rs"),
-        "trait Draw {}\nstruct Widget;\nimpl Draw for Widget {}\nfn f() {\n    G();\n}\n",
+        "trait Draw {}\nstruct Widget;\nimpl Draw for Widget {}\nfn f() {\n    G();\n}\nsetup!();\n",
     )
     .unwrap();
     let root = dir.path().to_str().unwrap();
@@ -173,7 +171,16 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
         .find(|r| r.name == "Draw")
         .expect("the impl-header Draw bound is extracted as a reference");
     assert_eq!(
-        draw.enclosing, None,
-        "a top-level reference outside every function body stays caller-less across save/load"
+        draw.enclosing.as_deref(),
+        Some("impl Draw for Widget"),
+        "an impl header's trait bound attributes to its impl and survives save/load"
+    );
+    let setup = refs
+        .iter()
+        .find(|r| r.name == "setup")
+        .expect("the top-level setup! call is extracted as a reference");
+    assert_eq!(
+        setup.enclosing, None,
+        "a top-level reference outside every definition stays caller-less across save/load"
     );
 }
