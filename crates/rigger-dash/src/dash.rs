@@ -8510,6 +8510,36 @@ mod tests {
         assert_eq!(dash_answer_on(held_port), DashAnswer::NotServing);
     }
 
+    /// A signal delivered to the probing thread mid-read ends a read that has a receive timeout
+    /// early with `Interrupted`, whatever the signal - such a read is never restarted - and a
+    /// process that spawns children gets one whenever a child's exit notice is queued while its
+    /// spawning thread blocks signals. The read is taken again inside the same window, so the
+    /// answer that then arrives decides, never the interruption.
+    #[test]
+    fn an_interrupted_probe_read_is_read_again_inside_the_window() {
+        let answer = format!("HTTP/1.1 200 OK\r\n{DASH_HEADER}: 1\r\n\r\n").into_bytes();
+        let mut reads = std::collections::VecDeque::from([
+            Err(io::Error::from(io::ErrorKind::Interrupted)),
+            Ok(answer.clone()),
+        ]);
+        let head = read_probe_head(
+            |buf: &mut [u8], _remaining| match reads.pop_front() {
+                Some(Ok(bytes)) => {
+                    buf[..bytes.len()].copy_from_slice(&bytes);
+                    Ok(bytes.len())
+                }
+                Some(Err(e)) => Err(e),
+                None => Ok(0),
+            },
+            |_| false,
+        );
+        assert_eq!(
+            head.ok(),
+            Some(answer),
+            "an interrupted read is read again, and the dash's answer is what the probe returns"
+        );
+    }
+
     #[test]
     fn dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies() {
         let m = DashMarker {
