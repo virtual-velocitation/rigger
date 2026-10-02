@@ -8060,6 +8060,49 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("at position 3")));
     }
 
+    // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
+
+    /// Gap 108: once a spawn has ENDED on a real result, a plain `rigger result` for it is refused,
+    /// naming the standing result's position and the `--supersede` override, so a replayed stale
+    /// worker can never overwrite it; `--supersede` (an explicit operator repair) records.
+    #[test]
+    fn result_refuses_a_second_result_without_supersede() {
+        let req = test_request("u", "impl", "implementer", 0, "do it");
+        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
+        res_ev.position = 7;
+        let events = [req.to_event().unwrap(), res_ev];
+
+        let refused = result_refusal(&events, &req.id, false)
+            .unwrap()
+            .expect("a second result for an ended spawn is refused");
+        assert!(
+            refused.contains("already ended (result at position 7)")
+                && refused.contains("--supersede"),
+            "the refusal names the standing result and the override; got {refused}"
+        );
+        assert_eq!(
+            result_refusal(&events, &req.id, true).unwrap(),
+            None,
+            "--supersede records over the standing result"
+        );
+    }
+
+    /// Gap 108 guard: the step's liveness fault is the sweep's diagnosis of a silent worker, never
+    /// its end, so the worker's real result still replaces it with no override.
+    #[test]
+    fn a_real_result_still_replaces_a_recorded_liveness_fault() {
+        let req = test_request("u", "impl", "implementer", 0, "do it");
+        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
+            .to_event()
+            .unwrap();
+        fault.position = 4;
+        assert_eq!(
+            result_refusal(&[req.to_event().unwrap(), fault], &req.id, false).unwrap(),
+            None,
+            "a real result replaces a liveness fault"
+        );
+    }
+
     /// The two checked-in workflows that ship with the repo - the self-hosted
     /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
     /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0

@@ -23591,10 +23591,12 @@ mod tests {
             "the operator-facing halt must not carry the internal sentinel marker: {:?}",
             err.0
         );
-        // It names the REAL recovery (re-record a substantive result; last-write-wins), not
-        // the dead "just re-run" promise the adjudicator rejected at adj-u2gap18.
+        // It names the REAL recovery (re-record a substantive result over the empty one with
+        // `--supersede`, since `rigger result` refuses to replace an ended spawn's result
+        // without it), not the dead "just re-run" promise the adjudicator rejected at
+        // adj-u2gap18.
         assert!(
-            err.0.contains("rigger result") && err.0.contains("last-write-wins"),
+            err.0.contains("rigger result") && err.0.contains("--supersede"),
             "the halt must name the working recovery (a corrected re-record), not a bare re-run: {}",
             err.0
         );

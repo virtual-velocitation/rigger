@@ -3848,6 +3848,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_result_supersede_is_off_by_default_and_a_bare_flag() {
+        let plain = parse_result_args(&["u/implementer#0".into(), "done".into()]).unwrap();
+        assert!(!plain.supersede, "--supersede defaults off");
+        let a = parse_result_args(&[
+            "u/implementer#0".into(),
+            "--supersede".into(),
+            "corrected".into(),
+        ])
+        .unwrap();
+        assert_eq!(a.text.as_deref(), Some("corrected"));
+        assert!(a.supersede, "--supersede is a bare flag");
+    }
+
+    #[test]
     fn parse_result_meta_must_be_a_json_object() {
         let a = parse_result_args(&[
             "u/implementer#0".into(),

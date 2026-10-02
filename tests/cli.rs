@@ -1629,8 +1629,10 @@ fn result_prints_an_orphan_advisory_for_an_unrecorded_id() {
     );
 }
 
-/// Re-recording a result for the same id prints a SUPERSEDE advisory (naming the prior
-/// result's log position) - the record still lands (results are last-write-wins).
+/// Re-recording a result for a spawn that already ended is REFUSED, naming the standing
+/// result and the override (gap 108: a stale worker a driver resume re-spawned must never
+/// overwrite it); with `--supersede` the record lands and prints a SUPERSEDE advisory naming
+/// the prior result's log position.
 #[test]
 fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
     let dir = temp_store_project();
@@ -1639,7 +1641,17 @@ fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
     let (_out, _err, ok) = run_rigger(root, &["result", "u/implementer#0", "first"]);
     assert!(ok, "the first record must succeed");
 
-    let (out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "second"]);
+    let (_out, err, ok) = run_rigger(root, &["result", "u/implementer#0", "second"]);
+    assert!(
+        !ok && err.contains("already ended (result at position") && err.contains("--supersede"),
+        "a plain second record is refused, naming the standing result and the override; \
+         stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["result", "u/implementer#0", "second", "--supersede"],
+    );
     assert!(
         ok,
         "the superseding record must succeed (advisory only); stderr: {err}"
