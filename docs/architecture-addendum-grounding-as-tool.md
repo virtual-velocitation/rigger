@@ -147,7 +147,7 @@ from the implement-stage prompt**.
 - **The guaranteed layer is unchanged.** `write_design_intent` already renders exactly the bound
   governing intent, deterministically ordered; it stays. This is the measured, immediate-ROI step.
 
-_Code:_ `graph_context` (`crates/rigger-conductor/src/conductor.rs`) — keep `write_design_intent` + a compact neighborhood
+_Code:_ `graph_context` (`crates/rigger-conductor/src/conductor.rs`) - keep `write_design_intent` + a compact neighborhood
 render, drop the capped decisions/lessons/findings sections from the implement prompt, append the
 tool pointer. The `write_capped_*` writers remain for the review-stage guarantee (§Workstream C).
 
