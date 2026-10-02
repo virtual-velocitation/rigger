@@ -104,8 +104,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 338,
-        "end_line": 343
+        "start_line": 339,
+        "end_line": 344
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -179,8 +179,8 @@
       },
       {
         "file": "crates/rigger-domain/src/review.rs",
-        "start_line": 386,
-        "end_line": 388
+        "start_line": 387,
+        "end_line": 389
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -679,23 +679,23 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3115,
-        "end_line": 3115
+        "start_line": 3264,
+        "end_line": 3264
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3148,
-        "end_line": 3148
+        "start_line": 3297,
+        "end_line": 3297
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3192,
-        "end_line": 3192
+        "start_line": 3341,
+        "end_line": 3341
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3261,
-        "end_line": 3261
+        "start_line": 3410,
+        "end_line": 3410
       },
       {
         "file": "src/cli/validate.rs",
@@ -789,8 +789,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 181,
-        "end_line": 181
+        "start_line": 207,
+        "end_line": 207
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -3024,43 +3024,43 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 159,
-        "end_line": 159
+        "start_line": 185,
+        "end_line": 185
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 170,
-        "end_line": 170
+        "start_line": 196,
+        "end_line": 196
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 191,
-        "end_line": 191
+        "start_line": 217,
+        "end_line": 217
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 208,
-        "end_line": 208
+        "start_line": 234,
+        "end_line": 234
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 472,
-        "end_line": 472
+        "start_line": 508,
+        "end_line": 508
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 473,
-        "end_line": 473
+        "start_line": 509,
+        "end_line": 509
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 537,
-        "end_line": 537
+        "start_line": 589,
+        "end_line": 589
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 634,
-        "end_line": 634
+        "start_line": 686,
+        "end_line": 686
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3694,18 +3694,18 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 354,
-        "end_line": 354
+        "start_line": 350,
+        "end_line": 350
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 595,
-        "end_line": 595
+        "start_line": 591,
+        "end_line": 591
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 1279,
-        "end_line": 1279
+        "start_line": 1275,
+        "end_line": 1275
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -4344,13 +4344,13 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3253,
-        "end_line": 3253
+        "start_line": 3402,
+        "end_line": 3402
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3357,
-        "end_line": 3357
+        "start_line": 3506,
+        "end_line": 3506
       },
       {
         "file": "tests/cli.rs",
@@ -4684,8 +4684,8 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 170,
-        "end_line": 172
+        "start_line": 183,
+        "end_line": 185
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -5174,18 +5174,18 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 537,
-        "end_line": 539
+        "start_line": 550,
+        "end_line": 552
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 540,
-        "end_line": 542
+        "start_line": 553,
+        "end_line": 555
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 543,
-        "end_line": 545
+        "start_line": 556,
+        "end_line": 558
       }
     ]
   },
@@ -5549,8 +5549,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 429,
-        "end_line": 429
+        "start_line": 416,
+        "end_line": 416
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5594,13 +5594,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 243,
-        "end_line": 243
+        "start_line": 279,
+        "end_line": 279
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 645,
-        "end_line": 645
+        "start_line": 697,
+        "end_line": 697
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -6414,13 +6414,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 600,
-        "end_line": 614
+        "start_line": 591,
+        "end_line": 605
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 669,
-        "end_line": 684
+        "start_line": 660,
+        "end_line": 675
       }
     ]
   },
@@ -7199,8 +7199,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 483,
-        "end_line": 490
+        "start_line": 535,
+        "end_line": 542
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7214,13 +7214,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 519,
-        "end_line": 539
+        "start_line": 571,
+        "end_line": 591
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 543,
-        "end_line": 559
+        "start_line": 595,
+        "end_line": 611
       },
       {
         "file": "tests/store_secrets.rs",
