@@ -45,8 +45,9 @@ jobs:
     # reaches the root package alone, so no member crate's own tests would run and none of its
     # clippy targets would be linted here - the blind spot of a multi-crate workspace whose root
     # is itself a package. The per-unit gates in .rigger/workflow.yml name the workspace for the
-    # same reason, so CI runs the battery a unit runs. The core lane is the one exception, see
-    # its own steps below.
+    # same reason, so CI runs the battery a unit runs. The no-default and core lanes run through
+    # .rigger/gates/lanes.sh, the script the check-in stage's `lanes` gate runs too, which names
+    # the workspace (and, on the core lane, every member with a `core` feature) itself.
     #
     # The test steps raise the test runner's per-process address-space cap
     # (RIGGER_TEST_AS_BYTES, .cargo/pidns-runner.sh, 4 GiB by default) to 16 GiB, spelled in
@@ -123,100 +124,29 @@ jobs:
         env:
           RIGGER_TEST_AS_BYTES: "17179869184"
         run: cargo test --workspace --no-fail-fast --verbose
-      # The deliberate light opt-out: `--no-default-features` drops turbovec so the
-      # grep-only build (no ONNX/OpenBLAS) stays green. It gets the SAME gate battery
-      # as the turbovec lane - clippy `--all-targets -D warnings` then build + test -
-      # so a warning that only surfaces under the grep-only cfg (dead code behind the
-      # turbovec feature, an unused import in the fallback path) fails CI instead of
-      # silently rotting. The loud "built without the turbovec feature" path is asserted
-      # by select_grounder's no-feature test here.
-      - name: clippy (grep-only, --no-default-features)
-        run: cargo clippy --workspace --no-default-features --all-targets -- -D warnings
-      - name: build + test (grep-only, --no-default-features)
+      # The deliberate light opt-out: `--no-default-features` drops turbovec so the grep-only
+      # build (no ONNX/OpenBLAS) stays green. The lanes script gives it the default lane's
+      # battery - clippy over every workspace target with warnings denied, then every workspace
+      # test - so a warning that only surfaces under the grep-only cfg (dead code behind the
+      # turbovec feature, an unused import in the fallback path) fails CI instead of silently
+      # rotting. The loud "built without the turbovec feature" path is asserted by
+      # select_grounder's no-feature test here.
+      - name: no-default lane (grep-only, --no-default-features)
         env:
           RIGGER_TEST_AS_BYTES: "17179869184"
-        run: |
-          cargo build --workspace --no-default-features --verbose
-          cargo test --workspace --no-default-features --no-fail-fast --verbose
+        run: sh .rigger/gates/lanes.sh no-default
       # Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
-      # --features core`) gets the same battery too - clippy then build + test - so a lint or
-      # a regression that only surfaces under the `core` cfg universe fails CI instead of
-      # rotting until the next hand-run `RIGGER_CORE_LANE_VERIFY=1`. Scoped to `--lib`
-      # throughout: THE FEATURE SPLIT (spec 93 Design) names "the binary" as one of the
-      # things `store` gates, so `main.rs` does not compile under `core` alone - `--lib` is
-      # the correct scope here, not a narrowed one (mirrors
-      # tests/core_lane_purity_audit.rs's own expensive check). The wasm32-unknown-unknown
-      # cross-compile of the pure subset stays the deliberately opt-in expensive check that
-      # test already gates behind `RIGGER_CORE_LANE_VERIFY=1`; this lane proves the native
-      # side of the same lane on every run instead.
-      - name: clippy (core lane, --no-default-features --features core)
-        run: cargo clippy --lib --no-default-features --features core -- -D warnings
-      # The root package's library holds no tests of its own (every library test lives in a
-      # member crate), so the `cargo test` line below runs 0 tests: it proves only that the
-      # root library's test harness links under `core`. The core lane's real tests run in the
-      # per-crate test steps that follow.
-      - name: build + test (core lane, --no-default-features --features core)
-        run: |
-          cargo build --lib --no-default-features --features core --verbose
-          cargo test --lib --no-default-features --features core --verbose
-      # The core lane for every member crate that declares a `core` feature (all of them): the
-      # root `--lib` battery above reaches only the root package's library, so each member gets
-      # clippy over all its targets and its own tests under the `core` cfg universe here, one
-      # crate per step because Cargo refuses `--features` across several packages in one
-      # invocation. The test steps run each crate's library tests, plus its integration tests
-      # where it has any (console-core alone).
-      - name: clippy (core lane, console-core)
-        run: cargo clippy -p console-core --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, console-core)
-        run: cargo test -p console-core --lib --tests --no-default-features --features core
-      - name: clippy (core lane, rigger-conductor)
-        run: cargo clippy -p rigger-conductor --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-conductor)
-        run: cargo test -p rigger-conductor --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-config-files)
-        run: cargo clippy -p rigger-config-files --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-config-files)
-        run: cargo test -p rigger-config-files --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-console)
-        run: cargo clippy -p rigger-console --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-console)
-        run: cargo test -p rigger-console --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-dash)
-        run: cargo clippy -p rigger-dash --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-dash)
-        run: cargo test -p rigger-dash --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-domain)
-        run: cargo clippy -p rigger-domain --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-domain)
-        run: cargo test -p rigger-domain --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-driver)
-        run: cargo clippy -p rigger-driver --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-driver)
-        run: cargo test -p rigger-driver --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-gates-shell)
-        run: cargo clippy -p rigger-gates-shell --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-gates-shell)
-        run: cargo test -p rigger-gates-shell --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-graph-sqlite)
-        run: cargo clippy -p rigger-graph-sqlite --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-graph-sqlite)
-        run: cargo test -p rigger-graph-sqlite --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-grounder)
-        run: cargo clippy -p rigger-grounder --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-grounder)
-        run: cargo test -p rigger-grounder --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-process)
-        run: cargo clippy -p rigger-process --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-process)
-        run: cargo test -p rigger-process --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-store-sqlite)
-        run: cargo clippy -p rigger-store-sqlite --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-store-sqlite)
-        run: cargo test -p rigger-store-sqlite --lib --no-default-features --features core
-      - name: clippy (core lane, rigger-worktree-git)
-        run: cargo clippy -p rigger-worktree-git --all-targets --no-default-features --features core -- -D warnings
-      - name: test (core lane, rigger-worktree-git)
-        run: cargo test -p rigger-worktree-git --lib --no-default-features --features core
+      # --features core`) gets the battery too, for every workspace member that declares a `core`
+      # feature - derived by the lanes script from `cargo metadata`, never listed - so a lint or a
+      # regression that only surfaces under the `core` cfg universe fails CI instead of rotting.
+      # A member that ships a binary (the root package) is linted on its library alone: THE
+      # FEATURE SPLIT (spec 93 Design) gates the binary, and the tests that drive it, behind
+      # `store`. A test step whose every test binary runs zero tests fails the lane. The
+      # wasm32-unknown-unknown cross-compile of the pure subset stays the deliberately opt-in
+      # expensive check tests/core_lane_purity_audit.rs gates behind `RIGGER_CORE_LANE_VERIFY=1`;
+      # this lane proves the native side of the same lane on every run instead.
+      - name: core lane (--no-default-features --features core)
+        run: sh .rigger/gates/lanes.sh core
 
   # Regression guard for dependency skew on a FRESH resolve. `cargo install` without
   # `--locked` ignores the committed Cargo.lock and re-resolves every dependency to the
