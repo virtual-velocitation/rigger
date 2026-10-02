@@ -23525,8 +23525,9 @@ fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_ga
     for (id, run) in &checkin {
         let (passed, out) = run_gate(run);
         assert!(
-            !passed,
-            "check-in gate `{id}` must see the operator commit in the whole spec diff: {out}"
+            !passed && out.contains("gate FAILED"),
+            "check-in gate `{id}` must find the operator commit's shape in the whole spec diff: \
+             {out}"
         );
     }
     let unit = content_gates("implement");
