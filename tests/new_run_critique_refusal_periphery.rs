@@ -14,8 +14,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    emit, read_run_events, record_clean_critique, record_critique, run_payloads, run_rigger,
-    run_rigger_envs, seed_run_events, temp_repoless_project, write_scaffold, write_spec_project,
+    assert_stopped_at_the_grounder, emit, read_run_events, record_clean_critique, record_critique,
+    run_payloads, run_rigger, run_rigger_envs, seed_run_events, stopping_at_the_grounder,
+    temp_repoless_project, write_scaffold, write_spec_project,
 };
 use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
 use common::repo::{stub_path, write_critique_stub};
@@ -326,12 +327,14 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
 
 /// Each run entry refuses a new run on the uncritiqued spec under its own command name: on an
 /// empty store, and with `--fresh` beside the spec's existing run, which begins a new run though
-/// the run it would otherwise adopt is in the store.
+/// the run it would otherwise adopt is in the store. The workflow stops at the grounder, so an
+/// entry that misses its refusal fails here instead of driving or serving.
 #[test]
 fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_name() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let workflow = stopping_at_the_grounder(SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
     let (_work, path) = stand_in_claude();
     let refuse_each = |extra: &[&str], runs_before: usize| {
         for (args, command) in RUN_ENTRIES {
@@ -706,13 +709,6 @@ fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_byt
     assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 1);
 }
 
-/// `workflow` with a grounder the binary rejects: a run entry that gets past its run start - its
-/// run minted or adopted - then stops selecting the grounder, before it drives an agent or serves
-/// stdin.
-fn stopping_at_the_grounder(workflow: &str) -> String {
-    workflow.replace("grounder: nop", "grounder: no-such-grounder")
-}
-
 /// The run entry `(args, command)` plus `extra` in `root`, with `path` as its `PATH`, got past its
 /// run start and stopped at the rejected grounder ([`stopping_at_the_grounder`]): it refused
 /// nothing, printed the no-critic line naming itself `no_critic` times and no other, and left the
@@ -724,15 +720,9 @@ fn assert_past_the_run_start(
     extra: &[&str],
     (no_critic, runs): (usize, usize),
 ) {
-    let (out, err, ok) = run_entry(root, path, args, extra);
-    assert!(
-        !ok && err.ends_with(
-            "rigger: unknown grounder \"no-such-grounder\"; valid names are symbols (default), \
-             grep, nop\n"
-        ),
-        "{command} {extra:?} gets past its run start and stops at the grounder; stdout:\n{out}\n\
-         stderr:\n{err}"
-    );
+    let output = run_entry(root, path, args, extra);
+    assert_stopped_at_the_grounder(&output, &format!("{command} {extra:?}"));
+    let err = &output.1;
     let line = format!("{command}: no spec critique for {SPEC_REL}: {NO_CRITIC_CLAUSE}\n");
     assert_eq!(
         (
