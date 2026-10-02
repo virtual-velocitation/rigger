@@ -14,6 +14,27 @@ pub fn repo_text(rel: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
+/// A PATH that finds `tool` in a directory under `work`, as the checked-in `tests/fixtures`
+/// script `stub` when one is given, ahead of the ambient PATH; with no stub the directory is
+/// empty and the whole PATH.
+pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
+    let bin = work.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let Some(stub) = stub else {
+        return bin.display().to_string();
+    };
+    std::os::unix::fs::symlink(
+        repo_root().join("tests/fixtures").join(stub),
+        bin.join(tool),
+    )
+    .unwrap();
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
 /// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
 /// consumer relies on - failing loudly, naming both, when it does not decode.
 pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str) -> T {

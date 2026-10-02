@@ -8,7 +8,8 @@ mod common;
 use common::cli::{run_rigger, temp_project};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_commit_all, git_ok, git_out, init_repo};
-use common::repo::repo_root;
+use common::repo::{repo_root, stub_path};
+use common::shell_outcome;
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -455,36 +456,6 @@ fn the_test_gate_covers_the_workspace_with_the_container_runtime() {
          exit 1; fi; cargo test --workspace"
     );
     assert!(repo_root().join(CONTAINER_SNIPPET).is_file());
-}
-
-/// A PATH that finds `tool` in a directory under `work`, as the fixture `stub` when one is
-/// given, ahead of the ambient PATH; with no stub the directory is empty and the whole PATH.
-fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
-    let bin = work.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    let Some(stub) = stub else {
-        return bin.display().to_string();
-    };
-    std::os::unix::fs::symlink(
-        repo_root().join("tests/fixtures").join(stub),
-        bin.join(tool),
-    )
-    .unwrap();
-    format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
-}
-
-/// A finished shell's success and its output, stdout then stderr.
-fn shell_outcome(out: &std::process::Output) -> (bool, String) {
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.success(), text)
 }
 
 /// This repository's `test` gate command run under `sh -c` - as the conductor runs every gate -

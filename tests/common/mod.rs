@@ -25,6 +25,16 @@ pub mod workflow_probe;
 #[allow(unused_imports)]
 pub use fixtures::wait_until;
 
+/// A finished shell's success and its output, stdout then stderr.
+pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
 ///
