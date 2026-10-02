@@ -27581,6 +27581,112 @@ mod tests {
         cfg
     }
 
+    /// Round 0's reject of the `per_unit_panel_cfg` unit: one correctness item, in the file
+    /// round 0 wrote.
+    const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
+
+    /// The `per_unit_panel_cfg` adjudicator's spawn id at `attempt`, or its `retry`-th
+    /// respawn.
+    fn adjudicator_at(attempt: u32, retry: u32) -> String {
+        spawn_retry_id("implement", ROLE_ADJUDICATOR, attempt, retry)
+    }
+
+    /// Run the `per_unit_panel_cfg` unit in a real repository: its implementer writes
+    /// `feature.rs` on attempt 0 and `fix<attempt>.rs` on every later attempt, so each review
+    /// round has a delta; each adjudicator spawn named in `verdicts` answers its verdict and
+    /// every other spawn answers prose. Returns the run's state, its log and the driver.
+    fn run_review_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: verdicts
+                .iter()
+                .map(|(id, verdict)| (id.clone(), verdict.to_string()))
+                .collect(),
+            write_files_by_spawn_id: (0..4)
+                .map(|attempt| {
+                    let file = match attempt {
+                        0 => "feature.rs".to_string(),
+                        n => format!("fix{n}.rs"),
+                    };
+                    (spawn_id("implement", ROLE_IMPLEMENTER, attempt), vec![file])
+                })
+                .collect(),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&per_unit_panel_cfg(None), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (rs, events, driver)
+    }
+
+    /// A later review round reviews what changed since the round that sent the unit back,
+    /// and the items that round required: every tier's round-1 prompt names the round-0 sha
+    /// its delta is read from, the `git diff` that is its scope, and each REQUIRED item, which
+    /// the round-1 implementer was also handed as its REQUIRED list. Round 0 carries none.
+    #[test]
+    fn the_round_two_review_prompt_carries_the_prior_required_list_and_the_delta_base() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let base = recorded_review_round_start_sha(&events, "implement", 0)
+            .expect("round 0 stamps the sha it judged");
+        let item = "- feature.rs: close the unscoped read";
+        for agent in ["lens", "adversary", "adj"] {
+            let prompts = driver.prompts_for(agent);
+            assert_eq!(prompts.len(), 2, "{agent} reviews both rounds");
+            assert!(
+                !prompts[0].contains(item) && !prompts[0].contains("..HEAD"),
+                "{agent}'s first round has no earlier round to read a delta from:\n{}",
+                prompts[0]
+            );
+            for needle in [&format!("git diff {base}..HEAD"), "fix1.rs", item] {
+                assert!(
+                    prompts[1].contains(needle),
+                    "{agent}'s second round must carry {needle:?}:\n{}",
+                    prompts[1]
+                );
+            }
+        }
+        let implementer = driver.prompts_for("worker");
+        assert!(
+            implementer[1].contains(item),
+            "the round-1 implementer is handed the REQUIRED list:\n{}",
+            implementer[1]
+        );
+    }
+
+    /// A later round's reject must name the items it requires fixed: one that names none is
+    /// no verdict the next round can be held to, so it is degenerate - the adjudicator is
+    /// respawned under its retry id and the unit is charged nothing for it.
+    #[test]
+    fn a_later_round_reject_naming_no_required_item_respawns_the_adjudicator() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"reject"}"#),
+            (adjudicator_at(1, 1), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            driver.spawn_ids().contains(&adjudicator_at(1, 1)),
+            "the bare reject is respawned; spawns: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
