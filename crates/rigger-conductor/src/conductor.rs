@@ -43619,6 +43619,47 @@ mod tests {
         );
     }
 
+    /// The Reverted corner: an operator resumes the stopped gate (`rigger resume-unit`), and the
+    /// next round's `spec-ambiguity` reject re-plans as a first one - the stop's completion key
+    /// closes the stopped pair, and the round the resume opens re-plans nothing - so the gate
+    /// critiques the re-planned DAG, approves it and releases the fan-out, while the stop's
+    /// records stand once each.
+    #[test]
+    fn a_resumed_stopped_gate_re_plans_its_next_spec_ambiguity_reject_as_a_first_one() {
+        let (st, _, _) = stopped_run();
+        grant_resume(&st, "plan-critique", 2);
+        let resumed = critique_rounds(&[
+            APPROVE.to_string(),
+            APPROVE.to_string(),
+            critique_reject("spec-ambiguity", &["adv-5"]),
+        ]);
+        let rs = critique_step(&st, &resumed);
+        assert_eq!(
+            (
+                resumed.spawn_ids(),
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+                stop_records(&run_log(&st)),
+            ),
+            (
+                vec![
+                    spawn_id("plan-critique", ROLE_ADVERSARY, 2),
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 2),
+                    spawn_id("plan", ROLE_REPLAN, 3),
+                    spawn_id("plan-critique", ROLE_ADVERSARY, 3),
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 3),
+                    spawn_id("u-a", ROLE_IMPLEMENTER, 0),
+                    spawn_id("u-b", ROLE_IMPLEMENTER, 0),
+                ],
+                ledger::Status::Integrated,
+                None,
+                the_stop_records(),
+            ),
+            "the resumed round's spec-ambiguity reject re-plans, the next round approves and \
+             releases the fan-out, and nothing stops again"
+        );
+    }
+
     #[test]
     fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_stops_the_run() {
         let (st, driver, rs) = stopped_run();
