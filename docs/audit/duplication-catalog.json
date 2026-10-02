@@ -38,7 +38,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-252bfd2c826c",
+    "id": "dup-670e6a1d59fa",
     "classification": "near",
     "sites": [
       {
@@ -54,6 +54,11 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "conflict_regenerate_key",
+        "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "audit_id",
         "content_hash": "7f40f97a5c856b17"
       },
       {
@@ -449,6 +454,25 @@
       }
     ],
     "proposed_home": "conductor::run_ctx",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-d0dab916f0d7",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "unit_size_cap",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
+        "name": "workflow_doc",
+        "content_hash": "c28c81e0bdeb1759"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

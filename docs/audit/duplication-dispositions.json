@@ -10,9 +10,9 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-252bfd2c826c",
+    "id": "dup-670e6a1d59fa",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`."
   },
   {
     "id": "dup-088ec120e4ac",
@@ -1013,5 +1013,10 @@
     "id": "dup-b4d4329417cc",
     "disposition": "not-a-duplicate",
     "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
+  },
+  {
+    "id": "dup-d0dab916f0d7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line `format!` builders of different values: the workflow file's path under the rigger directory, and the unit size cap's sentence the plan protocol and the DAG critique share; they share only the one-interpolation token shape."
   }
 ]
