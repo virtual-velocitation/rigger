@@ -275,7 +275,10 @@ observer can see what a working agent is doing between\n                        
 milestones - `rigger status` and the dash present it\n  \
 rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
 step advances past it: <out> (or stdin) is the agent's output\n                              \
-(with --error, its failure message); --if-absent records only\n                              \
+(with --error, its failure message). It refuses to replace\n                              \
+the result of a spawn that already ended unless\n                              \
+--supersede (the explicit repair); a step's liveness\n                              \
+fault is always replaceable. --if-absent records only\n                              \
 if the id has no result; --meta <json> adds bookkeeping\n  \
 rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
 context graph, scoped to the given files (the CLI form of\n                              \

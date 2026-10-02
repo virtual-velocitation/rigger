@@ -1544,8 +1544,9 @@ fn store_file(dir: &Path, name: &str) -> String {
 /// stream, BEFORE it records (spec 05, done-when: "`rigger result` prints stderr
 /// advisories for an orphan id and for superseding an existing result"). Two independent
 /// notes, both purely advisory - the record still lands, because pre-recording a result
-/// before its spawn request is parked is legitimate and re-recording deliberately
-/// supersedes (results are last-write-wins). ORPHAN: no `SpawnRequested` with this id is
+/// before its spawn request is parked is legitimate, and a record that reaches here over a
+/// standing result is a deliberate `--supersede` or replaces the step's liveness fault
+/// ([`result_refusal`] refuses every other). ORPHAN: no `SpawnRequested` with this id is
 /// in the stream, so nothing is parked under it - a typoed id would otherwise silently
 /// strand the real spawn while the orphan result records against an id the run never
 /// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N),
@@ -1615,6 +1616,22 @@ fn ended_refusal(events: &[Event], id: &str) -> Result<Option<String>, serde_jso
             e.position
         )
     }))
+}
+
+/// Why a plain `rigger result` for spawn `id` must not record: the spawn already ENDED
+/// ([`ended_refusal`]) and the operator did not pass `--supersede`, the explicit repair that
+/// replaces a standing result. `None` when it may record: nothing ended the spawn yet, only the
+/// step's liveness fault answers it (the real result replaces that), or `supersede`.
+fn result_refusal(
+    events: &[Event],
+    id: &str,
+    supersede: bool,
+) -> Result<Option<String>, serde_json::Error> {
+    if supersede {
+        return Ok(None);
+    }
+    Ok(ended_refusal(events, id)?
+        .map(|refusal| format!("result: {refusal}; pass --supersede to replace it")))
 }
 
 /// `rigger step [--spec <path>]` - advance the run one frontier (§4, spec 04).

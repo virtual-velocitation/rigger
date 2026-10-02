@@ -1391,8 +1391,9 @@ const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
 /// RECOVERY (the honest one, not the dead "just re-run"): reviewer spawn results are
 /// LAST-WRITE-WINS ([`spawn::result_of`] - a corrected re-record supersedes an earlier
 /// one), so the operator recovers by re-driving the reviewer and recording a SUBSTANTIVE
-/// result for one of its deterministic retry ids; the loop then replays that non-
-/// degenerate result and folds normally. Re-running WITHOUT a corrected result just
+/// result for one of its deterministic retry ids with `rigger result --supersede` (a plain
+/// record refuses to replace the result of a spawn that already ended); the loop then
+/// replays that non-degenerate result and folds normally. Re-running WITHOUT a corrected result just
 /// replays the recorded empties and halts here again - which is why the message names the
 /// re-record, not a bare re-run.
 fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt: u32) -> Error {
@@ -1402,9 +1403,9 @@ fn degenerate_reviewer(stage: &str, tier: &str, agent: &str, role: &str, attempt
          on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate \
          reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is \
          NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a \
-         SUBSTANTIVE result for one of its spawn ids (results are last-write-wins, so a corrected \
-         re-record supersedes the empty one), e.g. `rigger result {latest:?} <substantive output>`; \
-         then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
+         SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` \
+         (results are last-write-wins, and a plain record refuses to replace an ended spawn's \
+         result), e.g. `rigger result {latest:?} --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
          here again.",
         REVIEWER_RESPAWN_BOUND + 1
     ))
