@@ -972,7 +972,52 @@ pub(crate) use crate::test_support::test_request;
 mod tests {
     use super::*;
     use crate::eventstore::Event;
-    use crate::ledger::AttentionEntry;
+    use crate::ledger::{AttentionEntry, RequiredItem};
+
+    /// A reject's verdict line names the items it requires fixed - each one's finding, the
+    /// file it is in, whether it is a correctness defect, and the shape of a defect that
+    /// recurs across sites - read by the one verdict-line parse beside the rest of the
+    /// disposition; a line that names none, or names them in another shape, requires nothing.
+    #[test]
+    fn required_items_parse_from_the_verdict_line() {
+        let required = |output: &str| {
+            Adjudication::parse(output)
+                .map(|a| a.required)
+                .unwrap_or_default()
+        };
+        let line = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"src/a.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"reword the doc","path":"docs/b.md"}]}"#;
+        assert_eq!(
+            required(&format!("the reasoning\n{line}")),
+            vec![
+                RequiredItem {
+                    finding: "scope the log read".into(),
+                    path: "src/a.rs".into(),
+                    correctness: true,
+                    pattern: "unscoped log reads".into(),
+                },
+                RequiredItem {
+                    finding: "reword the doc".into(),
+                    path: "docs/b.md".into(),
+                    correctness: false,
+                    pattern: String::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            required(&format!("{line}\n{{\"verdict\":\"approve\"}}")),
+            Vec::new(),
+            "the last verdict line is the one read"
+        );
+        for none in [
+            r#"{"verdict":"reject"}"#,
+            r#"{"verdict":"reject","required":"fix it"}"#,
+            r#"{"verdict":"reject","required":["fix it"]}"#,
+            r#"{"required":[{"finding":"not a verdict line"}]}"#,
+            "no json here",
+        ] {
+            assert_eq!(required(none), Vec::new(), "{none}");
+        }
+    }
 
     #[test]
     fn adjudication_parses_the_verdict_line_only_for_an_adjudicator_result() {
