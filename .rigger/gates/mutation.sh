@@ -133,12 +133,17 @@
 # check-in is landed by hand during this run - and taking it would sweep only the changes since
 # it and re-run that spec's misses, failing this spec on survivors that are not its own.
 # Catches are the project's knowledge, whichever run recorded them: the sweep also re-runs by
-# name every caught mutant in the map whose catching binary's `tests/<binary>.rs` changed since
-# one point - the owned tip, else `$RIGGER_RUN_BASE` - so a spec that rewrites the test catching
-# an earlier spec's mutant examines that mutant again on its first sweep (a change under a
-# nested tests/ directory re-runs every mutant a tests/*.rs binary caught; the crate's own
-# unit-test binaries cannot see tests/ and keep their catches). That same point is the base of
-# the diff the sweep covers. The rerun's misses join the sweep's own missed.txt so one file is
+# name every caught mutant in the map whose catching binary changed since one point - the owned
+# tip, else `$RIGGER_RUN_BASE` - so a spec that rewrites the test catching an earlier spec's
+# mutant examines that mutant again on its first sweep. The map names a binary as nextest does,
+# less the root package's own `<root>::` prefix, and a changed path reaches binaries through the
+# package that owns it: its `tests/<t>.rs` is the integration-test binary `<package>::<t>` (`<t>`
+# for the root package); a change nested deeper under its tests/ (a shared module, a fixture)
+# reaches every integration-test binary of that package and no other, since only they compile
+# it; a change under a workspace crate's src/ reaches that crate's lib unit-test binary
+# `<crate>`. The root package's own unit-test binaries are reached by no path: its lib and its
+# bin share src/, and no path says which of them a change compiles into. That same point is the
+# base of the diff the sweep covers. The rerun's misses join the sweep's own missed.txt so one file is
 # the verdict. A solo-merging unit's post-merge re-sweep is therefore the empty merge delta and
 # passes in seconds. A mutant the main sweep already examined is not examined again by name.
 #
@@ -184,6 +189,37 @@ git rev-parse -q --verify "$RIGGER_RUN_BASE^{commit}" > /dev/null || {
 container_env="$(dirname "$0")/container-env.sh"
 test ! -f "$container_env" || . "$container_env" || exit 1
 
+# The package that owns the file $1, into `pkg_dir` and `pkg_name`: the nearest enclosing
+# directory whose Cargo.toml declares a [package] (see THE WHOLE WORKSPACE IS MUTATED), or the
+# root directory and no name when none does.
+package_of() {
+    pkg_dir="$(dirname "$1")"
+    while :; do
+        pkg_name=""
+        test ! -f "$pkg_dir/Cargo.toml" ||
+            pkg_name="$(awk -F '"' '/^\[/ { in_pkg = ($0 == "[package]"); next } in_pkg && $1 ~ /^name *= *$/ { print $2; exit }' "$pkg_dir/Cargo.toml")"
+        test -z "$pkg_name" -a "$pkg_dir" != . || return 0
+        pkg_dir="$(dirname "$pkg_dir")"
+    done
+}
+
+# The test binaries whose code changed since $1, named as the catch map names them (see
+# INCREMENTAL RE-SWEEPS): a package's tests/<t>.rs is `<package>::<t>`, `<t>` for the root
+# package; a change nested deeper under its tests/ is every such binary of that package; a
+# change under a workspace crate's src/ is `<crate>`.
+changed_binaries() {
+    git diff --name-only "$1" | while IFS= read -r f; do
+        package_of "$f"
+        prefix="$pkg_name::"
+        test "$pkg_dir" != . || prefix=""
+        case "${f#"$pkg_dir"/}" in
+            tests/*/*) for t in "$pkg_dir"/tests/*.rs; do t="${t##*/}"; echo "$prefix${t%.rs}"; done ;;
+            tests/*.rs) t="${f##*/}"; echo "$prefix${t%.rs}" ;;
+            src/*) test -z "$prefix" || echo "$pkg_name" ;;
+        esac
+    done
+}
+
 last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
@@ -197,8 +233,8 @@ since="${anchor:-$RIGGER_RUN_BASE}"
 
 rerun="$({
     test -z "$owned" || cat "$last/missed.txt" 2>/dev/null
-    changed="$(git diff --name-only "$since" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)"
-    test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set && $2 != "rigger" && $2 != "bin/rigger") { print $1 }' "$last/caught.map" 2>/dev/null
+    changed="$(changed_binaries "$since")"
+    test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) { print $1 }' "$last/caught.map" 2>/dev/null
 } | sort -u)"
 
 git diff "$since" -- '*.rs' > unit.diff || exit 1
@@ -236,21 +272,11 @@ else
 fi
 
 # The `--test-package` arguments for the diff file $1: the package of every file it touches,
-# plus the root package (the nearest Cargo.toml with a [package] of `Cargo.toml` itself).
+# plus the root package (the package of `Cargo.toml` itself).
 test_packages() {
     { sed -n 's#^+++ b/##p; s#^--- a/##p' "$1"; echo Cargo.toml; } | while IFS= read -r f; do
-        d="$(dirname "$f")"
-        while :; do
-            if test -f "$d/Cargo.toml"; then
-                pkg="$(awk -F '"' '/^\[/ { in_pkg = ($0 == "[package]"); next } in_pkg && $1 ~ /^name *= *$/ { print $2; exit }' "$d/Cargo.toml")"
-                if test -n "$pkg"; then
-                    echo "$pkg"
-                    break
-                fi
-            fi
-            test "$d" = "." && break
-            d="$(dirname "$d")"
-        done
+        package_of "$f"
+        test -z "$pkg_name" || echo "$pkg_name"
     done | sort -u | sed 's/^/--test-package /'
 }
 
@@ -318,9 +344,12 @@ fi
 printf '%s\n' "$RIGGER_RUN_BASE" > "$MUTANTS/last.new/base" || exit 1
 git rev-parse HEAD > "$MUTANTS/last.new/tip" || exit 1
 cp mutants.out/missed.txt "$MUTANTS/last.new/missed.txt" 2>/dev/null || : > "$MUTANTS/last.new/missed.txt"
+# Each catch under the binary that caught it, less the root package's own prefix (see
+# INCREMENTAL RE-SWEEPS).
+package_of Cargo.toml
 for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do
     test -f "$f" || continue
-    awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); sub(/^rigger::/, "", b); print name "\t" b; exit } }' "$f"
+    awk -v root="$pkg_name::" 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); if (index(b, root) == 1) b = substr(b, length(root) + 1); print name "\t" b; exit } }' "$f"
 done > "$MUTANTS/last.new/caught.map" || exit 1
 cat mutants.out/*.txt "$MUTANTS"/rerun/mutants.out/*.txt 2>/dev/null | sort -u > "$MUTANTS/examined.txt"
 awk -F '\t' 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($1 in seen)' "$MUTANTS/examined.txt" "$last/caught.map" 2>/dev/null >> "$MUTANTS/last.new/caught.map"
