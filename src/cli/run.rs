@@ -2031,17 +2031,17 @@ enum DashStart {
     Failed(String),
 }
 
-/// The recorded-serving predicate BOTH the step path's idempotent-start decision
-/// ([`ensure_run_dashboard_at`], via [`dash::dash_start_needed`]) and `rigger status`'s
-/// truthful presentation ([`cmd_status`], via [`dash::dash_status`]) verify a marker's port
-/// against - ONE named symbol, not two independently duplicated literal closures, so the two
-/// surfaces provably share the same probe rather than merely claiming to (arch-u69c4-parity-
-/// claim-rests-on-stale-unlinked-docs-not-a-shared-symbol). A REAL network probe of the port,
-/// never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must
-/// never masquerade as still serving just because its pid happens to be alive (possibly reused
-/// by an unrelated process).
+/// The recorded-serving predicate the step path's idempotent-start decision
+/// ([`ensure_run_dashboard_at`], via [`dash::dash_start_needed`]) verifies a marker's port
+/// against: the ONE probe `rigger status` ([`dash::dash_status`]) and `rigger watch` also
+/// consume, [`dash::dash_answer_on`], read the same way by all three - only a port nothing
+/// answers as a dash is not serving. A dash that holds its port but does not answer within the
+/// probe window is busy, never gone, so the step starts no second dash that could only fail to
+/// bind the held port. A REAL network probe of the port, never a bare pid-liveness check: a
+/// marker left by a self-reaped or pid-recycled dash must never masquerade as still serving
+/// just because its pid happens to be alive (possibly reused by an unrelated process).
 fn dash_marker_serving(m: dash::DashMarker) -> bool {
-    dash::dash_serving_on(m.port)
+    dash::dash_answer_on(m.port) != dash::DashAnswer::NotServing
 }
 
 /// Idempotently ensure a run dashboard serves the project whose marker lives at
