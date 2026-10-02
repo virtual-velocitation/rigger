@@ -17692,6 +17692,69 @@ fn assert_no_absolute_or_home_path(text: &str, root: &Path) {
     }
 }
 
+/// Runs [`assert_no_absolute_or_home_path`] over one probe `text` against a project root no
+/// probe names, so each probe fails on its own spelling alone.
+fn probe_no_absolute_or_home_path(text: &str) {
+    assert_no_absolute_or_home_path(text, Path::new("/a-project-root-no-probe-names"));
+}
+
+rigger::test_cases! {
+    /// The no-absolute-or-home-path check fails on a token opening with `/`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_token_opening_with_a_slash:
+        probe_no_absolute_or_home_path("Read /repo/specs/112.md first.\n");
+    /// The check fails on a token opening with `~`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_token_opening_with_a_tilde:
+        probe_no_absolute_or_home_path("Copy it to ~/.claude/skills/spec-preflight.\n");
+    /// The check fails on `$HOME` anywhere in a line.
+    #[should_panic(expected = "names \"$HOME\"")]
+    home_path_check_fails_on_dollar_home:
+        probe_no_absolute_or_home_path("Copy it to $HOME/.claude/skills/spec-preflight.\n");
+    /// The check fails on `${HOME}` anywhere in a line.
+    #[should_panic(expected = "names \"${HOME}\"")]
+    home_path_check_fails_on_braced_home:
+        probe_no_absolute_or_home_path("Copy it to ${HOME}/.claude/skills/spec-preflight.\n");
+    /// The check fails on a JSON value holding an absolute path: a `/` right after a `"`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_json_value_holding_an_absolute_path:
+        probe_no_absolute_or_home_path(
+            "rigger emit DecisionMade '{\"governs\":[\"/repo/specs/112.md\"]}'\n",
+        );
+    /// The check fails on a `/` right after a `'` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_single_quoted_absolute_path_inside_a_token:
+        probe_no_absolute_or_home_path("rigger critique --spec='/repo/specs/112.md'\n");
+    /// The check fails on a `/` right after a `=` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_flag_equals_an_absolute_path:
+        probe_no_absolute_or_home_path("rigger critique --spec=/repo/specs/112.md\n");
+    /// The check fails on a `~` right after a `=` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_flag_equals_a_home_path:
+        probe_no_absolute_or_home_path("rigger setup --skills=~/.claude/skills\n");
+    /// The check fails on a `/` right after a `:` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_colon_then_an_absolute_path:
+        probe_no_absolute_or_home_path("PATH=bin:/repo/target/debug\n");
+    /// The check fails on a `/` right after a `[` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_bracket_then_an_absolute_path:
+        probe_no_absolute_or_home_path("governs=[/repo/specs/112.md]\n");
+    /// The check fails on a `/` right after a `(` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_link_target_holding_an_absolute_path:
+        probe_no_absolute_or_home_path("See [spec 112](/repo/specs/112.md).\n");
+    /// The check fails on a `/` right after a `<` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_an_angle_bracket_then_an_absolute_path:
+        probe_no_absolute_or_home_path("See spec<</repo/specs/112.md>.\n");
+    /// The check fails on a `/` right after a backtick inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_backtick_then_an_absolute_path:
+        probe_no_absolute_or_home_path("Read spec`/repo/specs/112.md` first.\n");
+}
+
 /// Spec 112, criterion 4 (SETUP SHIPS THE PREFLIGHT SKILL). Given a project with no skills
 /// directory, when the operator runs `rigger setup`, then `spec-preflight` lands at
 /// `.claude/skills/spec-preflight/SKILL.md` from the skill registry - reported, loadable, its
