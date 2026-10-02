@@ -194,7 +194,8 @@ of whether a spawn reported yet; the death courier records\n                    
 atomically instead via `rigger result --if-absent`\n  \
 rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
 The step wave is a slim manifest; each worker fetches its\n                              \
-own prompt from the log by spawn id (spawn-by-reference)\n  \
+own prompt from the log by spawn id (spawn-by-reference);\n                              \
+it refuses a spawn that already ended on a real result\n  \
 rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\n                              \
 (the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
 a worker points agent-created scratch and manual\n                              \

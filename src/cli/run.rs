@@ -1199,13 +1199,21 @@ pub(crate) fn cmd_prompt(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    match spawn::prompt_for(&events, id).map_err(|e| e.to_string())? {
-        Some(p) => {
-            println!("{p}");
-            Ok(())
-        }
-        None => Err(format!("prompt: no spawn request recorded for {id:?}").into()),
+    println!("{}", prompt_reply(&events, id)?);
+    Ok(())
+}
+
+/// What `rigger prompt <id>` answers from the run's `events`: the spawn's full prompt
+/// ([`spawn::prompt_for`]), or a refusal - for an id no request is recorded under, and for a spawn
+/// that already ended ([`ended_refusal`]), so a worker a resumed driver re-spawns for a replayed
+/// wave stops before doing any work.
+fn prompt_reply(events: &[Event], id: &str) -> Result<String, String> {
+    if let Some(refusal) = ended_refusal(events, id).map_err(|e| e.to_string())? {
+        return Err(format!("prompt: {refusal}"));
     }
+    spawn::prompt_for(events, id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("prompt: no spawn request recorded for {id:?}"))
 }
 
 /// `rigger scratch <spawn-id>` - print spawn `<id>`'s own rigger-assigned scratch
