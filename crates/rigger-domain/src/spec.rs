@@ -2607,6 +2607,34 @@ mod tests {
             F10,
             &[twin(2, "s", 1)],
         );
+        /// An unpaired last backtick after a pair blanks to its sentence end, so a measure
+        /// word after it is hidden and criterion 1 measures nothing.
+        twin_tell_does_not_see_a_measure_word_after_an_unpaired_backtick_that_follows_a_pair: assert_decided_tells(
+            &["`s` is `odd appends one.", "`s` appends two."],
+            F10,
+            &[],
+        );
+        /// The blank of an unpaired backtick stops at its sentence end, so the next sentence's
+        /// span and measure word are seen.
+        twin_tell_sees_the_sentence_after_an_unpaired_backtick: assert_decided_tells(
+            &["`s` is `odd. `s` appends one.", "`s` appends two."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// The blank of an odd count of quote marks stops at its sentence end, so the next
+        /// sentence's span and measure word are seen.
+        twin_tell_sees_the_sentence_after_an_odd_quote_mark: assert_decided_tells(
+            &["`s` is \"odd. `s` appends one.", "`s` appends two."],
+            F10,
+            &[twin(2, "s", 1)],
+        );
+        /// A double-backtick span reads as two empty pairs, and an empty pair names no span,
+        /// so two criteria measuring one never twin on an empty surface.
+        twin_tell_names_no_empty_span_for_a_double_backtick_span: assert_decided_tells(
+            &["``store`` appends one event.", "``store`` appends two events."],
+            F10,
+            &[],
+        );
         /// A measure word inside a code span is masked, so it measures nothing.
         twin_tell_does_not_see_a_measure_word_inside_a_code_span: assert_decided_tells(
             &["`s` sets `exactly` one.", "`s` sets `exactly` two."],
