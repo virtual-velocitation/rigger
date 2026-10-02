@@ -14121,7 +14121,8 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, keyed_index, keyed_payload, run_log, stop_records, the_stop_records,
+        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log, stop_records,
+        the_stop_records,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -43573,22 +43574,6 @@ mod tests {
         (st, driver, rs)
     }
 
-    /// The summary of every `LessonLearned` in `log`, in log order.
-    fn lesson_summaries(log: &[Event]) -> Vec<Value> {
-        log.iter()
-            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .map(|e| e.decode::<Value>().unwrap()["summary"].clone())
-            .collect()
-    }
-
-    /// The payload of every `UnitEscalated` in `log`, in log order.
-    fn escalations(log: &[Event]) -> Vec<Value> {
-        log.iter()
-            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
-            .map(|e| e.decode::<Value>().unwrap())
-            .collect()
-    }
-
     /// At `max_retries: 2` the stopping reject also exhausts the gate's remediation bound
     /// (`remediate(1, 2)` escalates). The round head decides the stop before the remediation
     /// decision, so the stop's records stand, its escalation is the gate's only one, and no
@@ -43604,8 +43589,11 @@ mod tests {
                 driver.spawn_ids(),
                 stop_records(&log),
                 rs.budget_halt.as_deref(),
-                escalations(&log),
-                lesson_summaries(&log),
+                payloads_of_type(&log, ledger::TYPE_UNIT_ESCALATED),
+                payloads_of_type(&log, contextgraph::TYPE_LESSON_LEARNED)
+                    .iter()
+                    .map(|lesson| lesson["summary"].clone())
+                    .collect::<Vec<_>>(),
             ),
             (
                 critique_round_spawns(2),
@@ -43785,15 +43773,10 @@ mod tests {
         let driver = rejecting_twice_for_spec_ambiguity();
         let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria))
             .expect("a stopped gate returns its halted state, never the coverage error");
-        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
             (
                 rs.budget_halt.as_deref(),
-                events
-                    .iter()
-                    .filter(|e| e.type_ == TYPE_SPEC_DEFECT)
-                    .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
-                    .collect::<Vec<_>>()
+                payloads_of_type(&run_log(&st), TYPE_SPEC_DEFECT)
             ),
             (Some(STOP_HALT), vec![json!({"reason": STOP_HALT})]),
             "the step halts on the stop; the coverage check never runs"
