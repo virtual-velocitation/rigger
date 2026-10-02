@@ -1334,3 +1334,302 @@ fn critique_is_a_known_command_with_its_usage_line() {
         "the usage names the verb:\n{usage}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The SDET periphery layer over the second attempt's delta: the spec-positional rule every
+// spec-taking verb now shares, the result a concurrent call recorded first, an unreadable request
+// on the critique stream, the removal a repo-less project never runs, and the store selection
+// handed to the critic from a configured rung and over an ambient one.
+// ---------------------------------------------------------------------------------------------
+
+/// The names under the project's `.rigger/` directory, sorted.
+fn rigger_dir_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join(rigger::config::RIGGER_DIR))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Given a project, when the operator hands `rigger run`, `rigger workflow` or `rigger critique` a
+/// second spec path or an unknown flag - before or after the spec - then each verb refuses through
+/// the one spec-positional rule they share: exactly one stderr line naming the verb and the
+/// argument, a non-zero exit, nothing on stdout and nothing written into the project.
+#[test]
+fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_one_rule() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let scratch = root.join("scratch");
+    let envs = [
+        ("PATH", path.as_str()),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ];
+    let before = rigger_dir_names(root);
+    for (args, refusal) in [
+        (
+            ["run", SPEC_REL, "specs/other.md"],
+            "rigger: run: unexpected second positional argument \"specs/other.md\"\n",
+        ),
+        (
+            ["run", "--frob", SPEC_REL],
+            "rigger: run: unknown flag \"--frob\"\n",
+        ),
+        (
+            ["workflow", SPEC_REL, "specs/other.md"],
+            "rigger: workflow: unexpected second positional argument \"specs/other.md\"\n",
+        ),
+        (
+            ["workflow", SPEC_REL, "--frob"],
+            "rigger: workflow: unknown flag \"--frob\"\n",
+        ),
+        (
+            ["critique", SPEC_REL, "--frob"],
+            "rigger: critique: unknown flag \"--frob\"\n",
+        ),
+    ] {
+        let (out, err, ok) = run_rigger_envs(root, &args, &envs);
+        assert_eq!(
+            (out.as_str(), err.as_str(), ok),
+            ("", refusal, false),
+            "{args:?} refuses through the shared rule, naming its verb"
+        );
+    }
+    assert_eq!(
+        rigger_dir_names(root),
+        before,
+        "a refused argument list writes nothing into the project"
+    );
+    assert!(!scratch.exists(), "nor anything under the scratch root");
+    assert_eq!(critique_stub_spawns(work.path()), 0, "no critic is spawned");
+}
+
+/// Given the critique stream already holds a result for the critic's attempt-0 spawn that is no
+/// critique - a concurrent call that minted the same spawn id recorded it first - when the spec is
+/// critiqued, then the critic's session runs at attempt 0 but the first recorded result stands,
+/// and the verb judges what it reads back from the store, never its own session's output: it says
+/// why that result is no critique, exits non-zero and copies nothing. The next call counts the
+/// parked request and critiques at attempt 1.
+#[test]
+fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessions_own() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let first = critique_spawn_id(SPEC_HASH, 0);
+    let raced = json!({"id": first, "output": "I could not decide."});
+    seed_critique(root, &[(TYPE_SPAWN_RESULT, raced.clone())]);
+
+    // When the spec is critiqued and the critic's own session answers with a real reject ...
+    let (session, session_path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &session_path, &scratch);
+
+    // ... the session ran at attempt 0, yet the verb answers from the result recorded first.
+    assert_eq!(critique_stub_spawns(session.path()), 1, "the session ran");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): critiquing with critic at attempt 0"
+        )),
+        "no request was recorded, so the spawn runs at attempt 0:\n{err}"
+    );
+    assert!(!ok, "the result read back is no critique");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - the \
+             critic's output carries no verdict line"
+        )),
+        "the why is the recorded result's, not the session's reject:\n{err}"
+    );
+    assert_eq!(out, "", "the session's own findings are never printed");
+    let recorded = critique_payloads(root);
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|(t, d)| (t.as_str(), d["id"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        [
+            (TYPE_SPAWN_RESULT, first.as_str()),
+            (TYPE_SPAWN_REQUESTED, first.as_str()),
+        ],
+        "the attempt-0 request is parked and the session's result is never recorded beside the \
+         first one"
+    );
+    assert_eq!(
+        recorded[0].1, raced,
+        "the first recorded result stands unchanged"
+    );
+    assert_eq!(review_findings(root), Vec::<Value>::new(), "nothing copied");
+
+    // When the unchanged text is critiqued again, the parked request counts: attempt 1 runs.
+    let (next, next_path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &next_path, &scratch);
+    assert!(ok, "attempt 1 records a critique; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 1));
+    assert_eq!(critique_stub_spawns(next.path()), 1);
+    assert_eq!(
+        spawn_events(&critique_events(root))[2..],
+        [
+            (
+                TYPE_SPAWN_REQUESTED.to_string(),
+                critique_spawn_id(SPEC_HASH, 1)
+            ),
+            (
+                TYPE_SPAWN_RESULT.to_string(),
+                critique_spawn_id(SPEC_HASH, 1)
+            ),
+        ]
+    );
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 1, SPEC_REL));
+}
+
+/// Given the critique stream holds a spawn request that cannot be read - its attempt cannot be
+/// told apart - when a spec with no critique is critiqued, then the attempt count fails rather
+/// than reuse an attempt id: the verb exits non-zero naming the unreadable request, parks no
+/// request, spawns no critic and copies nothing.
+#[test]
+fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spawns_nothing() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    seed_critique(
+        root,
+        &[(TYPE_SPAWN_REQUESTED, json!("not a spawn request"))],
+    );
+    let (work, path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+    assert!(!ok, "an unreadable request fails the count");
+    assert!(
+        err.contains(
+            "rigger: event store: a spawn request recorded on the critique stream is unreadable: "
+        ),
+        "the verb names the unreadable request:\n{err}"
+    );
+    assert!(
+        !err.contains("critiquing with"),
+        "no attempt is chosen, so no critic is announced:\n{err}"
+    );
+    assert_eq!(out, "");
+    assert_eq!(critique_stub_spawns(work.path()), 0, "no critic is spawned");
+    assert_eq!(
+        critique_events(root).len(),
+        1,
+        "no request is parked beside the unreadable one"
+    );
+    assert_eq!(review_findings(root), Vec::<Value>::new());
+}
+
+/// Given a project with no git repository holding critique-named liveness and transcript
+/// directories under its root and under `RIGGER_TMPDIR`, when its spec is critiqued, then the
+/// critique records with an empty scratch root and its directory removal is a no-op: every planted
+/// directory stays, and nothing new is written under either base.
+#[test]
+fn a_project_with_no_git_repository_removes_no_critique_directory_under_its_root_or_tmpdir() {
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let tmpdir = root.join("scratch");
+    let mut planted = Vec::new();
+    for base in [root.to_path_buf(), tmpdir.clone()] {
+        for sub in ["agent-live", "agent-stream"] {
+            let run = base.join(sub).join(format!("critique-{SPEC_HASH}"));
+            std::fs::create_dir_all(&run).unwrap();
+            std::fs::write(run.join("left"), "").unwrap();
+            planted.push(run);
+        }
+    }
+    let (work, path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &tmpdir);
+    assert!(ok, "a repo-less project critiques; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert_eq!(critique_stub_spawns(work.path()), 1);
+    for run in &planted {
+        let entries: Vec<std::ffi::OsString> = std::fs::read_dir(run)
+            .unwrap_or_else(|e| panic!("{} stays: {e}", run.display()))
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            [std::ffi::OsString::from("left")],
+            "{} is never a repo-less critique's to remove or write into",
+            run.display()
+        );
+    }
+}
+
+/// Given a project whose `.rigger/store.conn` selects a KurrentDB server, with no flag and no
+/// `KURRENTDB_CONN`, when its spec is critiqued, then the critic is handed that configured server
+/// as `KURRENTDB_CONN`; and given an ambient `KURRENTDB_CONN` naming another address, when a spec
+/// is critiqued on a server the `--conn` flag selects, then the critic is handed the flagged
+/// server over the ambient one - whichever rung selected the server, the critic resolves the store
+/// the critique is recorded to.
+#[test]
+fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the_critic() {
+    common::fixtures::with_kurrentdb(|conn| {
+        // A server the per-machine secret file selects.
+        let configured = temp_project();
+        let root = configured.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        let secret = rigger_file(root, "store.conn");
+        std::fs::write(&secret, conn).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (work, path) = stub(REJECT);
+        let scratch = root.join("scratch");
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["critique", SPEC_REL],
+            &[
+                ("PATH", &path),
+                ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+                ("KURRENTDB_CONN", ""),
+            ],
+        );
+        assert!(
+            ok,
+            "the critique records on the configured server; stderr:\n{err}"
+        );
+        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert!(
+            !rigger_file(root, "events.db").exists(),
+            "the configured server holds the critique, never a local store"
+        );
+        assert_eq!(
+            critique_stub_conn(work.path()),
+            conn,
+            "the critic is handed the server the configuration selected"
+        );
+
+        // A server the flag selects, over an ambient KURRENTDB_CONN naming another address.
+        let flagged = temp_project();
+        let root = flagged.path();
+        scaffold(root, CRITIC_WORKFLOW);
+        let (work, path) = stub(REJECT);
+        let scratch = root.join("scratch");
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["critique", SPEC_REL, "--conn", conn],
+            &[
+                ("PATH", &path),
+                ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+                ("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/?tls=false"),
+            ],
+        );
+        assert!(
+            ok,
+            "the critique records on the flagged server; stderr:\n{err}"
+        );
+        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert_eq!(critique_stub_spawns(work.path()), 1);
+        assert_eq!(
+            critique_stub_conn(work.path()),
+            conn,
+            "the handed selection outranks the ambient KURRENTDB_CONN the critic inherits"
+        );
+    });
+}
