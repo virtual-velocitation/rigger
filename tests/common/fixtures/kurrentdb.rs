@@ -5,13 +5,60 @@
 use rigger::eventstore::kurrentdb::Store;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use testcontainers::bollard::errors::Error as BollardError;
 use testcontainers::bollard::models::PortBinding;
+use testcontainers::core::error::ClientError;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use testcontainers::{ContainerAsync, GenericImage, ImageExt, TestcontainersError};
 
 /// The server's gRPC port inside its container.
 const KURRENTDB_PORT: u16 = 2113;
+
+/// The label, key then value, on every container a test fixture starts. The test gate's container
+/// snippet (`.rigger/gates/container-env.sh`) removes each container carrying this key once it is
+/// older than RIGGER_TEST_CONTAINER_MAX_AGE_S, so a server left running by a test a signal ended
+/// is removed by the next gate run. The snippet spells the key in shell, and
+/// `tests/principle_gates_wiring.rs` pins that spelling to this constant.
+pub const TEST_CONTAINER_LABEL: (&str, &str) = ("rigger.test", "true");
+
+/// What a failed container start means for the test that asked for the server.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartFailure {
+    /// The test passes as skipped, its body never run.
+    Skip,
+    /// The test fails with the start's error.
+    Fail,
+}
+
+/// What [`start_kurrentdb`] does with a container start that failed, given the DOCKER_HOST the
+/// test process sees. It skips only when no container runtime is reachable: DOCKER_HOST unset
+/// (or empty, which the test gate's container snippet reads as unset too) and either no socket
+/// where the client looks for one, or a socket that refuses the connection - which arrives as
+/// the failure of the start's first call to the runtime, the container's creation. Every other
+/// failure - a startup timeout, an image pull, a port binding, any daemon error - fails the
+/// test, and so does every failure once DOCKER_HOST names a runtime: the snippet exports it
+/// exactly when it found one, so a test the gate runs never skips.
+pub fn start_failure(docker_host: Option<&str>, error: &TestcontainersError) -> StartFailure {
+    let no_runtime = match error {
+        TestcontainersError::Client(ClientError::Init(BollardError::SocketNotFoundError(_))) => {
+            true
+        }
+        TestcontainersError::Client(ClientError::CreateContainer(e)) => {
+            std::iter::successors(Some(e as &(dyn std::error::Error + 'static)), |e| {
+                e.source()
+            })
+            .filter_map(|e| e.downcast_ref::<std::io::Error>())
+            .any(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
+        }
+        _ => false,
+    };
+    if no_runtime && docker_host.is_none_or(str::is_empty) {
+        StartFailure::Skip
+    } else {
+        StartFailure::Fail
+    }
+}
 
 /// Run `body` against a throwaway KurrentDB server ([`start_kurrentdb`]), handed its connection
 /// string, then remove the server's container whatever `body` did - on the runtime that started
@@ -46,7 +93,8 @@ pub fn container_runtime() -> tokio::runtime::Runtime {
 /// runtime picks, read back from the container, so runs that overlap (a mutation sweep's
 /// parallel copies, two units testing at once, two tests of one binary) never compete for
 /// one. Returns `None` - after saying why on stderr, so the caller skips cleanly - when no
-/// container runtime is reachable.
+/// container runtime is reachable, and panics with the error on any other failed start
+/// ([`start_failure`]).
 fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<GenericImage>, String)> {
     let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
         .with_exposed_port(KURRENTDB_PORT.tcp())
@@ -67,13 +115,20 @@ fn start_kurrentdb(rt: &tokio::runtime::Runtime) -> Option<(ContainerAsync<Gener
                     host_port: Some(String::new()),
                 }]),
             )]));
-        });
+        })
+        // The test gate's container snippet removes a labelled container a signal left behind.
+        .with_labels([TEST_CONTAINER_LABEL]);
     let container = match rt.block_on(image.start()) {
         Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping: no KurrentDB container (no container runtime?): {e}");
-            return None;
-        }
+        Err(e) => match start_failure(std::env::var("DOCKER_HOST").ok().as_deref(), &e) {
+            StartFailure::Skip => {
+                eprintln!(
+                    "skipping: no KurrentDB container (no container runtime is reachable): {e}"
+                );
+                return None;
+            }
+            StartFailure::Fail => panic!("the KurrentDB container did not start: {e}"),
+        },
     };
     match rt
         .block_on(container.get_host_port_ipv4(KURRENTDB_PORT))
