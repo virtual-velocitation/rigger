@@ -154,20 +154,29 @@ pub fn emit(root: &Path, typ: &str, json: &str) {
     assert!(ok, "emit {typ} must succeed; stderr: {err}");
 }
 
-/// What the critic answers for [`record_clean_critique`]: prose, no finding line, an approve.
-const CLEAN_CRITIQUE: &str = "No defects.\n{\"verdict\":\"approve\"}";
-
-/// Record a clean critique of `spec`'s current text in the project at `root` (spec 112), so a
-/// new run on it under a workflow naming a critic is not refused: `rigger critique <spec>` with
-/// the checked-in critique stub first on `PATH` for that one call only, so a fixture's own fake
-/// agent keeps its `PATH` slot for the run it drives. Asserts the critique was recorded clean.
-pub fn record_clean_critique(root: &Path, spec: &str) {
+/// Record the critic's `answer` as the critique of `spec`'s current text in the project at `root`
+/// (spec 112): `rigger critique <spec>` with the checked-in critique stub, answering `answer`,
+/// first on `PATH` for that one call only, so a fixture's own fake agent keeps its `PATH` slot for
+/// the run it drives. Asserts the verb succeeded and returns its stdout.
+pub fn record_critique(root: &Path, spec: &str, answer: &str) -> String {
     let work = tempfile::tempdir().expect("a work directory for the critique stub");
-    let path = super::repo::write_critique_stub(work.path(), CLEAN_CRITIQUE);
+    let path = super::repo::write_critique_stub(work.path(), answer);
     let (out, err, ok) = run_rigger_envs(root, &["critique", spec], &[("PATH", path.as_str())]);
     assert!(
-        ok && out == "{\"verdict\":\"approve\"}\n",
-        "rigger critique {spec} must record a clean critique; stdout:\n{out}\nstderr:\n{err}"
+        ok,
+        "rigger critique {spec} must record a critique; stderr:\n{err}"
+    );
+    out
+}
+
+/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]:
+/// prose, no finding line, an approve), so a new run on it under a workflow naming a critic is not
+/// refused (spec 112).
+pub fn record_clean_critique(root: &Path, spec: &str) {
+    let out = record_critique(root, spec, "No defects.\n{\"verdict\":\"approve\"}");
+    assert_eq!(
+        out, "{\"verdict\":\"approve\"}\n",
+        "a clean critique of {spec}: no finding and an approve"
     );
 }
 
@@ -252,6 +261,16 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// The decoded payloads of the events of type `type_` in `root`'s namespaced run stream, oldest
+/// first.
+pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
+    read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == type_)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect()
 }
 
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
@@ -493,6 +512,22 @@ pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
             .expect("write an agent definition");
     }
     std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+}
+
+/// A project at `root` holding `workflow` and its `agents` ([`write_scaffold`]) and `text` as
+/// the spec at the root-relative path `spec`.
+pub fn write_spec_project(
+    root: &Path,
+    agents: &[(&str, &str)],
+    workflow: &str,
+    spec: &str,
+    text: &str,
+) {
+    write_scaffold(root, agents, workflow);
+    let spec = root.join(spec);
+    std::fs::create_dir_all(spec.parent().expect("a spec path under the root"))
+        .expect("create the spec's directory");
+    std::fs::write(spec, text).expect("write the spec");
 }
 
 /// Write a one-stage `workflow.yml` (plus its `worker` agent) under `root`, with `block`

@@ -14,14 +14,14 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    emit, read_run_events, record_clean_critique, run_rigger, run_rigger_envs, seed_run_events,
-    temp_repoless_project, write_scaffold,
+    emit, record_clean_critique, record_critique, run_payloads, run_rigger, run_rigger_envs,
+    seed_run_events, temp_repoless_project, write_spec_project,
 };
 use common::fixtures::temp_git_project_with_commit;
-use common::repo::{stub_path, write_critique_stub};
+use common::repo::stub_path;
 use rigger::review::critique_hash;
 use rigger::wave::NO_CRITIC_CLAUSE;
-use serde_json::{json, Value};
+use serde_json::json;
 
 /// A plan, its plan-critique gate naming `skeptic` as its adversary (the critic), and the
 /// fan-out implement template the gate releases.
@@ -59,20 +59,12 @@ const REJECT: &str = "Read it.\n\
      S | BLOCKING | criterion 3 | rests is undecided when empty | decide it in Design\n\
      {\"verdict\":\"reject\"}";
 
-/// A project at `root` carrying `workflow`, its three personas and the gadget spec.
-fn scaffold(root: &Path, workflow: &str) {
-    write_scaffold(
-        root,
-        &[
-            ("planner", PLANNER),
-            ("skeptic", SKEPTIC),
-            ("arbiter", ARBITER),
-        ],
-        workflow,
-    );
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(root.join(SPEC_REL), SPEC).unwrap();
-}
+/// The personas every workflow here names: a planner, the `skeptic` critic and the `arbiter`.
+const PERSONAS: [(&str, &str); 3] = [
+    ("planner", PLANNER),
+    ("skeptic", SKEPTIC),
+    ("arbiter", ARBITER),
+];
 
 /// `rigger <args...> --base HEAD` in `root`: (stdout, stderr, success).
 fn on_head(root: &Path, args: &[&str]) -> (String, String, bool) {
@@ -88,16 +80,6 @@ fn step(root: &Path, spec: &str, extra: &[&str]) -> (String, String, bool) {
         .copied()
         .collect();
     on_head(root, &args)
-}
-
-/// Record `answer` as the critique of the spec's current text, through the critique verb with
-/// the critique stub first on `PATH`.
-fn critique(root: &Path, answer: &str) {
-    let work = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(work.path(), answer);
-    let (_out, err, ok) =
-        run_rigger_envs(root, &["critique", SPEC_REL], &[("PATH", path.as_str())]);
-    assert!(ok, "the critique is recorded; stderr:\n{err}");
 }
 
 /// The text the refusal of a new run on `spec` by `command` ends stderr with: `open` the open
@@ -123,15 +105,6 @@ fn refusal(command: &str, spec: &str, open: Option<&[&str]>) -> String {
     )
 }
 
-/// The `RunStarted` payloads on the project run stream, oldest first.
-fn runs(root: &Path) -> Vec<Value> {
-    read_run_events(root)
-        .iter()
-        .filter(|e| e.type_ == "RunStarted")
-        .map(|e| serde_json::from_slice(&e.data).unwrap())
-        .collect()
-}
-
 /// `command` refused a new run on `spec` with `open`: stderr ends with the refusal, stdout carries
 /// no line of it, and the run stream still holds `runs_before` runs.
 fn assert_refused(
@@ -150,7 +123,7 @@ fn assert_refused(
         "the refusal is on stderr only; stdout:\n{out}"
     );
     assert_eq!(
-        runs(root).len(),
+        run_payloads(root, "RunStarted").len(),
         runs_before,
         "a refused command mints no run"
     );
@@ -169,7 +142,7 @@ fn resolve(root: &Path, id: &str, governs: &str, ids: &[String]) {
 fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    scaffold(root, SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     let hash = critique_hash(SPEC);
     let id = |k: u32| format!("sc-{hash}-0-{k}");
     let [one, three] = [id(1), id(3)];
@@ -182,7 +155,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     // A resolution recorded BEFORE the critique closes nothing; the critique's BLOCKING ids are
     // open, in finding order, and the NON-BLOCKING one is never listed.
     resolve(root, "early", SPEC_REL, std::slice::from_ref(&one));
-    critique(root, REJECT);
+    record_critique(root, SPEC_REL, REJECT);
     assert_refused(
         root,
         step(root, SPEC_REL, &[]),
@@ -220,7 +193,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
         "the step prints its one JSON line:\n{out}"
     );
     assert!(!err.contains("refusing"), "no refusal; stderr:\n{err}");
-    let minted = runs(root);
+    let minted = run_payloads(root, "RunStarted");
     assert_eq!(minted.len(), 1, "one run minted");
     assert_eq!(minted[0]["spec"], SPEC_REL, "the run is on the spec");
 }
@@ -229,7 +202,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
 fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    scaffold(root, SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
 
     // A run with no spec is never refused, under a workflow naming a critic.
     let (_out, err, ok) = on_head(root, &["step"]);
@@ -238,7 +211,11 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
         !err.contains("refusing") && !err.contains("no spec critique"),
         "a spec-less step neither refuses nor names a critique; stderr:\n{err}"
     );
-    assert_eq!(runs(root).len(), 1, "the spec-less run is minted");
+    assert_eq!(
+        run_payloads(root, "RunStarted").len(),
+        1,
+        "the spec-less run is minted"
+    );
 
     // The spec's run already in the store (no critique recorded for its text): a step adopts it,
     // with or without --rebase-definition, and is not refused.
@@ -254,7 +231,7 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
             "an adopting step {extra:?} neither refuses nor names a critique; stderr:\n{err}"
         );
         assert_eq!(
-            runs(root).len(),
+            run_payloads(root, "RunStarted").len(),
             2,
             "the spec's run is adopted, none minted"
         );
@@ -280,7 +257,7 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
 fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_never_critiqued() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    scaffold(root, SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     record_clean_critique(root, SPEC_REL);
 
     // DROPPED: the edited text inherits nothing of the clean critique of the text before it.
@@ -299,7 +276,7 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
         ok,
         "the reverted text's clean critique lets the run begin; stderr:\n{err}"
     );
-    assert_eq!(runs(root).len(), 1, "one run minted");
+    assert_eq!(run_payloads(root, "RunStarted").len(), 1, "one run minted");
 
     // The same bytes outside the repository cannot be critiqued: a new run on them is refused as
     // not critiqued, named by the spelling given.
@@ -319,7 +296,7 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
 fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_name() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    scaffold(root, SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     // A stand-in `claude` first on PATH, so a run the refusal missed never reaches a real agent.
     let work = tempfile::tempdir().unwrap();
     let path = stub_path(work.path(), "claude", Some("fake-agent.sh"));
@@ -345,27 +322,31 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
 fn a_repoless_project_resolves_its_spec_against_the_project_root() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    scaffold(root, SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
     let step_repoless = || run_rigger(root, &["step", "--spec", SPEC_REL]);
     assert_refused(root, step_repoless(), ("rigger step", SPEC_REL, None), 0);
     record_clean_critique(root, SPEC_REL);
     let (_out, err, ok) = step_repoless();
     assert!(ok, "the clean critique lets the run begin; stderr:\n{err}");
-    assert_eq!(runs(root).len(), 1, "one run minted");
+    assert_eq!(run_payloads(root, "RunStarted").len(), 1, "one run minted");
 }
 
 #[test]
 fn a_workflow_naming_no_critic_begins_each_new_run_with_one_line_saying_so() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    scaffold(root, CRITICLESS_WORKFLOW);
+    write_spec_project(root, &PERSONAS, CRITICLESS_WORKFLOW, SPEC_REL, SPEC);
     let line = format!("rigger step: no spec critique for {SPEC_REL}: {NO_CRITIC_CLAUSE}\n");
     let lines_in = |err: &str| err.matches(&line).count();
 
     let (_out, err, ok) = step(root, SPEC_REL, &[]);
     assert!(ok, "a new run with no critic proceeds; stderr:\n{err}");
     assert_eq!(lines_in(&err), 1, "one no-critic line; stderr:\n{err}");
-    assert_eq!(runs(root).len(), 1, "the run is minted");
+    assert_eq!(
+        run_payloads(root, "RunStarted").len(),
+        1,
+        "the run is minted"
+    );
 
     let (_out, err, ok) = step(root, SPEC_REL, &[]);
     assert!(ok, "an adopting step proceeds; stderr:\n{err}");
@@ -382,5 +363,9 @@ fn a_workflow_naming_no_critic_begins_each_new_run_with_one_line_saying_so() {
         1,
         "each new run says it again; stderr:\n{err}"
     );
-    assert_eq!(runs(root).len(), 2, "the fresh run is minted");
+    assert_eq!(
+        run_payloads(root, "RunStarted").len(),
+        2,
+        "the fresh run is minted"
+    );
 }
