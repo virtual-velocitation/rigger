@@ -14649,6 +14649,12 @@ mod tests {
         /// worktree BEFORE the pre-gate commit (asserting mere presence in the merged tree
         /// would NOT distinguish placement, since integrate sweeps any dirty file in).
         write_file_by_agent: HashMap<String, String>,
+        /// Per-SPAWN-ID file writes: the spawn whose deterministic id ([`SpawnOpts::id`])
+        /// matches writes each named path (its parent dirs created) into its worktree dir.
+        /// Lets a test give ONE attempt's implementer a different change than another
+        /// attempt's - which `write_file` and `write_file_by_agent` (identical on every
+        /// attempt of the same agent) cannot. Isolation-guarded like `write_file`.
+        write_files_by_spawn_id: HashMap<String, Vec<String>>,
         emits: Vec<(String, Value)>,
         /// Per-agent emits, in addition to the shared `emits`: lets one test give a
         /// single lens a ReviewFinding to emit so the test can assert the finding
@@ -14761,6 +14767,7 @@ mod tests {
             Stub {
                 write_file: None,
                 write_file_by_agent: HashMap::new(),
+                write_files_by_spawn_id: HashMap::new(),
                 emits: Vec::new(),
                 emits_by_agent: HashMap::new(),
                 output: String::new(),
@@ -14917,6 +14924,17 @@ mod tests {
             if let Some(f) = self.write_file_by_agent.get(&a.id) {
                 if !opts.dir.is_empty() {
                     let _ = std::fs::write(Path::new(&opts.dir).join(f), "periphery\n");
+                }
+            }
+            if let Some(paths) = self.write_files_by_spawn_id.get(&opts.id) {
+                if !opts.dir.is_empty() {
+                    for path in paths {
+                        let full = Path::new(&opts.dir).join(path);
+                        if let Some(parent) = full.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&full, "work\n");
+                    }
                 }
             }
             // Spec 88 criterion 4 (PLAN AMENDMENTS LAND): a producer's own git commits,
@@ -39916,6 +39934,86 @@ mod tests {
              implementer's diff (proving the spawn ran BEFORE the pre-gate commit); move the spawn \
              below that commit and it lands only at integrate - a later, different commit - failing this"
         );
+    }
+
+    /// The prompts the sdet-author gets, in attempt order, on a `per_unit_panel_cfg` unit
+    /// in a real repository whose adjudicator rejects round 0 and approves round 1: round 0's
+    /// implementer writes `feature.rs`, round 1's writes `second_round` (worktree-relative
+    /// paths).
+    fn sdet_prompts_around_a_rejected_round(second_round: &[&str]) -> Vec<String> {
+        let repo = temp_git_project_with_commit();
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let implementer = |attempt| spawn_id("implement", ROLE_IMPLEMENTER, attempt);
+        let adjudicator = |attempt| spawn_id("implement", ROLE_ADJUDICATOR, attempt);
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: HashMap::from([
+                (
+                    adjudicator(0),
+                    r#"{"verdict":"reject","issues":[]}"#.to_string(),
+                ),
+                (adjudicator(1), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            write_files_by_spawn_id: HashMap::from([
+                (implementer(0), vec!["feature.rs".to_string()]),
+                (
+                    implementer(1),
+                    second_round.iter().map(|p| p.to_string()).collect(),
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        driver.prompts_for(ROLE_SDET_AUTHOR)
+    }
+
+    /// A round that changed documentation only - `*.md` files and paths under `docs/` -
+    /// since its reviewers rejected the unit tells the sdet-author to extend the existing
+    /// owner test's needle or add no pin, never a new test. The first round (no review has
+    /// judged the unit yet), a round that changed code beside its docs, and a round that
+    /// changed nothing are not told.
+    #[test]
+    fn a_doc_only_round_tells_the_sdet_author_to_extend_the_owner_needle() {
+        const NEEDLE: &str = "This round changed documentation only: extend the existing owner \
+                              test's needle for the changed sentence, or add no pin; never a new test.";
+        for (second_round, told, why) in [
+            (
+                &["docs/diagram.svg", "README.md"][..],
+                true,
+                "a round that changed only docs/ and *.md paths",
+            ),
+            (
+                &["README.md", "src/more.rs"][..],
+                false,
+                "a round that changed code beside its docs",
+            ),
+            (&[][..], false, "a round that changed nothing"),
+        ] {
+            let prompts = sdet_prompts_around_a_rejected_round(second_round);
+            assert_eq!(
+                prompts.len(),
+                2,
+                "{why}: the sdet-author runs once per round"
+            );
+            assert!(
+                !prompts[0].contains(NEEDLE),
+                "{why}: the first round has no reviewed base, so no doc-only rule:\n{}",
+                prompts[0]
+            );
+            assert_eq!(
+                prompts[1].contains(NEEDLE),
+                told,
+                "{why}: told the doc-only rule must be {told}:\n{}",
+                prompts[1]
+            );
+        }
     }
 
     #[test]
