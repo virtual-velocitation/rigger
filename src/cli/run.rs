@@ -4048,9 +4048,9 @@ mod tests {
 
         // A second spec path is still the same clear error; a valueless --base names the fix.
         let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
-        assert!(
-            err.contains("expected at most one spec path"),
-            "a second positional must be rejected; got: {err:?}"
+        assert_eq!(
+            err, "workflow: unexpected second positional argument \"b.md\"",
+            "a second positional must be rejected through the shared spec rule"
         );
         let err = w(&["--base"]).unwrap_err().to_string();
         assert!(

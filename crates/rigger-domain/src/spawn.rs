@@ -980,8 +980,59 @@ pub(crate) use crate::test_support::test_request;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::SpawnOpts;
+    use crate::config::AgentDef;
     use crate::eventstore::Event;
     use crate::ledger::{AttentionEntry, RequiredItem};
+
+    /// The request a spawn parks is derived from its options and its agent alone: every field the
+    /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
+    /// wall-clock bound - and nothing else of the options (isolation, env, settings, launch).
+    #[test]
+    fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
+        let agent = AgentDef {
+            id: "critic".into(),
+            model_ladder: vec!["sonnet".into(), "opus".into()],
+            tools: vec!["Read".into(), "Agent".into(), "Glob".into()],
+            max_wall_clock: Some(900),
+            prompt: "the persona".into(),
+            ..AgentDef::default()
+        };
+        let opts = SpawnOpts {
+            id: "u/adversary#1".into(),
+            unit: "u".into(),
+            stage: "review".into(),
+            attempt: 1,
+            system_prompt: "the system prompt".into(),
+            dir: "/work/u".into(),
+            isolation: true,
+            blast_radius: vec!["src/a.rs".into()],
+            run_id: "run-1".into(),
+            title: "the criterion".into(),
+            env: vec![("K".into(), "V".into())],
+            reviews: vec!["lens:sdet".into()],
+            settings_json: "{}".into(),
+            launch: 2,
+            ..SpawnOpts::default()
+        };
+        assert_eq!(
+            spawn_request(&agent, "the task", &opts),
+            SpawnRequest {
+                id: "u/adversary#1".into(),
+                unit: "u".into(),
+                stage: "review".into(),
+                prompt: "the task".into(),
+                system_prompt: "the system prompt".into(),
+                model: "opus".into(),
+                tools: vec!["Read".into(), "Glob".into()],
+                dir: "/work/u".into(),
+                blast_radius: vec!["src/a.rs".into()],
+                max_wall_clock: Some(900),
+                title: "the criterion".into(),
+                reviews: vec!["lens:sdet".into()],
+            }
+        );
+    }
 
     /// A reject's verdict line names the items it requires fixed - each one's finding, the
     /// file it is in, whether it is a correctness defect, and the shape of a defect that

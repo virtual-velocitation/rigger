@@ -8292,6 +8292,44 @@ mod tests {
         );
     }
 
+    /// The single-positional-spec rule every spec-taking verb's parser shares: an argument no
+    /// flag arm claimed is an unknown flag when it starts with `--`, the spec when none was
+    /// taken yet, and a refused second positional after one was - each refusal naming the verb.
+    #[test]
+    fn an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional() {
+        let mut spec = None;
+        assert_eq!(
+            spec_positional("--frob", &mut spec, "run")
+                .unwrap_err()
+                .to_string(),
+            "run: unknown flag \"--frob\""
+        );
+        assert_eq!(spec, None, "a refused flag takes no spec");
+        spec_positional("a.md", &mut spec, "workflow").unwrap();
+        assert_eq!(spec.as_deref(), Some("a.md"));
+        assert_eq!(
+            spec_positional("b.md", &mut spec, "workflow")
+                .unwrap_err()
+                .to_string(),
+            "workflow: unexpected second positional argument \"b.md\""
+        );
+        assert_eq!(spec.as_deref(), Some("a.md"), "the first spec stands");
+        let (second_err, flag_err) = (
+            parse_run_args(&["a.md".into(), "b.md".into()])
+                .err()
+                .unwrap(),
+            parse_run_args(&["--frob".into()]).err().unwrap(),
+        );
+        assert_eq!(
+            (second_err.to_string(), flag_err.to_string()),
+            (
+                "run: unexpected second positional argument \"b.md\"".to_string(),
+                "run: unknown flag \"--frob\"".to_string()
+            ),
+            "rigger run refuses through the shared rule"
+        );
+    }
+
     #[test]
     fn parse_run_args_defaults_to_cli_and_an_unset_store() {
         let a = parse_run_args(&[]).unwrap();

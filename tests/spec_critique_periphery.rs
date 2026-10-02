@@ -201,6 +201,25 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers",
         "the critic's tools are replaced: no Bash, Agent, Grep or emit"
     );
+    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!([
+            "Bash",
+            "Agent",
+            "Task",
+            "Grep",
+            "Edit",
+            "MultiEdit",
+            "Write",
+            "NotebookEdit",
+            "mcp__rigger__rigger_emit",
+            "mcp__rigger__rigger_progress",
+            "mcp__rigger__rigger_scratch"
+        ]),
+        "the critic is denied every tool that builds, records or edits, whatever the checkout's \
+         own settings allow: {settings}"
+    );
     assert_eq!(
         flag_value(&argv, "--model"),
         "sonnet",
@@ -402,6 +421,11 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
         "the absolute path is made relative to the project root"
     );
     assert_eq!(critique_stub_spawns(stub.path()), 1);
+    assert!(
+        !root.join("scratch").exists(),
+        "a project with no git repository has no scratch root: the session writes no liveness \
+         marker or transcript, even with RIGGER_TMPDIR set"
+    );
 }
 
 #[test]
@@ -621,6 +645,14 @@ fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_
             ),
             (TYPE_SPAWN_RESULT, "critique-ff026c95e7c7af01/adversary#0"),
         ]
+    );
+    assert_eq!(
+        critique_events(root)[0]
+            .meta
+            .get(rigger::run::META_RUN_ID)
+            .map(String::as_str),
+        Some("critique-ff026c95e7c7af01"),
+        "the request is parked in the critique run"
     );
     let request = &recorded[0].1;
     assert_eq!(
@@ -1135,6 +1167,12 @@ fn the_kurrentdb_flag_selects_the_server_backend_and_fabricates_no_local_store()
     .output()
     .unwrap();
     assert_selected_server(&out, root, "rigger critique --eventstore kurrentdb");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("connect to kurrentdb://127.0.0.1:1/?tls=false"),
+        "only a selected server addressed by --conn is dialled - never a refused flag or a \
+         missing connection:\n{stderr}"
+    );
     assert_eq!(critique_stub_spawns(work.path()), 0, "no critic is spawned");
 }
 

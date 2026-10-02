@@ -10448,7 +10448,7 @@ fn workflow_accepts_a_spec_and_a_base_flag() {
     let (out, err, ok) = run_rigger(root, &["workflow", "specs/18.md", "--base", "my-feature"]);
     assert!(!ok, "the un-provisioned shim still fails the command");
     assert!(
-        !err.contains("expected at most one spec path"),
+        !err.contains("unexpected second positional argument"),
         "rigger workflow must ACCEPT --base alongside a spec, not reject it; got: {err:?}"
     );
     // It got PAST argument parsing to the driver-launch step (which is un-provisioned here).

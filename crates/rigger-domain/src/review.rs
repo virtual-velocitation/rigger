@@ -828,6 +828,85 @@ mod tests {
         );
     }
 
+    /// A recorded `SpawnRequested` for `id` at log position `position`.
+    fn request_at(position: u64, id: &str) -> Event {
+        ev_at(
+            position,
+            crate::spawn::TYPE_SPAWN_REQUESTED,
+            json!({"id": id, "unit": "u", "stage": "critique", "prompt": "p"}),
+        )
+    }
+
+    #[test]
+    fn the_next_attempt_counts_the_requests_whose_id_is_a_critic_spawn_of_the_hash() {
+        let events = vec![
+            request_at(1, &critique_spawn_id(HASH, 0)),
+            ev_at(2, "DecisionMade", json!({"id": "d", "summary": "s"})),
+            result_at(3, &critique_spawn_id(HASH, 0), "", "the spawn failed"),
+            request_at(4, &critique_spawn_id(HASH, 1)),
+            request_at(5, &critique_spawn_id("fedcba9876543210", 0)),
+            request_at(6, &format!("critique-{HASH}/implementer#2")),
+            request_at(7, &format!("critique-{HASH}/adversary#03")),
+        ];
+        assert_eq!(
+            critique_requests(&events, HASH).unwrap(),
+            2,
+            "a request with no result or a failed one still counts; another hash, another role, \
+             a non-canonical attempt and a non-request do not"
+        );
+        assert_eq!(critique_requests(&events[1..3], HASH).unwrap(), 0);
+        let unreadable = ev_at(
+            8,
+            crate::spawn::TYPE_SPAWN_REQUESTED,
+            json!({"id": critique_spawn_id(HASH, 2)}),
+        );
+        assert!(
+            critique_requests(&[unreadable], HASH)
+                .unwrap_err()
+                .to_string()
+                .starts_with("missing field `unit`"),
+            "an unreadable request fails the count, so an attempt id is never reused"
+        );
+    }
+
+    #[test]
+    fn the_why_of_a_spawn_with_no_critique_is_its_own_latest_result_read_by_the_authority() {
+        let attempt_1 = critique_spawn_id(HASH, 1);
+        let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";
+        let events = vec![
+            result_at(1, &critique_spawn_id(HASH, 0), reject, ""),
+            result_at(2, &attempt_1, "", "boom"),
+            result_at(3, &attempt_1, "I could not decide.", ""),
+            ev_at(4, "DecisionMade", json!({"id": "d", "summary": "s"})),
+        ];
+        assert_eq!(
+            why_no_critique(&events, HASH, 1).as_deref(),
+            Some("the critic's output carries no verdict line"),
+            "the latest result of the spawn is the one judged"
+        );
+        assert_eq!(
+            why_no_critique(&events[..3], HASH, 1).as_deref(),
+            Some("the critic's output carries no verdict line")
+        );
+        assert_eq!(
+            why_no_critique(&events[..2], HASH, 1).as_deref(),
+            Some("the critic's spawn failed: boom")
+        );
+        assert_eq!(
+            why_no_critique(&events, HASH, 2),
+            None,
+            "a spawn that recorded no result has no why of its own"
+        );
+        let unreadable = ev_at(5, TYPE_SPAWN_RESULT, json!({"output": "no id"}));
+        let why = why_no_critique(&[events[2].clone(), unreadable], HASH, 1).unwrap();
+        assert!(
+            why.starts_with(
+                "a result recorded on the critique stream is unreadable: missing field `id`"
+            ),
+            "an unreadable result on the stream is the why: {why}"
+        );
+    }
+
     #[test]
     fn the_plan_critique_rules_are_the_rule_seven_and_eight_bullets_and_the_overlap_note() {
         assert!(PLAN_CRITIQUE_RULES.starts_with("- Rule 7 (mitigation ownership): "));
