@@ -23,7 +23,7 @@ use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
 use crate::instructions::Instruction;
-use crate::ledger::{self, RunState};
+use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
 use crate::safety;
@@ -38,12 +38,11 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, TierRouting,
+    route_review_tier, verdict_compensates, verdict_rejects_without_required, verdict_required,
+    TierRouting,
 };
 #[cfg(test)]
-use rigger_domain::review::{
-    path_is_high_risk, verdict_required, RequiredItem, TIER_FULL, TIER_LIGHT,
-};
+use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_stable_id, critique_gate_name, fan_out_lenses,
     first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
@@ -741,11 +740,14 @@ struct ReviewOutcome {
     /// live-re-read bug class criterion 6 already closed for the single-lane stamp. Empty
     /// when the emit was not deferred, or no adjudicator rendered the verdict.
     round_start_sha: String,
+    /// A reject's REQUIRED list: the items the next attempt must fix and the next review
+    /// round holds it to. Empty on an approve.
+    required: Vec<RequiredItem>,
 }
 
 impl ReviewOutcome {
     /// The one constructor: a bare `approved` verdict carrying `reason`, with no rollback, no
-    /// adjudicator resolution and no round-start sha.
+    /// adjudicator resolution, no round-start sha and no REQUIRED list.
     fn verdict(approved: bool, reason: String) -> Self {
         ReviewOutcome {
             approved,
@@ -753,6 +755,7 @@ impl ReviewOutcome {
             compensate: None,
             adj_resolved: String::new(),
             round_start_sha: String::new(),
+            required: Vec::new(),
         }
     }
     fn approved(reason: String) -> Self {
@@ -1113,6 +1116,9 @@ struct PriorFailure {
     gate_evidence: Vec<String>,
     /// The adjudicator's rejection reasoning (its raw output) when review rejected.
     review_reason: String,
+    /// The REQUIRED list: the review items the next attempt must fix. It stays open across a
+    /// failure no review round ruled on (a crash, a red gate), until the next round judges it.
+    required: Vec<RequiredItem>,
     /// A later unit's review proved this unit's ALREADY-INTEGRATED change wrong (spec 12,
     /// unit 4): the contradiction reason, threaded into the RE-ENTERED unit's next prompt so
     /// it fixes the specific defect its (now reverted) integrating commit introduced, rather
@@ -1126,8 +1132,8 @@ struct PriorFailure {
 }
 
 impl PriorFailure {
-    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence and review
-    /// reason, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
+    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence, review
+    /// reason and REQUIRED list, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
     /// stage in a LATER process than the one that saw the failure - an operator's `rigger
     /// resume-unit` grant, or any step that picks up a mid-remediation unit - is prompted from
     /// these, so its block is the one the in-process retry built from the same facts.
@@ -1135,6 +1141,7 @@ impl PriorFailure {
         PriorFailure {
             gate_evidence: u.gate_evidence.clone(),
             review_reason: u.review_reason.clone(),
+            required: u.required.clone(),
             contradiction: String::new(),
             halted_commit: String::new(),
         }
@@ -1151,12 +1158,14 @@ impl PriorFailure {
             "cause": cause,
             "gate_evidence": self.gate_evidence,
             "review_reason": self.review_reason,
+            "required": self.required,
         })
     }
 
     fn is_empty(&self) -> bool {
         self.gate_evidence.is_empty()
             && self.review_reason.trim().is_empty()
+            && self.required.is_empty()
             && self.contradiction.trim().is_empty()
             && self.halted_commit.trim().is_empty()
     }
@@ -1204,6 +1213,7 @@ impl PriorFailure {
         }
         if !self.gate_evidence.is_empty()
             || !self.review_reason.trim().is_empty()
+            || !self.required.is_empty()
             || !self.contradiction.trim().is_empty()
         {
             b.push_str(
@@ -1219,6 +1229,10 @@ impl PriorFailure {
             b.push_str("Your previous attempt was rejected by review: ");
             b.push_str(self.review_reason.trim());
             b.push('\n');
+        }
+        if !self.required.is_empty() {
+            b.push_str("REQUIRED - review holds the next round to each of these:\n");
+            b.push_str(&required_lines(&self.required));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
@@ -1365,6 +1379,19 @@ fn is_parked_or_budget_refused(e: &Error) -> bool {
 /// most `1 + REVIEWER_RESPAWN_BOUND` times (its original spawn plus this many respawns)
 /// before [`degenerate_reviewer`] halts the run.
 const REVIEWER_RESPAWN_BOUND: u32 = 2;
+
+/// What a review-tier spawn's stdout carries, which decides when
+/// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewerOutput {
+    /// Findings go to the graph and stdout is discarded: a lens or the adversary.
+    Findings,
+    /// Stdout is the gating verdict: an adjudicator.
+    Verdict,
+    /// Stdout is the gating verdict of a later review round ([`ReviewRound`]), whose reject
+    /// must name the items it requires fixed.
+    RoundVerdict,
+}
 
 /// The sentinel a degenerate-reviewer HALT (Gap 18, spec 07) embeds in its error so
 /// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes
@@ -4265,30 +4292,31 @@ impl RunCtx<'_> {
 
     /// THE ROUND DELTA: what unit `unit`'s worktree `wt` changed since its reviewers last
     /// judged it, as `(base, paths)` - `None` when no review round judged the unit before
-    /// `attempt` (a first round has no delta: the whole unit is new), or when that round judged
+    /// `attempt` (a first round has no delta: the whole unit is new), when that round judged
     /// a sha this worktree's branch never passed through (a sibling speculation lane's tip),
-    /// so the round is reviewed whole. `base` is [`round_delta_base`]'s round-start sha;
-    /// `paths` are the direct two-dot diff from it ([`crate::worktree::DiffMode::Direct`]:
-    /// `base` is in this branch's history) plus whatever the worktree holds uncommitted, so a
-    /// delta read at the build seam, before the pre-gate commit, still sees the implementer's
-    /// edits.
+    /// when the unit has no worktree, or when the delta cannot be read: every reader then
+    /// treats the round as a first one, reviewed whole. `base` is [`round_delta_base`]'s
+    /// round-start sha; `paths` are the direct two-dot diff from it
+    /// ([`crate::worktree::DiffMode::Direct`]: `base` is in this branch's history) plus
+    /// whatever the worktree holds uncommitted, so a delta read at the build seam, before the
+    /// pre-gate commit, still sees the implementer's edits.
     fn round_delta(
         &self,
-        wt: &Worktree,
+        wt: Option<&Worktree>,
         unit: &str,
         attempt: u32,
-    ) -> Result<Option<(String, Vec<String>)>, Error> {
-        let events = self.read_current_run()?;
-        let Some(base) = round_delta_base(&events, unit, attempt)
-            .filter(|base| worktree::is_ancestor(&wt.dir, base, "HEAD"))
-        else {
-            return Ok(None);
-        };
-        let mut paths = wt.diff_names(&base, crate::worktree::DiffMode::Direct)?;
-        paths.extend(wt.changed_files()?);
+    ) -> Option<(String, Vec<String>)> {
+        let wt = wt?;
+        let events = self.read_current_run().ok()?;
+        let base = round_delta_base(&events, unit, attempt)
+            .filter(|base| worktree::is_ancestor(&wt.dir, base, "HEAD"))?;
+        let mut paths = wt
+            .diff_names(&base, crate::worktree::DiffMode::Direct)
+            .ok()?;
+        paths.extend(wt.changed_files().ok()?);
         paths.sort();
         paths.dedup();
-        Ok(Some((base, paths)))
+        Some((base, paths))
     }
 
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
@@ -4353,11 +4381,17 @@ impl RunCtx<'_> {
     /// read the signal back (an Err from ANY tier here already propagates out of its phase-B
     /// loop via `?` without touching any candidate's worktree, so it is already conservative);
     /// it passes a throwaway `AtomicBool` to satisfy this shared signature.
+    ///
+    /// `prior_required` is the REQUIRED list this attempt's implementer was handed. On a LATER
+    /// review round - one whose unit an earlier round of the same branch judged
+    /// ([`Self::round_delta`]) - every tier reviews the delta since that round against it
+    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome.
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
     // attempt, the two routing/deferral flags, the blast-radius view, the caller's
-    // any-parked out-param, and now the unit worktree object itself for the ensure-on-park
-    // re-assert) - the same primitive-argument shape `reviewer_spawn_opts` and
-    // `run_reviewer` carry, allowed for the same reason.
+    // any-parked out-param, the unit worktree object itself for the ensure-on-park
+    // re-assert, and the REQUIRED list the round holds the unit to) - the same
+    // primitive-argument shape `reviewer_spawn_opts` and `run_reviewer` carry, allowed for
+    // the same reason.
     #[allow(clippy::too_many_arguments)]
     fn review_unit(
         &self,
@@ -4374,6 +4408,7 @@ impl RunCtx<'_> {
         // read again immediately before this function's own `reviewed`-sha stamp -
         // never inferred or reconstructed here.
         wt: Option<&Worktree>,
+        prior_required: &[RequiredItem],
     ) -> Result<ReviewOutcome, Error> {
         // Risk-tiered review depth (spec 03 / spec 13 unit 4): route this unit to the
         // LIGHT or FULL panel from its observable risk - the grounded blast-radius size,
@@ -4398,6 +4433,15 @@ impl RunCtx<'_> {
         // doc comment for why a live re-read here would silently adopt an earlier tier's
         // already-committed residue as this round's new baseline.
         let round_start_sha = self.review_round_start_sha(&st.name, attempt, dir)?;
+        // A LATER REVIEW ROUND reviews the delta since the round that sent the unit back,
+        // against the REQUIRED list that round left open; a first round reviews the whole unit.
+        let round = self
+            .round_delta(wt, &st.name, attempt)
+            .map(|(base, delta)| ReviewRound {
+                base,
+                delta,
+                required: prior_required.to_vec(),
+            });
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
@@ -4414,17 +4458,25 @@ impl RunCtx<'_> {
             // (spec 103, criterion 6, adv-u103c6-guard-skipped-on-tier-err): a lens tier
             // has no LATER tier to guard the tree on its behalf if ITS OWN spawn is what
             // errors, so this site guards itself via `map_err` before the `?` unwinds.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked, wt)
-                .map_err(|e| {
-                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
-                })?;
+            self.run_review_agents_concurrently(
+                st,
+                &lenses,
+                dir,
+                attempt,
+                any_parked,
+                wt,
+                round.as_ref(),
+            )
+            .map_err(|e| {
+                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+            })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
-            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)
+            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses, round.as_ref())
                 .map_err(|e| {
                     self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
                 })?;
@@ -4438,7 +4490,16 @@ impl RunCtx<'_> {
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) = self
-            .run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)
+            .run_adjudicator(
+                st,
+                &adjudicator,
+                dir,
+                attempt,
+                wt,
+                &lenses,
+                &adversary,
+                round.as_ref(),
+            )
             .map_err(|e| {
                 self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
             })?;
@@ -4516,8 +4577,10 @@ impl RunCtx<'_> {
             outcome.compensate = compensate;
             Ok(outcome)
         } else {
+            let required = verdict_required(&reason);
             let mut outcome = ReviewOutcome::rejected(reason);
             outcome.compensate = compensate;
+            outcome.required = required;
             Ok(outcome)
         }
     }
@@ -4730,7 +4793,7 @@ impl RunCtx<'_> {
         )?;
         // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
-        let delta = wt.and_then(|w| self.round_delta(w, &st.name, attempt).ok().flatten());
+        let delta = self.round_delta(wt, &st.name, attempt);
         if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
             sdet_prompt.push_str("\n\n");
             sdet_prompt.push_str(DOC_ONLY_ROUND);
@@ -5221,8 +5284,13 @@ impl RunCtx<'_> {
                 }
             }
 
-            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5).
-            let mut next = PriorFailure::default();
+            // A fresh accumulator for THIS attempt's failure specifics (item 3 + 5). The
+            // REQUIRED list stays open until a review round rules on it, so a crash or a red
+            // gate before the review carries it to the next attempt.
+            let mut next = PriorFailure {
+                required: prior.required.clone(),
+                ..PriorFailure::default()
+            };
             // The unit's own lifecycle (§3.2): implement -> the unit's gates -> the
             // three-tier review OF THIS UNIT -> integrate. The gates and the
             // adjudicator's verdict BOTH gate integration: a gate failure OR a reject
@@ -5389,7 +5457,7 @@ impl RunCtx<'_> {
                         // structural width forces the full panel for a beyond-cap high-risk file, and a
                         // wide structural change earns the full panel by size. On the non-symbols
                         // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                        let review = self.review_unit(
+                        let mut review = self.review_unit(
                             st,
                             dir,
                             attempts,
@@ -5398,7 +5466,11 @@ impl RunCtx<'_> {
                             &radius.safe,
                             any_parked,
                             wt,
+                            &prior.required,
                         )?;
+                        // The round has ruled on the REQUIRED list: what stays open is what
+                        // its verdict requires (nothing, on an approve).
+                        next.required = std::mem::take(&mut review.required);
                         // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
                         // adjudicator named another, already-integrated unit as the real defect
                         // source. QUEUE the rollback for the run loop to drain after this wave
@@ -5858,6 +5930,8 @@ impl RunCtx<'_> {
                 &radius.safe,
                 &lane_any_parked,
                 Some(&candidates[i].wt),
+                // A candidate is a parallel first attempt: no REQUIRED list is open on it.
+                &[],
             )?;
             // A candidate's review may name a PRIOR integrated unit as the real defect source
             // (spec 12, unit 4), independent of whether it approves this candidate: queue the
@@ -6339,9 +6413,17 @@ impl RunCtx<'_> {
             // lifecycle (see this function's own doc comment), never the durable unit
             // worktree `run_reviewer`'s ensure-on-park re-assert (spec 64 criterion 3)
             // guards - unchanged by that fix.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempts, any_lens_parked, None)?;
+            self.run_review_agents_concurrently(
+                st,
+                &lenses,
+                dir,
+                attempts,
+                any_lens_parked,
+                None,
+                None,
+            )?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, None, &lenses)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, None, &lenses, None)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -6357,6 +6439,7 @@ impl RunCtx<'_> {
                     None,
                     &lenses,
                     &st.adversary,
+                    None,
                 )?
             };
 
@@ -6513,6 +6596,7 @@ impl RunCtx<'_> {
     /// prioritize the genuine error (as below) and the LOSING half must come from
     /// somewhere else - `any_parked` is that somewhere else, read by `run_fan_out_stage`
     /// separately from the propagated Err.
+    #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
         st: &Stage,
@@ -6521,6 +6605,7 @@ impl RunCtx<'_> {
         attempt: u32,
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // Bounded fan-out pool (§6): run the lenses in chunks of at most
         // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
@@ -6529,7 +6614,7 @@ impl RunCtx<'_> {
             let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt, wt)))
+                    .map(|a| s.spawn(move || self.run_lens(st, a, dir, attempt, wt, round)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
@@ -6584,12 +6669,13 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         wt: Option<&Worktree>,
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // A lens's output is not a verdict - it emits its findings to the graph - so the
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id))?;
+        let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
         self.run_reviewer(
             st,
             "lens",
@@ -6600,7 +6686,7 @@ impl RunCtx<'_> {
             true,
             // A lens's stdout is NOT its verdict - it emits findings to the graph - so an
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
-            false,
+            ReviewerOutput::Findings,
             &prompt,
             wt,
             // A lens judges the diff directly, not another tier's output - it carries no
@@ -6639,7 +6725,7 @@ impl RunCtx<'_> {
     /// `tier` is the human label the audit trail/`reviewer_spawn_opts` use; `role` is the
     /// deterministic-id role token (`lens_role(agent)` / [`ROLE_ADVERSARY`] /
     /// [`ROLE_ADJUDICATOR`]); `parallel` sets the reviewer's isolation-opt (§6, lenses run
-    /// in parallel); `stdout_is_verdict` selects the tier-specific degeneracy signal (see
+    /// in parallel); `output` selects the tier-specific degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
     /// sentinel exactly like the original spawn. `reviews` is the routed review roster
@@ -6656,7 +6742,7 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         parallel: bool,
-        stdout_is_verdict: bool,
+        output: ReviewerOutput,
         prompt: &str,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit
         // worktree this tier's spawn runs in, or `None` when the caller has none to
@@ -6762,14 +6848,9 @@ impl RunCtx<'_> {
             };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
-            if !self.reviewer_result_is_degenerate(
-                stdout_is_verdict,
-                &id,
-                &result,
-                findings.get(),
-            )? {
+            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
                 // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
-                // spawn (`stdout_is_verdict`) that returned a non-degenerate result with NO
+                // spawn (a verdict `output`) that returned a non-degenerate result with NO
                 // parseable verdict line, yet emitted an approve-shaped verdict via
                 // rigger_emit during the spawn, mistook the event channel for the gate. The
                 // gate reads ONLY the result channel, so folding this empty verdict as a
@@ -6787,7 +6868,7 @@ impl RunCtx<'_> {
                 // ReplayDriver (rigger step) and workflow::Driver (rigger serve) too, not only
                 // the cli stdout bridge. The result-channel check is FIRST, so the store read
                 // is taken only for a genuinely empty verdict.
-                if stdout_is_verdict
+                if output != ReviewerOutput::Findings
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
                 {
@@ -6883,12 +6964,14 @@ impl RunCtx<'_> {
     /// fault the conductor respawns/halts on rather than folding into the review. The
     /// signal DIFFERS by tier because each tier's WORK lands in a different channel:
     ///
-    /// - The ADJUDICATOR's stdout IS its verdict (`stdout_is_verdict`), so an empty or
+    /// - The ADJUDICATOR's stdout IS its verdict (a verdict `output`), so an empty or
     ///   whitespace-only stdout is degenerate on EVERY path - including a recorded empty
     ///   result replayed on the stepwise path. That is the wedge Gap 18 must catch (and
     ///   let recover): `build_result` records an empty success with no non-empty check, so
     ///   an infra-broken adjudicator's empty result would otherwise fold as a silent
-    ///   reject.
+    ///   reject. On a later review round ([`ReviewerOutput::RoundVerdict`]) a verdict line
+    ///   that rejects without naming a REQUIRED item is degenerate too: the next round
+    ///   could hold the unit to nothing.
     /// - A LENS/ADVERSARY emits its findings to the GRAPH and its stdout is discarded, so
     ///   an empty stdout is the NORMAL outcome, never degeneracy by itself. It is
     ///   degenerate only when the conductor OBSERVED it produce nothing at all: zero
@@ -6903,15 +6986,22 @@ impl RunCtx<'_> {
     ///   fragile per-spawn actor attribution of the recorded findings.
     fn reviewer_result_is_degenerate(
         &self,
-        stdout_is_verdict: bool,
+        output: ReviewerOutput,
         id: &str,
         result: &AgentResult,
         findings_emitted: u32,
     ) -> Result<bool, Error> {
+        if output == ReviewerOutput::RoundVerdict
+            && verdict_rejects_without_required(&result.output)
+        {
+            // A later round's reject that names no REQUIRED item is no verdict the next
+            // round can hold the unit to.
+            return Ok(true);
+        }
         if !result.output.trim().is_empty() {
             return Ok(false);
         }
-        if stdout_is_verdict {
+        if output != ReviewerOutput::Findings {
             // The adjudicator's verdict IS its stdout: empty is degenerate on both the
             // live and the replay path.
             return Ok(true);
@@ -6945,6 +7035,7 @@ impl RunCtx<'_> {
     /// own lens agent ids (spec 67, criterion 4) - the CALLER's already-routed value (light
     /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
     /// [`review_roster`].
+    #[allow(clippy::too_many_arguments)]
     fn run_adversary(
         &self,
         st: &Stage,
@@ -6953,12 +7044,13 @@ impl RunCtx<'_> {
         attempt: u32,
         wt: Option<&Worktree>,
         lenses: &[String],
+        round: Option<&ReviewRound>,
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY)?;
+        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
         self.run_reviewer(
             st,
             "adversary",
@@ -6969,7 +7061,7 @@ impl RunCtx<'_> {
             false,
             // Like a lens, the adversary's stdout is discarded (findings go to the graph),
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
-            false,
+            ReviewerOutput::Findings,
             &prompt,
             wt,
             &review_roster(lenses),
@@ -6988,9 +7080,12 @@ impl RunCtx<'_> {
     /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
     /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
     /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
+    /// Its prompt says how a reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
+    /// a later review round, ends with that round's block, where a reject naming no
+    /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
-    // attempt, the ensure-on-park worktree, and now the routed lens/adversary roster
-    // inputs) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
+    // attempt, the ensure-on-park worktree, the routed lens/adversary roster inputs and the
+    // review round) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
     // already carry this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
@@ -7002,6 +7097,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         lenses: &[String],
         adversary_id: &str,
+        round: Option<&ReviewRound>,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -7015,7 +7111,11 @@ impl RunCtx<'_> {
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
         // driven) - so it carries the SAME reviewer discipline those two tiers get via
         // `review_protocol` (spec 103, criterion 6), appended directly here.
-        let prompt = format!("{}{REVIEWER_DISCIPLINE}", self.build_prompt(st)?);
+        let prompt = format!(
+            "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
+            self.build_prompt(st)?,
+            round.map(ReviewRound::block).unwrap_or_default()
+        );
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7025,8 +7125,13 @@ impl RunCtx<'_> {
             attempt,
             false,
             // The adjudicator's stdout IS the gating verdict, so an empty/whitespace-only
-            // stdout is degenerate on every path (including a replayed recorded result).
-            true,
+            // stdout is degenerate on every path (including a replayed recorded result), and
+            // on a later round so is a reject that names no REQUIRED item.
+            if round.is_some() {
+                ReviewerOutput::RoundVerdict
+            } else {
+                ReviewerOutput::Verdict
+            },
             &prompt,
             wt,
             &adjudicator_roster(lenses, adversary_id),
@@ -7408,7 +7513,7 @@ impl RunCtx<'_> {
                     dir,
                     attempts,
                     false,
-                    false,
+                    ReviewerOutput::Findings,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
                     // The DAG-level critique names no lens tier of its own (spec 67, c4): an
@@ -7428,7 +7533,7 @@ impl RunCtx<'_> {
                     dir,
                     attempts,
                     false,
-                    true,
+                    ReviewerOutput::Verdict,
                     &prompt,
                     None,
                     // No lens tier at the DAG level, so the shared helper's roster reduces to
@@ -10194,12 +10299,19 @@ impl RunCtx<'_> {
     /// emits findings, the adversary and adjudicator (which ground after it) read them back
     /// from the graph, and a reviewer who emits its own findings feeds the next tier the
     /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
-    /// finding on the out-of-process path (see [`review_protocol`]).
-    fn build_review_prompt(&self, st: &Stage, actor: &str) -> Result<String, Error> {
+    /// finding on the out-of-process path (see [`review_protocol`]). On a later review round
+    /// it ends with that round's block ([`ReviewRound::block`]).
+    fn build_review_prompt(
+        &self,
+        st: &Stage,
+        actor: &str,
+        round: Option<&ReviewRound>,
+    ) -> Result<String, Error> {
         Ok(format!(
-            "{}{}",
+            "{}{}{}",
             self.build_prompt(st)?,
-            review_protocol(actor)
+            review_protocol(actor),
+            round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
 
@@ -11597,6 +11709,60 @@ pub fn review_protocol(actor: &str) -> String {
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
 const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run cargo-mutants, directly or through a verify helper: mutation testing belongs to the check-in gate, never to a review.";
+
+/// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
+/// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
+/// the next review round holds it to ([`ReviewRound::block`]). Appended to every
+/// adjudicator's prompt by [`RunCtx::run_adjudicator`].
+const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
+
+/// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
+/// worktree has since changed `delta` ([`RunCtx::round_delta`]), and `required` is the
+/// REQUIRED list that round left open - the one this attempt's implementer was handed. A
+/// round no earlier round of the same branch preceded is a first round and has none.
+struct ReviewRound {
+    base: String,
+    delta: Vec<String>,
+    required: Vec<RequiredItem>,
+}
+
+impl ReviewRound {
+    /// The block every review tier's prompt ends with on this round: what it reviews (the
+    /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
+    fn block(&self) -> String {
+        let base = &self.base;
+        let delta = if self.delta.is_empty() {
+            "nothing".to_string()
+        } else {
+            self.delta.join(", ")
+        };
+        let required = if self.required.is_empty() {
+            "That round required no item.\n".to_string()
+        } else {
+            format!(
+                "The items that round REQUIRED:\n{}",
+                required_lines(&self.required)
+            )
+        };
+        format!(
+            "\n\nLATER REVIEW ROUND: an earlier round judged this unit at {base} and sent it back. \
+             Review what changed since - `git diff {base}..HEAD`, which changed {delta} - and \
+             whether each item that round required is now fixed.\n{required}\
+             A finding outside that delta blocks only as a correctness defect \
+             (`\"correctness\":true`); any other finding outside it is recorded for the operator \
+             and never blocks. A reject this round names every item it requires in `required`.\n"
+        )
+    }
+}
+
+/// One `- <path>: <finding>` line per REQUIRED item: the one rendering the implementer's
+/// prior-failure block and a later round's review block share.
+fn required_lines(items: &[RequiredItem]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {}: {}\n", item.path, item.finding))
+        .collect()
+}
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -17928,7 +18094,7 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens").unwrap();
+        let review = ctx.build_review_prompt(&unit, "lens", None).unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -22772,7 +22938,7 @@ mod tests {
         let driver = Stub {
             write_file: Some("feature.rs".into()),
             output_by_agent: HashMap::from([
-                ("judge".to_string(), r#"{"verdict":"reject"}"#.to_string()),
+                ("judge".to_string(), REJECT_FEATURE.to_string()),
                 (
                     "lens".to_string(),
                     "reviewed: a blocker remains".to_string(),
@@ -30927,10 +31093,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let driver = Stub {
             write_file: Some(work.into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"reject"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([("judge".to_string(), REJECT_FEATURE.to_string())]),
             delete_dir_by_agent: ["judge".to_string()].into_iter().collect(),
             ..Stub::new()
         };
@@ -40316,9 +40479,7 @@ mod tests {
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
-            RunCtx::for_test(&cfg, &deps)
-                .round_delta(&wt, "u", 1)
-                .unwrap()
+            RunCtx::for_test(&cfg, &deps).round_delta(Some(&wt), "u", 1)
         };
         assert_eq!(
             delta_from(&own),
@@ -40889,10 +41050,7 @@ mod tests {
         // rejects, so the unit retries to the bound and escalates.
         let driver = Stub {
             write_file: Some("feature.rs".into()),
-            output_by_agent: HashMap::from([(
-                "judge".to_string(),
-                r#"{"verdict":"reject","reason":"adversarial review refuses this"}"#.to_string(),
-            )]),
+            output_by_agent: HashMap::from([("judge".to_string(), REJECT_FEATURE.to_string())]),
             ..Stub::new()
         };
         let deps = Deps {

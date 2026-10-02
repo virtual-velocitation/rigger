@@ -1,8 +1,9 @@
 //! The review-verdict logic: the fail-closed verdict-line reading on the result channel, the
 //! risk-tiered review-depth routing, and the review rosters.
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::ledger::RequiredItem;
 
 use crate::spawn::{lens_role, ROLE_ADVERSARY};
 
@@ -205,25 +206,18 @@ fn last_verdict(output: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// One item a reject's verdict line requires fixed (its `required` list): what must change,
-/// the repo-relative file it is in, whether it is a correctness defect - the adjudicator's
-/// judgment, which keeps an item outside a later review round's delta blocking - and, for a
-/// defect that recurs across sites, its shape (empty for a single site).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RequiredItem {
-    pub finding: String,
-    pub path: String,
-    pub correctness: bool,
-    pub pattern: String,
-}
-
 /// The items `output`'s [`verdict_line`] requires fixed: empty when there is no verdict line,
 /// it carries no `required` list, or the list holds anything but items.
 pub fn verdict_required(output: &str) -> Vec<RequiredItem> {
     verdict_line(output)
         .and_then(|v| serde_json::from_value(v.get("required")?.clone()).ok())
         .unwrap_or_default()
+}
+
+/// Whether `output`'s verdict line rejects without naming a single item it requires fixed:
+/// a reject a later review round cannot hold the next attempt to.
+pub fn verdict_rejects_without_required(output: &str) -> bool {
+    has_verdict_line(output) && !verdict_approves(output) && verdict_required(output).is_empty()
 }
 
 /// Whether `output` carries ANY parseable verdict line - a JSON line with a top-level

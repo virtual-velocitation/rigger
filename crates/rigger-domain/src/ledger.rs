@@ -93,6 +93,10 @@ pub struct Unit {
     /// a plan-stage commit. Raw passthrough like `cause`; empty when that failure was no
     /// rejection.
     pub review_reason: String,
+    /// The most recent `UnitFailed`'s REQUIRED list: the review items the next attempt must
+    /// fix, open until a review round rules on them. Raw passthrough like `cause`; empty
+    /// when no review item is open.
+    pub required: Vec<RequiredItem>,
     /// Spec 88, criterion 3 (ESCALATION RESUMES): the per-unit remediation ceiling an
     /// operator's `rigger resume-unit` grant raised past a prior escalation - the
     /// folded attempt count AT the moment of the LATEST `UnitResumed` fold, plus its
@@ -109,6 +113,20 @@ pub struct Unit {
     /// escalation after the grant is final again until the next resume" - so a stale
     /// banner never survives past the grant it described.
     pub resumed: Option<ResumeGrant>,
+}
+
+/// One item a review's reject requires fixed - an entry of its verdict line's `required` list,
+/// carried on `UnitFailed` as the unit's REQUIRED list ([`Unit::required`]): what must change,
+/// the repo-relative file it is in, whether it is a correctness defect - the adjudicator's
+/// judgment, which keeps an item outside a later review round's delta blocking - and, for a
+/// defect that recurs across sites, its shape (empty for a single site).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequiredItem {
+    pub finding: String,
+    pub path: String,
+    pub correctness: bool,
+    pub pattern: String,
 }
 
 /// The operator identity and grant size of a unit's latest `UnitResumed` (spec 88,
@@ -433,6 +451,8 @@ struct UnitFailed {
     gate_evidence: Vec<String>,
     #[serde(default)]
     review_reason: String,
+    #[serde(default)]
+    required: Vec<RequiredItem>,
 }
 #[derive(Deserialize)]
 struct UnitEscalated {
@@ -482,6 +502,7 @@ impl RunState {
             cause: String::new(),
             gate_evidence: Vec::new(),
             review_reason: String::new(),
+            required: Vec::new(),
             resume_bound: 0,
             resumed: None,
         })
@@ -527,6 +548,7 @@ impl RunState {
                 u.cause = p.cause;
                 u.gate_evidence = p.gate_evidence;
                 u.review_reason = p.review_reason;
+                u.required = p.required;
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
