@@ -2693,22 +2693,18 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
     stages.values().any(|st| !st.produces.is_empty())
 }
 
-/// The plan-critique adjudicator's reject `cause` for a defect in a criterion's own text that no
-/// decomposition can remove (spec 112, criterion 5): the one cause that is a spec defect.
-const CAUSE_SPEC_AMBIGUITY: &str = "spec-ambiguity";
-
 /// A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE (spec 112, criterion 5): the stop predicate, one
 /// pure function over the current run slice `run`, `s` the attempt the plan-critique gate `gate`'s
 /// next round would run and `plan` the gate's producer. It holds - answering the stopping reject's
 /// adjudication, whose upheld ids the stop names - when the gate's rejects at attempts `s - 2` and
-/// `s - 1` (each the `UnitFailed` under its [`failed_key`]) both carry a review reason
-/// whose parsed cause is `spec-ambiguity`, the re-plan `spawn_id(plan, replan, s - 1)` between them
-/// is recorded, the re-plan at `s` is not, and no event carries the stop's completion key
-/// ([`spec_defect_escalated_key`] at `s - 1`). A re-plan is recorded by its `SpawnRequested` or
-/// `SpawnResult` (the stepwise driver records both) or by an event it emitted, stamped with its id
-/// as [`META_SPAWN`] (a blocking driver records no spawn event). So a first `spec-ambiguity` reject
-/// re-plans as before, and the stop fires on one that follows a re-plan which did not clear the
-/// previous one.
+/// `s - 1` (each the `UnitFailed` under its [`failed_key`]) both carry a review reason whose
+/// parsed verdict is a spec ambiguity ([`spawn::Adjudication::is_spec_ambiguity`]), the re-plan
+/// `spawn_id(plan, replan, s - 1)` between them is recorded, the re-plan at `s` is not, and no
+/// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
+/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
+/// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
+/// event). So a first `spec-ambiguity` reject re-plans as before, and the stop fires on one that
+/// follows a re-plan which did not clear the previous one.
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
@@ -2720,7 +2716,7 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
         keyed(failed_key(gate, k))
             .and_then(Event::decode::<Value>)
             .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
-            .filter(|a| a.cause.as_deref() == Some(CAUSE_SPEC_AMBIGUITY))
+            .filter(spawn::Adjudication::is_spec_ambiguity)
     };
     let re_planned = |attempt: u32| {
         let id = spawn_id(plan, ROLE_REPLAN, attempt);
@@ -7753,22 +7749,23 @@ impl RunCtx<'_> {
         // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
         // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
         // a defect in a criterion's own text from one a re-plan can fix.
-        b.push_str(
-            "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
-             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
+        b.push_str(&format!(
+            "\nRender your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to \
+             release the fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition \
              back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
              (open disposition) defect, a unit over the size cap, or a defect in a \
              criterion's own text that no decomposition can remove - never for mechanical \
              blast-radius overlap alone. A reject's cause follows this gate's contract, \
              which governs it over any generic cause wording in your persona: \
-             \"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's \
+             \"cause\":\"{}\" only when the upheld defect is in a criterion's \
              own text and no decomposition can remove it (two criteria that contradict \
              under every landing order, a criterion no plan can satisfy, a demanded \
              mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
              defect a re-plan can fix (twin units, a missing exclusion between units, a unit \
              over the size cap, a unit owning no criterion, a split the planner chose). When \
              unsure, \"cause\":\"decomposition-conflict\".\n",
-        );
+            spawn::CAUSE_SPEC_AMBIGUITY
+        ));
         b
     }
 
@@ -8171,8 +8168,9 @@ impl RunCtx<'_> {
             None,
             gate,
             &format!(
-                "plan-critique {gate:?} stopped the run: its spec-ambiguity reject at attempt {k} \
-                 followed a re-plan that did not clear the previous one; {halt}"
+                "plan-critique {gate:?} stopped the run: its {} reject at attempt {k} followed a \
+                 re-plan that did not clear the previous one; {halt}",
+                spawn::CAUSE_SPEC_AMBIGUITY
             ),
             Some(&spec_defect_lesson_key(gate, k)),
             Some(&about),

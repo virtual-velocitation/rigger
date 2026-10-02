@@ -298,6 +298,12 @@ pub struct Adjudication {
 /// [`Adjudication::is_infra_fault`] reads.
 pub const CAUSE_INFRA_FAULT: &str = "infra-fault";
 
+/// The plan-critique adjudicator's reject `cause` for a defect in a criterion's own text that no
+/// decomposition can remove (spec 112, criterion 5): the one cause that is a spec defect, which
+/// can stop the run, spelled once for the critique prompt that asks for it and for
+/// [`Adjudication::is_spec_ambiguity`], which reads it.
+pub const CAUSE_SPEC_AMBIGUITY: &str = "spec-ambiguity";
+
 impl Adjudication {
     /// Parse an adjudicator's raw `output` for its grown verdict line (spec 11): the LAST
     /// JSON object line carrying a `verdict`, `upheld`, or `discarded` field yields the upheld
@@ -354,6 +360,12 @@ impl Adjudication {
     /// handing the author a remediation attempt.
     pub fn is_infra_fault(&self) -> bool {
         self.cause.as_deref() == Some(CAUSE_INFRA_FAULT)
+    }
+
+    /// Whether the verdict blames the spec ([`CAUSE_SPEC_AMBIGUITY`]): the plan-critique reject
+    /// names a defect in a criterion's own text that no re-plan can remove.
+    pub fn is_spec_ambiguity(&self) -> bool {
+        self.cause.as_deref() == Some(CAUSE_SPEC_AMBIGUITY)
     }
 }
 
