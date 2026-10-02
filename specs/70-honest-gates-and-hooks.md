@@ -22,11 +22,11 @@ infrastructure failures into the unit under test:
   commit, naming the drifted files, the rendering binary (path and build provenance), and
   the two remedies - re-render with the tree-built binary, or reinstall. It never stages its
   own render. A matching render passes silently, exactly as today.
-- **Gate evidence prefers real failure markers** (`src/gate.rs::compact`): genuine failure
+- **Gate evidence prefers real failure markers** (`crates/rigger-gates-shell/src/gate.rs::compact`): genuine failure
   syntax (`test <name> ... FAILED`, `error[`, `panicked at`, the failures summary block)
   ranks above mere keyword hits, and a passing `... ok` line never consumes a slot. The
   five-line bound and the compactor's role are unchanged.
-- **The gate's store resolution is fenced** (`src/gate.rs` env seam, same seam as the
+- **The gate's store resolution is fenced** (`crates/rigger-gates-shell/src/gate.rs` env seam, same seam as the
   target-dir override): every gate process runs with store resolution pinned to an isolated
   scratch store, so a walk-up finds a fenced empty store, never the live run's. The fence is
   the gate runner's job, not each test's.

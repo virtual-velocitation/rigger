@@ -28,7 +28,7 @@
 //! Each case runs unconditionally, so the reshaped rung-1 flag and its place at the top of the
 //! order are regression-locked on every machine and on both feature lanes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -37,6 +37,10 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
+
+use common::cli::assert_selected_server;
+use common::cli::write_workflow;
 use common::rigger_bin;
 
 /// An unreachable but well-formed server address: nothing listens on this loopback port, so the
@@ -57,42 +61,10 @@ fn committed_project() -> TempDir {
         &["config", "user.name", "t"],
         &["commit", "--allow-empty", "-q", "-m", "init"],
     ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
+        let ok = run_git(root, args).status.success();
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// Write `<root>/.rigger/workflow.yml` (and the worker agent it references) so `rigger run` loads a
-/// valid config and reaches the store seam. `store_block` is appended verbatim - `""` pins nothing
-/// (the config rung is no-opinion), `"store:\n  backend: sqlite\n"` pins the local backend beneath
-/// the flag under test.
-fn write_workflow(root: &Path, store_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: flagtest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {store_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
-
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The flag
-/// rung must never fabricate this when a server is selected.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
 }
 
 /// Drive `rigger run --base HEAD <extra flags>` in `root`, with `KURRENTDB_CONN` REMOVED from the
@@ -118,66 +90,36 @@ fn run_with_flags(root: &Path, extra: &[&str]) -> Output {
         .expect("spawn rigger run")
 }
 
-/// Assert the flag selected the SERVER backend: the run failed inside the kurrentdb adapter (the
-/// eager connect to the unreachable address) and fabricated no local sqlite event log. The ABSENCE
-/// of the sqlite walk-up's `no rigger store found` is what distinguishes a genuine server selection
-/// from the pre-fix drop.
-fn assert_selected_server(out: &Output, root: &Path, why: &str) {
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        !out.status.success(),
-        "{why}: an unreachable server must fail, never silently succeed against a local fallback; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("kurrentdb"),
-        "{why}: the run must fail INSIDE the server backend, proving the flag selected the server; \
-         stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("no rigger store found"),
-        "{why}: the flag-selected server must not drop to the local sqlite walk-up; stderr:\n{stderr}"
-    );
-    assert!(
-        !local_event_log(root).exists(),
-        "{why}: a server selection must NOT fabricate a local .rigger/events.db"
-    );
-}
-
-#[test]
-fn run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite() {
-    // Rung 1, the reshaped flag arm: a bare `--conn <url>` (no `--eventstore`) with NOTHING beneath
-    // it configured - no env, no secret file, a store-less committed config - must SELECT the server
-    // it addresses. Before the fix a bare `--conn` fell through the flag arm to the lower rungs and,
-    // with none set, resolved the LOCAL sqlite default - the store-fracture footgun where
-    // `rigger run --conn kurrentdb://prod <spec>` silently ran against a local log. This pins that a
-    // non-empty `--conn` is a first-class highest-precedence source, wired straight through the
-    // shipped binary.
+/// A bare `--conn <url>` (no `--eventstore`) over a committed project whose workflow carries
+/// `store_block` selects the server it addresses through the shipped binary, never dropping to
+/// the local sqlite default; `why` is the assertion's reason.
+fn assert_bare_conn_selects_the_server(store_block: &str, why: &str) {
     let project = committed_project();
     let root = project.path();
-    write_workflow(root, "");
+    write_workflow(root, store_block);
     let out = run_with_flags(root, &["--conn", UNREACHABLE]);
-    assert_selected_server(
-        &out,
-        root,
+    assert_selected_server(&out, root, why);
+}
+
+rigger::test_cases! {
+    /// Rung 1, the reshaped flag arm: a bare `--conn <url>` (no `--eventstore`) with NOTHING beneath
+    /// it configured - no env, no secret file, a store-less committed config - must SELECT the server
+    /// it addresses. Before the fix a bare `--conn` fell through the flag arm to the lower rungs and,
+    /// with none set, resolved the LOCAL sqlite default - the store-fracture footgun where
+    /// `rigger run --conn kurrentdb://prod <spec>` silently ran against a local log. This pins that a
+    /// non-empty `--conn` is a first-class highest-precedence source, wired straight through the
+    /// shipped binary.
+    run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite: assert_bare_conn_selects_the_server(
+        "",
         "a bare --conn selects the server, never dropping to the local sqlite default",
     );
-}
-
-#[test]
-fn run_conn_flag_beats_a_committed_sqlite_store_config() {
-    // Rung 1 beats rung 4, the footgun with an ACTIVE lower rung: the committed config explicitly
-    // pins `store: sqlite`, yet a bare `--conn <url>` alongside it must still select the server -
-    // the flag is never dropped to the sqlite the config names. Before the fix the bare `--conn`
-    // fell through to the config rung and resolved that sqlite; the operator's explicit `--conn`
-    // was silently discarded. This pins the flag outranking the committed config through the binary.
-    let project = committed_project();
-    let root = project.path();
-    write_workflow(root, "store:\n  backend: sqlite\n");
-    let out = run_with_flags(root, &["--conn", UNREACHABLE]);
-    assert_selected_server(
-        &out,
-        root,
+    /// Rung 1 beats rung 4, the footgun with an ACTIVE lower rung: the committed config explicitly
+    /// pins `store: sqlite`, yet a bare `--conn <url>` alongside it must still select the server -
+    /// the flag is never dropped to the sqlite the config names. Before the fix the bare `--conn`
+    /// fell through to the config rung and resolved that sqlite; the operator's explicit `--conn`
+    /// was silently discarded. This pins the flag outranking the committed config through the binary.
+    run_conn_flag_beats_a_committed_sqlite_store_config: assert_bare_conn_selects_the_server(
+        "store:\n  backend: sqlite\n",
         "a bare --conn outranks a committed store: sqlite config, never dropping to it",
     );
 }

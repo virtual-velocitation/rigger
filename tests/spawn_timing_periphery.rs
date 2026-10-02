@@ -20,7 +20,7 @@
 //!  - THE WRITER -> STORE -> READER WIRE FORM. The unit tests never persist a `SpawnRequest`/
 //!    `SpawnResult` anywhere: they hand-set `Event.recorded_at` directly on an in-memory
 //!    value. This test builds the SAME events through the real writer path
-//!    (`SpawnRequest::new(..).to_event()` / `SpawnResult::ok(..).to_event()`), APPENDS them to
+//!    (`common::spawn_request(..).to_event()` / `SpawnResult::ok(..).to_event()`), APPENDS them to
 //!    a real `eventstore::sqlite::Store` (the real BLOB/INTEGER/TEXT columns, the real
 //!    store-STAMPED `recorded_at` clock - not a caller-set value), reads them back, and folds
 //!    the READ-BACK events - proving the SQLite round trip the pairing fold depends on in
@@ -54,12 +54,15 @@
 //! `metrics` and `eventstore::sqlite` are not feature-gated, so every test here runs
 //! identically on both the default and the `--no-default-features` lane.
 
+mod common;
+
+use rigger::spawn::SpawnEvent;
 use std::time::Duration;
 
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore, ExpectedRevision};
 use rigger::metrics::{project, Metrics, SpawnTiming};
-use rigger::spawn::{SpawnRequest, SpawnResult};
+use rigger::spawn::SpawnResult;
 
 /// `SpawnTiming`'s two fields and `mean()` are constructible and computed exactly as
 /// documented, entirely from OUTSIDE the crate - the public-API half of spec 61 c9's surface.
@@ -95,6 +98,29 @@ fn metrics_spawn_timing_fields_are_publicly_reachable_and_default_empty() {
     assert_eq!(projected.unpaired_spawns, 0);
 }
 
+/// Appends each of `batches` to the `run` stream of a REAL sqlite store in its OWN append call
+/// (one store-stamped `recorded_at` per batch), with a short, real sleep before every batch
+/// after the first, so events in different batches carry measurably different stamps; returns
+/// the stream read back.
+fn read_back_batches(
+    batches: Vec<Vec<rigger::eventstore::Event>>,
+) -> Vec<rigger::eventstore::Event> {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
+    for (i, batch) in batches.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        store
+            .append("run", ExpectedRevision::Any, batch)
+            .unwrap_or_else(|e| panic!("append batch {i}: {e}"));
+    }
+    store
+        .read_stream("run", 0, Direction::Forward)
+        .expect("read the stream back")
+}
+
 /// The full WRITER -> STORE -> READER round trip, across TWO roles - one review-tier
 /// (`adversary`), one not (`implementer`) - plus one unanswered request. Real
 /// `SpawnRequest`/`SpawnResult` events are appended to a real sqlite store, read back, and
@@ -102,59 +128,27 @@ fn metrics_spawn_timing_fields_are_publicly_reachable_and_default_empty() {
 /// memory a moment earlier.
 #[test]
 fn spawn_timing_pairs_real_writer_events_through_a_real_store_by_role() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("events.db");
-    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
+    let implementer_req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
+    let adversary_req = common::spawn_request("u2", "review", "adversary", 0, "review it");
+    let dead_req = common::spawn_request("u3", "impl", "implementer", 1, "never answered");
 
-    let implementer_req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
-    let adversary_req = SpawnRequest::new("u2", "review", "adversary", 0, "review it");
-    let dead_req = SpawnRequest::new("u3", "impl", "implementer", 1, "never answered");
-
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[
-                implementer_req.to_event().unwrap(),
-                dead_req.to_event().unwrap(),
-            ],
-        )
-        .expect("append the two requests");
-    // A short, real sleep so the paired duration is measurably nonzero through the store's
-    // own wall-clock stamp - proving `recorded_at` (store-stamped on ingest) actually drives
-    // the fold, rather than every path coincidentally producing an unmeasured zero.
-    std::thread::sleep(Duration::from_millis(20));
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[SpawnResult::ok(&implementer_req.id, "done")
-                .to_event()
-                .unwrap()],
-        )
-        .expect("append the implementer result");
-
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[adversary_req.to_event().unwrap()],
-        )
-        .expect("append the adversary request");
-    std::thread::sleep(Duration::from_millis(20));
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[SpawnResult::ok(&adversary_req.id, "done")
-                .to_event()
-                .unwrap()],
-        )
-        .expect("append the adversary result");
-
-    let events = store
-        .read_stream("run", 0, Direction::Forward)
-        .expect("read the stream back");
+    // Each batch lands after a short, real sleep, so every paired duration is measurably
+    // nonzero through the store's own wall-clock stamp - proving `recorded_at` (store-stamped
+    // on ingest) actually drives the fold, rather than every path coincidentally producing an
+    // unmeasured zero.
+    let events = read_back_batches(vec![
+        vec![
+            implementer_req.to_event().unwrap(),
+            dead_req.to_event().unwrap(),
+        ],
+        vec![SpawnResult::ok(&implementer_req.id, "done")
+            .to_event()
+            .unwrap()],
+        vec![adversary_req.to_event().unwrap()],
+        vec![SpawnResult::ok(&adversary_req.id, "done")
+            .to_event()
+            .unwrap()],
+    ]);
     assert_eq!(events.len(), 5, "all five appended events must read back");
 
     let m = project(&events);
@@ -190,10 +184,6 @@ fn spawn_timing_pairs_real_writer_events_through_a_real_store_by_role() {
 /// `unpaired_spawns == 0` (silently absorbed by window 2's result) instead of `1`.
 #[test]
 fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("events.db");
-    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
-
     // A well-formed body (matching what `crate::run::RunStarted::to_event` actually
     // serializes in production), NOT an empty placeholder - `metrics::project`'s window
     // advance now decodes this body (mirroring `crate::run::run_attribution`, see
@@ -208,39 +198,15 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
     };
     // The SAME textual spawn id is reused in both windows - a re-proposed/relaunched unit
     // reusing its auto-slugged id, the realistic collision this fix closes.
-    let req = SpawnRequest::new("u1", "impl", "implementer", 0, "do it");
+    let req = common::spawn_request("u1", "impl", "implementer", 0, "do it");
 
-    // Window 1: parked, but never answered before window 2 begins.
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[run_started("run-a"), req.to_event().unwrap()],
-        )
-        .expect("append window 1's RunStarted + the never-answered-in-window request");
-
-    std::thread::sleep(Duration::from_millis(20));
-
-    // Window 2: the same id is re-requested and genuinely answered inside this window.
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[run_started("run-b"), req.to_event().unwrap()],
-        )
-        .expect("append window 2's RunStarted + the reused-id request");
-    std::thread::sleep(Duration::from_millis(20));
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[SpawnResult::ok(&req.id, "done").to_event().unwrap()],
-        )
-        .expect("append window 2's result");
-
-    let events = store
-        .read_stream("run", 0, Direction::Forward)
-        .expect("read the stream back");
+    let events = read_back_batches(vec![
+        // Window 1: parked, but never answered before window 2 begins.
+        vec![run_started("run-a"), req.to_event().unwrap()],
+        // Window 2: the same id is re-requested and genuinely answered inside this window.
+        vec![run_started("run-b"), req.to_event().unwrap()],
+        vec![SpawnResult::ok(&req.id, "done").to_event().unwrap()],
+    ]);
     assert_eq!(
         events.len(),
         5,
@@ -278,39 +244,19 @@ fn spawn_timing_never_pairs_a_request_and_result_from_different_run_windows() {
 /// too.
 #[test]
 fn spawn_timing_excludes_a_real_same_batch_pair_as_suspect_not_a_silent_zero() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("events.db");
-    let store = Store::open(db.to_str().unwrap()).expect("open a real sqlite store");
+    let same_batch = common::spawn_request("u1", "impl", "implementer", 0, "same batch");
+    let genuine = common::spawn_request("u2", "impl", "implementer", 0, "genuine");
 
-    let same_batch = SpawnRequest::new("u1", "impl", "implementer", 0, "same batch");
-    let genuine = SpawnRequest::new("u2", "impl", "implementer", 0, "genuine");
-
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[
-                same_batch.to_event().unwrap(),
-                SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
-            ],
-        )
-        .expect("append the same-batch pair in ONE call");
-
-    store
-        .append("run", ExpectedRevision::Any, &[genuine.to_event().unwrap()])
-        .expect("append the genuine request in its own batch");
-    std::thread::sleep(Duration::from_millis(20));
-    store
-        .append(
-            "run",
-            ExpectedRevision::Any,
-            &[SpawnResult::ok(&genuine.id, "done").to_event().unwrap()],
-        )
-        .expect("append the genuine result in a LATER, separate batch");
-
-    let events = store
-        .read_stream("run", 0, Direction::Forward)
-        .expect("read the stream back");
+    let events = read_back_batches(vec![
+        // The same-batch pair, in ONE append call.
+        vec![
+            same_batch.to_event().unwrap(),
+            SpawnResult::ok(&same_batch.id, "done").to_event().unwrap(),
+        ],
+        // The genuine request in its own batch, and its result in a LATER, separate one.
+        vec![genuine.to_event().unwrap()],
+        vec![SpawnResult::ok(&genuine.id, "done").to_event().unwrap()],
+    ]);
 
     let m = project(&events);
 

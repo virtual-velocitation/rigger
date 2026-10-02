@@ -1,17 +1,17 @@
 //! Periphery (integration) test for spec 61 criterion 5 (ITEM SHARDING AND THE JOBS CAP),
 //! unit u61c5b: `run_canary` gained a caller-supplied `jobs: usize` total-concurrent-spawn
-//! budget, and a new private `canary::spawn_budget` splits it between the function's own
+//! budget, and a new private `canary_store::spawn_budget` splits it between the function's own
 //! OUTER per-item sharding (new: `run_canary` now calls `crate::parallel::map_ordered`
 //! itself, a call site that did not exist before this unit) and the LENS FAN-OUT
 //! criterion's already-built INNER `score_item` fan-out, so their PRODUCT never exceeds
-//! `jobs`. A new `canary::default_jobs()` supplies the production default when the operator
+//! `jobs`. A new `canary_store::default_jobs()` supplies the production default when the operator
 //! (or a direct library caller) does not choose one.
 //!
 //! The implementer's own unit tests pin every property above at the PRIVATE `canary.rs`
 //! seam, with a `#[cfg(test)]`-private `Scripted`/`BarrierGatedEverySpawn` driver
 //! unreachable from here. This suite re-proves the same behavioral contracts from OUTSIDE
-//! the crate, over the library's public surface (`rigger::canary::run_canary`,
-//! `rigger::canary::default_jobs`), using drivers built fresh in this file (the same
+//! the crate, over the library's public surface (`rigger::canary_store::run_canary`,
+//! `rigger::canary_store::default_jobs`), using drivers built fresh in this file (the same
 //! "written FROM SCRATCH, cannot reuse the private one" discipline
 //! `tests/canary_lens_fanout_periphery.rs` already established for criterion 4) - so a
 //! wiring bug between the public entry and the private budget-splitting internals (e.g. a
@@ -25,69 +25,26 @@
 //! erroring one (in corpus order) are ever appended to the store, matching this crate's own
 //! "a canary score the store did not write is not a score" discipline.
 
+mod common;
+
 use std::sync::{Barrier, Mutex};
 
 use serde_json::{json, Value};
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_LENS};
+use common::fixtures::anchor_of;
+use common::fixtures::cfg_for;
+use common::fixtures::critical_verdict;
+use common::fixtures::emit_review_finding;
+use common::fixtures::panel_with_lenses;
+use common::fixtures::planted_item as item;
+use common::fixtures::CRITICAL_SUMMARY;
+use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
+use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
-
-const CRITICAL_SUMMARY: &str = "CRIT defect here";
-
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel(lenses: &[&str]) -> ReviewPanel {
-    ReviewPanel {
-        lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
-
-fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: format!("{id}.rs"),
-        expected_verdict: verdict.into(),
-        expected_tier: tier.into(),
-        review: format!("fn {id}() {{}}"),
-    }
-}
-
-/// Extract the anchor a reviewer prompt names - the file between the FIRST pair of
-/// backticks `review_header` wraps it in. Re-derived here rather than shared, since this
-/// file cannot see canary.rs's private helper either.
-fn anchor_of(prompt: &str) -> String {
-    prompt
-        .split_once('`')
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(anchor, _)| anchor.to_string())
-        .unwrap_or_default()
-}
 
 /// `default_jobs()` is not merely "greater than one" (already pinned in
 /// `canary_lens_fanout_periphery.rs`) but an EXACT, reproducible formula: the crate-wide
@@ -98,7 +55,7 @@ fn anchor_of(prompt: &str) -> String {
 #[test]
 fn default_jobs_equals_default_workers_floored_at_two() {
     assert_eq!(
-        rigger::canary::default_jobs(),
+        rigger::canary_store::default_jobs(),
         rigger::parallel::default_workers().max(2),
         "default_jobs must be exactly default_workers() floored at 2, not merely > 1"
     );
@@ -113,8 +70,8 @@ fn default_jobs_equals_default_workers_floored_at_two() {
 #[test]
 fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicking() {
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![item("only", true, "reject", "lens")];
 
     struct Catches;
@@ -127,12 +84,7 @@ fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicki
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             // Only the lens tier catches here - the adversary stays clean, so the
             // resulting caught_by names exactly the lens tier, not both.
@@ -187,8 +139,8 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
     let lenses = ["lens-a", "lens-b"];
     let mut ids: Vec<&str> = lenses.to_vec();
     ids.extend(["adv", "adj"]);
-    let c = cfg(&ids);
-    let p = panel(&lenses);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&lenses);
     let corpus = vec![
         item("i1", false, "approve", ""),
         item("i2", true, "reject", "lens"),
@@ -207,12 +159,7 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             // Only the lens tier is sharded by this unit's `item_workers x lens_workers`
             // product; the adversary runs once per item, sequential after the lens tier -
@@ -223,16 +170,7 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
             }
             let anchor = anchor_of(prompt);
             let catches = a.id == "lens-b" && anchor == "i2.rs";
-            let finding = if catches {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": CRITICAL_SUMMARY, "about": [anchor]})
-            } else {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": "minor style nit", "about": ["other.rs"]})
-            };
-            emit(TYPE_REVIEW_FINDING, finding)?;
-            Ok(AgentResult {
-                output: "reviewed".into(),
-                resolved_model: String::new(),
-            })
+            emit_review_finding(emit, &a.id, &anchor, catches)
         }
     }
 
@@ -274,8 +212,8 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
     let lenses = ["lens-a", "lens-b", "lens-c"];
     let mut ids: Vec<&str> = lenses.to_vec();
     ids.extend(["adv", "adj"]);
-    let c = cfg(&ids);
-    let p = panel(&lenses);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&lenses);
     let corpus = vec![
         item("i1", true, "reject", "lens"),
         item("i2", true, "reject", "adversary"),
@@ -293,27 +231,13 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             let anchor = anchor_of(prompt);
             // lens-c catches i1/i4; the adversary catches i2; nobody catches i3 (control).
             let catches = (a.id == "lens-c" && (anchor == "i1.rs" || anchor == "i4.rs"))
                 || (a.id == "adv" && anchor == "i2.rs");
-            let finding = if catches {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": CRITICAL_SUMMARY, "about": [anchor]})
-            } else {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": "minor style nit", "about": ["other.rs"]})
-            };
-            emit(TYPE_REVIEW_FINDING, finding)?;
-            Ok(AgentResult {
-                output: "reviewed".into(),
-                resolved_model: String::new(),
-            })
+            emit_review_finding(emit, &a.id, &anchor, catches)
         }
     }
 
@@ -351,8 +275,8 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
 #[test]
 fn run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors() {
     let ids = ["lens-a", "adv", "adj"];
-    let c = cfg(&ids);
-    let p = panel(&["lens-a"]);
+    let c = cfg_for(&ids);
+    let p = panel_with_lenses(&["lens-a"]);
     let corpus = vec![
         item("i1", false, "approve", ""),
         item("i2", true, "reject", "lens"),

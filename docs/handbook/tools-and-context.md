@@ -63,6 +63,8 @@ The discipline that makes this layer worth having: **emit at decision time, not 
 
 Supersession, not deletion: the graph is bi-temporal, so overruling a decision emits a superseding event and the old belief is marked invalid-as-of, never erased. Agents therefore never need to "clean up" the log - append the correction and the projection handles the rest.
 
+Live progress (`rigger progress <id> '<activity>'`) is presentation only and lives outside the log, in `.rigger/progress.db`, on one stream per run, so `rigger status`, the dash and the `rigger_activity` tool read the current run's reports and nothing older. A binary that predates the per-run streams wrote every run's reports to one shared stream. Refreshing the binary to one with per-run progress streams in the middle of a run drops that run's earlier reports from these views (a recorded stop-failure class included); each agent's line fills again with its next report, and nothing in the event log is lost.
+
 ## 3. Gates: the tools that judge
 
 A gate is a shell command whose exit code is the verdict, declared once in the workflow's `gates:` library and referenced by name from stages:
@@ -95,5 +97,17 @@ This is the integration seam for embedding Rigger's orchestration and memory int
 Granting tools is half the surface; the other half is what the driver feeds the agent up front. Per assignment, an agent receives its agent-file prompt, the unit spec (files, criterion, gates), and the **context slice**: the subgraph of decisions governing the files it is about to touch, the lessons attached to them, and what peers have already decided. Not the whole codebase, not the whole history - all the context it needs and only the context it needs.
 
 The side-car keeps that slice *live* during long work: peer decisions land as they are emitted, so an agent mid-unit learns that a concurrent agent just made a governing decision without polling for it.
+
+### How a headless spawn is configured
+
+A headless Claude Code session reads its hooks, MCP servers and subagents from its working directory, and a unit worktree is a fresh checkout: `.claude/settings.json` is machine-local, and a project's `.gitignore` usually ignores `.claude`. So the headless host hands the whole configuration to each spawn on its command line, as inline JSON, and writes nothing into the worktree (whatever lands in a worktree is committed with the unit's work):
+
+| Flag | Carries | Built from |
+|---|---|---|
+| `--settings` | The spawn's own settings, with the SessionStart hook (`rigger prime`), the PreToolUse lookup guard (`rigger grep-guard` on `Grep\|Bash`) and the status line (`rigger status --line`) merged in | The same installers and commands `rigger setup` writes into `.claude/settings.json` |
+| `--mcp-config` + `--strict-mcp-config` | Exactly one MCP server, `rigger`, bound to this spawn (`rigger mcp --spawn <id>`), and no other | The same installer `rigger setup` writes `.mcp.json` with |
+| `--agents` | The `lookup` and `verify` fan-out helpers | The committed `.claude/agents/lookup.md` and `verify.md`, the same text `rigger init` scaffolds |
+
+Every value has one home in the binary, shared with `rigger setup`, so what an operator's session carries and what a spawn carries cannot drift, and the worktree needs nothing. A spawn is only a working spawn when its `rigger` server connects: the host reads the server's status from the session's `system/init` message, and any status but `connected` stops the session before its task runs and fails the spawn as a launch fault of class `unknown` whose message names the status. The usual cause is a `rigger mcp --spawn <id>` that could not start, for example in a checkout with no `.rigger/` store. The operator's own interactive session still reads `.claude/settings.json`; `rigger validate` warns when that file lacks the hooks, and `rigger setup` installs them.
 
 What this means for you as an author: you rarely need to stuff context into prompts. Put durable knowledge in events (lessons, decisions), keep prompts about *role and method*, and let grounding deliver the knowledge at the moment it is relevant. A prompt that hardcodes facts about the codebase goes stale; a graph that stores them gets superseded properly.

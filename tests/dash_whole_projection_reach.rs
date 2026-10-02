@@ -7,7 +7,7 @@
 //!
 //! This layer runs OUTSIDE the crate, over the library's PUBLIC surface only (`Projector::open` ->
 //! `Projection::apply` -> the new `whole` -> `dash::graph_seeds` / `Projection::subgraph` /
-//! `dash::serve` + `/api/graph`), exactly as the real dash provider and any external caller reach it.
+//! `dash::serve_on` + `/api/graph`), exactly as the real dash provider and any external caller reach it.
 //! It cannot touch the private `conn`, the crate-internal fold helpers, or the binary-private
 //! `dash_read_whole_graph` the implementer's in-binary test drives - so it guards what the two
 //! inside-out tests are structurally blind to:
@@ -25,17 +25,16 @@
 //! tests are not feature-gated and run in both - the fold and the read they exercise are always
 //! compiled.
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+mod common;
 
+use common::served::body_of;
+use common::served::{fetch_with_retry, try_fetch_over};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Graph, Projection, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_EDGE_INFERRED,
 };
-use rigger::dash::{self, DashInputs};
+use rigger::dash::{self};
 use rigger::eventstore::Event;
 
 /// A `DecisionMade` event in its on-log JSON form (`id` decides, governing `governs`, superseding
@@ -107,11 +106,18 @@ fn whole_reads_the_projection_with_deterministic_node_and_edge_ordering() {
 
     // Apply in an order that is NOT the sorted `from_id` order (d2 before d1, files interleaved), so
     // a returned edge sequence sorted by `from_id` can only come from the read's own ORDER BY.
-    p.apply(&decision_event(1, "d2", "second", &["z.rs"], ""))
-        .unwrap();
-    p.apply(&decision_event(2, "d1", "first", &["y.rs"], ""))
-        .unwrap();
-    p.apply(&code_entity_event(3, "a.rs", "run", 5)).unwrap();
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&decision_event(1, "d2", "second", &["z.rs"], "")),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&decision_event(2, "d1", "first", &["y.rs"], "")),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(3, "a.rs", "run", 5)),
+    );
 
     let g = p.whole().unwrap();
 
@@ -179,15 +185,21 @@ fn whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it() 
 
     // A decision seeds one component (d1 GOVERNS src/combat.rs, which CONTAINS apply_damage).
     let d1 = decision_event(1, "d1", "wire combat", &["src/combat.rs"], "");
-    p.apply(&d1).unwrap();
-    p.apply(&code_entity_event(2, "src/combat.rs", "apply_damage", 7))
-        .unwrap();
+    common::fixtures::folds(&p, std::slice::from_ref(&d1));
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "apply_damage", 7)),
+    );
     // A SEPARATE component with no path to the seed: code ingest of an unrelated file. No decision
     // or finding concerns it, so no run seed can ever reach it.
-    p.apply(&code_entity_event(3, "src/unrelated.rs", "helper", 3))
-        .unwrap();
-    p.apply(&edge_inferred_event(4, "src/unrelated.rs", "detail"))
-        .unwrap();
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(3, "src/unrelated.rs", "helper", 3)),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&edge_inferred_event(4, "src/unrelated.rs", "detail")),
+    );
 
     // The run-seeded read the OLD provider used: seeds derived from the run log (the decision only),
     // walked depth-2. It reaches the decision's own component but NOT the unrelated one.
@@ -228,108 +240,43 @@ fn code_ingest_db(dir: &std::path::Path, identity: &str) -> String {
     let path = dir.join("graph.db");
     let path = path.to_str().unwrap().to_string();
     let p = Projector::open(&path, identity).unwrap();
-    p.apply(&code_entity_event(1, "src/combat.rs", "apply_damage", 7))
-        .unwrap();
-    p.apply(&code_entity_event(2, "src/combat.rs", "take_hit", 20))
-        .unwrap();
-    p.apply(&edge_inferred_event(3, "src/combat.rs", "clamp"))
-        .unwrap();
-    p.apply(&code_entity_event(4, "src/loot.rs", "roll_drop", 11))
-        .unwrap();
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(1, "src/combat.rs", "apply_damage", 7)),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "take_hit", 20)),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&edge_inferred_event(3, "src/combat.rs", "clamp")),
+    );
+    common::fixtures::folds(
+        &p,
+        std::slice::from_ref(&code_entity_event(4, "src/loot.rs", "roll_drop", 11)),
+    );
     path
-}
-
-/// Start the dash server on a FRESH ephemeral loopback port whose graph provider is the REAL
-/// whole-projection read - `Projector::open(db).whole()`, byte-for-byte what the production
-/// `dash_read_whole_graph` does - over a file-backed graph.db, while the polled state provider
-/// carries an EMPTY run-seeded graph (the never-built repo). Fetch `GET <path>` once and return the
-/// raw response, or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. Releasing it
-/// first would leave the port free for the whole handoff window, so a sibling test's `bind(0)` in
-/// this same binary could be handed it; one `serve` then wins the re-bind and the loser's client
-/// CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture - a content failure no
-/// connect-error retry can see, reddening only on a loaded machine. Owning the port from `bind`
-/// through `serve_on` closes that window by construction.
-fn try_fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The SEPARATE lazy graph provider (spec 45, criteria 1+2): opens the projection and reads the
-    // WHOLE graph on a graph request - the exact read production wires into `/api/graph`.
-    let graph_provider = {
-        let db = graph_db.to_string();
-        let id = identity.to_string();
-        move |_instance: Option<&str>| -> Graph {
-            match Projector::open(&db, &id) {
-                Ok(p) => p.whole().unwrap_or_default(),
-                Err(_) => Graph::default(),
-            }
-        }
-    };
-    // The polled STATE provider: a never-built repo has no run content, so its run-seeded graph is
-    // empty. This is the other half of the provider split - `/api/graph` must still reach the whole
-    // projection even though the state poll's graph is `Graph::default`.
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
-    };
-    // The lazy directed-call provider (spec 52, criterion 4): this test drives the overview /
-    // neighborhood reach, not a call view, so an empty walk satisfies `serve`'s calls-provider bound.
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => return None,
-        }
-    };
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
 }
 
 /// Drive the real `serve` socket, retrying the whole port handoff on a connection-level transient.
 fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_whole_served(graph_db, identity, path) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
-}
-
-/// The body (everything past the header terminator) of a raw HTTP response.
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
+    fetch_with_retry(path, || {
+        // The lazy graph provider (spec 45, criteria 1+2): opens the projection and reads the
+        // WHOLE graph on a graph request - byte-for-byte what the production
+        // `dash_read_whole_graph` wires into `/api/graph`. The state poll serves an EMPTY
+        // run-seeded graph (the never-built repo), so `/api/graph` must reach the whole
+        // projection through the provider split alone.
+        let db = graph_db.to_string();
+        let id = identity.to_string();
+        let whole = move |_instance: Option<&str>| -> Graph {
+            match Projector::open(&db, &id) {
+                Ok(p) => p.whole().unwrap_or_default(),
+                Err(_) => Graph::default(),
+            }
+        };
+        try_fetch_over(path, whole, Graph::default())
+    })
 }
 
 /// Integration (spec 45, criterion 2) over the REAL serve socket: on a never-built repo (a graph.db

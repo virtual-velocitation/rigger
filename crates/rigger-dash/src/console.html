@@ -1,0 +1,860 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rigger Mission Control</title>
+<style>
+/* Rigger Mission Control (spec 94 criterion 1, THE PAGE IS THE MOCK'S SHELL): the
+   header, tab bar, health strip, view, dock, scrubber and statusline regions, the
+   mock's class names, and the CSS custom properties verbatim for both themes (light
+   on :root, dark under both the system media query and an explicit [data-theme]
+   override so a person's own choice always wins over the system default). Every
+   region below is a container only - no snapshot, no stream, no fold. It renders the
+   spec's own "empty store" constraint (a run: "no run recorded; start one with
+   `rigger run <spec>`", the scrubber disabled, the health strip showing dash and
+   store only) because that is the true state of a page that reads no store at all;
+   criteria 2 and 3 replace this placeholder content with the real snapshot/stream
+   and the position-addressed fold, never this file re-deriving it. */
+:root{
+  --bg:#F2F5F7; --surface:#FFFFFF; --surface2:#E9EEF2; --line:#D3DCE3; --line2:#BFCAD3;
+  --ink:#17232C; --ink2:#4A5A66; --muted:#7C8B97; --faint:#A9B6C0;
+  --accent:#B86F2E; --accent-ink:#FFFFFF; --accent-soft:rgba(184,111,46,.14);
+  --good:#2E8B57; --warn:#B7791F; --crit:#C7423B; --review:#6D5DD3; --stale:#9AA7B1;
+  --good-soft:rgba(46,139,87,.14); --warn-soft:rgba(183,121,31,.16); --crit-soft:rgba(199,66,59,.14); --review-soft:rgba(109,93,211,.14);
+  --term-bg:#0F171E; --term-ink:#D6E0E8;
+  --shadow:0 1px 2px rgba(23,35,44,.06),0 8px 24px -12px rgba(23,35,44,.18);
+  --sans:"Source Sans 3",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --ui:"Sora",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0C141B; --surface:#131D26; --surface2:#182430; --line:#22303C; --line2:#2E3E4C;
+  --ink:#E4ECF1; --ink2:#B4C1CC; --muted:#8B9BA8; --faint:#5E6E7B;
+  --accent:#D08A48; --accent-ink:#1A1208; --accent-soft:rgba(208,138,72,.16);
+  --good:#4FB477; --warn:#E0A13A; --crit:#E0564F; --review:#8B7BE0; --stale:#6C7C89;
+  --good-soft:rgba(79,180,119,.15); --warn-soft:rgba(224,161,58,.16); --crit-soft:rgba(224,86,79,.15); --review-soft:rgba(139,123,224,.16);
+  --term-bg:#080F15; --term-ink:#CFDAE3;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -14px rgba(0,0,0,.6);
+}}
+:root[data-theme="dark"]{
+  --bg:#0C141B; --surface:#131D26; --surface2:#182430; --line:#22303C; --line2:#2E3E4C;
+  --ink:#E4ECF1; --ink2:#B4C1CC; --muted:#8B9BA8; --faint:#5E6E7B;
+  --accent:#D08A48; --accent-ink:#1A1208; --accent-soft:rgba(208,138,72,.16);
+  --good:#4FB477; --warn:#E0A13A; --crit:#E0564F; --review:#8B7BE0; --stale:#6C7C89;
+  --good-soft:rgba(79,180,119,.15); --warn-soft:rgba(224,161,58,.16); --crit-soft:rgba(224,86,79,.15); --review-soft:rgba(139,123,224,.16);
+  --term-bg:#080F15; --term-ink:#CFDAE3;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -14px rgba(0,0,0,.6);
+}
+
+/* THE ASSETS (spec 94 criterion 1): the three faces, Latin-subset woff2, served from
+   this same origin under /console/fonts/<family>/ - never fetched from a network
+   font host, so the served page references no URL outside its own origin. */
+@font-face{font-family:"Sora";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/sora/Sora-400.woff2") format("woff2");}
+@font-face{font-family:"Sora";font-style:normal;font-weight:500;font-display:swap;src:url("/console/fonts/sora/Sora-500.woff2") format("woff2");}
+@font-face{font-family:"Sora";font-style:normal;font-weight:600;font-display:swap;src:url("/console/fonts/sora/Sora-600.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-400.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:normal;font-weight:600;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-600.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:italic;font-weight:400;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-400italic.woff2") format("woff2");}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2") format("woff2");}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url("/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2") format("woff2");}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,[tabindex]:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.ui{font-family:var(--ui)}
+.hint{color:var(--muted);font-size:12.5px}
+kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--ink2)}
+
+/* ---------- shell ---------- */
+#app{display:grid;grid-template-rows:auto auto 1fr auto auto;height:100vh;min-height:640px}
+header.top{display:flex;align-items:center;gap:18px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--surface)}
+.brand{font-family:var(--ui);font-weight:600;font-size:15px;letter-spacing:.01em;display:flex;align-items:center;gap:10px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.projsel{font:12.5px var(--ui);color:var(--ink);background:var(--surface2);border:1px solid var(--line2);border-radius:8px;padding:5px 8px}
+.runid{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.spacer{flex:1}
+.themebtn{padding:5px 10px;border:1px solid var(--line2);border-radius:8px;font-size:12px;color:var(--ink2)}
+.themebtn:hover{background:var(--surface2)}
+
+nav.tabs{display:flex;align-items:stretch;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--surface)}
+nav.tabs button{font-family:var(--ui);font-size:13px;padding:10px 14px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs .health{margin-left:auto;display:flex;align-items:center;gap:14px;font-family:var(--ui);font-size:12px;color:var(--muted)}
+.sig{display:inline-flex;align-items:center;gap:6px}
+.sig i{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--good)}
+.sig.warn i{background:var(--warn)} .sig.crit i{background:var(--crit)} .sig.stale i{background:var(--stale)}
+
+main.body{display:grid;grid-template-columns:1fr 300px;min-height:0}
+@media (max-width:1100px){main.body{grid-template-columns:1fr}.dock{display:none}}
+section.view{min-width:0;min-height:0;overflow:auto;padding:18px 20px 24px}
+aside.dock{border-left:1px solid var(--line);background:var(--surface);min-height:0;overflow:auto;padding:16px}
+
+/* ---------- scrubber ---------- */
+footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;padding:10px 18px 8px;border-top:1px solid var(--line);background:var(--surface)}
+.playbtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line2);display:grid;place-items:center;color:var(--ink)}
+.playbtn:hover{background:var(--surface2)}
+.playbtn:disabled{opacity:.4;cursor:default}
+.track{position:relative;height:40px}
+.track input[type=range]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;z-index:3}
+.track input[type=range]:disabled{cursor:default}
+.track .rail{position:absolute;left:0;right:0;top:18px;height:4px;border-radius:2px;background:var(--line2)}
+.track .fill{position:absolute;left:0;top:18px;height:4px;border-radius:2px;background:var(--accent)}
+.track .knob{position:absolute;top:11px;width:18px;height:18px;border-radius:50%;background:var(--accent);border:2px solid var(--surface);box-shadow:0 0 0 2px var(--accent);transform:translateX(-50%);z-index:2}
+/* THE POSITION MODEL's marks and ticks (spec 94 c3, `scrub_track`): small rail
+   fixtures a page paints from the core's own marks/ticks list, never invented here. */
+.track .rail .mark{position:absolute;top:14px;width:6px;height:10px;border-radius:2px;transform:translateX(-50%);z-index:1}
+.track .rail .mark.tall{top:8px;height:22px;width:4px}
+.track .rail .tick{position:absolute;top:0;width:1px;height:4px;background:var(--line2);transform:translateX(-50%)}
+.cursor{font-family:var(--mono);font-size:12.5px;color:var(--ink2);min-width:230px;text-align:right}
+.statusline{display:flex;align-items:center;gap:12px;padding:6px 18px;border-top:1px solid var(--line);background:var(--bg);font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* ---------- palette (spec 94 c4, THE PALETTE) ---------- */
+.palette-overlay{position:fixed;inset:0;background:rgba(23,35,44,.35);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 0;z-index:50}
+/* The class rule above must never outrank the UA `[hidden]{display:none}` default
+   (author-origin always beats user-agent-origin regardless of specificity, so an
+   unqualified `display:flex` here would keep the overlay visible even while `hidden`
+   is set) - this raises the hidden state's specificity above the plain class rule so
+   `hidden` wins whenever it is present, same as every other hidden-toggled element in
+   this file relies on the UA default alone for. */
+.palette-overlay[hidden]{display:none}
+.palette{width:min(560px,100%);max-height:70vh;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.palette-input{width:100%;border:0;border-bottom:1px solid var(--line);padding:14px 16px;font:15px var(--ui);color:var(--ink);background:transparent}
+.palette-input:focus{outline:0}
+.palette-list{list-style:none;margin:0;padding:6px;overflow:auto}
+.palette-list li{padding:8px 10px;border-radius:8px;font-size:13.5px;color:var(--ink2);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.palette-list li[aria-selected="true"]{background:var(--accent-soft);color:var(--ink)}
+.palette-list li .kind{color:var(--faint);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;flex:none}
+.palette-empty{padding:14px 16px;color:var(--muted);font-size:13px}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand"><span class="dot"></span>Rigger Mission Control</div>
+    <select class="projsel" id="projsel" aria-label="Project"><option value="rigger">rigger</option></select>
+    <div class="runid mono" id="runid">no run recorded; start one with <span class="mono">rigger run &lt;spec&gt;</span></div>
+    <span class="spacer"></span>
+    <button class="themebtn" id="themebtn" title="Toggle theme" aria-label="Toggle theme">Theme</button>
+    <button class="themebtn" id="palbtn" title="Command palette" aria-label="Command palette"><kbd>&#8984;K</kbd></button>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-view="fleet" aria-current="page">Fleet</button>
+    <button data-view="theater">Theater</button>
+    <button data-view="agents">Agents</button>
+    <button data-view="court">Courtroom</button>
+    <button data-view="map">Knowledge</button>
+    <button data-view="plan">Plan</button>
+    <button data-view="brief">Briefing</button>
+    <div class="health" id="health">
+      <span class="sig stale"><i></i>dash</span>
+      <span class="sig stale"><i></i>store</span>
+    </div>
+  </nav>
+
+  <main class="body">
+    <section class="view" data-view="fleet"><p class="hint">Fleet renders in spec 97.</p></section>
+    <section class="view" data-view="theater" hidden><p class="hint">Theater renders in spec 95.</p></section>
+    <section class="view" data-view="agents" hidden><p class="hint">Agents renders in spec 95.</p></section>
+    <section class="view" data-view="court" hidden><p class="hint">Courtroom renders in spec 96.</p></section>
+    <section class="view" data-view="map" hidden><p class="hint">Knowledge renders in spec 98.</p></section>
+    <section class="view" data-view="plan" hidden><p class="hint">Plan renders in spec 96.</p></section>
+    <section class="view" data-view="brief" hidden><p class="hint">Briefing renders in spec 97.</p></section>
+    <aside class="dock" id="dock"><p class="hint">The dock (Next, Needs you, Run) renders in spec 95.</p></aside>
+  </main>
+
+  <footer class="scrub">
+    <button class="playbtn" id="play" title="Play / pause (space)" aria-label="Play" disabled>&#9654;</button>
+    <div class="track" id="track">
+      <div class="rail"></div><div class="fill" id="fill"></div>
+      <div class="knob" id="knob" hidden></div>
+      <input type="range" id="range" min="1" max="1" value="1" aria-label="Time scrubber" disabled>
+    </div>
+    <div class="cursor mono" id="cursor">no run recorded; start one with rigger run &lt;spec&gt;</div>
+  </footer>
+  <div class="statusline mono" id="statusline">no run recorded; start one with rigger run &lt;spec&gt;</div>
+</div>
+
+<!-- THE PALETTE (spec 94 c4): entries come from the core's own palette_commands op -
+     views, every unit's courtroom, every agent, jump to live, replay from start - never
+     a second, page-side command list. Opens on Ctrl-K/Cmd-K (and the header's [^K]
+     button), filters as typed, Enter runs the highlighted entry, Escape closes. -->
+<div class="palette-overlay" id="paletteOverlay" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input
+      class="palette-input mono"
+      id="paletteInput"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Jump to a view, a unit's courtroom, an agent, live, or replay..."
+      aria-label="Command palette"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="paletteList"
+    >
+    <ul class="palette-list" id="paletteList" role="listbox"></ul>
+  </div>
+</div>
+
+<script>
+// THE THEME TOGGLE'S PERSISTENCE (spec 94 criterion 1, the one behavior this shell
+// owns outright): the chosen theme is written to the browser's own storage and read
+// back on every load, so a person's choice survives a reload/restart of this same
+// browser without asking the server for anything. `apply(null)` removes the
+// attribute entirely, which is how a person returns to "follow the system", the
+// default this page ships with.
+(function () {
+  var THEME_KEY = "rigger-console-theme";
+  var root = document.documentElement;
+
+  function apply(theme) {
+    if (theme === "light" || theme === "dark") {
+      root.setAttribute("data-theme", theme);
+    } else {
+      root.removeAttribute("data-theme");
+    }
+  }
+
+  var stored = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch (e) {
+    stored = null; // a private window or blocked site data: fall back to the system theme
+  }
+  apply(stored);
+
+  var themeBtn = document.getElementById("themebtn");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      var current = root.getAttribute("data-theme");
+      var isDark = current
+        ? current === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var next = isDark ? "light" : "dark";
+      apply(next);
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch (e) {
+        // best-effort: the toggle still works for this load, it just will not persist
+      }
+    });
+  }
+})();
+
+// Tab switching, shell-only: which of the seven static view sections is visible.
+// This never touches the URL - the position-addressed URL hash (view, selection,
+// position) is criterion 3's routing, layered on top of this same markup once the
+// snapshot and the fold exist to render into it.
+(function () {
+  var tabs = document.querySelectorAll("nav.tabs button[data-view]");
+  var views = document.querySelectorAll("section.view[data-view]");
+
+  function show(name) {
+    views.forEach(function (v) {
+      v.hidden = v.getAttribute("data-view") !== name;
+    });
+    tabs.forEach(function (b) {
+      if (b.getAttribute("data-view") === name) {
+        b.setAttribute("aria-current", "page");
+      } else {
+        b.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  tabs.forEach(function (b) {
+    b.addEventListener("click", function () {
+      show(b.getAttribute("data-view"));
+    });
+  });
+})();
+
+// THE POSITION MODEL (spec 94 criterion 3): loads the console core (spec 93's wasm
+// module) and drives it through the fold ops the addendum's own data-plane diagram
+// names verbatim - fold_reset(events), fold_push(e), fold_at(N) - so the page renders
+// the SAME state struct the core computes, never a second, page-side fold. THE ABI's
+// own words: "the whole page-side ABI is thirty lines of loader" - callOp below is it.
+(function () {
+  "use strict";
+
+  var WASM_URL = "/console/core.wasm";
+  var core = null; // { alloc, free, call, memory } once loadCore() resolves
+
+  function loadCore() {
+    return fetch(WASM_URL)
+      .then(function (r) {
+        return r.arrayBuffer();
+      })
+      .then(function (bytes) {
+        return WebAssembly.instantiate(bytes, {});
+      })
+      .then(function (result) {
+        var exports = result.instance.exports;
+        core = {
+          alloc: exports.console_alloc,
+          free: exports.console_free,
+          call: exports.console_call,
+          memory: exports.memory,
+        };
+      });
+  }
+
+  // Write a JS string into a fresh core_alloc'd buffer, returning its {ptr, len}.
+  function writeBytes(str) {
+    var bytes = new TextEncoder().encode(str);
+    var ptr = core.alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr: ptr, len: bytes.length };
+  }
+
+  // console_call packs (ptr << 32) | len into one u64 (this crate's own `pack`, whose
+  // doc explains the packing); a wasm i64 export return crosses the JS boundary as a
+  // BigInt, so both halves are read with BigInt arithmetic before narrowing to Number.
+  function readReply(packed) {
+    var len = Number(packed & 0xffffffffn);
+    var ptr = Number(packed >> 32n);
+    var bytes = new Uint8Array(core.memory.buffer, ptr, len).slice();
+    core.free(ptr, len);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  // The whole calling surface: an op name plus a JSON input, out a JSON reply - the
+  // SAME dispatch contract `crates/console-core` documents for `console_call`.
+  function callOp(op, input) {
+    var opBytes = writeBytes(op);
+    var inBytes = writeBytes(JSON.stringify(input === undefined ? {} : input));
+    var packed = core.call(opBytes.ptr, opBytes.len, inBytes.ptr, inBytes.len);
+    core.free(opBytes.ptr, opBytes.len);
+    core.free(inBytes.ptr, inBytes.len);
+    return readReply(packed);
+  }
+
+  // THE CURSOR (Design: "The cursor is a position among console events; its range is
+  // the run's first console event to the head"). `positions` is every console-event
+  // position seen so far (snapshot plus stream deltas), kept sorted, so stepping and
+  // replaying land on real events rather than raw integers a filtered position space
+  // may skip.
+  var STATE = {
+    head: 0,
+    positions: [],
+    cursor: 0,
+    live: true,
+    playing: false,
+    playTimer: null,
+    view: "fleet",
+    selection: [],
+  };
+
+  // Five events per second (Design: "the play button replays from the cursor at five
+  // events per second").
+  var REPLAY_MS = 1000 / 5;
+
+  // THE PALETTE's own filtered state (spec 94 c4): `commands` is the core's own
+  // palette_commands reply, fetched fresh every time the palette opens (Design: "its
+  // entries come from palette_commands in the core"); `filtered`/`highlight` are
+  // page-only render state, never sent back to the core.
+  var PALETTE = { commands: [], filtered: [], highlight: 0 };
+
+  function render() {
+    var state = callOp("fold_at", { position: STATE.cursor });
+    var statusEl = document.getElementById("statusline");
+    if (statusEl && state && state.statusline) {
+      statusEl.textContent = state.statusline;
+    }
+    renderCursor();
+    renderTrack();
+  }
+
+  function renderCursor() {
+    var el = document.getElementById("cursor");
+    if (!el) return;
+    if (STATE.live) {
+      el.textContent = "LIVE . event " + STATE.cursor + "/" + STATE.head;
+    } else {
+      el.textContent = "event " + STATE.cursor + "/" + STATE.head + " . replay";
+    }
+  }
+
+  var MARK_COLOR_VAR = {
+    green: "--good",
+    red: "--crit",
+    accent: "--accent",
+    review: "--review",
+  };
+
+  function paintTrack(track) {
+    var rail = document.querySelector(".track .rail");
+    if (!rail) return;
+    var existing = rail.querySelectorAll(".mark, .tick");
+    for (var i = 0; i < existing.length; i++) {
+      existing[i].remove();
+    }
+    var lo = STATE.positions.length ? STATE.positions[0] : 0;
+    var hi = Math.max(STATE.head, lo + 1);
+    function pct(pos) {
+      return Math.min(100, Math.max(0, ((pos - lo) / (hi - lo)) * 100)) + "%";
+    }
+    (track.ticks || []).forEach(function (t) {
+      var el = document.createElement("div");
+      el.className = "tick";
+      el.style.left = pct(t.position);
+      el.title = t.label;
+      rail.appendChild(el);
+    });
+    (track.marks || []).forEach(function (m) {
+      var el = document.createElement("div");
+      el.className = "mark mark-" + m.kind + (m.tall ? " tall" : "");
+      el.style.left = pct(m.position);
+      el.style.background = "var(" + (MARK_COLOR_VAR[m.color] || "--accent") + ")";
+      el.title = m.tooltip;
+      rail.appendChild(el);
+    });
+  }
+
+  function renderTrack() {
+    var range = document.getElementById("range");
+    if (range) {
+      range.max = String(Math.max(STATE.head, 1));
+      range.value = String(STATE.cursor);
+      range.disabled = STATE.positions.length === 0;
+    }
+    var play = document.getElementById("play");
+    if (play) play.disabled = STATE.positions.length === 0;
+    var fill = document.getElementById("fill");
+    if (fill && STATE.head > 0) {
+      fill.style.width = Math.min(100, (STATE.cursor / STATE.head) * 100) + "%";
+    }
+    paintTrack(callOp("scrub_track", {}));
+  }
+
+  function goTo(position, live) {
+    STATE.cursor = position;
+    STATE.live = !!live;
+    render();
+    updateHash();
+  }
+
+  // The next/previous REAL console-event position from `from` (never a raw +/-1,
+  // which a filtered position space may skip) - Design: "the left and right arrows
+  // step one event".
+  function nextPosition(from, dir) {
+    var positions = STATE.positions;
+    if (positions.length === 0) return from;
+    var idx = positions.indexOf(from);
+    if (idx !== -1) {
+      var next = idx + dir;
+      if (next < 0) return positions[0];
+      if (next >= positions.length) return from;
+      return positions[next];
+    }
+    // Not an exact event position (e.g. a drag mid-range): land on the nearest event
+    // in the requested direction.
+    var candidate = dir > 0 ? null : positions[0];
+    for (var i = 0; i < positions.length; i++) {
+      if (dir > 0 && positions[i] > from) {
+        candidate = positions[i];
+        break;
+      }
+      if (dir < 0 && positions[i] <= from) {
+        candidate = positions[i];
+      }
+    }
+    return candidate === null ? from : candidate;
+  }
+
+  function stopPlaying() {
+    STATE.playing = false;
+    if (STATE.playTimer) {
+      clearInterval(STATE.playTimer);
+      STATE.playTimer = null;
+    }
+    var play = document.getElementById("play");
+    if (play) play.setAttribute("aria-label", "Play");
+  }
+
+  function stepEvent(dir) {
+    stopPlaying();
+    goTo(nextPosition(STATE.cursor, dir), false);
+  }
+
+  function jumpToLive() {
+    stopPlaying();
+    goTo(STATE.head, true);
+  }
+
+  // Design: "the play button replays from the cursor at five events per second ...
+  // and stops at the head".
+  function togglePlay() {
+    if (STATE.playing) {
+      stopPlaying();
+      return;
+    }
+    if (STATE.positions.length === 0) return;
+    STATE.playing = true;
+    STATE.live = false;
+    var play = document.getElementById("play");
+    if (play) play.setAttribute("aria-label", "Pause");
+    STATE.playTimer = setInterval(function () {
+      var to = nextPosition(STATE.cursor, 1);
+      if (to >= STATE.head) {
+        stopPlaying();
+        goTo(STATE.head, true);
+        return;
+      }
+      goTo(to, false);
+    }, REPLAY_MS);
+  }
+
+  // THE URL HASH (Design: "The URL hash carries the view, the selection and the
+  // position (`#/theater?at=N`, `#/court/<unit>/<round>?at=N`) and is restored on
+  // load, so a moment is a link"). `history.replaceState`, never `pushState`: a scrub
+  // or a replay tick is not a browser-history-worthy navigation.
+  function parseHash() {
+    var hash = location.hash.replace(/^#\/?/, "");
+    var queryIdx = hash.indexOf("?");
+    var path = queryIdx === -1 ? hash : hash.slice(0, queryIdx);
+    var query = queryIdx === -1 ? "" : hash.slice(queryIdx + 1);
+    var atMatch = query.match(/(?:^|&)at=(\d+)/);
+    var parts = path.split("/").filter(Boolean);
+    return {
+      view: parts[0] || "fleet",
+      selection: parts.slice(1),
+      at: atMatch ? parseInt(atMatch[1], 10) : null,
+    };
+  }
+
+  function updateHash() {
+    var path = "#/" + [STATE.view].concat(STATE.selection).join("/");
+    var query = STATE.live ? "" : "?at=" + STATE.cursor;
+    var next = path + query;
+    if (location.hash !== next) {
+      history.replaceState(null, "", next);
+    }
+  }
+
+  // View-only restore, run BEFORE the core/snapshot load: click the matching tab so
+  // the shell's own show/hide logic (above) runs unduplicated. The position half of
+  // the hash is resolved once the snapshot's head is known, in boot() below.
+  function restoreViewFromHash() {
+    var parsed = parseHash();
+    STATE.view = parsed.view;
+    STATE.selection = parsed.selection;
+    var btn = document.querySelector(
+      'nav.tabs button[data-view="' + STATE.view + '"]'
+    );
+    if (btn) btn.click();
+  }
+
+  function connectStream(since) {
+    var source = new EventSource("/api/console/stream?since=" + since);
+    source.addEventListener("event", function (evt) {
+      var wire = JSON.parse(evt.data);
+      callOp("fold_push", wire);
+      STATE.head = Math.max(STATE.head, wire.position);
+      if (STATE.positions.indexOf(wire.position) === -1) {
+        STATE.positions.push(wire.position);
+        STATE.positions.sort(function (a, b) {
+          return a - b;
+        });
+      }
+      if (STATE.live) {
+        goTo(STATE.head, true);
+      } else {
+        renderTrack();
+      }
+    });
+    // THE STREAM's own reconnect-with-since= contract (spec 94 criterion 2),
+    // fixed at the root by adj-u94c3-verdict-reject-stream-reconnect-duplicate-events:
+    // a bare EventSource retrying at the URL it was opened with would otherwise replay
+    // this tab's whole already-processed range on every ordinary dropped connection,
+    // since that URL's own since= is frozen at page-load and never re-evaluated - the
+    // native retry itself needs no page-side reconnect call, but ONLY because the
+    // server now reads the id: line this same retry sends back as Last-Event-ID
+    // (write_sse/handle_conn, crates/rigger-dash/src/dash.rs) and resumes from there instead. fold_push
+    // is additionally idempotent by position (console-core's own op_fold_push), so
+    // even a frame this resume mechanism still lets through twice renders no duplicate
+    // mark and grows session.events by zero, not by one. The health strip's
+    // disconnected signal is specs 95-98's own paint, out of this criterion's scope.
+    //
+    // Stream drop beyond the server's retained window (CONSTRAINTS WALK, "Stream
+    // drop"; adj-u94c3-r2-verdict-reject-retained-window-gap-refetch): an ordinary
+    // dropped connection closes the socket with NO HTTP response, which a real
+    // EventSource treats as a network error - readyState goes to CONNECTING and the
+    // browser's OWN retry reopens this same URL automatically, needing nothing from
+    // this handler (the case above). A stale since/Last-Event-ID the store can no
+    // longer serve instead gets a REAL, distinct HTTP response
+    // (write_retained_window_gone, crates/rigger-dash/src/dash.rs) - which is a definitive server
+    // refusal, so the spec sets readyState to CLOSED and fires error exactly ONCE,
+    // with no further auto-retry at the same stale position. That CLOSED state is
+    // the one signal this handler acts on: re-fetch the snapshot, fold_reset onto
+    // whatever the store currently holds, and reopen the stream from the fresh
+    // head - rather than doing nothing and leaving a closed EventSource that never
+    // reconnects at all.
+    source.onerror = function () {
+      if (source.readyState !== EventSource.CLOSED) return;
+      fetch("/api/console/snapshot")
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (snapshot) {
+          var events = snapshot.events || [];
+          callOp("fold_reset", { events: events });
+          STATE.head = snapshot.head || 0;
+          STATE.positions = events
+            .map(function (e) {
+              return e.position;
+            })
+            .sort(function (a, b) {
+              return a - b;
+            });
+          renderTrack();
+          if (STATE.live) goTo(STATE.head, true);
+          connectStream(STATE.head);
+        });
+    };
+  }
+
+  // THE PALETTE (spec 94 c4): opens on Ctrl-K/Cmd-K (wired in the document keydown
+  // handler below, and on the header's palbtn), filters as typed, Enter runs the
+  // highlighted entry, Escape closes. "Jump to live" and "replay from start" run
+  // through this SAME module's own jumpToLive/goTo/togglePlay - never a second copy of
+  // u94c3's cursor and replay functions.
+  function clickTab(id) {
+    var btn = document.querySelector('nav.tabs button[data-view="' + id + '"]');
+    if (btn) btn.click();
+  }
+
+  function renderPaletteList() {
+    var list = document.getElementById("paletteList");
+    if (!list) return;
+    list.innerHTML = "";
+    if (PALETTE.filtered.length === 0) {
+      var empty = document.createElement("li");
+      empty.className = "palette-empty";
+      empty.textContent = "No matching command";
+      list.appendChild(empty);
+      return;
+    }
+    PALETTE.filtered.forEach(function (cmd, i) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", i === PALETTE.highlight ? "true" : "false");
+      var label = document.createElement("span");
+      label.textContent = cmd.label;
+      var kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = cmd.kind;
+      li.appendChild(label);
+      li.appendChild(kind);
+      li.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        PALETTE.highlight = i;
+        runHighlightedPaletteCommand();
+      });
+      list.appendChild(li);
+    });
+  }
+
+  function filterPalette(query) {
+    var q = query.trim().toLowerCase();
+    PALETTE.filtered = !q
+      ? PALETTE.commands
+      : PALETTE.commands.filter(function (c) {
+          return c.label.toLowerCase().indexOf(q) !== -1;
+        });
+    PALETTE.highlight = 0;
+    renderPaletteList();
+  }
+
+  function movePaletteHighlight(dir) {
+    if (PALETTE.filtered.length === 0) return;
+    var n = PALETTE.filtered.length;
+    PALETTE.highlight = (PALETTE.highlight + dir + n) % n;
+    renderPaletteList();
+  }
+
+  function runPaletteCommand(cmd) {
+    if (cmd.kind === "view") {
+      clickTab(cmd.id);
+    } else if (cmd.kind === "courtroom") {
+      clickTab("court");
+      STATE.selection = [cmd.id];
+      updateHash();
+    } else if (cmd.kind === "agent") {
+      clickTab("agents");
+      STATE.selection = [cmd.id];
+      updateHash();
+    } else if (cmd.kind === "live") {
+      jumpToLive();
+    } else if (cmd.kind === "replay") {
+      stopPlaying();
+      if (STATE.positions.length) {
+        goTo(STATE.positions[0], false);
+        togglePlay();
+      }
+    }
+  }
+
+  function runHighlightedPaletteCommand() {
+    var cmd = PALETTE.filtered[PALETTE.highlight];
+    if (!cmd) return;
+    closePalette();
+    runPaletteCommand(cmd);
+  }
+
+  function openPalette() {
+    if (!core) return;
+    var overlay = document.getElementById("paletteOverlay");
+    var input = document.getElementById("paletteInput");
+    if (!overlay || !input) return;
+    // Pass the SAME position this page currently displays (spec 94 c4's own REQUIRED FIX,
+    // adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync): `palette_commands` takes an
+    // explicit position argument rather than reading the core's own ambient fold state, so
+    // an ordinary live push arriving while this page is scrubbed (which never re-renders -
+    // see connectStream's push handler) can never desync the palette from the still-shown
+    // cursor readout the way an ambient core cursor could.
+    var args = STATE.live ? {} : { position: STATE.cursor };
+    PALETTE.commands = callOp("palette_commands", args).commands || [];
+    input.value = "";
+    filterPalette("");
+    overlay.hidden = false;
+    input.focus();
+  }
+
+  function closePalette() {
+    var overlay = document.getElementById("paletteOverlay");
+    if (overlay) overlay.hidden = true;
+  }
+
+  function wirePalette() {
+    var palBtn = document.getElementById("palbtn");
+    if (palBtn) palBtn.addEventListener("click", openPalette);
+    var overlay = document.getElementById("paletteOverlay");
+    if (overlay) {
+      overlay.addEventListener("mousedown", function (e) {
+        if (e.target === overlay) closePalette();
+      });
+    }
+    var input = document.getElementById("paletteInput");
+    if (input) {
+      input.addEventListener("input", function () {
+        filterPalette(input.value);
+      });
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closePalette();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          runHighlightedPaletteCommand();
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          movePaletteHighlight(1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          movePaletteHighlight(-1);
+        }
+      });
+    }
+  }
+
+  function wireControls() {
+    var range = document.getElementById("range");
+    if (range) {
+      range.addEventListener("input", function () {
+        stopPlaying();
+        var pos = parseInt(range.value, 10);
+        goTo(pos, pos >= STATE.head);
+      });
+    }
+    var play = document.getElementById("play");
+    if (play) {
+      play.addEventListener("click", togglePlay);
+    }
+    document.addEventListener("keydown", function (e) {
+      // Ctrl-K / Cmd-K opens the palette (Design: "THE PALETTE AND KEYS") - checked
+      // BEFORE the input-tag guard below, since a chorded shortcut like this must open
+      // the palette regardless of what currently has focus (e.g. the time scrubber).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openPalette();
+        return;
+      }
+      var tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "ArrowLeft") {
+        stepEvent(-1);
+      } else if (e.key === "ArrowRight") {
+        stepEvent(1);
+      } else if (e.key === "End") {
+        jumpToLive();
+      } else if (/^[0-6]$/.test(e.key)) {
+        // Design §6.9 / "THE PALETTE AND KEYS": "the digits 0-6 switch views" - the
+        // SAME left-to-right tab order the palette's own view entries list.
+        var tabs = document.querySelectorAll("nav.tabs button[data-view]");
+        var idx = parseInt(e.key, 10);
+        if (tabs[idx]) tabs[idx].click();
+      }
+    });
+    document.querySelectorAll("nav.tabs button[data-view]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        STATE.view = btn.getAttribute("data-view");
+        STATE.selection = [];
+        updateHash();
+      });
+    });
+    wirePalette();
+  }
+
+  function boot() {
+    restoreViewFromHash();
+    loadCore()
+      .then(function () {
+        return fetch("/api/console/snapshot");
+      })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (snapshot) {
+        var events = snapshot.events || [];
+        callOp("fold_reset", { events: events });
+        STATE.head = snapshot.head || 0;
+        STATE.positions = events
+          .map(function (e) {
+            return e.position;
+          })
+          .sort(function (a, b) {
+            return a - b;
+          });
+        wireControls();
+        connectStream(STATE.head);
+        var parsed = parseHash();
+        if (parsed.at !== null) {
+          goTo(Math.min(parsed.at, STATE.head), false);
+        } else {
+          goTo(STATE.head, true);
+        }
+      })
+      .catch(function (err) {
+        var statusEl = document.getElementById("statusline");
+        if (statusEl) {
+          statusEl.textContent = "console core failed to load: " + err;
+        }
+      });
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>

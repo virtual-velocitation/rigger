@@ -27,7 +27,7 @@ create/sweep can no longer corrupt each other.
 
 ## Design
 
-### Reviewer error re-park (`src/conductor.rs`)
+### Reviewer error re-park (`crates/rigger-conductor/src/conductor.rs`)
 
 When the conductor's replay reaches a REVIEW-stage spawn (lens / adversary / adjudicator) whose
 recorded result is an ERROR, it does not adopt the error as the stage outcome and does not fail the
@@ -47,7 +47,7 @@ here - or, if the output cannot be obtained, fall back to the existing re-run ru
 results make re-runs resume past finished work). Returning a sentinel or placeholder remains forbidden;
 the null-step guard in the driver stays as the last line of defense.
 
-### Serialized, self-healing worktree ops (`src/conductor.rs` / the worktree lifecycle)
+### Serialized, self-healing worktree ops (`crates/rigger-conductor/src/conductor.rs` / the worktree lifecycle)
 
 - All worktree MUTATIONS (add, remove, sweep) in a step happen under the step's existing serialization
   (the step lock already guarantees one step at a time; within a step, sweep completes before any add

@@ -10,7 +10,7 @@ user the capability exists for. Retire the flag; the adapter compiles into every
 
 ## Design
 
-The adapter (`src/eventstore/kurrentdb.rs`) is complete and contract-verified (its `passes_the_contract`
+The adapter (`crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs`) is complete and contract-verified (its `passes_the_contract`
 test runs the backend-agnostic store contract against a real KurrentDB container). What gates it is
 small and explicit:
 
@@ -20,7 +20,7 @@ small and explicit:
   `[dev-dependencies]` - it drives the contract TEST only and must never sit in the production
   dependency tree. Delete the `kurrentdb` feature from `[features]` and from the `check-cfg` values;
   nothing in the tree may reference `feature = "kurrentdb"` afterwards.
-- **`src/eventstore/mod.rs`:** the `#[cfg(feature = "kurrentdb")]` module gate comes off; the module
+- **`crates/rigger-store-sqlite/src/eventstore/mod.rs`:** the `#[cfg(feature = "kurrentdb")]` module gate comes off; the module
   is always compiled and exported.
 - **`src/main.rs`:** the gated `open_kurrentdb` pair collapses to the real implementation only; the
   `#[cfg(not(...))]` stub and its "requires the `kurrentdb` cargo feature" error are deleted (that

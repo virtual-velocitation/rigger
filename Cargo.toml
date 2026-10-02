@@ -6,6 +6,32 @@ description = "A config-driven, event-sourced multi-agent dev-loop harness"
 license = "MIT"
 repository = "https://github.com/virtual-velocitation/rigger"
 
+# THE MEMBER CRATE (spec 93, criterion 2): this root package IS a workspace member (a
+# "root package + workspace" manifest, not a virtual one), so a bare `cargo build`/`test`/
+# `clippy` run from here - exactly what every existing gate already invokes - still operate
+# on ONLY this package by default (cargo's documented default-members rule: a non-virtual
+# workspace's default members are the root package alone, unless overridden; empirically
+# verified via `cargo metadata --no-deps` and by grepping a real build/clippy run's output
+# for `console-core`, 0 hits). `crates/console-core` is reached only via `-p console-core`,
+# `--workspace`, or `cd`ing into it, so today's two lanes stay byte-for-byte unchanged,
+# matching THE FEATURE SPLIT's own promise. The one exception is `cargo fmt --check`, which
+# formats every workspace member regardless of default-members (also verified) - harmless,
+# since `crates/console-core` is kept fmt-clean in its own right. `resolver = "2"` is
+# edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
+# resolution behavior never depends on an implicit default.
+[workspace]
+members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash"]
+resolver = "2"
+
+# THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
+# rest and a module named after its parent are compile errors in every workspace crate.
+[workspace.lints.clippy]
+large_enum_variant = "deny"
+module_inception = "deny"
+
+[lints]
+workspace = true
+
 [lib]
 name = "rigger"
 path = "src/lib.rs"
@@ -20,7 +46,29 @@ path = "src/main.rs"
 # ships structural grounding. It compiles tree-sitter grammars INTO the binary (no
 # runtime-loaded artifacts and no model download), so `--no-default-features` is the
 # deliberate light opt-out (the literal `grep` grounder only).
-default = ["symbols"]
+default = ["symbols", "store"]
+# THE FEATURE SPLIT (spec 93, criterion 1): `store` gates every module that touches a
+# file, a socket, a process or the clock (the event-store backends, the async runtime,
+# `reap`, `worktree`, `liveness`, the process half of `spawn`, `gate` execution, `dash`
+# serving, `watch`, `registry`, `hooks`, `sidecar`, the binary). It is carried in
+# `default`, but a gated module's real predicate is `any(feature = "store", not(feature
+# = "core"))`, never a bare `feature = "store"` check: `store` alone cannot be forced on
+# under a bare `--no-default-features` invocation (that flag disables every default
+# feature, `store` included), and today's light lane must keep building the full I/O
+# surface unchanged - the `not(core)` half of the predicate is what actually carries
+# that lane. `store` stays the name-carrying half of the check and the literal feature
+# a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
+# surface without `symbols`.
+store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store", "rigger-dash/store"]
+# THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
+# `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
+# `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
+# `store`-gated module's `#[cfg]` excludes it whenever `core` alone is requested (see
+# the `store` feature's own doc above), so `--no-default-features --features core`
+# builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
+# dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
+# already unconditional.
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core", "rigger-dash/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -29,38 +77,83 @@ default = ["symbols"]
 # depend on `tree-sitter` only as a dev-dep and couple at runtime through
 # `tree-sitter-language`, so this set is ABI-pinned by `tree-sitter-tags` (which requires
 # an exact `tree-sitter` minor); unit 2 extends this feature with the other four grammars.
-symbols = [
-    "dep:tree-sitter",
-    "dep:tree-sitter-tags",
-    "dep:tree-sitter-rust",
-    "dep:tree-sitter-c-sharp",
-    "dep:tree-sitter-javascript",
-    "dep:tree-sitter-typescript",
-    "dep:tree-sitter-go",
-    "dep:tree-sitter-python",
-]
+symbols = ["rigger-grounder/symbols", "rigger-conductor/symbols"]
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
+# The domain ring (workspace split): its lanes follow this crate's `store`/`core` features.
+rigger-domain = { path = "crates/rigger-domain", default-features = false }
+# The persistence adapters (workspace split, ring 3). Not optional: the pure `namespace`
+# decorator and the connection-string redaction are always compiled, exactly as they were in
+# the root; the crate's own `store`/`core` features (forwarded above) gate the rest.
+rigger-store-sqlite = { path = "crates/rigger-store-sqlite", default-features = false }
+# The context-graph projector (workspace split, ring 3). Not optional for the same reason: its
+# `contextgraph` module compiles in every lane, the projector itself behind the store gate.
+rigger-graph-sqlite = { path = "crates/rigger-graph-sqlite", default-features = false }
+# The process adapters (workspace split, ring 3): the process-spawn port, the reaper, the build
+# budget and the parallel map. Not optional, like the adapters above; its own `store`/`core`
+# features (forwarded above) gate every module exactly as the root gated them.
+rigger-process = { path = "crates/rigger-process", default-features = false }
+# The git worktree adapter (workspace split, ring 3). Not optional, like the adapters above;
+# its own `store`/`core` features (forwarded above) gate it exactly as the root gated it.
+rigger-worktree-git = { path = "crates/rigger-worktree-git", default-features = false }
+# The gate adapter (workspace split, ring 3). Not optional, like the adapters above; its own
+# `store`/`core` features (forwarded above) gate it exactly as the root gated it.
+rigger-gates-shell = { path = "crates/rigger-gates-shell", default-features = false }
+# The agent-host adapters (workspace split, ring 3). Not optional, like the adapters above; its
+# own `store`/`core` features (forwarded above) gate it exactly as the root gated it.
+rigger-driver = { path = "crates/rigger-driver", default-features = false }
+# The grounding adapters (workspace split, ring 3). Not optional, like the adapters above; its
+# own `store`/`core`/`symbols` features (forwarded above) gate it exactly as the root gated it.
+rigger-grounder = { path = "crates/rigger-grounder", default-features = false }
+# The operator-tree adapter (workspace split, ring 3): the loaded config and the `.rigger/` readers.
+# Not optional: its `config` module compiles in every lane, exactly as it did in the root; its own
+# `store`/`core` features (forwarded above) gate the rest.
+rigger-config-files = { path = "crates/rigger-config-files", default-features = false }
+# The application ring (workspace split, ring 2): the conductor use case. Not optional, like the
+# adapters above; its own `store`/`core`/`symbols` features (forwarded above) gate it exactly as
+# the root gated it.
+rigger-conductor = { path = "crates/rigger-conductor", default-features = false }
+# The console delivery (workspace split, ring 4): the console fold and the code map. Not optional:
+# it is `core` and compiles in every lane, exactly as it did in the root; its own `store`/`core`
+# features (forwarded above) follow this crate's lane.
+rigger-console = { path = "crates/rigger-console", default-features = false }
+# The delivery ring (workspace split, ring 4): the HTTP dashboard and the MCP server. Not optional,
+# like the crates above; its own `store`/`core` features (forwarded above) gate it exactly as the
+# root gated it, and its build script embeds the console core only in the lanes that compile it.
+rigger-dash = { path = "crates/rigger-dash", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`
-# matching must resolve in BOTH feature lanes, so `regex` is declared as a direct
-# dependency rather than leaning on any transitive pull that only the default
-# (`symbols`) lane might supply. Compiles in the light (`--no-default-features`) lane too.
+# matching must resolve in every lane (including the `core` lane's wasm target), so
+# `regex` is declared as a direct dependency rather than leaning on any transitive pull
+# that only the default (`symbols`) lane might supply.
 regex = "1"
 serde_json = "1"
+# Structural (not text-searched) dotted-path recovery for a `deny_unknown_fields`
+# violation on any workflow.yml-tree config struct (spec 102 Design amendment,
+# THE DOTTED PATH IS TRACKED STRUCTURALLY - the one admitted new dependency): wraps
+# the config deserializer so the path comes from the actual field/key accesses the
+# deserializer performs, never from searching the rendered error text.
+serde_path_to_error = "0.1"
 serde_yaml = "0.9"
-# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
-# project's own sources by honoring the repository's OWN version-control ignore rules
-# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine:
-# no system libraries, so it compiles in BOTH feature lanes (the walk is UNGATED - it
-# serves the light `grep` grounder too). We use only its
-# committed-`.gitignore` matching (global + `.git/info/exclude` disabled) so the scoping
-# is machine-independent and the same tree yields a byte-identical graph. Non-optional.
-ignore = "0.4"
-uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
+
+# THE CORE LANE IS PURE (spec 93, criterion 1): these seven crates are exactly the ones
+# the `store`-gated modules need and the pure `core` subset must never see - each is
+# either a native-only binding (`rusqlite`'s bundled sqlite C code, `rustix`'s Linux
+# syscalls, `fs2`'s `flock`) or fails to even COMPILE for `wasm32-unknown-unknown`
+# without extra opt-in (`tokio`'s `mio` epoll backend, `kurrentdb`'s tonic/TLS stack,
+# `uuid`'s `getrandom` entropy source). Cargo resolves a target-cfg'd dependency table
+# ahead of any feature flag, so this is what actually keeps the nested wasm build (spec
+# 93, criterion 3) from ever attempting to compile them - the `store`/`core` feature
+# split (above) additionally keeps the MODULES that use them out of the `core` lane's
+# own native build, but only a target-cfg'd table stops the wasm target from trying to
+# build the crates themselves. `not(target_arch = "wasm32")` is unconditional on every
+# other target, so `default` and `--no-default-features` (native) are byte-for-byte
+# unaffected: these seven are exactly as mandatory there as they were before this split.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
 # The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
 # (spec 78): `kill_process`/`test_kill_process`, never a `Command::new("kill")` shell-out and
 # never `libc`. `default-features = false` + explicit `std`+`process` selects the linux_raw
@@ -70,48 +163,23 @@ thiserror = "2"
 # also present transitively) because `Pid::from_raw` in 1.x accepts negative raw values and
 # rejects only zero - the reaper's own explicit `pid > 1` guard is therefore load-bearing,
 # never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
-# adding it direct at that version is a no-op for dependency resolution. Non-optional: the
-# reap runs in both feature lanes.
+# adding it direct at that version is a no-op for dependency resolution.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
-# (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
-# invariant. A step checks out the run branch and branches unit worktrees off HEAD, then
-# integrates units and appends events; two steps running at once would race that shared
-# checkout/HEAD and interleave their integrations, corrupting the run. Non-optional: the lock
-# must hold in BOTH feature lanes. `fs2` releases the lock when the file drops OR the process
-# dies (even on kill), so a crashed step never leaves a stale lock wedging the run.
+# Cross-process advisory file lock (`flock` under the hood) on the shared build cache's guard
+# file: `reclaim_shared_build_cache` takes it exclusively, without waiting, so `reset
+# --build-cache` never renames the cache away under a build holding its shared lock. The
+# lock is released explicitly once the rename lands, or by the process ending however it
+# ends. (`rigger step`'s serialization lock is the store crate's `lockfile::HeldLock`.)
 fs2 = "0.4"
-# The KurrentDB EventStore adapter (the trait's server-backed implementation) is
-# part of the product, compiled into EVERY build: the shared-store capability
-# (many rigger instances appending to one KurrentDB so agent context is shared
-# across a team) is reachable in the default binary with a runtime flag, never a
-# recompile. `kurrentdb` is the async gRPC client and `tokio` is the runtime that
-# bridges its async API onto the (sync) EventStore port - both unconditional. The
-# sqlite backend stays the default; `--eventstore kurrentdb` is the runtime opt-in.
+# The KurrentDB EventStore adapter (the trait's server-backed implementation) is part of
+# the product, compiled into every NATIVE build: the shared-store capability (many rigger
+# instances appending to one KurrentDB so agent context is shared across a team) is
+# reachable in the default binary with a runtime flag, never a recompile. `kurrentdb` is
+# the async gRPC client and `tokio` is the runtime that bridges its async API onto the
+# (sync) EventStore port - both unconditional on every native target. The sqlite backend
+# stays the default; `--eventstore kurrentdb` is the runtime opt-in.
 kurrentdb = { version = "1.2" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
-# Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
-# concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
-# definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
-# pins the runtime version; grammar crates couple only through `tree-sitter-language`, so a
-# grammar's `LANGUAGE` (a `LanguageFn`) converts to `tree_sitter::Language` via `.into()`
-# regardless of which `tree-sitter` minor built it. Unit 1 ships the Rust grammar; unit 2
-# adds the remaining four on this same base. All optional, all under the `symbols` feature.
-tree-sitter = { version = "0.25", optional = true }
-tree-sitter-tags = { version = "0.25", optional = true }
-tree-sitter-rust = { version = "0.24", optional = true }
-# The remaining four shipped languages (unit 2). Each couples to the runtime only through
-# `tree-sitter-language` (its `LANGUAGE` is a `LanguageFn` that `.into()`s to
-# `tree_sitter::Language`), so the pinned `tree-sitter` / `tree-sitter-tags` 0.25 ABI drives
-# resolution and these grammar minors are chosen to match it. All optional, all under the
-# `symbols` feature. The JavaScript/TypeScript family is two crates (one grammar each);
-# `tree-sitter-typescript` exposes `LANGUAGE_TYPESCRIPT` (and `LANGUAGE_TSX`), so `.ts`/`.tsx`
-# both resolve through it.
-tree-sitter-c-sharp = { version = "0.23", optional = true }
-tree-sitter-javascript = { version = "0.23", optional = true }
-tree-sitter-typescript = { version = "0.23", optional = true }
-tree-sitter-go = { version = "0.23", optional = true }
-tree-sitter-python = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

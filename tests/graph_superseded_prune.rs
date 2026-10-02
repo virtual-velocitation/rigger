@@ -20,39 +20,12 @@
 //! are owned by sibling in-crate units; this file's role is to guard the changed PUBLIC prune
 //! surface, not to re-derive those criteria.
 
+mod common;
+
+use common::cli::nanos;
+use common::fixtures::apply_def_at;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
-use rigger::contextgraph::{Graph, Projection, REL_CONTAINS, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
-use std::time::{Duration, UNIX_EPOCH};
-
-/// Fold a `CodeEntityExtracted` (`file` defines `name`) from its raw on-log JSON at `pos`, exactly
-/// the event the extraction pass emits per definition - deliberately built from JSON so the test
-/// pins the on-log contract, not the in-crate payload struct. `fresh` marks the FIRST event of an
-/// extraction batch, whose fold supersedes the file's prior live structural edges before folding the
-/// new batch. `secs` sets the event's `valid_from` (when the extraction happened), so a re-extraction
-/// batch's supersession stamps `valid_to = to_nanos(valid_from)` - the retention boundary spec 41
-/// keys on. `apply` returns `Err` on a fold failure, so a successful call is itself evidence the
-/// payload folded.
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool, secs: u64) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-        "fresh": fresh,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    )
-    .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// The nanosecond boundary an edge carries for a fact retired `secs` after the epoch - the public
-/// mirror of the crate-private `to_nanos`, computed here so the external test never reaches into the
-/// crate for it. This is the same time base an edge's `valid_to` is stored in.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
+use rigger::contextgraph::{Graph, Projection, REL_CONTAINS};
 
 /// The file's live CONTAINS targets in a public `subgraph` result, sorted - the exact live structure
 /// a grounding consumer reads. The prune must leave this identical (it reclaims only historical rows).
@@ -77,15 +50,15 @@ fn extended_prune_reclaims_superseded_edges_at_the_boundary_leaving_the_live_sub
     let file = "src/a.rs";
 
     // Run 1 (t=100s): first extraction of `foo` and `bar` - two live CONTAINS edges.
-    apply_def(&p, 1, file, "foo", 5, true, 100);
-    apply_def(&p, 2, file, "bar", 9, false, 100);
+    apply_def_at(&p, 1, file, "foo", 5, true, 100);
+    apply_def_at(&p, 2, file, "bar", 9, false, 100);
     // Run 2 (t=200s): re-extract `foo` only. The fresh event supersedes run-1's CONTAINS(foo)+(bar)
     // with valid_to=to_nanos(200s), then folds a new live CONTAINS(foo).
-    apply_def(&p, 10, file, "foo", 12, true, 200);
+    apply_def_at(&p, 10, file, "foo", 12, true, 200);
     // Run 3 (t=300s, the ACTIVE run): re-extract `foo` and add `baz`. Supersedes run-2's CONTAINS(foo)
     // with valid_to=to_nanos(300s); folds live CONTAINS(foo)+CONTAINS(baz).
-    apply_def(&p, 20, file, "foo", 3, true, 300);
-    apply_def(&p, 21, file, "baz", 7, false, 300);
+    apply_def_at(&p, 20, file, "foo", 3, true, 300);
+    apply_def_at(&p, 21, file, "baz", 7, false, 300);
 
     let boundary = nanos(300);
 

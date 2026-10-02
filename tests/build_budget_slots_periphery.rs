@@ -55,14 +55,18 @@
 //! `cli::Driver`, and `config::load` are all compiled and exercised in both
 //! feature lanes.
 
+mod common;
+
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use common::cli::write_workflow;
 use rigger::budget::BuildBudget;
 use rigger::conductor::{run, AgentDriver, Deps, SpawnOpts};
 use rigger::config::{self, AgentDef, BuildConfig, Config, Stage};
+use rigger::config_store;
 use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Kind, Runner};
@@ -197,29 +201,6 @@ fn an_exhausted_budget_gates_a_real_build_but_never_a_real_agent_spawn() {
     );
 }
 
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
-/// `root`, so `config::load` reaches all the way through agent parsing and
-/// `Config::validate` - the real on-disk boundary, not a struct literal built in
-/// memory. `build_block` is appended to the workflow verbatim: `""` omits the
-/// `build:` section entirely (the back-compat case - the documented default must
-/// apply), a `build:\n  ...\n` block pins an explicit `max_concurrent`.
-fn write_workflow(root: &Path, build_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: buildbudgettest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {build_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
-
 #[test]
 fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // config.rs's own unit test parses `BuildConfig` via a bare `serde_yaml::
@@ -230,7 +211,8 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // 1), now for `max_concurrent`.
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(configured.path(), "build:\n  max_concurrent: 2\n");
-    let cfg = config::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(cfg.workflow.build.max_concurrent, 2);
 
     // The back-compat case: an OMITTED `build:` section - every workflow.yml
@@ -239,7 +221,7 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // the plain `BuildConfig::default()` (0) an in-memory Rust construction gets.
     let legacy = tempfile::tempdir().expect("create temp project");
     write_workflow(legacy.path(), "");
-    let cfg = config::load(legacy.path().to_str().unwrap())
+    let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(
         cfg.workflow.build.max_concurrent, 4,
@@ -250,7 +232,8 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // distinct from the omitted-key default above.
     let unlimited = tempfile::tempdir().expect("create temp project");
     write_workflow(unlimited.path(), "build:\n  max_concurrent: 0\n");
-    let cfg = config::load(unlimited.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(unlimited.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(
         cfg.workflow.build.max_concurrent, 0,
         "an explicit max_concurrent: 0 must parse as 0 (unlimited) through the real loader"
@@ -368,6 +351,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     run(&cfg, &deps).expect("the run must complete: two real agents and two real gate builds");
 

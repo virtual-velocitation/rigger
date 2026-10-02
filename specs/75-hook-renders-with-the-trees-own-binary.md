@@ -7,7 +7,7 @@ code legitimately changes a rendered fact (a new command, a new skill) then dead
 correctly regenerated docs read as drift against the stale installed render, and the
 refusal blocks the very commit that would land the change. Hand-patching the installed
 hook does not survive `rigger setup`, which any agent may lawfully run - the fix must live
-in the template `install_precommit_hook` composes (src/main.rs:9209).
+in the template `install_precommit_hook` composes (src/cli/hygiene.rs:758).
 
 ## Design
 

@@ -25,96 +25,31 @@
 //! before landing the fix, mirroring that finding's own "isolated fake-HOME run" method so
 //! this proof never has to touch the operator's actual `~/.cache/rigger` to make its point.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 mod common;
+use common::fixtures::{fan_out_stage, workflow_cfg, NoopDriver};
+use common::git::temp_git_project_with_commit;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::conductor::{run, Deps};
+use rigger::config::Config;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
-
-/// A no-op `AgentDriver`: every assertion in this file is about the FILESYSTEM side effect a
-/// real `ExecRunner` gate and a real unit worktree leave behind, never about agent output
-/// content, so the driver itself only has to satisfy the port contract.
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
-
-/// `git init` plus one real commit, so a fan-out unit worktree has a HEAD to branch off of -
-/// mirrors every other periphery file's own identical copy (this codebase's established
-/// per-file idiom for this fixture, e.g. `gate_store_fence_periphery.rs`'s
-/// `init_repo_with_head`, `fanout_template_needs_and_stage_retries_periphery.rs`'s
-/// `temp_git_project_with_commit`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create the fixture repo dir");
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
 
 /// A single-stage, single-unit fan-out workflow (mirrors every other periphery file's
 /// minimal `implement-template`-shaped fixture) whose real `ExecRunner` gate is a trivial
 /// `true` - enough for `conductor::run` to create a REAL git unit worktree under
 /// `cfg.workflow.defaults.workdir`, without needing a real cargo build.
 fn one_unit_cfg(repo: &Path) -> Config {
-    let mut cfg = Config::default();
+    let mut cfg = workflow_cfg(
+        &["worker"],
+        &[("gate", "true")],
+        vec![fan_out_stage("implement-template", &[], &["gate"])],
+    );
     // Item 2's fix, item 3's subject: nest the scratch/worktree default back inside this
     // fixture's own repo tempdir so the real unit worktree `run` below creates never reaches
     // the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "gate".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement-template".into(),
-        Stage {
-            name: "implement-template".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            gates: vec!["gate".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
     cfg
 }
 
@@ -134,42 +69,60 @@ fn real_cache_home_rigger_dir() -> Option<PathBuf> {
     Some(rigger::driver::replay::cache_home_from(xdg, home)?.join("rigger"))
 }
 
-/// Every direct child entry currently under `dir` (non-recursive: a NEW top-level entry is
-/// exactly what a leaked worktree/scratch root would be) - `dir` not yet existing reads as
-/// empty, matching a machine that has never run a fixture against this cache home before.
-fn snapshot(dir: &Path) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect()
-}
-
 /// Ruling item 3, guard 1: a REAL in-process `conductor::run()` that creates a REAL git unit
 /// worktree, routed through [`common::isolated_workdir`] (item 2's fix), must leave the real
-/// ambient cache home exactly as it found it - the class of litter the operator ruling
-/// exists to close (`adv-u89c2r6-empty-dir-litter-empirically-reproduced`), proven absent
-/// here rather than merely argued from the code.
+/// ambient cache home exactly as it found it for THIS fixture's own repo - the class of
+/// litter the operator ruling exists to close
+/// (`adv-u89c2r6-empty-dir-litter-empirically-reproduced`), proven absent here rather than
+/// merely argued from the code.
+///
+/// Scoped to the ONE entry an isolation regression would create for this fixture's own
+/// (freshly minted, therefore never-before-seen) repo path - computed through
+/// [`rigger::worktree::cache_scratch_root_from`], the SAME production authority
+/// `real_cache_home_rigger_dir` itself reuses, never a second, independently-spelled copy of
+/// the precedence - rather than a whole-directory snapshot. The real ambient cache home is
+/// legitimately SHARED scratch space for every concurrently running test binary in the suite
+/// (`.cargo/pidns-runner.sh` pins one `XDG_CACHE_HOME` for the whole run, by design - see its
+/// own header comment): other periphery tests deliberately exercise the real ambient default
+/// themselves, so a sibling creating or reclaiming its OWN, differently-keyed entry there
+/// during this window is expected concurrent traffic, never a leak this guard should fail on
+/// (a whole-directory `before == after` snapshot flaked exactly this way under
+/// `cargo-mutants`' full-suite baseline: a concurrent sibling's own unrelated entry vanished
+/// mid-window - `sdet-checkin-scratch-leak-guard-scoped-not-snapshot`).
 #[test]
 fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_home() {
-    let Some(real_dir) = real_cache_home_rigger_dir() else {
+    if real_cache_home_rigger_dir().is_none() {
         return; // genuinely homeless host: nothing for this guard to check
-    };
-    let before = snapshot(&real_dir);
+    }
 
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = one_unit_cfg(repo.path());
     let store = Store::open(":memory:").unwrap();
     let deps = Deps {
         store: &store,
         driver: &NoopDriver,
         gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
+        repo: repo_path.clone(),
         grounder: None,
         graph: None,
         criteria: vec!["a widget exists".to_string()],
+        log: &|_| {},
     };
+
+    let would_leak = rigger::worktree::cache_scratch_root_from(
+        &repo_path,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+    .expect("a non-empty, non-homeless fixture always resolves a cache-home scratch root");
+    assert!(
+        !would_leak.exists(),
+        "precondition: a freshly minted fixture repo path must not already have an entry at \
+         the exact path an isolation regression would create, or this test proves nothing: \
+         {would_leak:?}"
+    );
+
     let rs = run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert_eq!(
         rs.units.len(),
@@ -177,11 +130,11 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         "exactly one fan-out unit for the one criterion"
     );
 
-    let after = snapshot(&real_dir);
-    assert_eq!(
-        before, after,
+    assert!(
+        !would_leak.exists(),
         "an isolated in-process conductor::run() must create no new entry under the real \
-         cache home {real_dir:?}: before {before:?} after {after:?}"
+         cache home: the exact entry an isolation regression would create for this \
+         fixture's own repo now exists at {would_leak:?}"
     );
 }
 
@@ -192,7 +145,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
 /// proof for the subprocess/`XDG_CACHE_HOME` case.
 #[test]
 fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drops() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let cfg = one_unit_cfg(repo.path());
     let scratch_root = PathBuf::from(&cfg.workflow.defaults.workdir);
     let store = Store::open(":memory:").unwrap();
@@ -204,6 +157,7 @@ fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drop
         grounder: None,
         graph: None,
         criteria: vec!["a widget exists".to_string()],
+        log: &|_| {},
     };
     run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert!(

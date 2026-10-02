@@ -7,9 +7,9 @@ it, so a build, test binary, or dash whose cwd is inside the removed dir survive
 as an orphan holding dead paths (and, for a cargo target dir, holding gigabytes open). The
 spec-78 run's adversary proved the class live rather than by inspection. Inventory as found
 (re-ground each site before implementing; line numbers drift): `sweep_terminal`
-(src/worktree.rs ~864, `git worktree remove --force` with no reap), `clear_worktree_dir` (three
+(crates/rigger-worktree-git/src/worktree.rs ~864, `git worktree remove --force` with no reap), `clear_worktree_dir` (three
 call sites, `fs::remove_dir_all` with no reap), `reclaim_worktree_on_branch` (no reap),
-`reclaim_cache_sibling` (src/worktree.rs ~810-818, removes the per-unit `cargo-target-<slug>`
+`reclaim_cache_sibling` (crates/rigger-worktree-git/src/worktree.rs ~810-818, removes the per-unit `cargo-target-<slug>`
 dir on both its normal and review-fence branches with no reap - empirically shown to leave a
 live process rooted in the removed tree), and `Worktree::discard` (leaks a review-fence sibling
 process; live-confirmed during the spec-78 run). `Worktree::remove` is the exemplar: it already

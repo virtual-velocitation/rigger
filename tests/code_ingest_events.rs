@@ -12,25 +12,74 @@
 //!   whole log (spec 29a's later rebuild criterion), and the code arms' `add_edge` does NOT dedup
 //!   at the row level, so replay-safety rests entirely on the applied-position ledger; this pins
 //!   that the code entity node and its structural edges honor it.
-//! - the emit API's determinism-and-ordering contract the doc comments promise: `index_events`
+//! - the emit API's determinism-and-ordering contract the doc comments promise: `project_batches`
 //!   yields byte-identical events for identical source, and definitions precede references.
 //!   Exercised through the real extraction pass, so it lives in the `symbols` lane only.
+
+mod common;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Projection, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - deliberately bypassing the in-crate payload structs so a test pins the JSON contract,
-/// not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call is
-/// itself evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
+use common::fixtures::apply_json;
+
+/// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
+/// following `pos`, advancing `pos` past the last one.
+#[cfg(feature = "symbols")]
+fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64) {
+    for mut e in common::project_events(root.to_str().unwrap()) {
+        *pos += 1;
+        e.position = *pos;
+        common::fixtures::folds(p, std::slice::from_ref(&e));
+    }
+}
+
+/// The `combat.rs` subgraph folded from a real tree where `util.rs` defines `shared` and
+/// `combat.rs` defines `apply_damage` plus a `caller` that calls it, `shared` and the undefined
+/// `undefined_thing` - one reference per confidence tier.
+#[cfg(feature = "symbols")]
+fn combat_calling_every_tier() -> rigger::contextgraph::Graph {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("combat.rs"),
+        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
+    )
+    .unwrap();
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    fold_tree(&p, dir.path(), &mut 0);
+    p.subgraph(&["combat.rs".to_string()], 3).unwrap()
+}
+
+/// The `combat.rs` subgraph folded from a real file defining `apply_damage`, `heal` and a
+/// `caller` calling both, then again after the file CHANGES - `heal` and its call deleted - is
+/// re-extracted and its second batch folded onto the SAME projection at fresh positions.
+#[cfg(feature = "symbols")]
+fn combat_before_and_after_dropping_heal(
+) -> (rigger::contextgraph::Graph, rigger::contextgraph::Graph) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("combat.rs");
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
+    )
+    .unwrap();
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    fold_tree(&p, dir.path(), &mut pos);
+    let before = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
+    )
+    .unwrap();
+    fold_tree(&p, dir.path(), &mut pos);
+    (before, p.subgraph(&["combat.rs".to_string()], 3).unwrap())
 }
 
 #[test]
@@ -240,8 +289,6 @@ fn the_file_container_holds_kind_file_in_the_integrated_graph_either_fold_order(
 #[test]
 fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() {
     use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 29a criterion 2, through the REAL extraction pass (not hand-built events): a source tree
     // is extracted, emitted, and folded, and every structural edge lands at its confidence tier.
@@ -252,22 +299,7 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
     // definition of it, so this ALSO exercises the definition arm's convergent AMBIGUOUS -> INFERRED
     // upgrade over real, sorted-order extraction - the reverse fold order a hand-built test can only
     // simulate.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
-    std::fs::write(
-        dir.path().join("combat.rs"),
-        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
-    )
-    .unwrap();
-
-    let idx = build_index(dir.path().to_str().unwrap(), None);
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-
-    let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    let g = combat_calling_every_tier();
     let tier_of = |to: &str| {
         g.edges
             .iter()
@@ -307,8 +339,6 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
 #[test]
 fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
     use rigger::contextgraph::{REL_CALLS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 37 criterion 3, through the WHOLE real chain (extractor attribution -> emit -> fold), not
     // hand-built events: a call inside `fn caller` folds a `combat.rs::caller --CALLS--> <callee>`
@@ -321,22 +351,7 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
     // (defined nowhere -> AMBIGUOUS). A regression that dropped the emit caller, folded the wrong
     // caller, or forgot to promote CALLS with its twin reds here while every hand-built unit stays
     // green.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
-    std::fs::write(
-        dir.path().join("combat.rs"),
-        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
-    )
-    .unwrap();
-
-    let idx = build_index(dir.path().to_str().unwrap(), None);
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-
-    let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    let g = combat_calling_every_tier();
     let calls_tier = |callee: &str| {
         g.edges
             .iter()
@@ -381,8 +396,6 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
 #[test]
 fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end() {
     use rigger::contextgraph::REL_CALLS;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // Spec 37 + spec 29a criterion 3, through the REAL pipeline: a CALLS edge hangs off
     // `<file>::<caller>` (the enclosing definition), NOT the bare file node, so the supersede must
@@ -390,24 +403,8 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
     // stale CALLS edge must leave the live subgraph - the hand-built unit test proves the prefix
     // match on a fabricated from_id; this proves it against the REAL `<file>::caller` id the extractor
     // mints, composed with the emit-side `fresh` batch stamping.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("combat.rs");
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
-    )
-    .unwrap();
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for mut e in first {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
+    let (g0, g1) = combat_before_and_after_dropping_heal();
     // Precondition: caller calls heal - a live CALLS edge before the change.
-    let g0 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g0.edges.iter().any(|e| e.rel == REL_CALLS
             && e.from == "combat.rs::caller"
@@ -417,21 +414,6 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
         g0.edges
     );
 
-    // The file CHANGES: the call to `heal` is removed. Re-extract, emit, fold the second batch onto
-    // the same projection at fresh positions.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
-    )
-    .unwrap();
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    for mut e in second {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    let g1 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     // The removed call's CALLS edge is superseded - gone from the live subgraph, not accreted.
     assert!(
         !g1.edges
@@ -587,8 +569,6 @@ fn the_graph_answers_who_calls_g_by_function_through_the_fold_traversal() {
 #[test]
 fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     use rigger::contextgraph::REL_CALLS;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     // The full ACID chain the spec's Done-when names: INGEST a real source file (tree-sitter
     // attribution -> emit -> fold), then answer "who calls apply_damage" by function from ONE
@@ -608,12 +588,8 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     )
     .unwrap();
 
-    let idx = build_index(dir.path().to_str().unwrap(), None);
     let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in index_events(&idx).into_iter().enumerate() {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
+    fold_tree(&p, dir.path(), &mut 0);
 
     // The query the design routes to an agent: `subgraph` around the CALLEE, read incoming callers.
     let g = p
@@ -654,9 +630,6 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
-
     // Drive the real extraction pass over a source file with two definitions and two same-file
     // references, then lower it through the public emit API.
     let dir = tempfile::tempdir().unwrap();
@@ -670,9 +643,9 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     // identical in type and payload. This exercises the full source -> extraction -> emit
     // pipeline, so a non-deterministic iteration order anywhere in it (e.g. a HashMap) would break
     // this, and with it the reproducible-rebuild guarantee spec 29a rests on.
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    let shape = |evs: &[Event]| {
+    let first = common::project_events(dir.path().to_str().unwrap());
+    let second = common::project_events(dir.path().to_str().unwrap());
+    let shape = |evs: &[rigger::eventstore::Event]| {
         evs.iter()
             .map(|e| (e.type_.clone(), e.data.clone()))
             .collect::<Vec<_>>()
@@ -680,7 +653,7 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
     assert_eq!(
         shape(&first),
         shape(&second),
-        "index_events must be deterministic for identical source"
+        "project_batches must be deterministic for identical source"
     );
     assert!(
         !first.is_empty(),
@@ -709,9 +682,6 @@ fn the_emit_api_is_deterministic_and_emits_definitions_before_references() {
 #[cfg(feature = "symbols")]
 #[test]
 fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
-
     // Criterion 3, end to end through the REAL pipeline: extract a file, emit its events, fold; then
     // CHANGE the file (delete a symbol), re-extract, emit, and fold the second batch onto the SAME
     // projection. Because the emit pass stamps the batch boundary (`fresh`) on the first event of
@@ -720,27 +690,8 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
     // a re-extraction REPLACES rather than accretes. This exercises extraction -> emit -> fold with
     // no hand-built events, so it pins that the emit-side `fresh` stamping and the fold's supersede
     // actually compose in production shape (unlike the in-crate fold test's hand-built batches).
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("combat.rs");
-
-    // Initial extraction: two definitions, `apply_damage` and `heal`, and a call to each.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
-    )
-    .unwrap();
-    let first = index_events(&build_index(dir.path().to_str().unwrap(), None));
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for mut e in first {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
+    let (g0, g1) = combat_before_and_after_dropping_heal();
     // Precondition: both definitions are live in the projection before the change.
-    let g0 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g0.nodes
             .iter()
@@ -749,23 +700,7 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         g0.nodes
     );
 
-    // The file CHANGES: `heal` is deleted (and its call removed). Re-extract, emit, fold the second
-    // batch onto the same projection at fresh positions.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
-    )
-    .unwrap();
-    let second = index_events(&build_index(dir.path().to_str().unwrap(), None));
-    for mut e in second {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    // The live view at the new position REPLACED the old: apply_damage survives, the deleted heal is
     // gone from the live subgraph (its CONTAINS edge was superseded, not deleted).
-    let g1 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g1.nodes
             .iter()
@@ -798,7 +733,7 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
-    // Drive the per-file emit API DIRECTLY - `index_events` only reaches `extract_events`
+    // Drive the per-file emit API DIRECTLY - `project_batches` only reaches `extract_events`
     // transitively, so its own contract is otherwise unpinned. Criterion 1 says the pass emits
     // "one CodeEntityExtracted per definition" and "one EdgeInferred per reference"; that
     // CARDINALITY is the core of the extract-as-events pass, yet no other periphery test asserts
@@ -873,7 +808,7 @@ fn extract_events_emits_one_event_per_definition_and_reference_threading_the_fil
     }
 
     // Per-file ordering asserted directly on `extract_events` (the determinism test only exercises
-    // `index_events`): every definition event precedes every reference event, so a same-file
+    // `project_batches`): every definition event precedes every reference event, so a same-file
     // reference folds onto an already-folded definition entity.
     let last_def = events
         .iter()
@@ -929,8 +864,6 @@ fn one_edge_tier(g: &rigger::contextgraph::Graph, rel: &str, to: &str) -> String
 
 #[test]
 fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
-    use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
-
     // Persistence + reopen boundary the inside-out tier tests are structurally blind to: every
     // in-crate tier test folds into a fresh `:memory:` connection (never re-opened, never
     // re-migrated), and the one on-disk unit test only proves the EXTRACTED *backfill* of a
@@ -983,12 +916,6 @@ fn the_confidence_tier_persists_across_a_reopen_of_an_on_disk_graph() {
         "ambiguous",
         "a define-nowhere reference persists at the ambiguous tier across the reopen"
     );
-
-    // The public consts still carry those exact literals: the API name and the persisted value
-    // cannot silently diverge (a rename of a const would redden this before it corrupts a db).
-    assert_eq!(TIER_EXTRACTED, "extracted");
-    assert_eq!(TIER_INFERRED, "inferred");
-    assert_eq!(TIER_AMBIGUOUS, "ambiguous");
 
     // Safe-superset (addendum 2.4) holds after the reopen too: tiering drops NO reference - all
     // three folded references read back, each carrying exactly one of the three tiers.
@@ -1269,7 +1196,7 @@ fn project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_inges
             pos += 1;
             let mut ev = e.clone();
             ev.position = pos;
-            p.apply(&ev).unwrap();
+            common::fixtures::folds(&p, std::slice::from_ref(&ev));
         }
     }
     let g = p

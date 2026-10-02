@@ -22,110 +22,17 @@
 //! "never wrong text" invariant it existed to prove is now the narrower, permanent one: a NEIGHBOUR
 //! at the recorded line is never shown under another entity's header, in EITHER lane).
 
-use std::path::Path;
-use std::process::Command;
-
-use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
-/// namespaced streams and the graph project) is stable across the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so the seeded `graph.db`
-/// lands under the exact project scope the compiled binary reads back: the git top-level basename
-/// (no tracked `.rigger/project.id` is seeded here), else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Create the `.rigger/` dir under `root` so `Projector::open` can lay `graph.db` beside it.
-fn seed_rigger_dir(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-}
-
-/// Open the seeded `graph.db` under `root`'s `.rigger/`, scoped to the identity the binary reads.
-fn open_graph(root: &Path) -> Projector {
-    let id = run_stream_identity(root);
-    Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap()
-}
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass would -
-/// so this seeding is feature-lane independent (no `symbols` extractor required). Seeding the entity
-/// at a chosen `line` is how a drifted location is expressed: the graph records one site while the
-/// working tree holds another.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
-/// auto-started dashboard and points the instance registry at a throwaway state dir, exactly as the
-/// other CLI integration tests do, so a short-lived inspector invocation spawns nothing that
-/// outlives the test.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Count the line-numbered body lines in a `--show` output. Each body line is printed as
-/// `  <n> | <text>` (a right-padded 1-based line number, then ` | `, then the source), so a line
-/// whose text BEFORE the first ` | ` parses as a number is a body line; the site/kind/degree header
-/// and the stale-location / extent-unavailable notes never carry that shape.
-fn body_line_count(out: &str) -> usize {
-    out.lines()
-        .filter(|l| {
-            l.trim_start()
-                .split_once(" | ")
-                .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
-                .unwrap_or(false)
-        })
-        .count()
-}
+use common::cli::body_line_count;
+use common::cli::open_graph;
+use common::cli::run_rigger;
+use common::cli::seed_rigger_dir;
+use common::cli::temp_project;
+use common::fixtures::apply_code_entity;
 
 /// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface still
 /// prints the recorded SITE header (the graph facts survive), replaces the body with a STALE note,
@@ -144,8 +51,8 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
     std::fs::write(root.join("present.rs"), "fn present() {}\n").unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "present.rs", "present", "function", 1);
-        seed_def(&p, 2, "gone.rs", "ghost", "function", 7);
+        apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
+        apply_code_entity(&p, 2, "gone.rs", "ghost", "function", 7, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "ghost"]);
@@ -214,7 +121,7 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "drift.rs", "moved", "function", 1);
+        apply_code_entity(&p, 1, "drift.rs", "moved", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);

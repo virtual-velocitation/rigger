@@ -30,20 +30,11 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_CONCEPT, REL_REALIZES, TIER_INFERRED, TYPE_CONCEPT_DERIVED,
-    TYPE_CONCEPT_REALIZED,
+    KIND_CONCEPT, REL_REALIZES, TIER_INFERRED, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED,
 };
-use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - into `p`, deliberately bypassing the in-crate payload structs so a test pins the JSON
-/// contract, not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call
-/// is itself evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+mod common;
+use common::fixtures::{apply_json, hold, live_node_ids, live_targets};
 
 /// Fold one `ConceptDerived` (the concept super-node) at `pos`.
 fn derived(p: &Projector, pos: u64, concept: &str, res: f64, fresh: bool) {
@@ -59,33 +50,13 @@ fn derived(p: &Projector, pos: u64, concept: &str, res: f64, fresh: bool) {
 
 /// Fold one `ConceptRealized` (a `<node> --REALIZES--> <concept>` membership) at `pos`.
 fn realized(p: &Projector, pos: u64, node: &str, concept: &str, res: f64) {
+    hold(p, pos + 1_000_000, &[node]);
     apply_json(
         p,
         pos,
         TYPE_CONCEPT_REALIZED,
         serde_json::json!({ "node": node, "concept": concept, "resolution": res, "hash": "h" }),
     );
-}
-
-/// The live `REALIZES` targets of `member` in `g` (whole() returns only live edges), as a set.
-fn live_realizes(g: &Graph, member: &str) -> BTreeSet<String> {
-    g.edges
-        .iter()
-        .filter(|e| e.rel == REL_REALIZES && e.from == member)
-        .map(|e| e.to.clone())
-        .collect()
-}
-
-/// Every live `KIND_CONCEPT` node id in `g`, sorted.
-fn concept_nodes(g: &Graph) -> Vec<String> {
-    let mut ids: Vec<String> = g
-        .nodes
-        .iter()
-        .filter(|n| n.kind == KIND_CONCEPT)
-        .map(|n| n.id.clone())
-        .collect();
-    ids.sort();
-    ids
 }
 
 #[test]
@@ -95,6 +66,7 @@ fn a_minimal_concept_realized_event_folds_a_live_membership_edge_backcompat() {
     // must still fold a live `REALIZES` edge; the inside-out `events()` helper always supplies them,
     // so these default arms are untested by it. A rebuild that replays a pre-field log must not error.
     let p = Projector::open(":memory:", "test").unwrap();
+    hold(&p, 1_000_000, &["docs/a.md"]);
     apply_json(
         &p,
         1,
@@ -223,6 +195,7 @@ fn a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_super
     // anything (the pass-boundary supersession is opt-in, gated on the emitter setting `fresh`).
     let p = Projector::open(":memory:", "test").unwrap();
     // First membership of node `x`, established WITHOUT a `fresh` key (the pre-field on-log form).
+    hold(&p, 1_000_000, &["x"]);
     apply_json(
         &p,
         1,
@@ -251,7 +224,7 @@ fn a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_super
     );
 
     let g = p.whole().unwrap();
-    let live = live_realizes(&g, "x");
+    let live = live_targets(&g, REL_REALIZES, "x");
     let expected: BTreeSet<String> = ["concept/1/0".to_string(), "concept/1/1".to_string()]
         .into_iter()
         .collect();
@@ -275,6 +248,7 @@ fn the_concept_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_
     // strings, not renamed consts - and must store the literal `concept` kind / `REALIZES` rel a
     // later read expects.
     let p = Projector::open(":memory:", "test").unwrap();
+    hold(&p, 1_000_000, &["docs/a.md"]);
     apply_json(
         &p,
         1,
@@ -326,10 +300,10 @@ fn a_fresh_rerun_supersedes_its_grains_memberships_and_drops_the_now_orphan_conc
 
     let g1 = p.whole().unwrap();
     assert_eq!(
-        concept_nodes(&g1),
+        live_node_ids(&g1, KIND_CONCEPT),
         vec!["concept/1/0".to_string(), "concept/1/1".to_string()],
         "pass 1 materialized both concept nodes; got {:?}",
-        concept_nodes(&g1)
+        live_node_ids(&g1, KIND_CONCEPT)
     );
 
     // Pass 2: everything re-groups into concept/1/0. The fresh head retires grain-1's memberships and
@@ -343,16 +317,16 @@ fn a_fresh_rerun_supersedes_its_grains_memberships_and_drops_the_now_orphan_conc
     let g2 = p.whole().unwrap();
     // The vanished concept left no ghost node.
     assert_eq!(
-        concept_nodes(&g2),
+        live_node_ids(&g2, KIND_CONCEPT),
         vec!["concept/1/0".to_string()],
         "the re-run dropped the now-orphan concept/1/1 node - no ghost bucket survives; got {:?}",
-        concept_nodes(&g2)
+        live_node_ids(&g2, KIND_CONCEPT)
     );
     // Every member realizes exactly the one surviving concept - the prior grain-1 edges were retired,
     // not left as stale duplicates.
     for member in ["docs/a.md", "src/a.rs", "docs/b.md", "src/b.rs"] {
         assert_eq!(
-            live_realizes(&g2, member),
+            live_targets(&g2, REL_REALIZES, member),
             ["concept/1/0".to_string()].into_iter().collect(),
             "{member} realizes exactly the one surviving concept after the fresh re-run"
         );
@@ -383,10 +357,10 @@ fn a_fresh_rerun_of_one_grain_leaves_every_other_resolution_grain_untouched() {
             .iter()
             .any(|n| n.id == "concept/2/0" && n.kind == KIND_CONCEPT),
         "the r=2 concept node survives a r=1 re-run; got {:?}",
-        concept_nodes(&g)
+        live_node_ids(&g, KIND_CONCEPT)
     );
     assert_eq!(
-        live_realizes(&g, "docs/a.md"),
+        live_targets(&g, REL_REALIZES, "docs/a.md"),
         ["concept/1/0".to_string(), "concept/2/0".to_string()]
             .into_iter()
             .collect(),
@@ -424,25 +398,25 @@ fn a_fresh_rerun_is_project_scoped_and_never_touches_another_projects_concepts()
 
     let gy = py.whole().unwrap();
     assert_eq!(
-        concept_nodes(&gy),
+        live_node_ids(&gy, KIND_CONCEPT),
         vec!["concept/1/0".to_string(), "concept/1/1".to_string()],
         "project py's concept nodes are untouched by project px's fresh re-run; got {:?}",
-        concept_nodes(&gy)
+        live_node_ids(&gy, KIND_CONCEPT)
     );
     assert_eq!(
-        live_realizes(&gy, "docs/y.md"),
+        live_targets(&gy, REL_REALIZES, "docs/y.md"),
         ["concept/1/0".to_string()].into_iter().collect(),
         "project py's membership survives project px's fresh re-run"
     );
     assert_eq!(
-        live_realizes(&gy, "docs/z.md"),
+        live_targets(&gy, REL_REALIZES, "docs/z.md"),
         ["concept/1/1".to_string()].into_iter().collect(),
         "project py's second concept membership survives project px's fresh re-run"
     );
     // And px itself re-materialized correctly (its single concept, one live member).
     let gx = px.whole().unwrap();
     assert_eq!(
-        live_realizes(&gx, "docs/a.md"),
+        live_targets(&gx, REL_REALIZES, "docs/a.md"),
         ["concept/1/0".to_string()].into_iter().collect(),
         "project px re-materialized its own concept after the re-run"
     );

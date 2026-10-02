@@ -19,18 +19,12 @@
 //! the wiring - not just the pure resolver - reaches the relocated default.
 
 use std::path::Path;
-use std::process::Command;
 
 mod common;
+use common::git::run_git;
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::run_rigger;
+use common::cli::temp_project;
 
 /// Seed an initialized, otherwise-empty `.rigger/events.db`, mirroring
 /// `tests/reset_build_cache_periphery.rs::seed_store` - `rigger validate` needs a resolvable
@@ -39,26 +33,6 @@ fn temp_project() -> tempfile::TempDir {
 fn seed_store(root: &Path) {
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
     std::fs::File::create(root.join(".rigger").join("events.db")).unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` through the isolated courier (its own throwaway
-/// `XDG_CACHE_HOME` is the ONLY scratch-relevant environment this file ever sets - no
-/// `RIGGER_TMPDIR`, no configured `defaults.workdir` - so every call genuinely resolves the
-/// DEFAULT rung, never an override).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Spec 89, criterion 2: with NEITHER `RIGGER_TMPDIR` NOR a configured `defaults.workdir` set -
@@ -85,12 +59,7 @@ fn validate_measures_the_shared_build_cache_at_the_relocated_default_root_with_n
         &["commit", "-q", "-m", "scaffold"],
     ] {
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .expect("spawn git")
-                .success(),
+            run_git(root, args).status.success(),
             "git {args:?} must succeed while seeding the repo"
         );
     }

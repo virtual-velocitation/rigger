@@ -10,7 +10,7 @@ the independent backstop that makes "no untested surface" a guarantee rather tha
 
 ## Design
 
-The unit lifecycle is hardcoded Rust control flow in `RunCtx::run_single_stage` (`src/conductor.rs`):
+The unit lifecycle is hardcoded Rust control flow in `RunCtx::run_single_stage` (`crates/rigger-conductor/src/conductor.rs`):
 implementer spawn -> commit worktree -> `run_gates` -> `review_unit` -> integrate, in one loop that
 re-enters on remediation. The seam for the SDET is BETWEEN the implementer emitting green (its code +
 unit tests pass, in its worktree) and the pre-gate commit - so the SDET's periphery tests land in the
@@ -20,7 +20,7 @@ SAME committed tree the gates and reviewers see.
 is a review LENS with tools `[Read, Grep, Glob, Bash]` - no `Edit`/`Write` - so its prompt's "write
 the failing test first" is aspirational; it physically cannot author. This spec adds a NEW agent
 `.rigger/agents/sdet-author.md` with `Edit`/`Write` + `isolation: worktree` (shaped like
-`rust-engineer.md`), a new role token in `src/spawn.rs` (alongside `ROLE_IMPLEMENTER`), and a spawn
+`rust-engineer.md`), a new role token in `crates/rigger-domain/src/spawn.rs` (alongside `ROLE_IMPLEMENTER`), and a spawn
 call in `run_single_stage` that parks it at the seam above. It is always spawned (config-driven,
 defaulting on) and self-scopes.
 
@@ -35,14 +35,14 @@ surface                         diff signal                          periphery l
 -----------------------------   ------------------------------       -------------------------------
 new/changed public API          `pub fn|struct|enum|trait` added     API test (tests/cli.rs et al.)
 trait impl                      `impl <Trait> for`                   contract suite (assert_contract,
-                                                                     src/eventstore/contract.rs)
+                                                                     crates/rigger-store-sqlite/src/eventstore/contract.rs)
 CLI subcommand / flag           addition to the command registry     tests/cli.rs (drives the binary)
 event type / serialized format  new Event / changed serde struct     round-trip + back-compat contract
 cross-module seam / fold arm    new call across a module boundary    integration test
 ```
 
 **Gates need no change:** the `test` gate is unscoped `cargo test` (`config::Gate.inputs` empty), so
-any periphery test the author writes - under `src/eventstore/contract.rs`, `tests/cli.rs`,
+any periphery test the author writes - under `crates/rigger-store-sqlite/src/eventstore/contract.rs`, `tests/cli.rs`,
 `tests/ci_lanes.rs`, or a new `tests/*.rs` - runs automatically. A failing periphery test reveals a
 boundary bug and drives remediation of the CODE (the implementer), never a weakening of the test.
 
@@ -76,7 +76,7 @@ a reject, in the constraints-recheck category. No role grades its own artifact.
 
 - [ ] a test proves a distinct, write-capable SDET-AUTHOR ROLE exists: a new agent
   `.rigger/agents/sdet-author.md` with `Edit`/`Write` tools + `isolation: worktree` (separate from the
-  read-only `sdet` review lens), plus its role token in `src/spawn.rs`. This criterion OWNS the
+  read-only `sdet` review lens), plus its role token in `crates/rigger-domain/src/spawn.rs`. This criterion OWNS the
   sdet-author role definition; it does NOT own the conductor spawn wiring (the spawn-placement criterion
   below).
 - [ ] a test proves the conductor SPAWNS the sdet-author at the build seam - after the implementer

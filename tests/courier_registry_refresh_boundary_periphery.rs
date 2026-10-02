@@ -20,92 +20,27 @@
 //!      `rigger::registry::write` - so the `if let Err(e) = rigger::registry::write(...)` arm
 //!      itself, the OTHER half of the same documented OR, has no test forcing it to actually run.
 
-use std::path::Path;
-use std::process::{Command, Output};
-
-use rigger::registry::{self, Instance};
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::RestoreEnvVars;
+use common::cli::progress_under_an_ambient_kurrentdb_conn;
+use common::cli::run_rigger_in_state_home;
+use common::cli::seed_store;
+use common::fixtures::registry_entries;
+use common::git::run_git;
+use common::git::temp_git_project_with_commit;
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo with a
 /// real commit (`git worktree add` needs a committed HEAD) and an INITIALIZED event log - a
 /// courier refuses to fabricate one from a cwd with no existing store (spec 05).
 fn courier_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let ok = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git init must succeed while seeding the fixture");
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the fixture");
-    }
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    std::fs::File::create(rigger_dir.join("events.db")).expect("seed an initialized event log");
+    let dir = temp_git_project_with_commit();
+    seed_store(dir.path());
     dir
-}
-
-/// Run `rigger <args...>` in `cwd`, with the machine-global registry redirected into the
-/// CALLER-OWNED `state_home`.
-fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
-    common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        // Never let a short-lived courier spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
-        .output()
-        .expect("the rigger binary runs")
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// mirrors the read helper in `tests/courier_registry_refresh_periphery.rs` (each periphery
-/// suite owns its own small fixture helpers rather than sharing test-only code across files).
-fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
 }
 
 /// GAP 1: a courier run from a REAL git-linked worktree nested under the project - exactly the
@@ -124,7 +59,7 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     // Seed the entry from the OWNING ROOT, exactly as a driver or a root-run courier would.
-    let seed = run_rigger(
+    let seed = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "seeded from root"],
@@ -147,12 +82,8 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     // scratch root a spawned worker's own courier calls run from.
     let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
     std::fs::create_dir_all(wt.parent().unwrap()).expect("create the worktree's parent dir");
-    let ok = Command::new("git")
-        .args(["worktree", "add", "-q"])
-        .arg(&wt)
-        .current_dir(root)
-        .status()
-        .expect("git must be runnable")
+    let ok = run_git(root, &["worktree", "add", "-q", wt.to_str().unwrap()])
+        .status
         .success();
     assert!(
         ok,
@@ -160,7 +91,7 @@ fn a_courier_in_a_nested_worktree_refreshes_the_owning_roots_registry_entry() {
     );
 
     // The exact courier traffic a worker self-reports with, run FROM the nested worktree.
-    let out = run_rigger(
+    let out = run_rigger_in_state_home(
         &wt,
         state.path(),
         &["progress", "u1/impl#0", "second, from the worktree"],
@@ -222,7 +153,7 @@ fn a_registry_write_error_never_fails_a_couriers_real_work() {
     std::fs::write(state.path().join("rigger"), b"not a directory")
         .expect("block the registry's own directory with a same-named file");
 
-    let out = run_rigger(
+    let out = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "did a thing"],
@@ -262,22 +193,5 @@ fn a_registry_write_error_never_fails_a_couriers_real_work() {
 #[serial_test::serial(kurrentdb_conn_env)]
 fn an_ambient_kurrentdb_conn_never_leaks_into_a_boundary_courier() {
     let project = courier_project_with_commit();
-    let root = project.path();
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-
-    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
-    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
-
-    let out = run_rigger(
-        root,
-        state.path(),
-        &["progress", "u1/impl#0", "did a thing"],
-    );
-    assert!(
-        out.status.success(),
-        "a courier spawned through the shared rigger_courier() helper must resolve the \
-         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
-         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    progress_under_an_ambient_kurrentdb_conn(project.path());
 }

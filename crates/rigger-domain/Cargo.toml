@@ -1,0 +1,35 @@
+[package]
+name = "rigger-domain"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's innermost ring: the entities and use-case rules, knowing no file, process, network, clock, store or agent host."
+
+[lib]
+name = "rigger_domain"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = []
+core = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+regex = "1"
+serde_json = "1"
+serde_path_to_error = "0.1"
+serde_yaml = "0.9"
+thiserror = "2"
+
+# `Event::mint`'s store arm draws a fresh event id from `uuid` (the recorded clock-and-entropy
+# violation, see tests/boundary_audit.rs DOMAIN_VIOLATIONS). Target-gated exactly as in the root
+# manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

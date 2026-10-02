@@ -35,11 +35,11 @@ page humans read, and the mechanical subset of the recipe as a pre-launch spec l
   stray before a real quote still masks the quote, a digit-adjacent mark inside a span
   cannot close it early, two spans in one paragraph mask through both, and a balanced
   paragraph still lints its unquoted hedge outside the marks.
-- **The skill ships as a registry entry** (`src/main.rs`, `src/docs.rs`): `planning-a-spec`
+- **The skill ships as a registry entry** (`src/main.rs`, `crates/rigger-domain/src/docs.rs`): `planning-a-spec`
   becomes a binary-embedded render registered in the spec-68 SKILL REGISTRY (spec 68 runs
   FIRST). Drift, overlay, and non-destructive install are the registry's contract, owned by
   spec 68; this spec owns only the entry and its content.
-- **The guide ships in the handbook** (`src/docs.rs`): the planning field guide becomes a
+- **The guide ships in the handbook** (`crates/rigger-domain/src/docs.rs`): the planning field guide becomes a
   rendered handbook page under the same drift gate, cross-linked from `authoring-loops.md`.
   Content as committed (failure classes F1-F8, the mid-run amendment protocol, measured
   outcomes), self-contained - a consumer needs no access to this repo's history.

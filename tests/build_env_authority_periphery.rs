@@ -8,7 +8,7 @@
 //!
 //! `src/gate.rs`'s own unit tests call `BuildEnv::resolve`/`apply` directly against a
 //! `std::process::Command` they inspect in-process - they never observe a real OS
-//! environment. `src/driver/cli.rs`'s own test spawns a real subprocess through
+//! environment. `crates/rigger-driver/src/driver/cli.rs`'s own test spawns a real subprocess through
 //! `Driver::spawn` directly, but only that one site, in isolation. `src/conductor.rs`'s
 //! own integration test (`one_build_environment_authority_reaches_both_a_gate_build_and_
 //! an_agent_spawn`) proves the SINGLE-RESOLVER wiring end to end, but through
@@ -113,13 +113,7 @@
 //!     naming the dir and the `build.cache_dir` key at this SAME bypass-`config::load`
 //!     entry point.
 //!
-//! 11. `resolve_wrapper_name_reads_the_real_ambient_path_directly` (SDET addition): proves
-//!     `gate::resolve_wrapper_name` - the wrapper-only, ambient-PATH-reading public fn -
-//!     directly over the crate's public API boundary, since production code now reaches
-//!     the wrapper axis through `gate::resolve_build_layer` (composing `gate::
-//!     resolve_wrapper_name_from` directly) rather than through this fn.
-//!
-//! 12. `run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_
+//! 11. `run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_
 //!     entry_point` (SDET addition): the WRITABILITY sub-case counterpart to test 10. A
 //!     directory that ALREADY EXISTS - the realistic steady state for a persisted, shared
 //!     cache dir - makes `create_dir_all` a no-op success regardless of write permission;
@@ -143,41 +137,22 @@
 //! Nothing here is feature-gated: `BuildEnv`, `ExecRunner`, `cli::Driver`, and
 //! `config::load` are all compiled and exercised in both feature lanes.
 
+mod common;
+
 use std::path::Path;
-use std::sync::Mutex;
 
-use serde_json::Value;
-
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, BuildConfig, Config, Gate, Stage};
-use rigger::contextgraph::TYPE_GATE_VERDICT;
-use rigger::driver::cli;
+use common::cli::write_workflow;
+use common::env_test_lock;
+use rigger::config::BuildConfig;
+use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, EventStore};
-use rigger::gate::{resolve_wrapper_name, BuildEnv, ExecRunner};
+use rigger::gate::BuildEnv;
 
-/// Write a minimal but real `.rigger/agents/worker.md` + `.rigger/workflow.yml` at
-/// `root`, so `config::load` reaches all the way through agent parsing and
-/// `Config::validate` - the real on-disk boundary, not a struct literal built in
-/// memory. `build_block` is appended to the workflow verbatim: `""` omits the `build:`
-/// section entirely (the back-compat case - defaults must apply), a `build:\n  ...\n`
-/// block pins an explicit wrapper/cache_dir.
-fn write_workflow(root: &Path, build_block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
-    let workflow = format!(
-        "name: buildenvtest\n\
-         defaults:\n  grounder: nop\n  budget: 60\n\
-         stages:\n  a:\n    agent: worker\n    on_pass: none\n\
-         {build_block}"
-    );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
-}
+#[path = "common/real_driver_spy.rs"]
+mod real_driver_spy;
+#[path = "common/real_gate_run.rs"]
+mod real_gate_run;
+use real_gate_run::{echo_agent_path, refused_run, run_real_gate_and_agent};
 
 /// The public `BuildEnv::vars()` result as a plain map, so an assertion states "these
 /// exact pairs" without caring about the resolver's internal ordering.
@@ -185,38 +160,30 @@ fn as_map(env: &BuildEnv) -> std::collections::BTreeMap<String, String> {
     env.vars().iter().cloned().collect()
 }
 
-/// Serializes every test in this file that touches the REAL process environment:
-/// `build_env_resolve_falls_back_to_the_default_cache_dir_when_unset` transitively
-/// READS `XDG_STATE_HOME`/`HOME` through `BuildEnv::resolve`'s empty-`cache_dir`
-/// fallback (`gate::default_cache_dir`); `one_build_environment_authority_reaches_a_
-/// real_gate_subprocess_and_a_real_agent_subprocess` WRITES via `std::env::remove_var`;
-/// and, as of spec 65 unit 2 (NO SILENT DEGRADE),
-/// `build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver`
-/// BOTH READS AND WRITES PATH too - `config::load` now calls `Config::validate`, which
-/// (since unit 2) calls `gate::resolve_build_layer`, an ambient-PATH read that did not
-/// exist when this lock's original two holders were written; that test now also stages a
-/// fake wrapper binary onto PATH so its hardcoded `wrapper: sccache` config resolves
-/// deterministically regardless of what the real machine running the suite has installed
-/// (see its own doc comment - this is not merely a race fix, a real machine without
-/// `sccache` on PATH would otherwise fail this test unconditionally, lock or no lock).
-/// `run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point` (unit 2)
-/// READS PATH too, transitively through the same `gate::resolve_build_layer` edge, reached
-/// this time via `conductor::run` directly rather than `config::load` - same hazard, same
-/// lock. `resolve_wrapper_name_reads_the_real_ambient_path_directly` (SDET addition) both
-/// READS and WRITES PATH calling the ambient-PATH pub fn itself. `cargo test` runs every
-/// test in this one binary as concurrent threads by default; a concurrent env read racing
-/// a concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
-/// regardless of which keys either side touches (the same hazard `registry::
-/// state_home_from`'s own doc comment names as the reason it takes explicit values
-/// instead of reading ambient env itself). Held for the duration of each test that
-/// touches env, so none of them can ever interleave.
-static ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+// `env_test_lock()` serializes every test in this file that touches the REAL process environment:
+// `build_env_resolve_falls_back_to_the_default_cache_dir_when_unset` transitively
+// READS `XDG_STATE_HOME`/`HOME` through `BuildEnv::resolve`'s empty-`cache_dir`
+// fallback (`gate::default_cache_dir`); `one_build_environment_authority_reaches_a_
+// real_gate_subprocess_and_a_real_agent_subprocess` WRITES via `std::env::remove_var`;
+// and, as of spec 65 unit 2 (NO SILENT DEGRADE),
+// `build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver`
+// BOTH READS AND WRITES PATH too - `config::load` now calls `Config::validate`, which
+// (since unit 2) calls `gate::resolve_build_layer`, an ambient-PATH read that did not
+// exist when this lock's original two holders were written; that test now also stages a
+// fake wrapper binary onto PATH so its hardcoded `wrapper: sccache` config resolves
+// deterministically regardless of what the real machine running the suite has installed
+// (see its own doc comment - this is not merely a race fix, a real machine without
+// `sccache` on PATH would otherwise fail this test unconditionally, lock or no lock).
+// `run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point` (unit 2)
+// READS PATH too, transitively through the same `gate::resolve_build_layer` edge, reached
+// this time via `conductor::run` directly rather than `config::load` - same hazard, same
+// lock. `cargo test` runs every
+// test in this one binary as concurrent threads by default; a concurrent env read racing
+// a concurrent env write is a genuine hazard at the POSIX `setenv`/`getenv` level
+// regardless of which keys either side touches (the same hazard `registry::
+// state_home_from`'s own doc comment names as the reason it takes explicit values
+// instead of reading ambient env itself). Held for the duration of each test that
+// touches env, so none of them can ever interleave.
 
 #[test]
 fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolver() {
@@ -226,7 +193,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // reachable on PATH regardless of what the machine actually running this suite has
     // installed. Staging a fake one (the same fixture the auto-wrapper tests below use)
     // makes this deterministic instead of an accidental pass tied to this developer's own
-    // machine happening to have the real tool - see ENV_TEST_LOCK's own doc comment for
+    // machine happening to have the real tool - see `env_test_lock`'s own doc comment for
     // why this also needs the lock now.
     let _guard = env_test_lock();
     let _bindir = stage_fake_sccache_on_path();
@@ -247,7 +214,8 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
             cache_dir.display()
         ),
     );
-    let cfg = config::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(cfg.workflow.build.wrapper, "sccache");
     assert_eq!(cfg.workflow.build.cache_dir, cache_dir.to_string_lossy());
     let resolved = as_map(&BuildEnv::resolve(
@@ -274,7 +242,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // unchanged for every pre-existing project.
     let legacy = tempfile::tempdir().expect("create temp project");
     write_workflow(legacy.path(), "");
-    let cfg = config::load(legacy.path().to_str().unwrap())
+    let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(cfg.workflow.build.wrapper, "");
     assert_eq!(cfg.workflow.build.cache_dir, "");
@@ -298,7 +266,7 @@ fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_load
     // (agent parsing + `Config::validate` included).
     let project = tempfile::tempdir().expect("create temp project");
     write_workflow(project.path(), "build:\n  jobs: 6\n");
-    let cfg = config::load(project.path().to_str().unwrap())
+    let cfg = config_store::load(project.path().to_str().unwrap())
         .expect("load a valid workflow.yml with an explicit build.jobs value");
     assert_eq!(cfg.workflow.build.jobs, 6);
     assert_eq!(
@@ -328,7 +296,7 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     // `<WRAPPER>_DIR` (the documented `<state home>/rigger/build-cache` default, or the
     // documented bare-relative-name fallback in a truly homeless environment) rather
     // than pointing the wrapper at nothing. This branch reads `XDG_STATE_HOME`/`HOME`
-    // (real ambient env), so it holds `ENV_TEST_LOCK` for the same reason the
+    // (real ambient env), so it holds `env_test_lock` for the same reason the
     // `remove_var` test below does - see that lock's doc comment.
     let _guard = env_test_lock();
     let resolved = as_map(&BuildEnv::resolve("sccache", "", 0));
@@ -354,49 +322,6 @@ fn build_env_resolve_falls_back_to_the_default_cache_dir_when_unset() {
     );
 }
 
-/// A driver that delegates EVERY spawn to the REAL `driver::cli::Driver` (spec 65's
-/// second injection site, unmodified production code) and records only the raw stdout
-/// it produced. This is an OBSERVATION point, not a substitute implementation: every
-/// subprocess this test drives is the actual `Command` the shipped driver builds,
-/// spawned for real, with `SpawnOpts.env` applied by the real `Driver::spawn` - nothing
-/// about the spawn itself is faked.
-struct RealDriverSpy {
-    inner: cli::Driver,
-    outputs: Mutex<Vec<String>>,
-}
-
-impl RealDriverSpy {
-    fn new(bin: &Path) -> Self {
-        RealDriverSpy {
-            inner: cli::Driver {
-                bin: bin.to_string_lossy().into_owned(),
-            },
-            outputs: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn outputs(&self) -> Vec<String> {
-        self.outputs.lock().unwrap().clone()
-    }
-}
-
-impl AgentDriver for RealDriverSpy {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        let result = self.inner.spawn(agent, prompt, opts, emit)?;
-        self.outputs.lock().unwrap().push(result.output.clone());
-        Ok(result)
-    }
-}
-
-const UNIT: &str = "a";
-const GATE: &str = "envgate";
-
 /// A small, controlled gate command: four `echo` lines, well under the evidence
 /// compactor's `MAX_LINES` (5) cap, so every line survives verbatim into the recorded
 /// `GateVerdict` - unlike a raw `env` dump, whose relevant line has no guaranteed
@@ -406,63 +331,11 @@ const GATE: &str = "envgate";
 const GATE_CMD: &str = "echo RUSTC_WRAPPER=$RUSTC_WRAPPER; echo SCCACHE_DIR=$SCCACHE_DIR; \
      echo CARGO_INCREMENTAL=$CARGO_INCREMENTAL; echo CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS";
 
-/// Drive one full `conductor::run` with `build` configured, a REAL `ExecRunner` for the
-/// stage's one gate, and a `RealDriverSpy` wrapping the REAL `cli::Driver` (spawning
-/// `agent_bin`) for the stage's one agent. Returns the gate's recorded evidence and
-/// every real agent-subprocess stdout the run produced.
+/// [`run_real_gate_and_agent`] with `build` configured and this file's [`GATE_CMD`] as its
+/// one `core` gate, onto a fresh store.
 fn run_once(build: BuildConfig, agent_bin: &Path) -> (String, Vec<String>) {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        GATE.into(),
-        Gate {
-            run: GATE_CMD.into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.build = build;
-    cfg.workflow.stages.insert(
-        UNIT.into(),
-        Stage {
-            name: UNIT.into(),
-            agent: "worker".into(),
-            gates: vec![GATE.into()],
-            on_pass: "none".into(),
-            ..Default::default()
-        },
-    );
-
     let store = Store::open(":memory:").unwrap();
-    let driver = RealDriverSpy::new(agent_bin);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
-    };
-    run(&cfg, &deps).expect("the run must complete: a real agent and a real gate");
-
-    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-    let gate_evidence = events
-        .iter()
-        .find(|e| e.type_ == TYPE_GATE_VERDICT)
-        .map(|e| {
-            let v: Value = serde_json::from_slice(&e.data).unwrap();
-            v["evidence"].as_str().unwrap().to_string()
-        })
-        .expect("the real ExecRunner gate must have run and recorded a GateVerdict");
-
-    (gate_evidence, driver.outputs())
+    run_real_gate_and_agent(&store, build, "core", GATE_CMD, agent_bin)
 }
 
 /// Every var line the resolved `BuildEnv` for a configured `sccache` wrapper writing to
@@ -477,6 +350,43 @@ fn configured_lines(cache_dir: &str) -> [String; 3] {
         format!("SCCACHE_DIR={cache_dir}"),
         "CARGO_INCREMENTAL=0".to_string(),
     ]
+}
+
+/// Holds [`env_test_lock`] with every one of `vars` removed from THIS process's ambient
+/// environment, so a real subprocess the caller spawns starts from a deterministic baseline.
+fn locked_env_without(vars: &[&str]) -> std::sync::MutexGuard<'static, ()> {
+    let guard = env_test_lock();
+    for var in vars {
+        std::env::remove_var(var);
+    }
+    guard
+}
+
+/// The fixture agent that echoes the build variables it was spawned with.
+fn echo_agent() -> std::path::PathBuf {
+    let agent_bin = echo_agent_path();
+    assert!(
+        agent_bin.exists(),
+        "the fixture agent {agent_bin:?} must exist"
+    );
+    agent_bin
+}
+
+/// Every one of `lines` reached BOTH real subprocesses of one run: the gate's recorded
+/// `gate_evidence` (`gate_why`) and every stdout of the agent, which must have spawned
+/// (`agent_why`).
+fn assert_reaches_both<S: AsRef<str>>(
+    gate_evidence: &str,
+    agent_outputs: &[String],
+    lines: &[S],
+    gate_why: &str,
+    agent_why: &str,
+) {
+    assert_lines_present(gate_evidence, lines, gate_why);
+    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
+    for out in agent_outputs {
+        assert_lines_present(out, lines, agent_why);
+    }
 }
 
 /// The same three var NAMES, unset - what a real `sh -c`/subprocess must echo when
@@ -505,18 +415,11 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     // inherited ambient value, not the authority correctly injecting nothing. Removed
     // from THIS process only, before either real subprocess is spawned, so every child
     // this test spawns starts from a deterministic baseline regardless of the
-    // operator's own shell. Guarded by ENV_TEST_LOCK (see its doc comment) so this
+    // operator's own shell. Guarded by `env_test_lock` (see its doc comment) so this
     // mutation never races the OTHER test in this file that reads ambient env.
-    let _guard = env_test_lock();
-    std::env::remove_var("RUSTC_WRAPPER");
-    std::env::remove_var("SCCACHE_DIR");
-    std::env::remove_var("CARGO_INCREMENTAL");
+    let _guard = locked_env_without(&["RUSTC_WRAPPER", "SCCACHE_DIR", "CARGO_INCREMENTAL"]);
 
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    assert!(
-        agent_bin.exists(),
-        "the fixture agent {agent_bin:?} must exist"
-    );
+    let agent_bin = echo_agent();
 
     // Configured: the SAME resolved vars must reach BOTH a real gate subprocess and a
     // real agent subprocess spawned in the SAME run. A real, actually-creatable cache dir
@@ -531,37 +434,25 @@ fn one_build_environment_authority_reaches_a_real_gate_subprocess_and_a_real_age
     };
     let lines = configured_lines(&cache_dir_str);
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &lines,
         "a configured wrapper must reach the real gate subprocess",
+        "the SAME configured wrapper must reach the real agent subprocess",
     );
-    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &agent_outputs {
-        assert_lines_present(
-            out,
-            &lines,
-            "the SAME configured wrapper must reach the real agent subprocess",
-        );
-    }
 
     // Default (no wrapper configured): the authority must inject into NEITHER real
     // subprocess - the exact "today's ambient-environment behavior, unchanged" contract
     // this unit's own doc comments promise.
     let (off_gate_evidence, off_agent_outputs) = run_once(BuildConfig::default(), &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &off_gate_evidence,
+        &off_agent_outputs,
         &UNSET_LINES,
         "no wrapper configured must inject nothing into the real gate subprocess",
+        "no wrapper configured must inject nothing into the real agent subprocess",
     );
-    assert!(!off_agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &off_agent_outputs {
-        assert_lines_present(
-            out,
-            &UNSET_LINES,
-            "no wrapper configured must inject nothing into the real agent subprocess",
-        );
-    }
 }
 
 #[test]
@@ -574,17 +465,14 @@ fn jobs_cap_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess_independe
     // injection site, and neither goes through the real `conductor::run` wiring that
     // proves the SAME resolved value reaches both boundaries together - the gap this
     // file's own scope note used to name against unit 4.
-    let _guard = env_test_lock();
-    std::env::remove_var("RUSTC_WRAPPER");
-    std::env::remove_var("SCCACHE_DIR");
-    std::env::remove_var("CARGO_INCREMENTAL");
-    std::env::remove_var("CARGO_BUILD_JOBS");
+    let _guard = locked_env_without(&[
+        "RUSTC_WRAPPER",
+        "SCCACHE_DIR",
+        "CARGO_INCREMENTAL",
+        "CARGO_BUILD_JOBS",
+    ]);
 
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    assert!(
-        agent_bin.exists(),
-        "the fixture agent {agent_bin:?} must exist"
-    );
+    let agent_bin = echo_agent();
 
     // Configured: jobs alone (no wrapper) must reach BOTH real subprocesses, and must
     // inject NO wrapper var - the "independent facet" half of the design.
@@ -595,46 +483,31 @@ fn jobs_cap_reaches_a_real_gate_subprocess_and_a_real_agent_subprocess_independe
         ..Default::default()
     };
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &["CARGO_BUILD_JOBS=6"],
         "a configured jobs cap must reach the real gate subprocess",
+        "the SAME configured jobs cap must reach the real agent subprocess",
     );
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &UNSET_LINES,
         "jobs alone must inject no wrapper var into the real gate subprocess",
+        "jobs alone must inject no wrapper var into the real agent subprocess",
     );
-    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &agent_outputs {
-        assert_lines_present(
-            out,
-            &["CARGO_BUILD_JOBS=6"],
-            "the SAME configured jobs cap must reach the real agent subprocess",
-        );
-        assert_lines_present(
-            out,
-            &UNSET_LINES,
-            "jobs alone must inject no wrapper var into the real agent subprocess",
-        );
-    }
 
     // Unset (the config default, 0): the "unset leaves the ambient default untouched"
     // half of the criterion - CARGO_BUILD_JOBS must reach NEITHER real subprocess.
     let (off_gate_evidence, off_agent_outputs) = run_once(BuildConfig::default(), &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &off_gate_evidence,
+        &off_agent_outputs,
         &[JOBS_UNSET_LINE],
         "an unset jobs cap must inject nothing into the real gate subprocess",
+        "an unset jobs cap must inject nothing into the real agent subprocess",
     );
-    assert!(!off_agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &off_agent_outputs {
-        assert_lines_present(
-            out,
-            &[JOBS_UNSET_LINE],
-            "an unset jobs cap must inject nothing into the real agent subprocess",
-        );
-    }
 }
 
 #[test]
@@ -643,17 +516,14 @@ fn jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites() {
     // suppress a configured jobs cap, at the SAME two real boundaries, in the SAME run -
     // proving the real-subprocess-level analog of the in-memory unit test
     // `build_env_jobs_cap_is_independent_of_the_wrapper` in `gate.rs`.
-    let _guard = env_test_lock();
-    std::env::remove_var("RUSTC_WRAPPER");
-    std::env::remove_var("SCCACHE_DIR");
-    std::env::remove_var("CARGO_INCREMENTAL");
-    std::env::remove_var("CARGO_BUILD_JOBS");
+    let _guard = locked_env_without(&[
+        "RUSTC_WRAPPER",
+        "SCCACHE_DIR",
+        "CARGO_INCREMENTAL",
+        "CARGO_BUILD_JOBS",
+    ]);
 
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    assert!(
-        agent_bin.exists(),
-        "the fixture agent {agent_bin:?} must exist"
-    );
+    let agent_bin = echo_agent();
 
     // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE: resolution
     // now attempts to CREATE it).
@@ -667,29 +537,20 @@ fn jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites() {
     };
     let lines = configured_lines(&cache_dir_str);
     let (gate_evidence, agent_outputs) = run_once(configured, &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &lines,
         "a configured wrapper must still reach the real gate subprocess alongside jobs",
+        "a configured wrapper must still reach the real agent subprocess alongside jobs",
     );
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &["CARGO_BUILD_JOBS=8"],
         "a configured jobs cap must reach the real gate subprocess alongside the wrapper",
+        "a configured jobs cap must reach the real agent subprocess alongside the wrapper",
     );
-    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &agent_outputs {
-        assert_lines_present(
-            out,
-            &lines,
-            "a configured wrapper must still reach the real agent subprocess alongside jobs",
-        );
-        assert_lines_present(
-            out,
-            &["CARGO_BUILD_JOBS=8"],
-            "a configured jobs cap must reach the real agent subprocess alongside the wrapper",
-        );
-    }
 }
 
 /// Stage a fake `sccache` executable in a fresh temp bin dir and prepend it to the REAL
@@ -718,24 +579,17 @@ fn stage_fake_sccache_on_path() -> tempfile::TempDir {
 
 #[test]
 fn auto_wrapper_resolves_to_a_real_probed_binary_and_reaches_both_real_subprocesses() {
-    // Same rationale as the ENV_TEST_LOCK doc comment: this test both READS PATH
+    // Same rationale as the `env_test_lock` doc comment: this test both READS PATH
     // (transitively, through `gate::resolve_build_layer`'s ambient edge) and WRITES it
     // (staging the fake `sccache`), so it must never interleave with the other tests in
     // this binary that touch ambient env.
-    let _guard = env_test_lock();
-    std::env::remove_var("RUSTC_WRAPPER");
-    std::env::remove_var("SCCACHE_DIR");
-    std::env::remove_var("CARGO_INCREMENTAL");
+    let _guard = locked_env_without(&["RUSTC_WRAPPER", "SCCACHE_DIR", "CARGO_INCREMENTAL"]);
     // Kept alive for the duration of the run below - dropping it would delete the staged
     // binary while `auto`'s PATH probe (inside `conductor::RunCtx::build_env`) still needs
     // to find it.
     let _bindir = stage_fake_sccache_on_path();
 
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    assert!(
-        agent_bin.exists(),
-        "the fixture agent {agent_bin:?} must exist"
-    );
+    let agent_bin = echo_agent();
 
     // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
     // resolution now attempts to CREATE it, even for an auto-discovered wrapper).
@@ -748,21 +602,15 @@ fn auto_wrapper_resolves_to_a_real_probed_binary_and_reaches_both_real_subproces
     };
     let lines = configured_lines(&cache_dir_str);
     let (gate_evidence, agent_outputs) = run_once(auto, &agent_bin);
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &lines,
         "auto must pre-resolve to the real probed sccache binary BEFORE reaching \
          BuildEnv::resolve, so the real gate subprocess sees the SAME vars an explicit \
          `wrapper: sccache` would produce - never the literal string \"auto\"",
+        "the SAME auto-probed resolution must reach the real agent subprocess too",
     );
-    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &agent_outputs {
-        assert_lines_present(
-            out,
-            &lines,
-            "the SAME auto-probed resolution must reach the real agent subprocess too",
-        );
-    }
 }
 
 /// The real ambient `PATH` with every directory that contains an executable named
@@ -795,18 +643,11 @@ fn auto_wrapper_finding_nothing_injects_into_neither_real_subprocess() {
     // READS PATH (transitively, through `gate::resolve_build_layer`'s ambient edge) and
     // WRITES it (staging the filtered PATH), so it must never interleave with the other
     // tests in this binary that touch ambient env.
-    let _guard = env_test_lock();
-    std::env::remove_var("RUSTC_WRAPPER");
-    std::env::remove_var("SCCACHE_DIR");
-    std::env::remove_var("CARGO_INCREMENTAL");
+    let _guard = locked_env_without(&["RUSTC_WRAPPER", "SCCACHE_DIR", "CARGO_INCREMENTAL"]);
     let orig_path = std::env::var_os("PATH").unwrap_or_default();
     std::env::set_var("PATH", path_with_neither_known_wrapper());
 
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    assert!(
-        agent_bin.exists(),
-        "the fixture agent {agent_bin:?} must exist"
-    );
+    let agent_bin = echo_agent();
 
     let auto = BuildConfig {
         wrapper: "auto".into(),
@@ -815,23 +656,17 @@ fn auto_wrapper_finding_nothing_injects_into_neither_real_subprocess() {
     };
     let (gate_evidence, agent_outputs) = run_once(auto, &agent_bin);
     std::env::set_var("PATH", orig_path);
-    assert_lines_present(
+    assert_reaches_both(
         &gate_evidence,
+        &agent_outputs,
         &UNSET_LINES,
         "auto finding no known wrapper on PATH must inject NOTHING into the real gate \
          subprocess - the discovered-implicit degrade this unit exists to prove, at the same \
          real-subprocess granularity the configured case is proven at above",
-    );
-    assert!(!agent_outputs.is_empty(), "the agent must have spawned");
-    for out in &agent_outputs {
-        assert_lines_present(
-            out,
-            &UNSET_LINES,
-            "the SAME auto-finds-nothing degrade must reach the real agent subprocess too - a \
+        "the SAME auto-finds-nothing degrade must reach the real agent subprocess too - a \
              literal RUSTC_WRAPPER=auto leaking here would be silently invisible until a real \
              build ran against a wrapper binary named `auto` that does not exist",
-        );
-    }
+    );
 }
 
 /// Spec 65 unit 2 (NO SILENT DEGRADE) - closing a genuine-defect finding:
@@ -847,74 +682,26 @@ fn auto_wrapper_finding_nothing_injects_into_neither_real_subprocess() {
 #[test]
 fn run_propagates_a_named_but_absent_wrappers_error_at_the_library_entry_point() {
     // Reads ambient PATH transitively (conductor::run -> RunCtx::build_env ->
-    // gate::resolve_build_layer -> std::env::var_os("PATH")) - guarded by ENV_TEST_LOCK
+    // gate::resolve_build_layer -> std::env::var_os("PATH")) - guarded by `env_test_lock`
     // for the same reason every other PATH-touching test in this file is (see the lock's
     // own doc comment): a concurrent env::set_var/remove_var in a sibling test racing this
     // read is a real POSIX getenv/setenv hazard regardless of which keys either side names.
     let _guard = env_test_lock();
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        GATE.into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
     // A NAMED (non-auto, non-off) wrapper virtually certain to be absent from the real
     // ambient PATH - a hand-built `Config` never passed through `config::load`, so the ONLY
     // place this can now be caught is inside `run` itself.
-    cfg.workflow.build.wrapper = "definitely-not-a-real-wrapper-rigger-u2-libtest".into();
-    cfg.workflow.stages.insert(
-        UNIT.into(),
-        Stage {
-            name: UNIT.into(),
-            agent: "worker".into(),
-            gates: vec![GATE.into()],
-            on_pass: "none".into(),
-            ..Default::default()
-        },
+    let build = BuildConfig {
+        wrapper: "definitely-not-a-real-wrapper-rigger-u2-libtest".into(),
+        ..Default::default()
+    };
+    let err = refused_run(
+        build,
+        "a named-but-absent build.wrapper must fail the run, not silently degrade, even when \
+         the Config reached `run` directly rather than through `config::load`",
     );
-
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    let store = Store::open(":memory:").unwrap();
-    let driver = RealDriverSpy::new(&agent_bin);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
-    };
-
-    // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be used
-    // here - match explicitly instead.
-    let err = match run(&cfg, &deps) {
-        Err(e) => e,
-        Ok(_) => panic!(
-            "a named-but-absent build.wrapper must fail the run, not silently degrade, even \
-             when the Config reached `run` directly rather than through `config::load`"
-        ),
-    };
     assert!(
-        err.to_string()
-            .contains("definitely-not-a-real-wrapper-rigger-u2-libtest"),
+        err.contains("definitely-not-a-real-wrapper-rigger-u2-libtest"),
         "the error must name the missing binary: {err}"
-    );
-    assert!(
-        driver.outputs().is_empty(),
-        "the build-env resolution failure must surface BEFORE any agent spawns, not after \
-         wasted work: {:?}",
-        driver.outputs()
     );
 }
 
@@ -940,56 +727,16 @@ fn run_propagates_a_named_wrappers_uncreatable_cache_dir_at_the_library_entry_po
     std::fs::write(&blocker, "not a directory").expect("write blocker file");
     let cache_dir = blocker.join("nested").join("cache");
 
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        GATE.into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.build.wrapper = "sccache".into();
-    cfg.workflow.build.cache_dir = cache_dir.to_string_lossy().into_owned();
-    cfg.workflow.stages.insert(
-        UNIT.into(),
-        Stage {
-            name: UNIT.into(),
-            agent: "worker".into(),
-            gates: vec![GATE.into()],
-            on_pass: "none".into(),
-            ..Default::default()
-        },
-    );
-
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    let store = Store::open(":memory:").unwrap();
-    let driver = RealDriverSpy::new(&agent_bin);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
+    let build = BuildConfig {
+        wrapper: "sccache".into(),
+        cache_dir: cache_dir.to_string_lossy().into_owned(),
+        ..Default::default()
     };
-
-    let err = match run(&cfg, &deps) {
-        Err(e) => e,
-        Ok(_) => panic!(
-            "a named wrapper's uncreatable cache dir must fail the run, not silently degrade, \
-             even when the Config reached `run` directly rather than through `config::load`"
-        ),
-    };
-    let msg = err.to_string();
+    let msg = refused_run(
+        build,
+        "a named wrapper's uncreatable cache dir must fail the run, not silently degrade, even \
+         when the Config reached `run` directly rather than through `config::load`",
+    );
     assert!(
         msg.contains(&cache_dir.to_string_lossy().into_owned()),
         "the error must name the cache dir: {msg}"
@@ -997,12 +744,6 @@ fn run_propagates_a_named_wrappers_uncreatable_cache_dir_at_the_library_entry_po
     assert!(
         msg.contains("build.cache_dir"),
         "the error must name the config key: {msg}"
-    );
-    assert!(
-        driver.outputs().is_empty(),
-        "the build-env resolution failure must surface BEFORE any agent spawns, not after \
-         wasted work: {:?}",
-        driver.outputs()
     );
 }
 
@@ -1036,57 +777,17 @@ fn run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_libra
         .expect("chmod cache dir read+execute-only");
     let cache_dir_str = cache_dir.to_string_lossy().into_owned();
 
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        GATE.into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.build.wrapper = "sccache".into();
-    cfg.workflow.build.cache_dir = cache_dir_str.clone();
-    cfg.workflow.stages.insert(
-        UNIT.into(),
-        Stage {
-            name: UNIT.into(),
-            agent: "worker".into(),
-            gates: vec![GATE.into()],
-            on_pass: "none".into(),
-            ..Default::default()
-        },
-    );
-
-    let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");
-    let store = Store::open(":memory:").unwrap();
-    let driver = RealDriverSpy::new(&agent_bin);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
+    let build = BuildConfig {
+        wrapper: "sccache".into(),
+        cache_dir: cache_dir_str.clone(),
+        ..Default::default()
     };
-
-    let err = match run(&cfg, &deps) {
-        Err(e) => e,
-        Ok(_) => panic!(
-            "a named wrapper's pre-existing-but-unwritable cache dir must fail the run, not \
-             silently degrade, even when the Config reached `run` directly rather than \
-             through `config::load`"
-        ),
-    };
-    let msg = err.to_string();
+    let msg = refused_run(
+        build,
+        "a named wrapper's pre-existing-but-unwritable cache dir must fail the run, not \
+         silently degrade, even when the Config reached `run` directly rather than through \
+         `config::load`",
+    );
     assert!(
         msg.contains(&cache_dir_str),
         "the error must name the cache dir: {msg}"
@@ -1095,57 +796,4 @@ fn run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_libra
         msg.contains("build.cache_dir"),
         "the error must name the config key: {msg}"
     );
-    assert!(
-        driver.outputs().is_empty(),
-        "the build-env resolution failure must surface BEFORE any agent spawns, not after \
-         wasted work: {:?}",
-        driver.outputs()
-    );
-}
-
-/// `gate::resolve_wrapper_name` (the ambient-PATH edge of the WRAPPER-ONLY axis) has no
-/// production caller - `Config::validate`, `RunCtx::build_env`, and `cmd_validate` all go
-/// through `gate::resolve_build_layer` (which folds in the cache-dir axis and calls
-/// `gate::resolve_wrapper_name_from` directly, never `resolve_wrapper_name` itself). It
-/// remains `pub` - part of the crate's committed public surface - so this proves its one
-/// distinguishing line - the real `std::env::var_os("PATH")` read - directly, over the
-/// crate's public API boundary (this file compiles as a separate test crate with no access
-/// to gate.rs's private items).
-#[test]
-fn resolve_wrapper_name_reads_the_real_ambient_path_directly() {
-    // WRITES PATH (staging the fake wrapper, then filtering it back out) and READS it (the
-    // function under test) - same ENV_TEST_LOCK discipline as every other PATH-touching test
-    // in this file.
-    let _guard = env_test_lock();
-    let orig_path = std::env::var_os("PATH").unwrap_or_default();
-
-    // auto + a known wrapper present on PATH -> Ok(Some(name)), the real probe finding it.
-    {
-        let _bindir = stage_fake_sccache_on_path();
-        assert_eq!(
-            resolve_wrapper_name("auto"),
-            Ok(Some("sccache".to_string())),
-            "auto must resolve the real probed wrapper it finds on the real ambient PATH"
-        );
-    }
-
-    // auto + nothing known on PATH -> Ok(None), the discovered-implicit degrade.
-    std::env::set_var("PATH", path_with_neither_known_wrapper());
-    assert_eq!(
-        resolve_wrapper_name("auto"),
-        Ok(None),
-        "auto finding nothing on the real ambient PATH must degrade to None, never error"
-    );
-
-    // A NAMED wrapper absent from that same real PATH -> Err naming the binary, the
-    // configured-explicit failure this whole unit exists to prove never silently degrades.
-    let err = resolve_wrapper_name("definitely-not-a-real-wrapper-rigger-u2-nametest")
-        .expect_err("a named-but-absent wrapper must error, not silently resolve to None");
-    assert!(
-        err.to_string()
-            .contains("definitely-not-a-real-wrapper-rigger-u2-nametest"),
-        "the error must name the missing binary: {err}"
-    );
-
-    std::env::set_var("PATH", orig_path);
 }

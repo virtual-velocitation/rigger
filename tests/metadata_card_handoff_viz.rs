@@ -21,31 +21,13 @@
 //! and the `--no-default-features` lane (the seam is not feature-gated), so this guards the client
 //! seam in both lanes.
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
+use common::served::node_harness_passes;
 
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
 /// dataset / .hidden / addEventListener). Mirrors `subject_view_memory_rail_client.rs`'s shim
@@ -117,55 +99,8 @@ const fetch = function(url){
 };
 "#;
 
-/// Assemble a complete node `vm` program: the shared DOM shim, the fetch fixtures, the served page
-/// script (read from `argv[2]`), then the driver - which shares the page's scope, so it calls the
-/// page's own functions and reads its module state (`kgLens`, `kgSubject`, `kgSeed`) directly.
-fn build_harness(driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__CARD_SHIM__`;
-const DRIVER = String.raw`__CARD_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-metadata-card-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{RESOLVING_FETCH}");
-    TEMPLATE
-        .replace("__CARD_SHIM__", &shim)
-        .replace("__CARD_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness, asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the metadata-card client seam, but node failed:\n\
-         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "dash-metadata-card-harness.js";
 
 /// Driver: (1) `renderCard` draws each of the three card taxonomies with their documented rows and
 /// chips, and hides on `null`; (2) `#kgcard`'s own delegated click listener hands a FILE/CONCEPTS/
@@ -289,24 +224,19 @@ const CARD_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard for spec 63 c2's own Done-when clause: a code subject's card carries file:line,
-/// concept chips, and memory counts, AND a card chip resolves to a lens handoff target of the
-/// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
-/// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
-#[test]
-fn metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens() {
-    if !node_available() {
-        eprintln!(
-            "SKIP metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
-             on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(CARD_DRIVER),
-        "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 63 c2's own Done-when clause: a code subject's card carries file:line,
+    /// concept chips, and memory counts, AND a card chip resolves to a lens handoff target of the
+    /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
+    /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
+    metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+    /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
+    /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
+    /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
+    /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
+    metadata_card_wiring_fires_at_every_render_and_drill_call_site:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
 }
 
 /// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in
@@ -374,23 +304,3 @@ const WIRING_DRIVER: &str = r#"
   console.log("OK metadata-card-wiring-fires-at-every-call-site");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
-
-/// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
-/// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
-/// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
-/// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
-#[test]
-fn metadata_card_wiring_fires_at_every_render_and_drill_call_site() {
-    if !node_available() {
-        eprintln!(
-            "SKIP metadata_card_wiring_fires_at_every_render_and_drill_call_site: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(WIRING_DRIVER),
-        "OK metadata-card-wiring-fires-at-every-call-site",
-    );
-}

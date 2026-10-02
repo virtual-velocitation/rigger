@@ -26,12 +26,16 @@
 //! `dash_decisions_progressive_disclosure.rs`), fed the SAME JSON this file's socket test above
 //! proves crosses the wire, and asserts the resulting DOM node's content - not its source text.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::Command;
-use std::time::Duration;
 
+use common::fixtures::tool_available;
+use common::served::connect_with_retry;
+use common::served::page_script;
 use rigger::contextgraph::Graph;
 use rigger::dash::{self, DashInputs};
 use rigger::eventstore::Event;
@@ -99,16 +103,6 @@ fn served_state(events: Vec<Event>) -> Value {
     );
     let body = resp.split("\r\n\r\n").nth(1).expect("a response body");
     serde_json::from_str(body).expect("the /api/state body parses as JSON")
-}
-
-fn connect_with_retry(addr: SocketAddr) -> TcpStream {
-    for _ in 0..200 {
-        if let Ok(s) = TcpStream::connect(addr) {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("the dash server never became reachable on {addr}");
 }
 
 /// Spec 38, criterion 3: the ready-to-release handoff crosses the real `/api/state` socket
@@ -214,28 +208,6 @@ fn release_ready_carries_a_multi_unit_count_across_the_wire() {
     );
 }
 
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub
-/// `ubuntu-latest`, which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` over a
 /// REAL wire state (the exact JSON this file's socket test proves crosses `/api/state`), then reads
 /// back the rendered release banner's `<code class="pr">` content.
@@ -331,7 +303,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// confirming this layer catches a class of regression the existing coverage cannot.
 #[test]
 fn release_ready_pr_command_survives_render_into_the_dom_with_its_newline_intact() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP release_ready_pr_command_survives_render_into_the_dom_with_its_newline_intact: \
              no `node` runtime on PATH. This runtime guard needs node (present on dev machines and \

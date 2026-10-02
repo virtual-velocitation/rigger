@@ -14,7 +14,7 @@
 //! They drive only the crate's public `rigger::registry` API - the exact surface an external
 //! consumer (the dash) sees.
 
-use rigger::registry::{self, Instance, StoreIdentity, DEFAULT_IDLE_MS};
+use rigger::registry::{self, Instance, StoreIdentity, Writer, DEFAULT_IDLE_MS};
 
 /// A live heartbeat relative to a chosen `now`, so a freshly-written or frozen entry is never
 /// pruned as stale by the reader under test.
@@ -28,6 +28,7 @@ fn local_instance(project: &str, root: &str, db: &str, heartbeat_ms: u64) -> Ins
             path: db.to_string(),
         },
         heartbeat_ms,
+        writer: Writer::Driver,
     }
 }
 
@@ -145,6 +146,7 @@ fn registry_entry_wire_format_is_stable_for_local_and_shared() {
                 endpoint: "kurrentdb://db.example:2113".to_string(),
             },
             heartbeat_ms: LIVE_NOW,
+            writer: Writer::Driver,
         },
     )
     .expect("write shared");

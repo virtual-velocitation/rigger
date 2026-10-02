@@ -21,7 +21,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
 //! clustered_overview, cluster_detail, route, NeighborhoodNode.shared, ...}` + the two concept
-//! consts), so they guard the exact boundaries the inside-out unit test (`src/dash.rs mod tests`,
+//! consts), so they guard the exact boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`,
 //! which reaches the same functions via `super::` and calls the folds in-process) is structurally
 //! blind to:
 //!
@@ -45,15 +45,23 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeSet, HashMap};
-use std::process::Command;
+mod common;
 
+use std::collections::BTreeSet;
+
+use common::fixtures::edge;
+use common::fixtures::node_with_optional_attrs;
+use common::fixtures::plain;
+use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
+use common::served::node_harness_passes;
+use common::served::served;
+use common::served::served_json;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
-    REL_REALIZES, REL_REFERENCES, TIER_INFERRED,
+    Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS, REL_REALIZES,
+    REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, route, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
+    cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
     DEFAULT_CONCEPT_RESOLUTION,
 };
 
@@ -70,62 +78,6 @@ const APPEND: &str = "src/store/log.rs::append";
 const INDEX: &str = "src/index/build.rs::index";
 const HELPER: &str = "src/util/misc.rs::helper";
 
-/// A code-entity node whose id names a file under a module directory (so the FILES lens folds it by
-/// that directory) - the members the CONCEPTS lens instead folds by the concept they realize.
-fn ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A design-doc node: under the concepts lens it folds by the concept it realizes alongside the code,
-/// grouping the idea's prose with its implementation across directory lines.
-fn doc(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_DESIGN_DOC.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A derived `KIND_CONCEPT` super-node carrying its deterministic display `label` attr (the intent
-/// derivation's pick, spec 54). Under the concepts lens it is a BUCKET, not a member, so it is
-/// excluded from every count and never carries its own membership.
-fn concept(id: &str, label: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CONCEPT.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("label".to_string(), label.to_string());
-    n
-}
-
-/// A membership-LESS node of an arbitrary kind (a dev-loop decision): under the concepts lens it must
-/// be entirely EXCLUDED (spec 63 c4) - no per-type bucket, so it never renders as a node here.
-fn plain(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel` at `tier`.
-fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    }
-}
-
 /// The lens fixture. TWO derived concepts, each grouping a DOC with the code it governs across
 /// directory lines: `concept/1/0` "the store" = {docs/store.md, src/store/log.rs::append,
 /// src/index/build.rs::index} (size 3, the LARGER); `concept/1/1` "the api" = {docs/api.md,
@@ -140,13 +92,13 @@ fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
 fn lens_graph() -> Graph {
     Graph {
         nodes: vec![
-            doc(STORE_DOC),
-            doc(API_DOC),
-            ce(APPEND),
-            ce(INDEX),
-            ce(HELPER),
-            concept(C0, "the store"),
-            concept(C1, "the api"),
+            plain(STORE_DOC, KIND_DESIGN_DOC),
+            plain(API_DOC, KIND_DESIGN_DOC),
+            plain(APPEND, KIND_CODE_ENTITY),
+            plain(INDEX, KIND_CODE_ENTITY),
+            plain(HELPER, KIND_CODE_ENTITY),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("the store"))]),
+            node_with_optional_attrs(C1, KIND_CONCEPT, &[("label", Some("the api"))]),
             plain("d1", KIND_DECISION),
         ],
         edges: vec![
@@ -212,70 +164,53 @@ fn lens_from_query_is_a_public_total_selector_including_concepts() {
     );
 }
 
-/// THE CONCEPTS-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph,
-/// &Lens::Concepts)` buckets every REALIZES-carrying node by the concept it realizes - an idea grouped
-/// ACROSS directory lines - sizing each concept super-node by MEMBER count, colouring it by its
-/// dominant member kind, and labelling it with the concept node's deterministic `label`. A node
-/// realizing MORE THAN ONE concept folds under its PRIMARY (the larger by member count) and is counted
-/// ONCE there; only edges that CROSS two concepts weight the symmetric super-edge (intra-concept
-/// coupling and the REALIZES spokes to the excluded super-node add none). Spec 63 criterion 4
-/// (CONCEPTS-LENS PURITY): a membership-LESS node carries NO bucket at all here, regardless of its own
-/// kind - the concepts lens admits exactly one subject taxonomy, never a per-kind bucket. Every value
-/// is bound to the fixture so a renamed field or a mis-fold reddens here, not just in-process.
-#[test]
-fn concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes(
-) {
-    let overview = clustered_overview(&lens_graph(), &concepts_default());
-
-    assert_eq!(
-        overview.total, 8,
-        "total carries every graph node, the excluded concept super-nodes included"
-    );
-    assert_eq!(
-        overview.empty_state, None,
-        "a DERIVED grain is not the empty state"
-    );
-    assert_eq!(
-        overview.clusters,
-        vec![
-            // concept/1/0 (the larger): {store.md, append, index} = 3 members across three
-            // directories, dominant kind code-entity (append + index), labelled by the concept node.
-            Cluster {
-                key: C0.to_string(),
-                count: 3,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("the store".to_string()),
-            },
-            // concept/1/1 (the smaller): the SHARED append folds under its primary c0, so c1 counts
-            // ONLY its sole non-shared member docs/api.md - never silently duplicated.
-            Cluster {
-                key: C1.to_string(),
-                count: 1,
-                kind: KIND_DESIGN_DOC.to_string(),
-                label: Some("the api".to_string()),
-            },
-            // NO cluster for the unattached code entity or the membership-less decision (spec 63 c4):
-            // the concepts lens admits ONLY concept members, so a membership-less node of any kind
-            // carries no bucket here.
-        ],
-        "concepts lens folds members by concept (primary bucket, shared counted once) and excludes every membership-less node entirely, at any kind: {overview:?}"
-    );
-    assert!(
-        overview
-            .clusters
-            .iter()
-            .all(|c| c.key != KIND_CODE_ENTITY && c.key != KIND_DECISION),
-        "no storage-schema-name (code-entity / decision) kind bucket ever appears as a cluster key under the concepts lens: {overview:?}"
-    );
-    assert_eq!(
-        overview.edges,
-        vec![ClusterEdge {
-            from: C0.to_string(),
-            to: C1.to_string(),
-            weight: 1,
-        }],
-        "only the cross-concept reference weights the super-edge; the intra-concept call and the REALIZES spokes to the excluded super-node add none: {overview:?}"
-    );
+rigger::test_cases! {
+    /// THE CONCEPTS-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph,
+    /// &Lens::Concepts)` buckets every REALIZES-carrying node by the concept it realizes - an idea grouped
+    /// ACROSS directory lines - sizing each concept super-node by MEMBER count, colouring it by its
+    /// dominant member kind, and labelling it with the concept node's deterministic `label`. A node
+    /// realizing MORE THAN ONE concept folds under its PRIMARY (the larger by member count) and is counted
+    /// ONCE there; only edges that CROSS two concepts weight the symmetric super-edge (intra-concept
+    /// coupling and the REALIZES spokes to the excluded super-node add none). Spec 63 criterion 4
+    /// (CONCEPTS-LENS PURITY): a membership-LESS node carries NO bucket at all here, regardless of its own
+    /// kind - the concepts lens admits exactly one subject taxonomy, never a per-kind bucket. Every value
+    /// is bound to the fixture so a renamed field or a mis-fold reddens here, not just in-process.
+    concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes:
+        assert_overview_folds(
+            &lens_graph(),
+            &concepts_default(),
+            8,
+            vec![
+                // concept/1/0 (the larger): {store.md, append, index} = 3 members across three
+                // directories, dominant kind code-entity (append + index), labelled by the concept
+                // node.
+                Cluster {
+                    key: C0.to_string(),
+                    count: 3,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("the store".to_string()),
+                },
+                // concept/1/1 (the smaller): the SHARED append folds under its primary c0, so c1
+                // counts ONLY its sole non-shared member docs/api.md - never silently duplicated.
+                Cluster {
+                    key: C1.to_string(),
+                    count: 1,
+                    kind: KIND_DESIGN_DOC.to_string(),
+                    label: Some("the api".to_string()),
+                },
+                // NO cluster for the unattached code entity or the membership-less decision (spec
+                // 63 c4): the concepts lens admits ONLY concept members, so a membership-less node
+                // of any kind carries no bucket here.
+            ],
+            // Only the cross-concept reference weights the super-edge; the intra-concept call and
+            // the REALIZES spokes to the excluded super-node add none.
+            vec![ClusterEdge {
+                from: C0.to_string(),
+                to: C1.to_string(),
+                weight: 1,
+            }],
+            &[KIND_CODE_ENTITY, KIND_DECISION],
+        );
 }
 
 /// THE CONCEPTS-LENS DRILL over the public boundary: `cluster_detail(graph, concept_key,
@@ -335,11 +270,11 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
     // the primary. `concept/1/0` sorts before `concept/1/1`, so the shared member's primary is c0.
     let graph = Graph {
         nodes: vec![
-            doc("docs/alpha.md"),
-            doc("docs/beta.md"),
-            ce("src/x.rs::shared_fn"),
-            concept(C0, "alpha"),
-            concept(C1, "beta"),
+            plain("docs/alpha.md", KIND_DESIGN_DOC),
+            plain("docs/beta.md", KIND_DESIGN_DOC),
+            plain("src/x.rs::shared_fn", KIND_CODE_ENTITY),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("alpha"))]),
+            node_with_optional_attrs(C1, KIND_CONCEPT, &[("label", Some("beta"))]),
         ],
         edges: vec![
             // concept/1/0 = {docs/alpha.md, shared_fn} (size 2).
@@ -420,9 +355,9 @@ fn concepts_lens_excludes_membershipless_nodes_of_any_kind_entirely() {
 fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() {
     let graph = Graph {
         nodes: vec![
-            ce("src/only.rs::fn_a"),
+            plain("src/only.rs::fn_a", KIND_CODE_ENTITY),
             plain("decision-realizes", KIND_DECISION),
-            concept(C0, "the idea"),
+            node_with_optional_attrs(C0, KIND_CONCEPT, &[("label", Some("the idea"))]),
         ],
         edges: vec![
             edge("src/only.rs::fn_a", C0, REL_REALIZES, TIER_INFERRED),
@@ -456,31 +391,19 @@ fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() 
     );
 }
 
-/// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
-/// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
-/// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
-#[test]
-fn concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error() {
-    let underived = clustered_overview(
-        &lens_graph(),
-        &Lens::Concepts {
-            resolution: "2".to_string(),
-        },
-    );
-
-    assert!(
-        underived.clusters.is_empty() && underived.edges.is_empty(),
-        "an underived concepts grain folds no concepts: {underived:?}"
-    );
-    assert_eq!(
-        underived.total, 8,
-        "the empty state still reports the whole graph size"
-    );
-    assert_eq!(
-        underived.empty_state.as_deref(),
-        Some(CONCEPTS_LENS_UNDERIVED),
-        "an underived concepts grain carries the documented empty-state message, never an error"
-    );
+rigger::test_cases! {
+    /// THE UNDERIVED-GRAIN empty state over the public boundary: a concepts lens at a resolution grain
+    /// with NO derived assignments returns the documented `CONCEPTS_LENS_UNDERIVED` prompt - never an
+    /// error and never a bare kind-bucket view - while `total` still reports the whole graph size.
+    concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error:
+        assert_underived_grain_is_the_empty_state(
+            &lens_graph(),
+            &Lens::Concepts {
+                resolution: "2".to_string(),
+            },
+            8,
+            CONCEPTS_LENS_UNDERIVED,
+        );
 }
 
 /// THE SERIALIZED `shared` WIRE-SHAPE back-compat the external panel reads: this pins the JSON key's
@@ -531,39 +454,6 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
     );
 }
 
-/// Drive the public `route` for `GET <target>` over the lens fixture and return the raw `Response`.
-/// `route` is the exact body-builder `serve` ships (serve delegates to it), so this drives the lens
-/// selector through the SAME `query_param` + `percent_decode` + `Lens::from_query` wiring the browser
-/// hits - the seam the in-process folds never exercise.
-fn served(target: &str) -> rigger::dash::Response {
-    let graph = lens_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the lens route never errors on a live graph)"
-    );
-    resp
-}
-
-/// Parse a served body as JSON.
-fn served_json(target: &str) -> serde_json::Value {
-    let resp = served(target);
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
-}
-
 /// THE SERVED `/api/graph` ROUTE threads the `lens=concepts` / `resolution=` selector END-TO-END into
 /// BOTH the overview and the drill - the integration seam the in-process folds never cover:
 ///   * `?lens=concepts` folds the overview by concept, carrying the concept `label`;
@@ -578,7 +468,7 @@ fn served_json(target: &str) -> serde_json::Value {
 #[test]
 fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     // --- CONCEPTS overview via the route: concept-bucketed, labelled ---
-    let ov = served_json("/api/graph?lens=concepts&resolution=1");
+    let ov = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=1");
     let keys: Vec<&str> = ov["clusters"]
         .as_array()
         .expect("clusters array")
@@ -605,14 +495,17 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
 
     // An EMPTY resolution defaults to grain 1: the body is identical to the explicit-grain request.
     assert_eq!(
-        served("/api/graph?lens=concepts&resolution=").body,
-        served("/api/graph?lens=concepts&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "an empty resolution= defaults to the same derived grain as resolution=1"
     );
 
     // --- CONCEPTS drill via the route: the lens reaches the cluster= branch AND the shared marker
     // rides the served wire ---
-    let drill = served_json("/api/graph?lens=concepts&cluster=concept/1/0");
+    let drill = served_json(
+        &lens_graph(),
+        "/api/graph?lens=concepts&cluster=concept/1/0",
+    );
     assert_eq!(
         drill["seed"].as_str(),
         Some(C0),
@@ -645,7 +538,7 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     );
 
     // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
-    let underived = served_json("/api/graph?lens=concepts&resolution=2");
+    let underived = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),
         Some(CONCEPTS_LENS_UNDERIVED),
@@ -653,21 +546,21 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     );
 
     // --- BACK-COMPAT: absent / files / hostile lens are all the byte-identical spec-42 default ---
-    let default = served("/api/graph").body;
+    let default = served(&lens_graph(), "/api/graph").body;
     assert_eq!(
-        served("/api/graph?lens=files").body,
+        served(&lens_graph(), "/api/graph?lens=files").body,
         default,
         "an explicit lens=files is byte-identical to the lens-absent default"
     );
     assert_eq!(
-        served("/api/graph?lens=bogus").body,
+        served(&lens_graph(), "/api/graph?lens=bogus").body,
         default,
         "a hostile lens=bogus falls back byte-identical to the default (never a 500)"
     );
     // The files default is genuinely NOT the concepts view (proves the comparison above is meaningful).
     assert_ne!(
         default,
-        served("/api/graph?lens=concepts&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "the concepts lens actually changes the served body (the back-compat equality is not vacuous)"
     );
 }
@@ -684,28 +577,6 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
 // siblings carry NONE of those. A negative control (a drill with no shared member) renders zero
 // markers, so the marker is CONDITIONED on `n.shared`, never blanket-applied. This is the proof the
 // wire-shape tests structurally cannot make: dropping `renderKgDrill`'s shared branch reddens it.
-
-/// Extract the single inline `<script>` body from the served page (the JS the browser runs).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// A DOM shim + driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's
 /// built-in `vm`. It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes
@@ -799,45 +670,12 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "drill-shared-harness.js" });
 "##;
 
-/// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
-/// renders the `shared` flag the fold computes. It drives the real `renderKgDrill` under node's `vm`
-/// with a fixture in which one member is multi-concept (`shared`), and asserts the drill SVG surfaces
-/// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
-/// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
-/// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
-#[test]
-fn the_concepts_drill_renders_the_shared_marker_to_the_human() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_concepts_drill_renders_the_shared_marker_to_the_human: no `node` runtime on \
-             PATH (present on dev machines and on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = rigger::dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the drill harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, DRILL_SHARED_HARNESS).expect("write the drill harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served concepts drill");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the concepts drill must render the shared marker, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK concepts-drill-renders-the-shared-marker"),
-        "the drill harness must confirm the shared marker reaches the SVG:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
+    /// renders the `shared` flag the fold computes. It drives the real `renderKgDrill` under node's `vm`
+    /// with a fixture in which one member is multi-concept (`shared`), and asserts the drill SVG surfaces
+    /// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
+    /// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
+    /// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
+    the_concepts_drill_renders_the_shared_marker_to_the_human: node_harness_passes(DRILL_SHARED_HARNESS, "OK concepts-drill-renders-the-shared-marker");
 }

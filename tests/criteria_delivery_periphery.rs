@@ -25,34 +25,16 @@
 //! proving delivery into `coverage`/`spec_criterion` proves delivery to all of them at once; this
 //! file does not re-walk each call site separately.
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
+mod common;
+use common::fixtures::NoopDriver;
+
+use common::repo::repo_text;
+use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use serde_json::Value;
-use std::path::Path;
-
-/// A driver that does nothing and reports nothing: this criterion is about what the baseline-unit
-/// synthesis RECORDS at the `UnitStarted` seam, not about agent behaviour - an empty result and a
-/// `true` gate are enough to reach integration.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// The exact real-world input spec 80's Goal names: specs/62's own criterion 1, extracted through
 /// the SAME public `extract_criteria` call every real consumer (`main.rs::load_criteria`,
@@ -61,9 +43,7 @@ impl AgentDriver for NoopDriver {
 /// three-line text; this helper only replays that call so the value this file drives through the
 /// conductor is the genuine current output, not a copy that could silently drift from it.
 fn real_spec_62_criterion_one() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs/62-dash-marker-lifecycle.md");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = repo_text("specs/62-dash-marker-lifecycle.md");
     let criteria = rigger::spec::extract_criteria(&text);
     assert!(
         !criteria.is_empty(),
@@ -148,6 +128,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         // `main.rs::load_criteria` -> the conductor's `Deps` construction does in production -
         // no synthetic reshaping between extraction and delivery.
         criteria: vec![criterion.clone()],
+        log: &|_| {},
     };
     let rs = run(&cfg, &deps).unwrap();
 

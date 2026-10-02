@@ -7,7 +7,7 @@ uncommitted after a one-hour `cargo mutants` sweep; the operator re-drove it by 
 Per-spawn scratch (`rigger scratch <id>`) puts `TMPDIR` and `CARGO_TARGET_DIR` under
 `<repo>/.rigger/tmp/agent-scratch`, inside the live store tree, so the twelve store-walk unit
 tests (`find_store_dir_from` and kin) climb into the real `.rigger` and fail - every reviewer
-re-reproduces and rules that out every round. (3) The reclaim guard (src/reap.rs:302) refuses
+re-reproduces and rules that out every round. (3) The reclaim guard (crates/rigger-process/src/reap.rs:302) refuses
 `~/.cache/rigger-mutants/<spawn>` as "not strictly under" `~/.cache/rigger-mutants` once the
 target is gone, so every `rigger result` logs a false refusal. (4) `rigger step` trusts the
 shell's cwd: run from inside a linked worktree it fails with "'rigger-run' is already used by
@@ -56,7 +56,7 @@ moved by hand.
 
 THE FAN-OUT IS A DEFINITION KNOB, decided: the number of units a run builds at once is
 `defaults.max_parallel_units` in workflow.yml (default 2), replacing the conductor constant
-`MAX_CONCURRENCY = 4` (src/conductor.rs:35); a review round costs one SDET author, two lenses,
+`MAX_CONCURRENCY = 4` (crates/rigger-conductor/src/conductor.rs:57); a review round costs one SDET author, two lenses,
 an adversary and an adjudicator, each an independent cold build in its own target dir, so four
 parallel units put ~90 cargo/rustc processes on a 32-core workstation at once (load average
 125, 2026-09-11) and ~200G of embedded worktree targets on disk. The operator sizes the run to

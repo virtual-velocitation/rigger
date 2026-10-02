@@ -13,13 +13,13 @@ load-bearing.
 
 The projection already invalidates on decision supersession: the `TYPE_DECISION_MADE` fold arm,
 when `supersedes` is set, runs `UPDATE edges SET valid_to = ?1 WHERE from_id = ?2 AND rel =
-'GOVERNS' AND valid_to IS NULL` (`src/contextgraph/sqlite.rs`, the supersession arm). Mirror that
+'GOVERNS' AND valid_to IS NULL` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, the supersession arm). Mirror that
 mechanism for findings.
 
 A finding becomes a `KIND_FINDING` node with a `REL_RAISED` edge (from the raiser) and one
 `REL_ABOUT` edge per touched file, created in the `TYPE_REVIEW_FINDING` fold arm
-(`src/contextgraph/sqlite.rs`). There is NO dedicated disposition event; a finding's disposition
-is the join of its attribution (`by`) with the adjudicator's result, exactly as `src/metrics.rs`
+(`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`). There is NO dedicated disposition event; a finding's disposition
+is the join of its attribution (`by`) with the adjudicator's result, exactly as `crates/rigger-domain/src/metrics.rs`
 (`ReviewQuality`, `survival()`, `upheld_unattributed`) computes it:
 
 - **Discarded** = raised in a review whose adjudicator `SpawnResult` (`TYPE_SPAWN_RESULT`, the
@@ -34,7 +34,7 @@ reads the adjudicator disposition and sets `valid_to` on the resolved findings' 
 `REL_ABOUT` edges, attributed to the disposing run's provenance (the `RunStarted`-boundary
 attribution that `reset --runs` and the LIVE/HISTORICAL peer labels already use, spec 21).
 
-Grounding observes the effect for free: `graph_context` (`src/conductor.rs`) builds its injected
+Grounding observes the effect for free: `graph_context` (`crates/rigger-conductor/src/conductor.rs`) builds its injected
 slice from a single `graph.subgraph(seed, 2)` whose traversal already filters `valid_to IS NULL`,
 then renders `write_capped_findings` under `FINDINGS_BUDGET_BYTES` (48 KiB). Resolved findings
 simply stop appearing.

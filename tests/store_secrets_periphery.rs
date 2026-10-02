@@ -45,52 +45,49 @@ fn assert_no_credential(text: &str, why: &str) {
     );
 }
 
-/// The public API resolves from an external crate and scrubs the userinfo while keeping the scheme,
-/// host, and query - the reachability of `rigger::eventstore::redact_conn` is proven by this file
-/// compiling, and its core contract is proven at the crate boundary (not only from inside the crate).
-#[test]
-fn redact_conn_is_a_public_symbol_that_scrubs_userinfo_but_keeps_scheme_host_and_query() {
-    let out = redact_conn("kurrentdb://spy:hunter2@db.internal:2113?tls=true");
-    assert_no_credential(&out, "public API basic scrub");
-    assert_eq!(
-        out, "kurrentdb://<redacted>@db.internal:2113?tls=true",
-        "the scheme, host, port, and query print; only the credential is replaced by the marker"
-    );
+/// The shared case body: `redact_conn` scrubs `conn`'s credential (`label` names the case in
+/// the no-credential check) and prints exactly `expected` (`why` explains the expectation).
+fn assert_redacts(conn: &str, label: &str, expected: &str, why: &str) {
+    let out = redact_conn(conn);
+    assert_no_credential(&out, label);
+    assert_eq!(out, expected, "{why}");
 }
 
-/// An `@` in the URL PATH (after the authority, before any query) is not a userinfo separator, so it
-/// is left untouched. This is the path-position sibling of the in-crate query-`@` case, and it pins
-/// that the authority boundary is the first `/` (path start), not merely the first `?`.
-#[test]
-fn redact_conn_leaves_an_at_sign_in_the_path_alone() {
-    let conn = "kurrentdb://db.internal:2113/tenants/a@b/stream";
-    assert_eq!(
-        redact_conn(conn),
-        conn,
-        "an `@` past the authority (in the path) is not a credential and must not be touched"
-    );
+rigger::test_cases! {
+    /// The public API resolves from an external crate and scrubs the userinfo while keeping the scheme,
+    /// host, and query - the reachability of `rigger::eventstore::redact_conn` is proven by this file
+    /// compiling, and its core contract is proven at the crate boundary (not only from inside the crate).
+    redact_conn_is_a_public_symbol_that_scrubs_userinfo_but_keeps_scheme_host_and_query:
+        assert_redacts(
+            "kurrentdb://spy:hunter2@db.internal:2113?tls=true",
+            "public API basic scrub",
+            "kurrentdb://<redacted>@db.internal:2113?tls=true",
+            "the scheme, host, port, and query print; only the credential is replaced by the marker",
+        );
 }
 
-/// When the authority itself contains several `@`, the host begins at the LAST one, so everything
-/// before it (the whole userinfo, embedded `@` and all) is scrubbed and the host survives. Pins the
-/// `rfind`-based host boundary the doc promises.
-#[test]
-fn redact_conn_scrubs_the_whole_userinfo_when_the_authority_has_several_at_signs() {
-    let out = redact_conn("kurrentdb://spy:hun@ter2@db.internal:2113");
-    assert!(
-        !out.contains("spy") && !out.contains("hun@ter2"),
-        "the entire userinfo up to the last `@` must be scrubbed: {out}"
+rigger::test_cases! {
+    /// An `@` in the URL PATH (after the authority, before any query) is not a userinfo separator,
+    /// so it is left untouched. This is the path-position sibling of the in-crate query-`@` case,
+    /// and it pins that the authority boundary is the first `/` (path start), not merely the first
+    /// `?`.
+    redact_conn_leaves_an_at_sign_in_the_path_alone: assert_redacts(
+        "kurrentdb://db.internal:2113/tenants/a@b/stream",
+        "path at sign",
+        "kurrentdb://db.internal:2113/tenants/a@b/stream",
+        "an `@` past the authority (in the path) is not a credential and must not be touched",
     );
-    assert_eq!(
-        out, "kurrentdb://<redacted>@db.internal:2113",
-        "the host begins at the last `@` of the authority; everything before it is the credential"
+    /// When the authority itself contains several `@`, the host begins at the LAST one, so
+    /// everything before it (the whole userinfo, embedded `@` and all) is scrubbed and the host
+    /// survives. Pins the `rfind`-based host boundary the doc promises.
+    redact_conn_scrubs_the_whole_userinfo_when_the_authority_has_several_at_signs: assert_redacts(
+        "kurrentdb://spy:hun@ter2@db.internal:2113",
+        "several at signs",
+        "kurrentdb://<redacted>@db.internal:2113",
+        "the host begins at the last `@` of the authority; everything before it is the credential",
     );
-}
-
-/// The empty string is a boundary input: no URL, nothing to scrub, no panic.
-#[test]
-fn redact_conn_on_the_empty_string_is_empty() {
-    assert_eq!(redact_conn(""), "");
+    /// The empty string is a boundary input: no URL, nothing to scrub, no panic.
+    redact_conn_on_the_empty_string_is_empty: assert_redacts("", "empty input", "", "nothing to scrub");
 }
 
 /// Redacting an already-redacted string is stable: the marker carries no `user:pass@`, so a second
@@ -236,21 +233,21 @@ fn open_with_a_special_char_credentialed_conn_never_leaks_it() {
     );
 }
 
-/// THE COEXISTENCE EDGE: ONE url that carries a REAL credential AND a benign `@` later in its path
-/// AND another in its query. The existing cases each isolate ONE side - a credential with no stray
-/// `@` (the basic scrub), or a bare `@` in a path/query with no credential (the path-`@` case and
-/// the in-crate query-`@` case). This pins the two together, where an off-by-one in the authority
-/// boundary is most likely to bite: `redact_conn` must scrub the ONE userinfo `@` (up to the host)
-/// yet leave BOTH post-authority `@`s untouched. A redactor that scanned to the LAST `@` would eat
-/// the host and the `a@` path segment (losing the address); one that stopped scrubbing on seeing a
-/// later `@` would leak the credential. Neither may happen.
-#[test]
-fn redact_conn_scrubs_the_credential_but_keeps_a_benign_at_sign_later_in_the_same_url() {
-    let out = redact_conn("kurrentdb://spy:hunter2@db.internal:2113/streams/a@b?ref=c@d&tls=true");
-    assert_no_credential(&out, "credential coexisting with benign later `@`s");
-    assert_eq!(
-        out, "kurrentdb://<redacted>@db.internal:2113/streams/a@b?ref=c@d&tls=true",
-        "only the userinfo before the host `@` is scrubbed; the host, the path `a@b`, and the \
-         query `c@d` all print verbatim"
-    );
+rigger::test_cases! {
+    /// THE COEXISTENCE EDGE: ONE url that carries a REAL credential AND a benign `@` later in its path
+    /// AND another in its query. The existing cases each isolate ONE side - a credential with no stray
+    /// `@` (the basic scrub), or a bare `@` in a path/query with no credential (the path-`@` case and
+    /// the in-crate query-`@` case). This pins the two together, where an off-by-one in the authority
+    /// boundary is most likely to bite: `redact_conn` must scrub the ONE userinfo `@` (up to the host)
+    /// yet leave BOTH post-authority `@`s untouched. A redactor that scanned to the LAST `@` would eat
+    /// the host and the `a@` path segment (losing the address); one that stopped scrubbing on seeing a
+    /// later `@` would leak the credential. Neither may happen.
+    redact_conn_scrubs_the_credential_but_keeps_a_benign_at_sign_later_in_the_same_url:
+        assert_redacts(
+            "kurrentdb://spy:hunter2@db.internal:2113/streams/a@b?ref=c@d&tls=true",
+            "credential coexisting with benign later `@`s",
+            "kurrentdb://<redacted>@db.internal:2113/streams/a@b?ref=c@d&tls=true",
+            "only the userinfo before the host `@` is scrubbed; the host, the path `a@b`, and the \
+             query `c@d` all print verbatim",
+        );
 }

@@ -1,0 +1,68 @@
+{
+  "spec": "93",
+  "criterion": "1 - THE CORE LANE IS PURE",
+  "core_modules": [
+    "crates/rigger-config-files/src/config.rs",
+    "crates/rigger-console/src/console/mod.rs",
+    "crates/rigger-console/src/console/map.rs",
+    "crates/rigger-domain/src/blocker.rs",
+    "crates/rigger-domain/src/canary.rs",
+    "crates/rigger-domain/src/community.rs",
+    "crates/rigger-domain/src/concepts.rs",
+    "crates/rigger-domain/src/config.rs",
+    "crates/rigger-domain/src/contextgraph.rs",
+    "crates/rigger-domain/src/contextgraph/query.rs",
+    "crates/rigger-domain/src/eventstore.rs",
+    "crates/rigger-domain/src/failure.rs",
+    "crates/rigger-domain/src/ledger.rs",
+    "crates/rigger-domain/src/metrics.rs",
+    "crates/rigger-domain/src/progress.rs",
+    "crates/rigger-domain/src/run.rs",
+    "crates/rigger-domain/src/safety.rs",
+    "crates/rigger-domain/src/spawn.rs",
+    "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
+    "crates/rigger-store-sqlite/src/eventstore/mod.rs",
+    "crates/rigger-store-sqlite/src/eventstore/namespace.rs",
+    "src/contextgraph/mod.rs",
+    "src/eventstore/mod.rs",
+    "src/spawn.rs"
+  ],  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included; console::mod's `map` submodule, spec 84 criterion 1's map engine, is likewise not gated so included - console.rs itself became console/mod.rs when that submodule was added) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships - plus the same ungated declarations in crates/rigger-domain/src/lib.rs, the domain ring the root re-exports (its gated `gate`, `ingest`, `playbooks`, `review`, `spec`, `watch` and `wave` are excluded). The event-store adapters now live in crates/rigger-store-sqlite: its ungated `eventstore` module (the connection-string redaction) and that module's always-on `namespace` submodule are listed, the root's `src/eventstore/mod.rs` re-exporting them; its `sqlite`/`kurrentdb`/`contract` submodules and its `sqlite`, `registry` and `*_store` modules are gated and so excluded. The console fold and code map now live in crates/rigger-console: its ungated `console` module and that module's always-on `map` submodule are listed, the root re-exporting it. The loaded harness configuration now lives in crates/rigger-config-files: its ungated `config` module is listed while its `config_store` module is gated and so excluded. The graph's pure query engine is the domain's always-on `contextgraph::query` submodule, and crates/rigger-graph-sqlite's ungated `contextgraph` module (the fold's private payload shapes) is listed while its `sqlite` projector submodule is gated and so excluded. `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
+  "banned_patterns": {
+    "std_paths": ["std::fs", "std::process", "std::net", "SystemTime::now"],
+    "crates": ["rusqlite", "tokio::", "use tokio", "rustix::", "use rustix", "fs2::", "use fs2", "ignore::", "use ignore", "uuid::", "use uuid", "kurrentdb::", "use kurrentdb"],
+    "note": "`crates` patterns require a `::` or a `use` keyword immediately adjacent (never a bare substring match) so a string-literal test fixture - e.g. eventstore::mod.rs's redact_conn tests, which build fixture strings like \"kurrentdb://user:pass@host\" - is never misread as a real import; `std_paths` patterns are similarly path-shaped, never single words a doc comment could contain in prose."
+  },
+  "scan_excludes": "Any line whose trimmed text starts with `//` (doc or plain comments) - so a comment EXPLAINING why a banned import is absent (e.g. 'SystemTime::now() is itself a banned import') never counts as an occurrence."
+  ,
+  "found_occurrences": [
+    {
+      "file": "crates/rigger-domain/src/eventstore.rs",
+      "line": 141,
+      "pattern": "uuid::",
+      "gated_by_line": 139,
+      "reason": "Event::new's mint() store-arm mints the id's real entropy via uuid; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning an empty id) satisfying the same call site under core-only - see that module's own doc on the split."
+    },
+    {
+      "file": "crates/rigger-domain/src/eventstore.rs",
+      "line": 141,
+      "pattern": "SystemTime::now",
+      "gated_by_line": 139,
+      "reason": "Event::new's mint() store-arm reads the real clock; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint() below, returning SystemTime::UNIX_EPOCH) satisfying the same call site under core-only - CONSTRAINTS WALK's 'the core has no now(), every age arrives as an input'."
+    }
+  ],
+  "found_occurrences_note": "The ONLY two banned-pattern occurrences across every core module's source text, both inside Event::new's mint() split (spec 93's own Clock constraint) and both gated one line below the #[cfg(any(feature = \"store\", not(feature = \"core\")))] attribute the always-run test below verifies is genuinely present.",
+  "verification": {
+    "cheap_tests": "tests/core_lane_purity_audit.rs re-scans every file in core_modules for banned_patterns (identically to how this record was produced) and asserts the result matches found_occurrences exactly - zero more, zero fewer - plus that each found occurrence's cited gated_by_line actually carries the required #[cfg(...)] text. This runs on every `cargo test`, no subprocess, no recompile.",
+    "expensive_rebuild": {
+      "manual_run_by": "u93c1/implementer#0",
+      "commands": [
+        "cargo build --lib --no-default-features --features core",
+        "cargo build --lib --no-default-features --features core --target wasm32-unknown-unknown",
+        "cargo test --lib --no-default-features --features core"
+      ],
+      "result": "all three clean: native lib builds, wasm32-unknown-unknown lib builds (proving every banned CRATE - rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb - is genuinely unreachable, since none of them are wasm32-unknown-unknown-compatible and are absent from the core-only dependency graph for that target), and the 181 core-lane library unit tests pass. (Re-run by u93c5/implementer#0 after spec 93 criterion 5 relocated the dashboard query engine into the new always-on src/contextgraph/query.rs: native build/clippy/test still clean, now 192 core-lane library unit tests pass - the +11 delta is query.rs's own new `search_tests`/`graph_ops_tests` modules, which build under `core` since the module they live in is ungated.) (Re-run by u84c1/implementer#0 after spec 84 criterion 1 added the map engine as the new always-on `console::map` submodule - `src/console.rs` became `src/console/mod.rs` declaring `pub mod map;`, both ungated: native build/clippy/test and the wasm32-unknown-unknown build still clean, now 231 core-lane library unit tests pass.)",
+      "expensive_rebuild_gated_by": "RIGGER_CORE_LANE_VERIFY=1 cargo test --test core_lane_purity_audit (the gate is a runtime env-var check inside the test body, not #[ignore] - passing -- --ignored filters this test OUT instead of running it)",
+      "why_gated": "the wasm cross-compile plus the native build/test each force a fresh recompile under a feature/target combination no other test in the suite otherwise builds, adding real minutes to every future unit's gate cycle - the same reason RIGGER_COMPILER_PASS_VERIFY=1 (spec 87) and RIGGER_AUDIT_WRITE=1 are opt-in rather than wired into the default suite. The always-on cheap_tests above instead assert the static, directly re-checkable textual facts this JSON records."
+    }
+  }
+}

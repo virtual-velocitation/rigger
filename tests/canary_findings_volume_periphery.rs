@@ -27,24 +27,24 @@
 //! populated map, decode it back); nothing else in the diff proves the pre-existing-data
 //! direction.
 
+mod common;
+
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use rigger::canary::{
-    default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS,
-};
+use common::fixtures::anchored_item as item;
+use common::fixtures::cfg_for;
+use common::fixtures::panel_with_lenses;
+use common::fixtures::CRITICAL_SUMMARY;
+use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
+use rigger::canary_store::{default_jobs, run_canary};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::ledger::TYPE_UNIT_STATUS;
-
-/// The finding summary text that marks a "critical" finding - the exact substring the
-/// scripted adjudicator below looks for in its own prompt (which embeds every finding's
-/// summary), mirroring how the live adjudicator prompt actually carries findings.
-const CRITICAL_SUMMARY: &str = "CRIT defect here";
 
 /// A minimal scripted `AgentDriver` written from scratch for this outside-in layer (it does
 /// not, and cannot, reuse canary.rs's own `#[cfg(test)]`-private `Scripted` driver). Every
@@ -106,46 +106,6 @@ impl AgentDriver for VolumeDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel(lenses: &[&str]) -> ReviewPanel {
-    ReviewPanel {
-        lenses: lenses.iter().map(|s| (*s).to_string()).collect(),
-        adversary: "adv".into(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
-
-fn item(id: &str, anchor: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: anchor.into(),
-        expected_verdict: verdict.into(),
-        expected_tier: tier.into(),
-        review: format!("fn {id}() {{}}"),
-    }
-}
-
 /// Drives `run_canary` - the public entry the shipped `rigger canary` command calls - over a
 /// panel whose lenses and adversary each raise MORE findings than they catch, and a
 /// two-item corpus: `"hot"` (a planted defect at `hot.rs`, which lens-a's fixed finding
@@ -173,8 +133,8 @@ fn item(id: &str, anchor: &str, planted: bool, verdict: &str, tier: &str) -> Can
 #[test]
 fn run_canary_scores_findings_volume_independent_of_catch_and_project_canary_sums_it() {
     let lenses = ["lens-a", "lens-b"];
-    let cfg = cfg(&["lens-a", "lens-b", "adv", "adj"]);
-    let panel = panel(&lenses);
+    let cfg = cfg_for(&["lens-a", "lens-b", "adv", "adj"]);
+    let panel = panel_with_lenses(&lenses);
 
     let corpus = vec![
         item("hot", "hot.rs", true, "reject", "lens"),

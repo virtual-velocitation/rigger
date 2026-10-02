@@ -37,8 +37,12 @@
 //! wire contract. `dash` and `contextgraph` compile on BOTH the default and the
 //! `--no-default-features` lane (neither is feature-gated), so this guards the drill in both lanes.
 
+mod common;
+
 use std::collections::BTreeMap;
 
+use common::fixtures::edge;
+use common::fixtures::spoke_id;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
@@ -87,25 +91,6 @@ fn membership(id: &str) -> Edge {
         source: 0,
         tier: TIER_INFERRED.to_string(),
     }
-}
-
-/// A currently-valid REFERENCES edge between two ids (the `extracted` tier, `valid_to = None`).
-fn edge(from: &str, to: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
-
-/// A spoke id, zero-padded so its ASCII order matches its numeric order (the drill emits members in
-/// ascending-id order, and the cap's id tie-break keeps the smallest ids).
-fn spoke_id(i: usize) -> String {
-    format!("cl/f.rs::s{i:05}")
 }
 
 /// EXPORT REACHABILITY: `cluster_detail` and `CLUSTER_RENDER_BUDGET` are genuinely `pub` and usable by
@@ -208,8 +193,13 @@ fn cluster_detail_is_a_pure_stable_drill_that_never_dangles_an_edge() {
     let spokes = CLUSTER_RENDER_BUDGET + 2;
     for i in 0..spokes {
         nodes.push(member(&format!("s{i:05}")));
-        edges.push(membership(&spoke_id(i)));
-        edges.push(edge("cl/f.rs::hub", &spoke_id(i)));
+        edges.push(membership(&spoke_id("cl/f.rs", i)));
+        edges.push(edge(
+            "cl/f.rs::hub",
+            &spoke_id("cl/f.rs", i),
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+        ));
     }
     let total = nodes.len() - 1; // hub + (budget + 2) spokes = budget + 3 members (excl. community node)
     let g = Graph { nodes, edges };
@@ -275,7 +265,7 @@ fn cluster_detail_degrades_gracefully_on_unknown_empty_key_and_empty_graph() {
         edges: vec![
             membership("cl/f.rs::a"),
             membership("cl/f.rs::b"),
-            edge("cl/f.rs::a", "cl/f.rs::b"),
+            edge("cl/f.rs::a", "cl/f.rs::b", REL_REFERENCES, TIER_EXTRACTED),
         ],
     };
 
@@ -327,7 +317,12 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
     // is needed here.
     let g = Graph {
         nodes: vec![member("a"), member("b")],
-        edges: vec![edge("cl/f.rs::a", "cl/f.rs::b")],
+        edges: vec![edge(
+            "cl/f.rs::a",
+            "cl/f.rs::b",
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+        )],
     };
     let nb = serde_json::to_value(neighborhood(&g, "cl/f.rs::a", 1))
         .expect("a Neighborhood serializes to JSON");
@@ -343,7 +338,7 @@ fn truncated_serializes_only_when_the_drill_capped_preserving_neighborhood_backc
         edges: vec![
             membership("cl/f.rs::a"),
             membership("cl/f.rs::b"),
-            edge("cl/f.rs::a", "cl/f.rs::b"),
+            edge("cl/f.rs::a", "cl/f.rs::b", REL_REFERENCES, TIER_EXTRACTED),
         ],
     };
     let under = serde_json::to_value(cluster_detail(&g_community, COMMUNITY, &code_lens()))

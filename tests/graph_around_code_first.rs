@@ -17,92 +17,16 @@
 //! agent uses) in a known order, so the store's own monotonic event position is the "newest"
 //! signal under test - never a wall clock, which no node carries.
 
-use std::path::Path;
-use std::process::Command;
-
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
-/// A throwaway project dir that is its own git repo, so `project_identity()` is stable across
-/// the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Seed an initialized `.rigger/events.db`, standing in for the store a prior `rigger run`/`step`
-/// would have created - the store-opening couriers refuse to fabricate one from the wrong cwd.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so the seeded `graph.db`
-/// lands under the exact project scope the compiled binary reads back.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
-/// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.
-///
-/// Spawned through [`common::rigger_courier`] (checkin-round fix), never a bare
-/// `Command::new(rigger_bin())`: that shared authority scrubs an inherited
-/// `RIGGER_STORE_FENCE_DIR` (spec 70 criterion 3's gate store fence, which
-/// `gate::ExecRunner::run` pins on the WHOLE subprocess tree of a unit-worktree gate's `test`
-/// gate - THIS test binary itself, when it runs as one) - see
-/// [`run_rigger_ignores_an_inherited_ambient_store_fence`] for the regression this closes.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event directly (the ALWAYS-compiled fold), exactly as
-/// `graph_show_surface.rs` seeds - feature-lane independent, no `symbols` extractor required.
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"rust"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_store_project;
+use common::fixtures::apply_code_entity;
 
 /// The `node <id> <kind>` lines of a `rigger graph --around` transcript, in the ORDER they
 /// printed (their 0-based line index) - parsed exactly, never substring-matched, so "code first,
@@ -121,9 +45,8 @@ fn node_lines(out: &str) -> Vec<(usize, String)> {
 
 #[test]
 fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     let file = "big.rs";
 
@@ -134,8 +57,8 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
         let id = run_stream_identity(root);
         let p =
             Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        seed_def(&p, 100_001, file, "alpha", "function", 1);
-        seed_def(&p, 100_002, file, "beta", "function", 5);
+        apply_code_entity(&p, 100_001, file, "alpha", "function", 1, "rust");
+        apply_code_entity(&p, 100_002, file, "beta", "function", 5, "rust");
     }
 
     // THIRTEEN governing decisions/findings about the same file, through the REAL `rigger emit`
@@ -227,18 +150,10 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
 #[test]
 #[serial_test::serial(cwd)]
 fn run_rigger_ignores_an_inherited_ambient_store_fence() {
-    std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
-        }
-    }
-    let _restore = Restore;
+    let _fence_cleared = common::StoreFenceCleared::new();
 
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     // Simulate exactly what a fenced `cargo test` gate does to THIS test binary's own
     // process: an ambient fence pointing at a scratch dir this fixture never built and never

@@ -12,7 +12,7 @@
 //!    down to nothing" case (an in-file `#[cfg(test)]` re-wrap of a product item) - PLUS the
 //!    OUT-OF-LINE `#[cfg(test)] mod name;` shape (round 5,
 //!    adj-u86c3-r4-out-of-line-exclusion-still-unmigrated), which is a distinct, CALLER-level
-//!    routing fix (`index_events`/`project_batches_paced`'s own `for_extraction` hollowing) rather
+//!    routing fix (`project_batches_paced`'s own `for_extraction` hollowing) rather
 //!    than a third branch inside `extract_events` itself - that exclusion set can only be computed
 //!    where every file's path in the project is known together, never from one file's own parse.
 //!    The implementer's own coverage of the first two shapes is either in-crate with a HAND-BUILT
@@ -24,14 +24,8 @@
 //!    `RunCtx` machinery - so neither proves the crate's PUBLIC `extract_events` ->
 //!    `Projector::apply` composition an external caller (or a future refactor of either side
 //!    alone) actually holds; the third (out-of-line) shape had NO coverage anywhere reaching the
-//!    real fold before this file's own addition below. `index_events` and `project_batches_paced`
-//!    are TWO independently-coded call sites for the identical `for_extraction` hollowing (round 5
-//!    fixed the same drop-the-batch defect in both, separately), and `project_batches_paced` -
-//!    never `index_events` - is the one `src/ingest.rs` actually calls in production, so this
-//!    shape's probe runs against BOTH entry points (one shared body, round-1-review addendum
-//!    below) rather than resting on one proving the other by inference. Mirrors
-//!    `proof_lands_on_the_card_periphery.rs`'s own stated precedent for criterion 2's identical
-//!    class of gap.
+//!    real fold before this file's own addition below. `project_batches_paced` is the entry point
+//!    `src/ingest.rs` calls in production, so this shape's probe runs against it.
 //!  - `rigger validate`'s RETIRED CODE-ENTITY advisory, driven end to end through the COMPILED
 //!    binary (stdout/stderr/exit code, exactly as an operator sees it) - never exercised at the
 //!    CLI boundary before this file: the implementer's own coverage
@@ -46,7 +40,7 @@
 //!  - the fold SQL itself (`ensure_node`'s merge, `supersede_file_edges`, the `r.name.is_empty()`
 //!    guard's own correctness given a hand-built event sequence) - the implementer's own
 //!    `sqlite.rs::migration_c3` tests own that array of cases directly;
-//!  - the in-process double-exclusion replay-key collision fix (`RunCtx::replayed_generations` /
+//!  - the in-process double-exclusion replay-key collision fix (`ReplayKeys::install` /
 //!    `RunCtx::emit_keyed_batch`'s stale-generation retirement): `RunCtx` is a private, non-`pub`
 //!    struct with no public constructor anywhere in the crate's public surface, and
 //!    `conductor::run`'s only production call to `ingest_project_batches` (src/conductor.rs:7985)
@@ -62,8 +56,12 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
+use common::fixtures::apply_json;
 use std::path::Path;
-use std::process::Command;
 
 // =========================================================================================
 // Part 1: the emit+fold seam through the PUBLIC API (symbols lane only)
@@ -111,7 +109,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     );
     legacy_event.position = pos;
     pos += 1;
-    p.apply(&legacy_event).unwrap();
+    common::fixtures::folds(&p, std::slice::from_ref(&legacy_event));
 
     // The unrelated product file's REAL first ingest, through the public pipeline.
     let idx = build_index(root.path().to_str().unwrap(), None);
@@ -122,7 +120,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     for mut ev in extract_events("keep.rs", keep_fs) {
         ev.position = pos;
         pos += 1;
-        p.apply(&ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
 
     assert_eq!(
@@ -149,7 +147,7 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
     for ev in boundary_events.iter_mut() {
         ev.position = pos;
         pos += 1;
-        p.apply(ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     assert_eq!(
@@ -218,7 +216,7 @@ fn a_lone_empty_structural_sentinel_through_the_real_pipeline_creates_nothing_at
     let p = Projector::open(":memory:", "test").unwrap();
     for ev in events.iter_mut() {
         ev.position = 1;
-        p.apply(ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     let g = p.subgraph(&["tests/fresh.rs".to_string()], 1).unwrap();
@@ -260,7 +258,7 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     for mut ev in extract_events("wrapped.rs", fs1) {
         ev.position = pos;
         pos += 1;
-        p.apply(&ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
     let live = p.subgraph(&["wrapped.rs".to_string()], 2).unwrap();
     assert!(
@@ -290,7 +288,7 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
     for ev in boundary_events.iter_mut() {
         ev.position = pos;
         pos += 1;
-        p.apply(ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(ev));
     }
 
     assert_eq!(
@@ -311,13 +309,12 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 /// OUT-OF-LINE `#[cfg(test)] mod name;` declaration. Unlike the two siblings above, this exclusion
 /// is computed one layer above `extract_events` itself (only there is every file's path in the
 /// project known together, so only there can the DECLARING file's attribute be resolved against
-/// its TARGET file) - by TWO independently-coded call sites, `index_events` and
-/// `project_batches_paced`, both of which dropped the excluded file's batch entirely before round
-/// 5's fix gave each its OWN `for_extraction` hollowing call. Parameterized over `entry` so one
-/// body proves the retirement fires through EITHER site rather than one standing in for the other
-/// by inference - see the two `#[test]`s below, reproducing the exact probe the adjudicator's own
-/// rejection ran by hand (`tests/_adjudicator_probe_out_of_line.rs`, reverted) through this
-/// crate's permanent test suite instead.
+/// its TARGET file) - by the whole-project ingest, `project_batches_paced`, which dropped the
+/// excluded file's batch entirely before round 5's fix gave it its own `for_extraction`
+/// hollowing call. Parameterized over `entry`, the ingest pipeline under test - see the
+/// `#[test]` below, reproducing the exact probe the adjudicator's own rejection ran by hand
+/// (`tests/_adjudicator_probe_out_of_line.rs`, reverted) through this crate's permanent test
+/// suite instead.
 #[cfg(feature = "symbols")]
 fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     entry: impl Fn(&str) -> Vec<rigger::eventstore::Event>,
@@ -343,7 +340,7 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
-        p.apply(&ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
     let before = p
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 2)
@@ -372,7 +369,7 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     for mut ev in entry(root_str) {
         ev.position = pos;
         pos += 1;
-        p.apply(&ev).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(&ev));
     }
 
     assert_eq!(
@@ -402,24 +399,8 @@ fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     );
 }
 
-#[cfg(feature = "symbols")]
-#[test]
-fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_index_events_and_fold_seam(
-) {
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
-
-    assert_out_of_line_declaration_retires_through_the_real_fold_seam(|root| {
-        index_events(&build_index(root, None))
-    });
-}
-
-/// The SAME shape as its `index_events` sibling above, through `project_batches_paced` instead -
-/// the site `src/ingest.rs` actually calls in production (`index_events` has no production
-/// caller of its own). Round 5 fixed this exact defect in `index_events` and
-/// `project_batches_paced` as two SEPARATE edits (each had its own `.filter(|(path, _)|
-/// !excluded.contains(path.as_str()))` line dropping the batch before `extract_events` ever ran),
-/// so proving the fix through one is not evidence it holds through the other; `workers: 2`
+/// The out-of-line shape through `project_batches_paced`, the site `src/ingest.rs` calls in
+/// production; `workers: 2`
 /// exercises the parallel dispatch path (`crate::parallel::map_ordered`), not merely the `workers
 /// <= 1` inline fallback - width-invariance across worker counts is `parallel_ordered_emit.rs`'s
 /// own, separate, general-purpose guarantee, so this does not re-prove that, only that THIS
@@ -443,65 +424,6 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
 // Part 2: `rigger validate`'s RETIRED CODE-ENTITY advisory, through the COMPILED binary
 // =========================================================================================
 
-/// A throwaway project: its own git repo, so `project_identity()` resolves as it does for a
-/// real project (mirrors `tests/validate_advisories.rs`'s own `temp_project` convention).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// The project identity `rigger validate`'s own `project_identity()` resolves for `root`: the
-/// tracked `.rigger/project.id` when present (as `rigger init` mints), else the git top-level's
-/// basename, else `root`'s own basename. Mirrors `tests/validate_advisories.rs`'s own
-/// `run_stream_identity`, needed here so a directly-seeded `graph.db` lands under the SAME
-/// project scope the compiled binary will read it back under.
-fn project_identity_of(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success). Mirrors
-/// `tests/validate_advisories.rs`'s own `run_rigger`: the dashboard and the machine-global
-/// instance registry are stubbed out so a short-lived invocation never leaves a live process or
-/// a phantom registry entry behind.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
 /// Seed `root`'s `.rigger/graph.db` directly (bypassing the extraction pass entirely, exactly
 /// like `tests/validate_advisories.rs`'s own `seed_duplicated_key`/`seed_key_under_two_covered_
 /// types` bypass the extraction pass to seed `events.db`): one legacy `CodeEntityExtracted` node
@@ -510,71 +432,60 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// correct. `contextgraph` is not feature-gated (unlike `grounder::symbols`), so this seeding
 /// runs in BOTH feature lanes, and Part 2's tests below carry no `#[cfg(feature = "symbols")]`.
 fn seed_a_retired_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
-    use rigger::eventstore::Event;
+    use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 
-    let project = project_identity_of(root);
-    let graph_path = root.join(".rigger").join("graph.db");
-    std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let legacy = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e1 = Event::new(
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
         TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&legacy).unwrap(),
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "old_test_helper", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
     );
-    e1.position = 1;
-    p.apply(&e1).unwrap();
-
-    let boundary = serde_json::json!({
-        "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
-    });
-    let mut e2 = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
-    e2.position = 2;
-    p.apply(&e2).unwrap();
+    apply_json(
+        &p,
+        2,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({
+            "file": "tests/legacy.rs", "name": "", "lang": "rust", "fresh": true,
+        }),
+    );
 }
 
 /// Seed `root`'s `.rigger/graph.db` with ONE live, never-retired code entity - the "graph.db
 /// exists but nothing has been retired" case, distinct from no `graph.db` at all.
 fn seed_a_live_entity(root: &Path) {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-    use rigger::eventstore::Event;
+    let p = project_graph(root);
+    apply_json(
+        &p,
+        1,
+        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+        serde_json::json!({
+            "file": "product.rs", "name": "product_fn", "kind": "function",
+            "line": 1, "lang": "rust", "fresh": true,
+        }),
+    );
+}
 
-    let project = project_identity_of(root);
+/// The projector over `root`'s own `.rigger/graph.db`, scoped to the SAME project identity the
+/// compiled binary will read it back under.
+fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
     let graph_path = root.join(".rigger").join("graph.db");
     std::fs::create_dir_all(graph_path.parent().unwrap()).unwrap();
-    let p = Projector::open(graph_path.to_str().unwrap(), &project).unwrap();
-
-    let def = serde_json::json!({
-        "file": "product.rs", "name": "product_fn", "kind": "function",
-        "line": 1, "lang": "rust", "fresh": true,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&def).unwrap(),
-    );
-    e.position = 1;
-    p.apply(&e).unwrap();
+    rigger::contextgraph::sqlite::Projector::open(
+        graph_path.to_str().unwrap(),
+        &run_stream_identity(root),
+    )
+    .unwrap()
 }
 
 #[test]
 fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_a_retired_entity(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, seed_a_retired_entity);
     assert!(
         err.to_lowercase().contains("retired"),
         "validate must warn that a code entity was retired; stderr:\n{err}"
@@ -592,14 +503,9 @@ fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fai
 
 #[test]
 fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_a_live_entity(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, seed_a_live_entity);
     assert!(
         !err.to_lowercase().contains("retired"),
         "a graph.db with a live, never-retired entity must draw no retirement warning; \
@@ -609,7 +515,7 @@ fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
 
 #[test]
 fn validate_never_fabricates_a_graph_db_and_draws_no_retired_advisory_on_a_fresh_project() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");

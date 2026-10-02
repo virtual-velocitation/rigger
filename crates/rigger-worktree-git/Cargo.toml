@@ -1,0 +1,42 @@
+[package]
+name = "rigger-worktree-git"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's git worktree adapter: the per-unit worktree, its landing onto the run branch and the reclaim of the scratch it leaves."
+
+[lib]
+name = "rigger_worktree_git"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-driver/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-driver/core", "rigger-root/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The process-spawn port and the reaper every removal goes through (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
+# The scratch-root resolvers' cache-home resolver and liveness marker encoding (a same-ring edge).
+rigger-driver = { path = "../rigger-driver", default-features = false }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+# The adapter's tests read the run log through the SQLite store, and the shared fixtures name the
+# conductor, config, gate, ingest and registry vocabulary (recorded in tests/boundary_audit.rs
+# ADAPTER_VIOLATIONS). A test is its own composition root, so it reaches them through the root
+# package as a dev-dependency, renamed because the shared fixtures already call this crate
+# `rigger`. No default features, so the dev-dependency never widens the root's lane when both
+# crates are tested in one invocation; `core` above forwards to it, so this crate's core-lane
+# tests build the root in the same lane as every other dependency.
+rigger-root = { package = "rigger", path = "../..", default-features = false }
+
+[lints]
+workspace = true

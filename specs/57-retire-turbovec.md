@@ -22,7 +22,7 @@ the measured rationale so the decision is legible to every consumer.
   The persisted embedding index under `.rigger/grounding/` is no longer read or written; `reindex`
   either retires or re-points to the symbol index (whichever the surviving command surface makes
   honest). No dead stubs remain: a removed thing is removed, not gated.
-- **Grounder selection** (`src/grounder/`, `src/main.rs`): the accepted names become
+- **Grounder selection** (`crates/rigger-grounder/src/grounder/`, `src/main.rs`): the accepted names become
   `symbols` (default) | `grep` | `nop`. `turbovec` and `hybrid` (whose whole point was composing
   vectors onto symbols) are REJECTED with a clear migration error naming the retirement and the
   default. The no-silent-degrade rule holds: an explicit request for a retired engine errors; it

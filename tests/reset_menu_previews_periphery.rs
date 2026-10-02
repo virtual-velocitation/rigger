@@ -36,59 +36,23 @@
 //!      like a pattern (mirrors the same concern `tests/reset_derived_compaction_periphery.rs`
 //!      already proves for the delete path, now proven for this new read path independently).
 
+mod common;
+
+use common::cli::code_entity;
+use common::cli::keyed;
+use common::cli::nanos;
+use common::fixtures::apply_def_at;
+use common::fixtures::edge_inferred;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
-use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{ContentIdentity, Event, EventStore, ExpectedRevision};
-use std::time::{Duration, UNIX_EPOCH};
+use rigger::eventstore::{ContentIdentity, EventStore, ExpectedRevision};
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/graph_superseded_prune.rs and tests/reset_derived_compaction_periphery.rs;
 // each integration suite is its own binary, so a small harness is duplicated per file by this
 // codebase's existing convention).
 // ---------------------------------------------------------------------------------------
-
-/// Fold a `CodeEntityExtracted` (`file` defines `name`) from its raw on-log JSON at `pos`. `fresh`
-/// marks the FIRST event of an extraction batch, whose fold supersedes the file's prior live
-/// structural edges before folding the new batch (mirrors `graph_superseded_prune.rs::apply_def`).
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool, secs: u64) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-        "fresh": fresh,
-    });
-    let mut e = Event::new(
-        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    )
-    .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// The nanosecond boundary an edge carries for a fact retired `secs` after the epoch - the same
-/// time base `valid_to` is stored in.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
-
-fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-fn code_entity() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
-    }))
-    .unwrap()
-}
-
-fn edge_inferred() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "file": "src/a.rs", "name": "beta", "lang": "rust" }))
-        .unwrap()
-}
 
 const KEY_CODE: &str = "gc/src/a.rs@h1#0";
 const KEY_EDGE: &str = "gc/src/a.rs@h1#1";
@@ -108,11 +72,11 @@ fn count_prunable_reports_the_same_nodes_and_superseded_edges_a_real_prune_then_
     // The exact three-run re-extraction shape `graph_superseded_prune.rs` proves the edge count
     // against, extended with a `bar` node that is never re-extracted after run 1 - a dead node a
     // real `--runs` would also drop.
-    apply_def(&p, 1, file, "foo", 5, true, 100);
-    apply_def(&p, 2, file, "bar", 9, false, 100);
-    apply_def(&p, 10, file, "foo", 12, true, 200);
-    apply_def(&p, 20, file, "foo", 3, true, 300);
-    apply_def(&p, 21, file, "baz", 7, false, 300);
+    apply_def_at(&p, 1, file, "foo", 5, true, 100);
+    apply_def_at(&p, 2, file, "bar", 9, false, 100);
+    apply_def_at(&p, 10, file, "foo", 12, true, 200);
+    apply_def_at(&p, 20, file, "foo", 3, true, 300);
+    apply_def_at(&p, 21, file, "baz", 7, false, 300);
 
     let boundary = nanos(300);
     // `bar`'s own CONTAINS edge is BOTH touched by the node drop (its to_id is the dropped node)
@@ -171,11 +135,11 @@ fn count_prunable_is_scoped_to_its_own_project_on_a_shared_backend() {
     // the two projects' synthetic positions here must not overlap, or the second project's folds
     // would be skipped as already-applied duplicates of the first's.
     for (p, base) in [(&a, 0u64), (&b, 100u64)] {
-        apply_def(p, base + 1, "src/a.rs", "foo", 5, true, 100);
-        apply_def(p, base + 2, "src/a.rs", "bar", 9, false, 100);
-        apply_def(p, base + 10, "src/a.rs", "foo", 12, true, 200);
-        apply_def(p, base + 20, "src/a.rs", "foo", 3, true, 300);
-        apply_def(p, base + 21, "src/a.rs", "baz", 7, false, 300);
+        apply_def_at(p, base + 1, "src/a.rs", "foo", 5, true, 100);
+        apply_def_at(p, base + 2, "src/a.rs", "bar", 9, false, 100);
+        apply_def_at(p, base + 10, "src/a.rs", "foo", 12, true, 200);
+        apply_def_at(p, base + 20, "src/a.rs", "foo", 3, true, 300);
+        apply_def_at(p, base + 21, "src/a.rs", "baz", 7, false, 300);
     }
     let boundary = nanos(300);
     let drop = vec!["src/a.rs::bar".to_string()];
@@ -229,7 +193,7 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
     for r in 0..EDGE_ROUNDS {
         events.push(keyed(
             rigger::contextgraph::TYPE_EDGE_INFERRED,
-            edge_inferred(),
+            edge_inferred("src/a.rs", "beta"),
             KEY_EDGE,
             2_000 + r as u64,
         ));
@@ -261,7 +225,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
 
     let preview = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert_eq!(
         preview, expected,
         "count_derived_duplicates must report every declared type, in declared order, zeros \
@@ -269,7 +234,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
     );
     let preview_again = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert_eq!(
         preview_again, preview,
         "a read-only preview must report the same counts on repeat asks"
@@ -284,7 +250,8 @@ fn count_derived_duplicates_matches_prune_derived_indexs_per_type_report_in_decl
 
     let after = backend
         .count_derived_duplicates(&prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     assert!(
         after.iter().all(|(_, n)| *n == 0),
         "after a real prune, count_derived_duplicates must find nothing left duplicated; got {after:?}"
@@ -314,14 +281,10 @@ fn count_derived_duplicates_needs_no_reasserting_declaration_unlike_the_prune_it
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .unwrap();
 
-    // The SAME meta key / covered types / split as the shipped policy, with the valid-time
+    // The SAME meta key / covered types as the shipped policy, with the valid-time
     // partition simply never declared.
     let shipped = rigger::ingest::derived_index_identity();
-    let undeclared = ContentIdentity::new(
-        shipped.meta_key().to_string(),
-        shipped.types().to_vec(),
-        shipped.split(),
-    );
+    let undeclared = ContentIdentity::new(shipped.meta_key().to_string(), shipped.types().to_vec());
     assert!(
         undeclared.reasserting().is_none(),
         "the fixture must actually be undeclared, or this test proves nothing"
@@ -334,7 +297,8 @@ fn count_derived_duplicates_needs_no_reasserting_declaration_unlike_the_prune_it
     // answer.
     let preview = backend
         .count_derived_duplicates(&prefix, &undeclared)
-        .expect("count_derived_duplicates must succeed against an undeclared partition");
+        .expect("count_derived_duplicates must succeed against an undeclared partition")
+        .removed;
     let code_dupes = preview
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
@@ -390,7 +354,8 @@ fn count_derived_duplicates_matches_its_namespace_prefix_literally_not_as_a_wild
     let target_prefix = Namespaced::prefix_for(TARGET);
     let preview = backend
         .count_derived_duplicates(&target_prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     let code_dupes = preview
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
@@ -409,7 +374,8 @@ fn count_derived_duplicates_matches_its_namespace_prefix_literally_not_as_a_wild
     let neighbour_prefix = Namespaced::prefix_for(WILDCARD_NEIGHBOUR);
     let neighbour_after = backend
         .count_derived_duplicates(&neighbour_prefix, &identity)
-        .unwrap();
+        .unwrap()
+        .removed;
     let neighbour_code = neighbour_after
         .iter()
         .find(|(t, _)| t == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)

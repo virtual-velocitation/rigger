@@ -39,7 +39,7 @@ A new directed traversal beside the undirected `subgraph`:
   edges to the seed's name that carry no caller (imports/uses) - "referenced but not called" sites a
   who-uses-this reader cares about.
 
-### The route (`src/dash.rs`)
+### The route (`crates/rigger-dash/src/dash.rs`)
 
 `GET /api/graph` gains the call views on the seeded branch, exactly the parameter scheme the
 inspector addendum fixes: `seed=<id>&view=calls&dir=down|up|both` (+ the existing `depth=`, and
@@ -49,7 +49,7 @@ response reuses the `Neighborhood` shape with additive per-node fields: `layer` 
 `frontier` (multi-candidate marker with the candidate ids), and per-edge `back` (recursion marker).
 It serves through the spec-45 lazy direct-projection provider, never the state poll.
 
-### The rendering (`src/dash.html`)
+### The rendering (`crates/rigger-dash/src/dash.html`)
 
 A second layout behind the shared SVG emitter (the emitter already takes a position map):
 

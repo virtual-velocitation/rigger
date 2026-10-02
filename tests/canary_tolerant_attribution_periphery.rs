@@ -21,9 +21,14 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
-use rigger::canary::{default_jobs, run_canary, CanaryItem, TIER_LENS};
+mod common;
+
+use common::fixtures::cfg_for;
+use common::fixtures::lens_only_panel;
+use rigger::canary::TIER_LENS;
+use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use serde_json::{json, Value};
@@ -85,29 +90,8 @@ impl AgentDriver for AttributionDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg() -> Config {
-    let mut c = Config::default();
-    for id in ["lens", "adv", "adj"] {
-        c.agents.insert(id.to_string(), agent(id));
-    }
-    c
-}
-
-fn panel() -> ReviewPanel {
-    ReviewPanel {
-        lenses: vec!["lens".into()],
-        adversary: String::new(),
-        adjudicator: "adj".into(),
-        tiers: None,
-    }
-}
+/// The agents every panel in this file names.
+const PANEL_AGENTS: &[&str] = &["lens", "adv", "adj"];
 
 fn item(id: &str, anchor: &str) -> CanaryItem {
     CanaryItem {
@@ -121,21 +105,18 @@ fn item(id: &str, anchor: &str) -> CanaryItem {
     }
 }
 
-/// A tolerant match anywhere in a multi-entry `about` list scores the catch - not only when
-/// the match happens to be the list's first or only entry. Drives `run_canary` with a
-/// finding whose `about` is `["unrelated.rs", "/home/dev/repo/src/sum.rs"]` against anchor
-/// `"src/sum.rs"`: the match is the SECOND entry, behind an unrelated file that must not
-/// short-circuit the search.
-#[test]
-fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
+/// Runs the canary through its public entry over ONE item planted at `anchor`, reviewed by the
+/// lens-only panel whose [`AttributionDriver`] raises its fixed finding for `id`: the one outcome
+/// is caught by exactly the `caught_by` tiers (`why`).
+fn assert_caught_by(id: &str, anchor: &str, caught_by: &[&str], why: &str) {
     let store = Store::open(":memory:").expect("an in-memory store opens");
-    let corpus = vec![item("multi-about", "src/sum.rs")];
+    let corpus = vec![item(id, anchor)];
 
     let report = run_canary(
         &store,
         &AttributionDriver,
-        &cfg(),
-        &panel(),
+        &cfg_for(PANEL_AGENTS),
+        &lens_only_panel(),
         &corpus,
         default_jobs(),
         &|_, _| {},
@@ -143,48 +124,39 @@ fn a_tolerant_match_in_a_later_about_entry_still_scores_the_catch() {
     .expect("run_canary succeeds through the public entry");
 
     assert_eq!(report.outcomes.len(), 1);
-    let outcome = &report.outcomes[0];
-    assert_eq!(
-        outcome.caught_by,
-        vec![TIER_LENS.to_string()],
+    assert_eq!(report.outcomes[0].caught_by, caught_by, "{why}");
+}
+
+rigger::test_cases! {
+    /// A tolerant match anywhere in a multi-entry `about` list scores the catch - not only when
+    /// the match happens to be the list's first or only entry. Drives `run_canary` with a
+    /// finding whose `about` is `["unrelated.rs", "/home/dev/repo/src/sum.rs"]` against anchor
+    /// `"src/sum.rs"`: the match is the SECOND entry, behind an unrelated file that must not
+    /// short-circuit the search.
+    a_tolerant_match_in_a_later_about_entry_still_scores_the_catch: assert_caught_by(
+        "multi-about",
+        "src/sum.rs",
+        &[TIER_LENS],
         "the finding's second about-entry ('/home/dev/repo/src/sum.rs') is a tolerant \
          spelling of the anchor 'src/sum.rs' - the lens tier must catch this even though \
          an unrelated file precedes it in the same finding's about list, proving the catch \
-         search does not stop at (or require) the first entry"
+         search does not stop at (or require) the first entry",
     );
-}
-
-/// An EMPTY `about` entry must never score a catch on its own - not even against an anchor
-/// ending in a path separator, where `paths_match`'s suffix-stripping previously inverted
-/// an absent value into a spurious match (`str::strip_suffix("")` trivially succeeds on any
-/// haystack). Drives `run_canary` with a finding whose `about` is
-/// `["", "totally-unrelated.rs"]` against a trailing-slash anchor (`parse_item` applies no
-/// shape validation to a corpus author's `anchor:` field, so this is a reachable real
-/// shape, not a contrived one) - neither entry names the anchor, so the lens tier must not
-/// catch it.
-#[test]
-fn an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_anchor() {
-    let store = Store::open(":memory:").expect("an in-memory store opens");
-    let corpus = vec![item("empty-about-trap", "corpus/")];
-
-    let report = run_canary(
-        &store,
-        &AttributionDriver,
-        &cfg(),
-        &panel(),
-        &corpus,
-        default_jobs(),
-        &|_, _| {},
-    )
-    .expect("run_canary succeeds through the public entry");
-
-    assert_eq!(report.outcomes.len(), 1);
-    let outcome = &report.outcomes[0];
-    assert!(
-        outcome.caught_by.is_empty(),
-        "neither '' nor 'totally-unrelated.rs' names the anchor 'corpus/' - an empty \
-         about entry must never invert into a spurious catch just because the anchor ends \
-         in a path separator; got caught_by = {:?}",
-        outcome.caught_by
-    );
+    /// An EMPTY `about` entry must never score a catch on its own - not even against an anchor
+    /// ending in a path separator, where `paths_match`'s suffix-stripping previously inverted
+    /// an absent value into a spurious match (`str::strip_suffix("")` trivially succeeds on any
+    /// haystack). Drives `run_canary` with a finding whose `about` is
+    /// `["", "totally-unrelated.rs"]` against a trailing-slash anchor (`parse_item` applies no
+    /// shape validation to a corpus author's `anchor:` field, so this is a reachable real
+    /// shape, not a contrived one) - neither entry names the anchor, so the lens tier must not
+    /// catch it.
+    an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_anchor:
+        assert_caught_by(
+            "empty-about-trap",
+            "corpus/",
+            &[],
+            "neither '' nor 'totally-unrelated.rs' names the anchor 'corpus/' - an empty \
+             about entry must never invert into a spurious catch just because the anchor \
+             ends in a path separator",
+        );
 }

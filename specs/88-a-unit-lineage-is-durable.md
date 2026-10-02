@@ -8,10 +8,10 @@ alone and was then rejected for a defect its abandoned lineage had already fixed
 (adj-u86c3-r4-out-of-line-exclusion-still-unmigrated). (2) A fresh run adopts a prior unit's
 durable branch only when the planner reproduces the same slug; the planner named criterion 1
 `u86-c1-exclusion` where the escalated run had `u86c1-tests-not-nodes`, so `Worktree::create`
-(src/worktree.rs:131) would have branched from base and dropped six reviewed rounds; the operator
+(crates/rigger-worktree-git/src/worktree.rs:128) would have branched from base and dropped six reviewed rounds; the operator
 pre-created the branch by hand. (3) `UnitEscalated` is final for a run and the reaper removes the
 worktree, so a human who wants one more attempt must replan the whole spec. (4) The plan and
-plan-critique stages integrate nothing (`REVIEW_ONLY_NO_ARTIFACT`, src/conductor.rs:641); the
+plan-critique stages integrate nothing (`REVIEW_ONLY_NO_ARTIFACT`, crates/rigger-conductor/src/conductor.rs:506); the
 first run's planner committed an approved spec amendment (b6a471c) in its worktree, it reached no
 branch, and the fresh run's critique rejected the plan for the gap that amendment had closed.
 Operator rule: a unit's reviewed history is never discarded by the harness.
@@ -28,7 +28,7 @@ here `docs/audit/*.json` - the report beside them is partly hand-written and its
 command in the worktree and committing, with no spawn at all.
 
 ADOPTION KEYS ON THE CRITERION, decided: a unit adopts a prior run's `rigger/u/<id>` branch when
-the prior unit's `criterion_stable_id` (src/conductor.rs:8676) equals this unit's, regardless of
+the prior unit's `criterion_stable_id` (crates/rigger-conductor/src/conductor.rs:8230) equals this unit's, regardless of
 the planner's slug: the conductor creates `rigger/u/<new-id>` at the prior tip (a new ref, never
 a rename, so the old name stays valid), `Worktree::create` then adopts as today, and `UnitStarted`
 records `adopted_from: {unit, tip}`. Prior units that reached `UnitIntegrated` are never adopted

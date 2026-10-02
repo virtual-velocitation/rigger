@@ -1,0 +1,52 @@
+[package]
+name = "rigger-graph-sqlite"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's context-graph persistence adapter: the SQLite projector that folds the event log into the bi-temporal graph behind the Projection port."
+
+[lib]
+name = "rigger_graph_sqlite"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store", "rigger-store-sqlite/store"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-process/core", "rigger-root/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The one SQLite opener every store connection goes through (a same-ring edge).
+rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Names the field a payload the fold cannot deserialize fails on (`check_fold_payload`).
+serde_path_to_error = "0.1"
+
+# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `backup`: a graph rebuild copies its finished shadow file into the live one in one transaction.
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+
+[dev-dependencies]
+tempfile = "3"
+# The shared host fixtures the rebuild-lock tests use read a process's open files through the
+# process adapters' reader (`holders::open_files`) and name the reaper; a test is its own
+# composition root, so it reaches them through this workspace dev-dependency edge. `core` above
+# forwards to it, so this crate's core-lane tests build it in the same lane as every other
+# dependency.
+rigger-process = { path = "../rigger-process", default-features = false }
+# Three fold tests name root-crate vocabulary that has no inner home yet: the conductor's
+# `META_SPAWN` meta key, the `TYPE_BLAST_RADIUS_COMPUTED` event type and `metrics::project`
+# (recorded in tests/boundary_audit.rs ADAPTER_VIOLATIONS). A test is its own composition root,
+# so it reaches them through the root package as a dev-dependency, renamed because the shared
+# fixtures already call this crate `rigger`. No default features, so the dev-dependency never
+# widens the root's lane when both crates are tested in one invocation; `core` above forwards to
+# it, so this crate's core-lane tests build the root in the same lane as every other dependency.
+rigger-root = { package = "rigger", path = "../..", default-features = false }
+
+[lints]
+workspace = true

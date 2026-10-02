@@ -9,15 +9,15 @@ added; the loop's bounded escalation is unchanged. This spec implements Workstre
 ## Design
 
 Builds on the existing config validation (`config::load`, `ReviewPanel::validate_depth`,
-`ReviewPanel::agent_ids` in `src/config.rs`), the `rigger validate` command
+`ReviewPanel::agent_ids` in `crates/rigger-domain/src/config.rs`), the `rigger validate` command
 (`cmd_validate`, `validate_advisories` in `src/main.rs`), the fail-closed integration
 gate (`verdict_approves`, `run_adjudicator`, `IntegrationApproval` in
-`src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
-`normalize_ws`, `baseline_units`, `PLAN_PROTOCOL` in `src/conductor.rs`), and the run
+`crates/rigger-conductor/src/conductor.rs`), the planner-to-baseline reconciliation (`harvest_proposed`,
+`normalize_ws`, `baseline_units`, `PLAN_PROTOCOL` in `crates/rigger-conductor/src/conductor.rs`), and the run
 entry / anchoring (`cmd_workflow`, `parse_run_args`, `load_criteria` in `src/main.rs`;
-`Worktree::ensure_run_branch`, `ref_resolves` in `src/worktree.rs`).
+`Worktree::ensure_run_branch`, `ref_resolves` in `crates/rigger-worktree-git/src/worktree.rs`).
 
-**Unit 1 - gating-persona verdict-line static lint (touches `src/config.rs`,
+**Unit 1 - gating-persona verdict-line static lint (touches `crates/rigger-config-files/src/config.rs`,
 `src/main.rs`).** The integration gate reads a gating agent's RESULT output for a
 `{"verdict":...}` line; it never reads emitted events (this is deliberate - see the
 addendum's load-bearing decisions). A gating agent (a review adjudicator on any tier, or
@@ -36,7 +36,7 @@ check runs at `config::load` time so a `rigger run`/`rigger workflow`/`rigger st
 config with a non-compliant gating persona REFUSES to begin with the same fix message,
 rather than starting a doomed run.
 
-**Unit 3 - runtime verdict-channel mismatch detection (touches `src/conductor.rs`).**
+**Unit 3 - runtime verdict-channel mismatch detection (touches `crates/rigger-conductor/src/conductor.rs`).**
 Backstops a persona that passed the lint but still returned no verdict. When a gating
 spawn returns a result with NO parseable verdict line AND an approve-shaped verdict was
 emitted via `rigger_emit` during that spawn, the conductor HARD-ERRORS that unit with the
@@ -45,16 +45,16 @@ the verdict line"), instead of folding the empty verdict as a reject and remedia
 This is the diagnostic use of events: events explain the failure, the result channel
 still decides.
 
-**Unit 4 - spec-shape lint (touches `src/main.rs`, `src/spec.rs`).** `rigger validate`
+**Unit 4 - spec-shape lint (touches `src/main.rs`, `crates/rigger-domain/src/spec.rs`).** `rigger validate`
 today accepts no spec argument. Make it accept an optional spec path and emit ADVISORY
 warnings (heuristic, never a hard failure) that name the rule and recommend the fix, for:
 a checkbox containing multiple observable behaviors; indented sub-bullets under a checkbox
 that read as separate criteria; a criterion long enough that a verbatim planner copy is
 unreliable. Each advisory recommends "one observable behavior per criterion; put type
 shapes and detail in a non-criteria Notes section." Reuses `extract_criteria`
-(`src/spec.rs`).
+(`crates/rigger-domain/src/spec.rs`).
 
-**Unit 5 - planner-to-baseline stable-id match (touches `src/conductor.rs`).** The
+**Unit 5 - planner-to-baseline stable-id match (touches `crates/rigger-conductor/src/conductor.rs`).** The
 conductor reconciles a planner's proposed unit against its baseline by comparing the
 criterion text with only whitespace normalization (`normalize_ws`), so a planner that
 paraphrases or truncates a criterion it was told to copy verbatim produces a proposal
@@ -67,7 +67,7 @@ surface (no new event type) so the extra unit is legible. A proposal mapping to 
 baseline id already claimed is merged, never double-run.
 
 **Unit 6 - `--base` reachability + missing-files refusal (touches `src/main.rs`,
-`src/worktree.rs`).** The default base `origin/main` is correct and stays, but is
+`crates/rigger-worktree-git/src/worktree.rs`).** The default base `origin/main` is correct and stays, but is
 unreachable-to-override on the commands an operator uses: `rigger workflow <spec> --base`
 errors "expected at most one spec path" and `rigger run --base` errors "unknown flag".
 Accept `--base <ref>` on both `cmd_workflow` and `parse_run_args` and thread it to the run

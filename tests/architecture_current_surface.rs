@@ -42,25 +42,11 @@
 //! changes to the port and fails RED the moment the front door and the code disagree
 //! about the contract a consumer must implement.
 
-use std::path::PathBuf;
+mod common;
 
-/// The committed architecture document, resolved from the manifest dir so the test does
-/// not depend on the process CWD (integration tests may run from anywhere).
-fn architecture_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("docs")
-        .join("architecture.md");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
-
-/// The committed event-store port, resolved the same CWD-independent way.
-fn eventstore_source() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("eventstore")
-        .join("mod.rs");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
-}
+use common::repo::assert_doc_carries_none_of;
+use common::repo::missing_rows;
+use common::repo::repo_text;
 
 /// The return type `EventStore::append` is declared with inside `text`, extracted rather
 /// than matched: find the trait, then its `append` arm, then the arrow that closes the
@@ -150,13 +136,9 @@ const WRONG_DEFAULT_OR_RETIRED_PHRASINGS: &[&str] = &[
 
 #[test]
 fn architecture_names_the_current_store_and_inspector_surface() {
-    let text = architecture_text();
+    let text = repo_text("docs/architecture.md");
 
-    let missing: Vec<String> = CURRENT_SURFACE_TOKENS
-        .iter()
-        .filter(|(_, token)| !text.contains(token))
-        .map(|(surface, token)| format!("{surface}  (missing token: {token:?})"))
-        .collect();
+    let missing = missing_rows(&text, CURRENT_SURFACE_TOKENS, "missing token");
 
     assert!(
         missing.is_empty(),
@@ -171,8 +153,8 @@ fn architecture_names_the_current_store_and_inspector_surface() {
 
 #[test]
 fn architecture_renders_the_event_store_port_the_source_declares() {
-    let declared = append_return_type(&eventstore_source());
-    let rendered = append_return_type(&architecture_text());
+    let declared = append_return_type(&repo_text("crates/rigger-domain/src/eventstore.rs"));
+    let rendered = append_return_type(&repo_text("docs/architecture.md"));
 
     assert_eq!(
         rendered, declared,
@@ -184,26 +166,17 @@ fn architecture_renders_the_event_store_port_the_source_declares() {
     );
 }
 
-#[test]
-fn architecture_names_no_retired_or_wrong_default_grounder() {
-    let text = architecture_text().to_lowercase();
-
-    let inversions: Vec<&str> = WRONG_DEFAULT_OR_RETIRED_PHRASINGS
-        .iter()
-        .copied()
-        .filter(|phrasing| text.contains(phrasing))
-        .collect();
-
-    assert!(
-        inversions.is_empty(),
-        "docs/architecture.md must describe the grounder surface that EXISTS (spec 57): \
-         `symbols` is the unset default (an unset `defaults.grounder` resolves to it and it \
-         ships in the default build), and `grep` / `nop` are the explicit, named-only \
-         opt-outs. The vector engine `turbovec` and its `hybrid` composite were RETIRED - they \
-         are neither the default nor a live choice, so the front-door document must not name \
-         them, and must never call `grep` the default. Every grounder enumeration (the seams \
-         diagram, the seams table, the config example, the module map, and ADR-0001 R4) must \
-         name `symbols` as the default. Inverting or retired phrasings still present in the \
-         document: {inversions:#?}"
+rigger::test_cases! {
+    architecture_names_no_retired_or_wrong_default_grounder: assert_doc_carries_none_of(
+        "docs/architecture.md",
+        WRONG_DEFAULT_OR_RETIRED_PHRASINGS,
+        "must describe the grounder surface that EXISTS (spec 57): `symbols` is the unset \
+         default (an unset `defaults.grounder` resolves to it and it ships in the default \
+         build), and `grep` / `nop` are the explicit, named-only opt-outs. The vector engine \
+         `turbovec` and its `hybrid` composite were RETIRED - they are neither the default nor \
+         a live choice, so the front-door document must not name them, and must never call \
+         `grep` the default. Every grounder enumeration (the seams diagram, the seams table, \
+         the config example, the module map, and ADR-0001 R4) must name `symbols` as the \
+         default",
     );
 }

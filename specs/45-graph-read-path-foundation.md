@@ -18,7 +18,7 @@ surface only; it does not change the fold or add an event type.
 ### A dedicated, lazy graph provider
 
 `serve` today receives one `provider` closure (`src/main.rs`) that `dash_read_graph` fills with a
-run-seeded `subgraph(graph_seeds(events), 2)`, and `route` (`src/dash.rs`) serves every `/api/*` path -
+run-seeded `subgraph(graph_seeds(events), 2)`, and `route` (`crates/rigger-dash/src/dash.rs`) serves every `/api/*` path -
 including the state poll and the graph views - purely over that one pre-fetched `DashInputs` tuple. The
 state poll (`/api/state`, `/api/events`) runs every 1.5s and does NOT need the graph; the graph views
 run only on panel load, a drill, a lens flip, or a call query.
@@ -50,7 +50,7 @@ creates the store; on an existing one it refreshes incrementally.
 ### Additive indexes
 
 Add two indexes through the existing additive-migration pattern (the `column_exists`-style guarded
-`CREATE INDEX IF NOT EXISTS` in `src/contextgraph/sqlite.rs`), so whole-graph reads and the directed
+`CREATE INDEX IF NOT EXISTS` in `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`), so whole-graph reads and the directed
 call traversal (spec 46) stay sub-linear as a repository grows:
 
 - a PARTIAL index on the live-edge relation - `edges(rel, from_id) WHERE valid_to IS NULL` - for the

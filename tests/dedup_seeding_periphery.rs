@@ -9,7 +9,7 @@
 //! neither can see is the boundary:
 //!
 //! 1. The four new items (`META_REPLAY_KEY`, `DERIVED_INDEX_TYPES`, `is_derived_index_type`,
-//!    `project_scoped_replay_keys`) are now PUBLIC API with an EXTERNAL consumer - `src/main.rs`
+//!    `project_scoped_latest_generations`) are now PUBLIC API with an EXTERNAL consumer - `src/main.rs`
 //!    reaches them as `rigger::ingest::...` across the crate boundary. Nothing drove them from
 //!    outside the crate.
 //! 2. The `<prefix>/<file>@<hash>#<i>` content key gained a READER (`derived_key_parts`) beside
@@ -41,7 +41,7 @@ use rigger::contextgraph::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use rigger::eventstore::Event;
-use rigger::ingest::{is_derived_index_type, project_scoped_replay_keys, DERIVED_INDEX_TYPES};
+use rigger::ingest::{is_derived_index_type, DERIVED_INDEX_TYPES};
 use std::collections::BTreeSet;
 
 /// An event of `type_` carrying `key` in the replay-key metadata slot - the exact shape both ingest
@@ -150,7 +150,7 @@ fn no_non_derived_event_is_eligible_however_its_replay_key_is_spelled() {
         .collect();
 
     assert!(
-        project_scoped_replay_keys(&stream).is_empty(),
+        reference_replay_keys(&stream).is_empty(),
         "no non-derived event may contribute a suppression key - the type test is asked first, so \
          a domain fact whose replay key is spelled like a content key is still passed over"
     );
@@ -168,8 +168,8 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
         keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/a.md@h9#0"),
     ];
 
-    let first = project_scoped_replay_keys(&stream);
-    let second = project_scoped_replay_keys(&stream);
+    let first = reference_replay_keys(&stream);
+    let second = reference_replay_keys(&stream);
 
     assert_eq!(
         first, second,
@@ -177,12 +177,11 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
          run and a cold build from disagreeing about what a fresh emit is redundant against"
     );
     assert!(
-        project_scoped_replay_keys(&[]).is_empty(),
+        reference_replay_keys(&[]).is_empty(),
         "an empty stream suppresses nothing"
     );
     assert!(
-        project_scoped_replay_keys(&[Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())])
-            .is_empty(),
+        reference_replay_keys(&[Event::new(TYPE_CODE_ENTITY_EXTRACTED, Vec::new())]).is_empty(),
         "a derived event with no replay key at all names no generation, so it suppresses nothing"
     );
 }
@@ -229,7 +228,7 @@ fn derived_keys_recorded_by_an_earlier_run_still_seed_the_next_run() {
     stream.push(keyed(TYPE_DOC_CONCEPT_EXTRACTED, "gd/docs/moving.md@h2#0"));
     stream.push(keyed(TYPE_DOC_LINK_EXTRACTED, "gd/docs/moving.md@h2#1"));
 
-    let seed: BTreeSet<String> = project_scoped_replay_keys(&stream).into_iter().collect();
+    let seed: BTreeSet<String> = reference_replay_keys(&stream);
 
     // DIRECTION ONE - the untouched file's generation was recorded by the EARLIER run and must
     // still suppress. Scope the read to the current run and this set is missing it, so the file's
@@ -313,7 +312,7 @@ fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
                 .with_meta(rigger::ingest::META_REPLAY_KEY, key),
         ),
     ] {
-        let seen: BTreeSet<String> = project_scoped_replay_keys(&[event]).into_iter().collect();
+        let seen: BTreeSet<String> = reference_replay_keys(&[event]);
         assert_eq!(
             seen, expected,
             "the suppression predicate must read a key stamped through {via}; a stamping half and \
@@ -336,10 +335,7 @@ fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
 fn temp_ingestable_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = common::git::run_git(root, &["init", "-q"]);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
@@ -365,10 +361,7 @@ fn temp_ingestable_project() -> tempfile::TempDir {
 fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = common::git::run_git(root, &["init", "-q"]);
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
     for (pkg, name) in [("pkg@1.2.3", "alpha"), ("pkg@4.5.6", "beta")] {
         let package = root.join("src").join(pkg);
@@ -388,13 +381,10 @@ fn temp_project_with_at_signs_in_its_paths() -> tempfile::TempDir {
 /// the real keys the log will carry - never a spelling this test invented.
 #[cfg(feature = "symbols")]
 fn minted(root: &std::path::Path) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
-        for (key, ev) in batch {
-            out.push((key.clone(), ev.type_.clone()));
-        }
-    });
-    out
+    minted_events(root)
+        .into_iter()
+        .map(|(key, event)| (key, event.type_))
+        .collect()
 }
 
 /// The minted keys as a set, for comparison against what the predicate hands a sink back.
@@ -412,7 +402,7 @@ fn as_recorded(minted: &[(String, String)]) -> Vec<Event> {
 
 /// ROUND-TRIP CONTRACT between the key WRITER and the new key READER, over REAL keys.
 ///
-/// `key_batch` mints `<prefix>/<file>@<hash>#<i>`; `project_scoped_replay_keys` now parses that
+/// `key_batch` mints `<prefix>/<file>@<hash>#<i>`; `project_scoped_latest_generations` now parses that
 /// same string back into (batch identity, content generation). The unit test proves the reader's
 /// rule against keys a human typed - which cannot fail if the writer's format moves. This drives
 /// the SHIPPED walk over a real tree and asserts the reader recognises EVERY key it mints: the
@@ -443,9 +433,7 @@ fn every_content_key_the_walk_actually_mints_round_trips_through_the_predicate()
         "sanity: the design half of the derived index must have minted keys; got {keys:?}"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_replay_keys(&as_recorded(&recorded))
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&as_recorded(&recorded));
 
     assert_eq!(
         suppressed, keys,
@@ -497,9 +485,7 @@ fn a_real_batchs_generation_is_recovered_from_the_key_the_walk_minted() {
         "sanity: the edited source file must mint a fresh code batch"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_replay_keys(&recorded_before)
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&recorded_before);
 
     assert!(
         new_code_keys.is_disjoint(&suppressed),
@@ -546,9 +532,7 @@ fn two_real_files_under_at_sign_paths_keep_two_batch_identities_end_to_end() {
          whole premise of splitting the key from the right; got {keys:?}"
     );
 
-    let suppressed: BTreeSet<String> = project_scoped_replay_keys(&as_recorded(&recorded))
-        .into_iter()
-        .collect();
+    let suppressed: BTreeSet<String> = reference_replay_keys(&as_recorded(&recorded));
     assert_eq!(
         suppressed, keys,
         "every file's own minted keys must survive: no file's batch may retire another's because \
@@ -573,37 +557,6 @@ fn two_real_files_under_at_sign_paths_keep_two_batch_identities_end_to_end() {
     );
 }
 
-/// The project identity the binary resolves for `root`, mirrored here so a seed lands in the exact
-/// namespaced run stream the compiled binary reads back: the tracked `.rigger/project.id` at the
-/// git top-level when present, else the git top-level basename, else `root`'s own basename.
-#[cfg(feature = "symbols")]
-fn run_stream_identity(root: &std::path::Path) -> String {
-    let toplevel = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel
-        .as_deref()
-        .map(std::path::Path::new)
-        .unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 /// Append events directly to the namespaced run stream under `root` - the store the compiled binary
 /// opens - standing in for facts a prior run recorded.
 #[cfg(feature = "symbols")]
@@ -625,61 +578,22 @@ fn seed_run_stream(root: &std::path::Path, events: &[Event]) {
         .unwrap();
 }
 
-/// The whole namespaced run stream under `root`, read back the way the binary reads it.
-#[cfg(feature = "symbols")]
-fn read_run_stream(root: &std::path::Path) -> Vec<Event> {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(
-        root.join(".rigger")
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
-}
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr, success).
 #[cfg(feature = "symbols")]
-fn run_rigger(cwd: &std::path::Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = std::process::Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        // Never let a short-lived integration invocation spawn a real dashboard, and never let it
-        // register a phantom instance in the operator's real machine-global registry.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// How many events `rigger graph build` reported ingesting, parsed from the line it prints - the
-/// shipped observable for "this build appended nothing".
+use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
-fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
-}
+use common::cli::read_run_events;
+#[cfg(feature = "symbols")]
+use common::cli::run_rigger;
+#[cfg(feature = "symbols")]
+use common::cli::run_stream_identity;
+#[cfg(feature = "symbols")]
+use common::fixtures::minted_events;
+use common::fixtures::reference_replay_keys;
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
 /// seeding are two processes that must agree, and this criterion makes them agree by sharing ONE
@@ -703,8 +617,8 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
         "sanity: the first build over a fresh tree must ingest the derived index; got:\n{out}"
     );
 
-    let log = read_run_stream(root);
-    let suppressed: BTreeSet<String> = project_scoped_replay_keys(&log).into_iter().collect();
+    let log = read_run_events(root);
+    let suppressed: BTreeSet<String> = reference_replay_keys(&log);
     assert_eq!(
         suppressed,
         minted_keys(root),
@@ -725,7 +639,7 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
         "a re-build over a byte-identical tree must append NOTHING; got:\n{out2}"
     );
     assert_eq!(
-        read_run_stream(root)
+        read_run_events(root)
             .iter()
             .filter(|e| is_derived_index_type(&e.type_))
             .count(),
@@ -791,7 +705,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
         "the new file must be ingested despite domain events pre-claiming its content keys; got:\n{out2}"
     );
 
-    let recorded: BTreeSet<String> = read_run_stream(root)
+    let recorded: BTreeSet<String> = read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
@@ -817,12 +731,12 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
 
 /// Every `<prefix>/<file>@<hash>#<i>` key the log has EVER recorded on a derived-index event under
 /// `root` - across generations, so a superseded generation is still in here. This is deliberately
-/// NOT `project_scoped_replay_keys`: that returns the LIVE set (each file's latest generation
+/// NOT `project_scoped_latest_generations`: that returns the LIVE set (each file's latest generation
 /// only), and the difference between the two is exactly what "only what changed is re-emitted"
 /// and "the log holds the latest generation in full" are claims about.
 #[cfg(feature = "symbols")]
 fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
-    read_run_stream(root)
+    read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
@@ -834,7 +748,7 @@ fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
 /// "only what changed is re-emitted" has to be measured against this and not against the set.
 #[cfg(feature = "symbols")]
 fn recorded_derived_events(root: &std::path::Path) -> usize {
-    read_run_stream(root)
+    read_run_events(root)
         .iter()
         .filter(|e| is_derived_index_type(&e.type_))
         .count()
@@ -954,9 +868,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     // live. The predicate over the log is the shipped read of "what is already recorded", so this
     // equality is the net contract itself: the edited file's superseded generation is retired, the
     // skipped files' generations are still there whole, and nothing else is live.
-    let live: BTreeSet<String> = project_scoped_replay_keys(&read_run_stream(root))
-        .into_iter()
-        .collect();
+    let live: BTreeSet<String> = reference_replay_keys(&read_run_events(root));
     assert_eq!(
         live, tree_now,
         "after a mix of skipping and re-ingest the live suppression set must be exactly the tree's \

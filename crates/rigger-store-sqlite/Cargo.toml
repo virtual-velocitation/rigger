@@ -1,0 +1,39 @@
+[package]
+name = "rigger-store-sqlite"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's persistence adapters: the event-store backends (SQLite, KurrentDB), the one SQLite opener, the run/spawn/progress write halves, the machine-global instance registry and the one advisory lock-file guard."
+
+[lib]
+name = "rigger_store_sqlite"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
+# root forwards both features, so every lane compiles exactly the surface it did before.
+default = ["store"]
+store = ["rigger-domain/store"]
+core = ["rigger-domain/core"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The native-only adapter dependencies, target-gated exactly as in the root manifest: the
+# `wasm32` core lane never builds them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+kurrentdb = { version = "1.2" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Drives the KurrentDB adapter's contract test against a real KurrentDB in a container.
+testcontainers = { version = "0.27" }
+
+[lints]
+workspace = true

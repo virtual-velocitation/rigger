@@ -30,65 +30,24 @@
 //! REPROJECT_NO_CONCEPT}`), so they guard the exact public boundary the served panel consumes, and
 //! drive the served `route` end-to-end.
 
-use std::collections::HashMap;
+mod common;
 
+use common::fixtures::def_node as def;
+use common::fixtures::edge;
+use common::fixtures::node_with_optional_attrs;
+use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
+use common::served::served_json;
+use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
-    REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
+    Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS, REL_CONTAINS,
+    REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, Cluster, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
+    reproject, Cluster, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
     REPROJECT_NO_CONCEPT,
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
-
-/// A code-entity DEFINITION node (a `name` attr marks it a real definition, so a files re-grain folds
-/// it under its OWN file and a derived lens reads its memberships).
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A plain node of a given kind (a `file` subject, or a `community` / `concept` super-node carrying
-/// its deterministic display `label`).
-fn node(id: &str, kind: &str, label: Option<&str>) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    };
-    if let Some(l) = label {
-        n.attrs.insert("label".to_string(), l.to_string());
-    }
-    n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: "extracted".to_string(),
-    }
-}
-
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
-
-fn concepts_lens() -> Lens {
-    Lens::from_query(Some("concepts"), Some("1"))
-}
 
 /// A code-entity kind-fallback bucket of `count` members (the membership-less fold criterion 1 ships).
 fn kind_bucket(count: usize) -> Cluster {
@@ -98,26 +57,6 @@ fn kind_bucket(count: usize) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
     }
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(resp.status, 200, "GET {target} must be served 200");
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 // --- THE EMPTY CELL: a derived lens with no membership carries the documented message ---------------
@@ -133,17 +72,37 @@ const COMM_Y: &str = "community/1/1";
 fn communities_no_concepts_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(FILE_SUBJECT, KIND_FILE, None),
-            node(COMM_X, KIND_COMMUNITY, Some("x")),
-            node(COMM_Y, KIND_COMMUNITY, Some("y")),
+            node_with_optional_attrs(FILE_SUBJECT, KIND_FILE, &[("label", None)]),
+            node_with_optional_attrs(COMM_X, KIND_COMMUNITY, &[("label", Some("x"))]),
+            node_with_optional_attrs(COMM_Y, KIND_COMMUNITY, &[("label", Some("y"))]),
             def("src/pkg/mod.rs::e1", "e1"),
             def("src/pkg/mod.rs::e2", "e2"),
         ],
         edges: vec![
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e1", REL_CONTAINS),
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e2", REL_CONTAINS),
-            edge("src/pkg/mod.rs::e1", COMM_X, REL_IN_COMMUNITY),
-            edge("src/pkg/mod.rs::e2", COMM_Y, REL_IN_COMMUNITY),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e1",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e2",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e1",
+                COMM_X,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e2",
+                COMM_Y,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     }
 }
@@ -159,7 +118,7 @@ fn a_derived_regrain_with_no_membership_carries_the_documented_empty_cell_messag
 
     // CONCEPTS lens: the two entities realize no concept -> the empty cell, genuinely empty (criterion
     // 4's total purity: no own-kind fallback).
-    let concepts = reproject(&graph, FILE_SUBJECT, &concepts_lens());
+    let concepts = reproject(&graph, FILE_SUBJECT, &lens("concepts"));
     assert_eq!(
         concepts.empty_state.as_deref(),
         Some(REPROJECT_NO_CONCEPT),
@@ -176,7 +135,7 @@ fn a_derived_regrain_with_no_membership_carries_the_documented_empty_cell_messag
     );
 
     // CODE lens: the two entities ARE in communities -> a FULL cell, no message.
-    let code = reproject(&graph, FILE_SUBJECT, &code_lens());
+    let code = reproject(&graph, FILE_SUBJECT, &lens("code"));
     assert_eq!(
         code.empty_state, None,
         "a re-grain that DOES fold into community buckets carries no empty-cell message: {code:?}"
@@ -200,14 +159,19 @@ const CONCEPT_ONLY: &str = "concept/5/0";
 fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message() {
     let graph = Graph {
         nodes: vec![
-            node(CONCEPT_ONLY, KIND_CONCEPT, Some("idea")),
+            node_with_optional_attrs(CONCEPT_ONLY, KIND_CONCEPT, &[("label", Some("idea"))]),
             def("src/a.rs::only", "only"),
         ],
-        edges: vec![edge("src/a.rs::only", CONCEPT_ONLY, REL_REALIZES)],
+        edges: vec![edge(
+            "src/a.rs::only",
+            CONCEPT_ONLY,
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     };
 
     // CODE lens: the member is in no community -> the code empty cell.
-    let code = reproject(&graph, CONCEPT_ONLY, &code_lens());
+    let code = reproject(&graph, CONCEPT_ONLY, &lens("code"));
     assert_eq!(
         code.empty_state.as_deref(),
         Some(REPROJECT_NO_COMMUNITY),
@@ -255,18 +219,38 @@ const MIXED_CONCEPT: &str = "concept/1/0";
 fn mixed_membership_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(MIXED_FILE, KIND_FILE, None),
-            node(MIXED_COMM, KIND_COMMUNITY, Some("cx")),
-            node(MIXED_CONCEPT, KIND_CONCEPT, Some("cc")),
+            node_with_optional_attrs(MIXED_FILE, KIND_FILE, &[("label", None)]),
+            node_with_optional_attrs(MIXED_COMM, KIND_COMMUNITY, &[("label", Some("cx"))]),
+            node_with_optional_attrs(MIXED_CONCEPT, KIND_CONCEPT, &[("label", Some("cc"))]),
             def("src/mix/mod.rs::e1", "e1"),
             def("src/mix/mod.rs::e2", "e2"),
         ],
         edges: vec![
-            edge(MIXED_FILE, "src/mix/mod.rs::e1", REL_CONTAINS),
-            edge(MIXED_FILE, "src/mix/mod.rs::e2", REL_CONTAINS),
+            edge(
+                MIXED_FILE,
+                "src/mix/mod.rs::e1",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                MIXED_FILE,
+                "src/mix/mod.rs::e2",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
             // e1 folds into a derived bucket under BOTH lenses; e2 folds into neither.
-            edge("src/mix/mod.rs::e1", MIXED_COMM, REL_IN_COMMUNITY),
-            edge("src/mix/mod.rs::e1", MIXED_CONCEPT, REL_REALIZES),
+            edge(
+                "src/mix/mod.rs::e1",
+                MIXED_COMM,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/mix/mod.rs::e1",
+                MIXED_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
         ],
     }
 }
@@ -286,7 +270,7 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
     let graph = mixed_membership_graph();
 
     // CODE lens: e1 is in a community, e2 is not -> a MIXED cell, no empty-cell message.
-    let code = reproject(&graph, MIXED_FILE, &code_lens());
+    let code = reproject(&graph, MIXED_FILE, &lens("code"));
     assert_eq!(
         code.total, 2,
         "the member set is {{e1, e2}} regardless of membership: {code:?}"
@@ -311,7 +295,7 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
     );
 
     // CONCEPTS lens: e1 realizes a concept, e2 does not -> equally a MIXED, full cell.
-    let concepts = reproject(&graph, MIXED_FILE, &concepts_lens());
+    let concepts = reproject(&graph, MIXED_FILE, &lens("concepts"));
     assert_eq!(
         concepts.total, 2,
         "the member set is {{e1, e2}} under concepts too: {concepts:?}"
@@ -355,7 +339,7 @@ fn an_absent_subject_under_a_derived_lens_is_the_documented_empty_cell() {
     // Any graph works; the subject is simply not one of its nodes.
     let graph = communities_no_concepts_graph();
 
-    let code = reproject(&graph, "no/such/subject", &code_lens());
+    let code = reproject(&graph, "no/such/subject", &lens("code"));
     assert_eq!(
         code.total, 0,
         "an absent subject has an empty member set: {code:?}"
@@ -370,7 +354,7 @@ fn an_absent_subject_under_a_derived_lens_is_the_documented_empty_cell() {
         "the absent-subject code cell carries the documented empty-cell message: {code:?}"
     );
 
-    let concepts = reproject(&graph, "no/such/subject", &concepts_lens());
+    let concepts = reproject(&graph, "no/such/subject", &lens("concepts"));
     assert_eq!(
         concepts.total, 0,
         "an absent subject has an empty member set under concepts: {concepts:?}"
@@ -395,23 +379,33 @@ const WIDE_CONCEPT: &str = "concept/2/0";
 /// bucket and one wholly within the kept set.
 fn wide_files_graph() -> Graph {
     let n = CLUSTER_RENDER_BUDGET + 1;
-    let mut nodes = vec![node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide"))];
+    let mut nodes = vec![node_with_optional_attrs(
+        WIDE_CONCEPT,
+        KIND_CONCEPT,
+        &[("label", Some("wide"))],
+    )];
     let mut edges = Vec::new();
     for i in 0..n {
         // Zero-padded so the file KEY ordering is lexicographic 00 < 01 < ... < 60: the largest key
         // (index n-1) is the one the (count-tie, key-asc) rank drops.
         let id = format!("src/f{i:02}.rs::e{i}");
         nodes.push(def(&id, &format!("e{i}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     // A coupling edge from the LAST (dropped) member into the first: its super-edge must be pruned.
     edges.push(edge(
         &format!("src/f{:02}.rs::e{}", n - 1, n - 1),
         "src/f00.rs::e0",
         REL_CALLS,
+        TIER_EXTRACTED,
     ));
     // A coupling edge wholly within the kept set (f00 -> f01): its super-edge must survive.
-    edges.push(edge("src/f00.rs::e0", "src/f01.rs::e1", REL_CALLS));
+    edges.push(edge(
+        "src/f00.rs::e0",
+        "src/f01.rs::e1",
+        REL_CALLS,
+        TIER_EXTRACTED,
+    ));
     Graph { nodes, edges }
 }
 
@@ -475,10 +469,15 @@ fn a_wide_regrain_caps_to_the_render_budget_and_prunes_dangling_edges() {
     let small = reproject(
         &Graph {
             nodes: vec![
-                node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide")),
+                node_with_optional_attrs(WIDE_CONCEPT, KIND_CONCEPT, &[("label", Some("wide"))]),
                 def("src/one.rs::a", "a"),
             ],
-            edges: vec![edge("src/one.rs::a", WIDE_CONCEPT, REL_REALIZES)],
+            edges: vec![edge(
+                "src/one.rs::a",
+                WIDE_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            )],
         },
         WIDE_CONCEPT,
         &Lens::Files,
@@ -499,43 +498,13 @@ fn a_wide_regrain_caps_to_the_render_budget_and_prunes_dangling_edges() {
 
 // --- THE SHARED MEMBER: a multi-concept member appears once, flagged ---------------------------------
 
-const SUB_C: &str = "concept/1/0";
-const OTHER_D: &str = "concept/1/1";
-const SHARED_MEMBER: &str = "src/a.rs::m";
-const SOLO_MEMBER: &str = "src/b.rs::n";
-
-/// The concept subject `C` has two members: `n` realizes only `C`, and `m` realizes BOTH `C` and `D`.
-/// `D` is realized by two more nodes (so `D` is the larger concept and is `m`'s PRIMARY bucket). Under
-/// the concepts re-grain of `C`'s members, `m` appears ONCE (in `D`) and is flagged `shared`.
-fn shared_member_graph() -> Graph {
-    Graph {
-        nodes: vec![
-            node(SUB_C, KIND_CONCEPT, Some("cc")),
-            node(OTHER_D, KIND_CONCEPT, Some("dd")),
-            def(SHARED_MEMBER, "m"),
-            def(SOLO_MEMBER, "n"),
-            def("src/c.rs::p", "p"),
-            def("src/d.rs::q", "q"),
-        ],
-        edges: vec![
-            // C's members: m and n.
-            edge(SHARED_MEMBER, SUB_C, REL_REALIZES),
-            edge(SOLO_MEMBER, SUB_C, REL_REALIZES),
-            // m ALSO realizes D; D has two more realizers (p, q), so D is the larger -> m's primary.
-            edge(SHARED_MEMBER, OTHER_D, REL_REALIZES),
-            edge("src/c.rs::p", OTHER_D, REL_REALIZES),
-            edge("src/d.rs::q", OTHER_D, REL_REALIZES),
-        ],
-    }
-}
-
 /// A member realizing more than one concept appears ONCE (its primary bucket) and is FLAGGED in
 /// `shared`; a member realizing exactly one is never flagged. The bucket counts sum to the member-set
 /// size (no silent duplication), and the flag is empty under the code and files lenses.
 #[test]
 fn a_multi_concept_member_appears_once_and_is_flagged_shared() {
     let graph = shared_member_graph();
-    let re = reproject(&graph, SUB_C, &concepts_lens());
+    let re = reproject(&graph, SUB_C, &lens("concepts"));
 
     assert_eq!(re.total, 2, "C's member set is {{m, n}}");
     assert_eq!(
@@ -578,7 +547,7 @@ fn a_multi_concept_member_appears_once_and_is_flagged_shared() {
     );
 
     // A node carries at most ONE community and files never share, so `shared` is empty under those.
-    let code = reproject(&graph, SUB_C, &code_lens());
+    let code = reproject(&graph, SUB_C, &lens("code"));
     assert!(
         code.shared.is_empty(),
         "the code lens never flags a shared member: {code:?}"
@@ -593,7 +562,7 @@ fn a_multi_concept_member_appears_once_and_is_flagged_shared() {
         !serde_json::to_value(reproject(
             &communities_no_concepts_graph(),
             FILE_SUBJECT,
-            &code_lens()
+            &lens("code")
         ))
         .unwrap()
         .as_object()

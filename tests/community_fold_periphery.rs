@@ -27,86 +27,25 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_COMMUNITY_ASSIGNED, TYPE_EDGE_INFERRED,
+    KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_COMMUNITY_ASSIGNED,
 };
-use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - deliberately bypassing the in-crate payload structs so a test pins the JSON contract,
-/// not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call is itself
-/// evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold one `CodeEntityExtracted` (spec 29a): a definition, folding its file node, the
-/// `<file>::<name>` entity node (carrying a `name` attr - the label source), and their `CONTAINS`
-/// edge. The coupling structure the community label's degree pick is computed over.
-fn entity(p: &Projector, pos: u64, file: &str, name: &str) {
-    apply_json(
-        p,
-        pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::json!({ "file": file, "name": name, "kind": "function", "line": pos, "lang": "rust" }),
-    );
-}
-
-/// Fold one caller-attributed reference (spec 37): a `<file>::<caller> --CALLS--> <file>::<callee>`
-/// edge, so a hub caller accrues real structural degree the deterministic label ranks by.
-fn call(p: &Projector, pos: u64, file: &str, callee: &str, caller: &str) {
-    apply_json(
-        p,
-        pos,
-        TYPE_EDGE_INFERRED,
-        serde_json::json!({ "file": file, "name": callee, "caller": caller, "lang": "rust" }),
-    );
-}
-
-/// The live `IN_COMMUNITY` targets of `member` in `g` (whole() returns only live edges), as a set.
-fn live_memberships(g: &Graph, member: &str) -> BTreeSet<String> {
-    g.edges
-        .iter()
-        .filter(|e| e.rel == REL_IN_COMMUNITY && e.from == member)
-        .map(|e| e.to.clone())
-        .collect()
-}
-
-/// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
-/// `KIND_COMMUNITY` node (id, kind, ordered attrs) and every LIVE `IN_COMMUNITY` edge (from, to),
-/// sorted. Two derivations of the same assignment SET must produce byte-identical snapshots.
-fn community_snapshot(g: &Graph) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    for n in &g.nodes {
-        if n.kind == KIND_COMMUNITY {
-            // `attrs` is a `BTreeMap`, so its Debug is key-ordered and byte-stable.
-            rows.push(format!("node\t{}\t{}\t{:?}", n.id, n.kind, n.attrs));
-        }
-    }
-    for e in &g.edges {
-        if e.rel == REL_IN_COMMUNITY {
-            rows.push(format!("edge\t{}\t{}", e.from, e.to));
-        }
-    }
-    rows.sort();
-    rows
-}
+mod common;
+use common::fixtures::{apply_call, apply_json, community_snapshot, def, live_targets};
 
 /// The canonical spec-53 coupling graph: an `apply_damage` hub that CALLS three symbols (degree-4
 /// highest-degree member), a `clamp` and a `send` in DIFFERENT directories (`src/combat`,
 /// `src/net`), and a `util.rs` pair. Shared so the community-layer tests fold the SAME structure.
 fn seed_coupling(p: &Projector) {
-    entity(p, 1, "src/combat/hit.rs", "apply_damage");
-    entity(p, 2, "src/combat/hit.rs", "clamp");
-    entity(p, 3, "src/net/socket.rs", "send");
-    entity(p, 4, "src/util.rs", "alpha");
-    entity(p, 5, "src/util.rs", "zeta");
+    def(p, 1, "src/combat/hit.rs", "apply_damage");
+    def(p, 2, "src/combat/hit.rs", "clamp");
+    def(p, 3, "src/net/socket.rs", "send");
+    def(p, 4, "src/util.rs", "alpha");
+    def(p, 5, "src/util.rs", "zeta");
     // `apply_damage` calls three symbols -> the highest-degree hub (1 CONTAINS + 3 CALLS).
-    call(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
-    call(p, 7, "src/combat/hit.rs", "min", "apply_damage");
-    call(p, 8, "src/combat/hit.rs", "max", "apply_damage");
+    apply_call(p, 6, "src/combat/hit.rs", "clamp", "apply_damage");
+    apply_call(p, 7, "src/combat/hit.rs", "min", "apply_damage");
+    apply_call(p, 8, "src/combat/hit.rs", "max", "apply_damage");
 }
 
 #[test]
@@ -117,7 +56,7 @@ fn a_minimal_community_assigned_event_folds_with_defaulted_attrs_backcompat() {
     // so these default arms are untested by it. A rebuild that replays a pre-field log must not
     // error, and the attrs must default deterministically rather than aborting the fold.
     let p = Projector::open(":memory:", "test").unwrap();
-    entity(&p, 1, "src/a.rs", "solo");
+    def(&p, 1, "src/a.rs", "solo");
     apply_json(
         &p,
         2,
@@ -234,7 +173,7 @@ fn a_community_assigned_event_without_a_fresh_key_is_a_non_boundary_and_never_su
     // absent-key path is untested by it. A pre-`fresh` log must replay without retiring anything
     // (the pass-boundary supersession is opt-in, gated on the emitter setting `fresh`).
     let p = Projector::open(":memory:", "test").unwrap();
-    entity(&p, 1, "a.rs", "x");
+    def(&p, 1, "a.rs", "x");
     // First membership, established WITHOUT a `fresh` key (the pre-field on-log form).
     apply_json(
         &p,
@@ -252,7 +191,7 @@ fn a_community_assigned_event_without_a_fresh_key_is_a_non_boundary_and_never_su
     );
 
     let g = p.whole().unwrap();
-    let live = live_memberships(&g, "a.rs::x");
+    let live = live_targets(&g, REL_IN_COMMUNITY, "a.rs::x");
     let expected: BTreeSet<String> = ["community/1/0".to_string(), "community/1/1".to_string()]
         .into_iter()
         .collect();
@@ -274,7 +213,7 @@ fn the_community_layer_serialized_literals_are_stable_and_the_fold_matches_the_o
     // entirely) must still hit the fold arm - the arm matches the persisted string, not a renamed
     // const - and must store the literal `community` kind / `IN_COMMUNITY` rel a later read expects.
     let p = Projector::open(":memory:", "test").unwrap();
-    entity(&p, 1, "a.rs", "x");
+    def(&p, 1, "a.rs", "x");
     apply_json(
         &p,
         2,

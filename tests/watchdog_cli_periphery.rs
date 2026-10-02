@@ -32,96 +32,62 @@ mod common;
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Stdio;
+use std::time::Duration;
 
+use common::cli::now_nanos;
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::seed_order_signature;
+use common::cli::seed_run_events;
+use common::cli::temp_project;
+use common::cli::temp_store_project;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-/// A throwaway project: its own git repo (so `project_identity()` resolves deterministically),
-/// with NO `.rigger` dir yet - mirrors `tests/cli.rs`'s `temp_project`.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Seed an initialized, EMPTY `.rigger/events.db` under `root` - stands in for the store a prior
-/// `rigger run`/`step` would have created, so `require_store_dir`'s walk finds a real store
-/// instead of refusing to fabricate one. Mirrors `tests/cli.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s
-/// `run_stream_identity`, which mirrors `StoreLocation::identity`'s own precedence: the tracked
-/// `.rigger/project.id` at the git top-level when present, else the git top-level basename, else
-/// `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream, standing in for the conductor
-/// minting them - mirrors `tests/cli.rs`'s `seed_run_events`. Requires `seed_store(root)` (or an
-/// equivalent prior append) to have run first.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
 
 // --- `rigger watch --once`: the composition root, driven through the real binary ---
+
+/// Runs `rigger watch --once` in `root`, asserts it exits 0 (`why`), and returns its non-empty
+/// stdout lines.
+fn watch_once(root: &Path, why: &str) -> Vec<String> {
+    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
+    assert!(ok, "{why}: {err}");
+    out.lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Asserts the reported `line` names every one of `parts` together (`why` naming the line).
+fn assert_names(line: &str, parts: &[&str], why: &str) {
+    assert!(parts.iter().all(|p| line.contains(p)), "{why}: {line}");
+}
+
+/// A streaming `rigger watch --interval 1` in `root`, its stdout and stderr piped.
+fn spawn_streaming_watch(root: &Path) -> std::process::Child {
+    common::rigger_courier()
+        .args(["watch", "--interval", "1"])
+        .current_dir(root)
+        .env("RIGGER_NO_DASH", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger watch`")
+}
+
+/// Forwards each line `stream` produces onto the returned channel from a reader thread.
+fn line_channel(stream: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
 
 /// The headline boundary proof: a project seeded (via a real store, not an injected
 /// `StoreLocation`) with an escalated unit and a stalled frontier, watched through the REAL
@@ -131,9 +97,8 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 #[test]
 fn watch_once_reports_anomalies_through_the_real_compiled_binary_naming_signal_subject_and_response(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -154,30 +119,25 @@ fn watch_once_reports_anomalies_through_the_real_compiled_binary_naming_signal_s
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
-    assert!(
-        ok,
-        "rigger watch --once must exit 0 on a healthy store: {err}"
-    );
-    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    let lines = watch_once(root, "rigger watch --once must exit 0 on a healthy store");
     assert_eq!(
         lines.len(),
         2,
-        "expected one line per anomaly, in Design order (escalated before frontier-stall): {out}"
+        "expected one line per anomaly, in Design order (escalated before frontier-stall): {lines:?}"
     );
-    assert!(
-        lines[0].contains("escalated blockers")
-            && lines[0].contains("u-esc")
-            && lines[0].contains("rigger-handle-an-escalation"),
-        "line 1 must name signal, subject, and response: {}",
-        lines[0]
+    assert_names(
+        &lines[0],
+        &["escalated blockers", "u-esc", "rigger-handle-an-escalation"],
+        "line 1 must name signal, subject, and response",
     );
-    assert!(
-        lines[1].contains("frontier progress")
-            && lines[1].contains("u-stall/implementer#0")
-            && lines[1].contains("stop the driver and diagnose"),
-        "line 2 must name signal, subject, and response: {}",
-        lines[1]
+    assert_names(
+        &lines[1],
+        &[
+            "frontier progress",
+            "u-stall/implementer#0",
+            "stop the driver and diagnose",
+        ],
+        "line 2 must name signal, subject, and response",
     );
 }
 
@@ -187,9 +147,8 @@ fn watch_once_reports_anomalies_through_the_real_compiled_binary_naming_signal_s
 /// property of the pure `detect()` fold but of the whole composed command.
 #[test]
 fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
     assert!(ok, "watch --once must exit 0 on a clean store: {err}");
@@ -199,86 +158,33 @@ fn watch_once_on_a_freshly_initialized_store_reports_nothing_and_exits_cleanly()
     );
 }
 
-/// Nanosecond wall-clock `recorded_at`/`valid_from`, matching exactly what a real
-/// [`rigger::eventstore::sqlite::Store::append`] stamps - unlike `tests/cli.rs`'s own
-/// `seed_order_signature` (which stamps `0`, harmless for `rigger validate`'s report), a
-/// STALE `recorded_at` here would spuriously also satisfy `watch_poll`'s dead-driver "store
-/// quiet an hour" clause, contaminating the store-integrity assertion below with a SECOND,
-/// unrelated anomaly line.
-fn now_nanos() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as i64
-}
-
-/// Seed `<root>/.rigger/events.db`'s run stream with rows whose position order and revision
-/// order DISAGREE (spec 71's corruption signature `watch::order_signatures` detects) by
-/// inserting directly - bypassing the store's own always-increasing revision assignment, the
-/// only way to reach this shape (mirrors `tests/cli.rs`'s own `seed_order_signature`, which
-/// proves the SAME shared detector reachable from `rigger validate`'s DIFFERENT composition
-/// root). Three rows land in the run stream, in this insertion (position) order: revision 5,
-/// then revision 1, then revision 2 - distinct values (satisfying `UNIQUE(stream, revision)`,
-/// the actual on-disk shape a write into a compaction-opened revision hole leaves) where
-/// positions 2 and 3 both carry a revision at or below the running maximum (5).
-fn seed_order_signature(root: &Path) {
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let db = rigger_dir.join("events.db");
-    // Open through the real store first, so the schema is laid down exactly as the binary
-    // itself would lay it down (mirrors `seed_run_events`'s own precondition).
-    rigger::eventstore::sqlite::Store::open(db.to_str().unwrap()).unwrap();
-    let stream = format!(
-        "{}{}",
-        rigger::eventstore::namespace::Namespaced::prefix_for(&run_stream_identity(root)),
-        rigger::conductor::STREAM
-    );
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    let ts = now_nanos();
-    for revision in [5i64, 1, 2] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
-            rusqlite::params![stream, format!("seed-{revision}"), ts, revision],
-        )
-        .unwrap();
-    }
-}
-
-/// Seed an out-of-order TAIL directly on a stream DISTINCT from the run stream
-/// (`"other"`, still namespaced to this project), rather than the run stream
-/// [`seed_order_signature`] itself uses - a store-wide corruption shape `watch_poll`'s
-/// `full_events` read picks up (it reads every stream under this project's namespace, spec
-/// 71's own scope: "a disordered stream is a store-wide fault, not a per-run one") without
-/// touching `run_events` (scoped to `conductor::STREAM` = `"run"` only). That separation is
-/// what lets this seed compose cleanly, in the SAME store, alongside [`seed_run_events`]'s
-/// legitimate run-scoped anomalies for the criterion's own combined scenario below - putting
-/// the tail on `"run"` too would work for `order_signatures` itself, but every revision 1..N
-/// there is already claimed by a real appended event, leaving no unused, still-disordering
-/// value the `UNIQUE(stream, revision)` constraint would accept. Mirrors
-/// [`seed_order_signature`]'s exact technique (three distinct revisions landing out of
-/// position order: 5, then 1, then 2 - two rows disagree with the running max of 5),
-/// parameterized onto a stream the four run-scoped signals never read.
-fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
+/// Seed an out-of-order TAIL on the run stream - spec 71's own corruption signature, the shape
+/// a stale (pre-append-guard) writer leaves: delete the stream's revision-0 row (recorded before
+/// the run's boundary) and reissue it at the newest position, exactly the shape `Store::append`
+/// itself refuses, so it can only be reproduced around it with a raw connection. The reissued
+/// row now sits after the boundary in the log, so `watch_poll`'s read of the run holds it where
+/// the log recorded it (spec 101: a one-shot command reads the run, never the whole log) and the
+/// run's legitimate anomalies compose with it in the SAME store.
+fn seed_out_of_order_tail(root: &Path) {
     let db = root.join(".rigger").join("events.db");
     // The schema is already laid down by the `seed_run_events`/`seed_store` call this
     // combined scenario always makes first; opening again here is a no-op, kept for the same
     // self-contained-precondition reason `seed_order_signature` opens it.
     Store::open(db.to_str().unwrap()).unwrap();
-    let stream = format!(
-        "{}{stream_suffix}",
-        Namespaced::prefix_for(&run_stream_identity(root))
-    );
+    let stream = format!("{}run", Namespaced::prefix_for(&run_stream_identity(root)));
     let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute(
+        "DELETE FROM events WHERE stream = ?1 AND revision = 0",
+        [&stream],
+    )
+    .unwrap();
     let ts = now_nanos();
-    for revision in [5i64, 1, 2] {
-        conn.execute(
-            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
-             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
-            rusqlite::params![stream, format!("tail-{revision}"), ts, revision],
-        )
-        .unwrap();
-    }
+    conn.execute(
+        "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+         VALUES (?1, 'E', 'reissued', X'7b7d', '{}', ?2, ?2, 0)",
+        rusqlite::params![stream, ts],
+    )
+    .unwrap();
 }
 
 /// The shared consolidation's own periphery proof (spec 69 c2 round 2,
@@ -287,11 +193,10 @@ fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
 /// (`tests/cli.rs::validate_detects_a_stream_whose_position_order_and_revision_order_disagree`)
 /// and this command's own store-integrity signal call - reachable from TWO DIFFERENT
 /// composition roots. Proving the algorithm through `rigger validate` says nothing about
-/// whether `main.rs::watch_poll`'s OWN wiring (the whole-log `full_events` read, `detect`'s
-/// signal-6 fold, `out_of_order_streams`' delegation) still reaches it correctly through THIS
-/// command - a regression here (e.g. the consolidation quietly narrowing `watch_poll`'s read
-/// to the run-scoped stream instead of the whole log, or `detect` dropping the signal-6 arm)
-/// would leave every pure `watch::` unit test green while `rigger watch` itself silently
+/// whether `watch_poll`'s OWN wiring (the read of the run it judges, `detect`'s signal-6 fold,
+/// `out_of_order_streams`' delegation) still reaches it correctly through THIS command - a
+/// regression here (e.g. a read that hands the run back in revision order, hiding the
+/// disorder, or `detect` dropping the signal-6 arm) would leave every pure `watch::` unit test green while `rigger watch` itself silently
 /// stopped reporting store corruption. Drives the REAL compiled binary against a REAL sqlite
 /// store carrying a genuine out-of-order revision (not an injected `WatchInputs`), pinned to
 /// the exact reported values like the validate counterpart, not a loose digit match.
@@ -299,29 +204,29 @@ fn seed_out_of_order_tail(root: &Path, stream_suffix: &str) {
 fn watch_once_reports_a_store_integrity_anomaly_through_the_real_compiled_binary() {
     let proj = temp_project();
     let root = proj.path();
-    seed_order_signature(root);
+    seed_order_signature(root, &run_stream_identity(root), now_nanos());
 
-    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
-    assert!(
-        ok,
+    let lines = watch_once(
+        root,
         "watch --once must exit 0 even on a store-integrity anomaly (report-only, like every \
-         other signal): {err}"
+         other signal)",
     );
-    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(
         lines.len(),
         1,
         "a store with exactly one disordered stream must report exactly one anomaly, no \
-         spurious extras from an unrealistic recorded_at: {out}"
+         spurious extras from an unrealistic recorded_at: {lines:?}"
     );
-    assert!(
-        lines[0].contains("store integrity")
-            && lines[0].contains("run")
-            && lines[0].contains("2 row(s) where position order and revision order disagree")
-            && lines[0].contains("docs/architecture.md, section 5.1.3"),
+    assert_names(
+        &lines[0],
+        &[
+            "store integrity",
+            "run",
+            "2 row(s) where position order and revision order disagree",
+            "docs/architecture.md, section 5.1.3",
+        ],
         "the store-integrity line must name signal, subject, exact row count, and the repair \
-         doc together: {}",
-        lines[0]
+         doc together",
     );
 }
 
@@ -354,9 +259,8 @@ fn watch_refuses_a_project_with_no_rigger_store_at_all_through_the_real_binary()
 /// message naming the bad argument, never a panic.
 #[test]
 fn watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
     let (out, err, ok) = run_rigger(root, &["watch", "--bogus"]);
     assert!(
@@ -380,29 +284,13 @@ fn watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit() {
 /// and zero prior tests; this drives all three together, live.
 #[test]
 fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
 
-    let mut child = common::rigger_courier()
-        .args(["watch", "--interval", "1"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger watch`");
+    let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
 
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let rx = line_channel(stdout);
 
     // Phase 1: the store is clean. The first poll (immediate, before any sleep) must print
     // nothing, and the process must still be running afterward - streaming mode does not exit
@@ -430,11 +318,14 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
     let line = rx
         .recv_timeout(Duration::from_secs(8))
         .expect("streaming watch never re-polled the live store and printed the new anomaly");
-    assert!(
-        line.contains("escalated blockers")
-            && line.contains("u-live")
-            && line.contains("rigger-handle-an-escalation"),
-        "the re-polled line must name signal, subject, and response: {line}"
+    assert_names(
+        &line,
+        &[
+            "escalated blockers",
+            "u-live",
+            "rigger-handle-an-escalation",
+        ],
+        "the re-polled line must name signal, subject, and response",
     );
 
     // Phase 4: the SAME anomaly, still present at the same magnitude on the next poll(s), must
@@ -460,41 +351,17 @@ fn watch_without_once_streams_and_re_polls_a_live_mutating_store_until_killed() 
 /// live-process shape.
 #[test]
 fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     let db_path = root.join(".rigger").join("events.db");
     let good_bytes = std::fs::read(&db_path).expect("read the seeded store");
 
-    let mut child = common::rigger_courier()
-        .args(["watch", "--interval", "1"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger watch`");
+    let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
     let stderr = child.stderr.take().expect("watch stderr is piped");
 
-    let (out_tx, out_rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if out_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            if err_tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let out_rx = line_channel(stdout);
+    let err_rx = line_channel(stderr);
 
     // Phase 1: a clean first poll prints nothing and the process stays alive.
     assert!(
@@ -566,17 +433,18 @@ fn watch_streaming_survives_a_transient_store_read_failure_and_recovers() {
 /// headline test above: escalated + frontier-stall; the store-integrity test: that signal
 /// alone); this is the one place the whole combination is proven end to end rather than
 /// piecewise, closing the gap the module doc's own reasoning implies - a regression that
-/// narrowed `watch_poll`'s real read (e.g. dropping a signal arm, or scoping `full_events`
-/// down to the run stream) could leave every piecewise CLI test above green while the
+/// narrowed `watch_poll`'s real read (e.g. dropping a signal arm) could leave every piecewise CLI test above green while the
 /// combined shape a real operator's store actually presents silently lost a line.
 #[test]
 fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real_compiled_binary() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
+            // Revision 0, recorded before the run and reissued below; then the run's boundary.
+            ("E", "{}"),
+            ("RunStarted", r#"{"run":"watch-run"}"#),
             ("UnitStarted", r#"{"id":"u-esc"}"#),
             ("UnitEscalated", r#"{"id":"u-esc"}"#),
             ("UnitStarted", r#"{"id":"u-fail"}"#),
@@ -608,48 +476,50 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
             ),
         ],
     );
-    seed_out_of_order_tail(root, "other");
+    seed_out_of_order_tail(root);
 
-    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
-    assert!(
-        ok,
-        "rigger watch --once must exit 0 even with every anomaly firing at once: {err}"
+    let lines = watch_once(
+        root,
+        "rigger watch --once must exit 0 even with every anomaly firing at once",
     );
-    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(
         lines.len(),
         4,
-        "one line per anomaly, four anomalies seeded together, in Design order: {out}"
+        "one line per anomaly, four anomalies seeded together, in Design order: {lines:?}"
     );
-    assert!(
-        lines[0].contains("escalated blockers")
-            && lines[0].contains("u-esc")
-            && lines[0].contains("rigger-handle-an-escalation"),
-        "line 1 (Design order: escalated blockers first): {}",
-        lines[0]
+    assert_names(
+        &lines[0],
+        &["escalated blockers", "u-esc", "rigger-handle-an-escalation"],
+        "line 1 (Design order: escalated blockers first)",
     );
-    assert!(
-        lines[1].contains("reject-recurrence trend")
-            && lines[1].contains("u-fail")
-            && lines[1].contains("reject-recurrence #3")
-            && lines[1].contains("gate:fmt")
-            && lines[1].contains("rigger-diagnose-churn"),
-        "line 2 (the unit at reject-recurrence three, its cause named): {}",
-        lines[1]
+    assert_names(
+        &lines[1],
+        &[
+            "reject-recurrence trend",
+            "u-fail",
+            "reject-recurrence #3",
+            "gate:fmt",
+            "rigger-diagnose-churn",
+        ],
+        "line 2 (the unit at reject-recurrence three, its cause named)",
     );
-    assert!(
-        lines[2].contains("frontier progress")
-            && lines[2].contains("u-stall/implementer#0")
-            && lines[2].contains("stop the driver and diagnose"),
-        "line 3 (the multi-result spawn): {}",
-        lines[2]
+    assert_names(
+        &lines[2],
+        &[
+            "frontier progress",
+            "u-stall/implementer#0",
+            "stop the driver and diagnose",
+        ],
+        "line 3 (the multi-result spawn)",
     );
-    assert!(
-        lines[3].contains("store integrity")
-            && lines[3].contains("other")
-            && lines[3].contains("2 row(s) where position order and revision order disagree"),
-        "line 4 (the out-of-order tail, store integrity sorts last): {}",
-        lines[3]
+    assert_names(
+        &lines[3],
+        &[
+            "store integrity",
+            "run",
+            "1 row(s) where position order and revision order disagree",
+        ],
+        "line 4 (the out-of-order tail, store integrity sorts last)",
     );
 }
 
@@ -667,9 +537,8 @@ fn watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real
 /// needs a real process re-polling a store that keeps changing while it runs.
 #[test]
 fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     // Two same-cause failures: below the diagnose threshold of three, must stay silent.
     seed_run_events(
         root,
@@ -687,25 +556,10 @@ fn watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment()
         ],
     );
 
-    let mut child = common::rigger_courier()
-        .args(["watch", "--interval", "1"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger watch`");
+    let mut child = spawn_streaming_watch(root);
     let stdout = child.stdout.take().expect("watch stdout is piped");
 
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let rx = line_channel(stdout);
 
     // Phase 1: two same-cause failures is below threshold - the first (immediate) poll must
     // print nothing, and the process must still be running.

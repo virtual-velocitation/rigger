@@ -132,113 +132,12 @@
 
 mod common;
 
-use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git project with a real commit, so a base ref resolves and `ensure_run_
-/// branch` can anchor - mirrors `tests/cli.rs`'s identical `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let ok = |args: &[&str]| {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success()
-    };
-    assert!(ok(&["init", "-q"]), "git init must succeed");
-    assert!(
-        ok(&["config", "user.email", "t@example.com"]),
-        "git config must succeed"
-    );
-    assert!(ok(&["config", "user.name", "t"]), "git config must succeed");
-    assert!(
-        ok(&["commit", "--allow-empty", "-q", "-m", "init"]),
-        "git commit must succeed"
-    );
-    dir
-}
-
-/// The minimal reviewless, git-isolated single-unit workflow - mirrors `tests/cli.rs`'s
-/// identical `write_reviewless_git_unit_workflow`: an always-passing gate and `on_pass:
-/// merge`, the shape that reaches a real `ensure_run_branch` anchor without needing a
-/// review panel.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: terminalintegratetest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` with extra environment `envs` - mirrors `tests/cli.rs`'s
-/// identical `run_rigger_envs` (opts out of the auto-started dashboard and the
-/// machine-global instance registry).
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(cwd, args, &[])
-}
-
-/// The branch `HEAD` currently names in `root` (e.g. "main", "master", or whatever `git
-/// init`'s configured default is on this machine) - read BEFORE the rogue step runs so the
-/// assertion never hardcodes a default-branch name the local git config could pick
-/// differently.
-fn current_branch(root: &Path) -> String {
-    let out = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(root)
-        .output()
-        .expect("git must be runnable");
-    assert!(
-        out.status.success(),
-        "git rev-parse --abbrev-ref HEAD must succeed"
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn branch_exists(root: &Path, branch: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", "--quiet", branch])
-        .current_dir(root)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
+use common::cli::run_rigger;
+use common::cli::run_rigger_envs;
+use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
+use common::git::git_out;
+use common::git::temp_git_project_with_commit;
+use rigger::worktree::branch_exists;
 
 /// Spec 89, criterion 4 (EXACTLY ONE ROOT) - a regression, RED at round 1, GREEN as of round
 /// 2's fix, proving the refusal used to fire too late to keep its own promise. Reproduces the
@@ -286,17 +185,17 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
-    let before_branch = current_branch(root);
+    let before_branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     assert!(
-        !branch_exists(root, "rigger-run"),
+        !branch_exists(root.to_str().unwrap(), "rigger-run"),
         "premise: the enclosing repository must not already have a rigger-run branch"
     );
 
     let scratch = root.join("scratchroot");
     let fixture = scratch.join("nested-fixture");
-    write_reviewless_git_unit_workflow(&fixture);
+    write_workflow_fixture(&fixture, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let (_out, err, ok) = run_rigger_envs(
         &fixture,
@@ -314,14 +213,14 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
     );
 
     assert_eq!(
-        current_branch(root),
+        git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
         before_branch,
         "the ENCLOSING repository's checked-out branch must be untouched by a step that \
          ultimately refuses for that repository's own store/root mismatch - the refusal must \
          land before the run-branch anchor mutates it, not only before the terminal sweep"
     );
     assert!(
-        !branch_exists(root, "rigger-run"),
+        !branch_exists(root.to_str().unwrap(), "rigger-run"),
         "the enclosing repository must not gain a rigger-run branch as a side effect of a \
          rogue nested step that refuses"
     );
@@ -354,14 +253,14 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
-    let before_root_branch = current_branch(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let before_root_branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
 
     let other_dir = temp_git_project_with_commit();
     let other_repo = other_dir.path();
-    let before_other_branch = current_branch(other_repo);
+    let before_other_branch = git_out(other_repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     assert!(
-        !branch_exists(other_repo, "rigger-run"),
+        !branch_exists(other_repo.to_str().unwrap(), "rigger-run"),
         "premise: the other repository must not already have a rigger-run branch"
     );
 
@@ -389,23 +288,23 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
     );
 
     assert_eq!(
-        current_branch(root),
+        git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
         before_root_branch,
         "the step's OWN repository must be untouched by a step that refuses on the scratch-root \
          mismatch - the refusal lands before the run-branch anchor, same placement as leg one"
     );
     assert!(
-        !branch_exists(root, "rigger-run"),
+        !branch_exists(root.to_str().unwrap(), "rigger-run"),
         "the step's own repository must not gain a rigger-run branch from a step that refuses"
     );
     assert_eq!(
-        current_branch(other_repo),
+        git_out(other_repo, &["rev-parse", "--abbrev-ref", "HEAD"]),
         before_other_branch,
         "the OTHER (scratch-owning) repository must be untouched too - this check only ever \
          reads its git toplevel, never mutates it"
     );
     assert!(
-        !branch_exists(other_repo, "rigger-run"),
+        !branch_exists(other_repo.to_str().unwrap(), "rigger-run"),
         "the other repository must not gain a rigger-run branch either"
     );
 }
@@ -430,7 +329,7 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 fn step_run_and_workflow_via_a_symlinked_main_tree_are_not_refused() {
     let dir = temp_git_project_with_commit();
     let real_root = dir.path();
-    write_reviewless_git_unit_workflow(real_root);
+    write_workflow_fixture(real_root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let link_parent = tempfile::tempdir().expect("create a parent dir for the symlink");
     let via_symlink = link_parent.path().join("via-symlink");

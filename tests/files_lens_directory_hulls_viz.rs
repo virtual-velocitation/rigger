@@ -28,31 +28,9 @@
 //! the other's test - proving the overview alone would leave the re-projection panel's directory hulls
 //! (spec 55's subject x lens surface, e.g. a concept re-grained by files) structurally unguarded.
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use common::served::node_harness_passes;
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN renderers under node's built-in
 /// `vm` (no npm, hermetic). It drives `renderKgOverview` directly against a fixture `ClusterOverview` (no
@@ -147,48 +125,13 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-hull-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 63 c3's directory hulls (its own Done-when clause): the served page's OWN
-/// `renderKgOverview` draws a low-contrast, labelled hull region behind each directory's file nodes
-/// under the default (files) lens - a repo-root file groups under `(root)`, every hull renders BEHIND
-/// the node circles, and the CODE lens (a different taxonomy, no directory concept) draws none. This
-/// is the behavioral proof a structural grep on the served bytes cannot make.
-#[test]
-fn the_files_lens_draws_directory_hulls_behind_its_file_nodes() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_files_lens_draws_directory_hulls_behind_its_file_nodes: no `node` runtime on \
-             PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the hull harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, HULL_HARNESS).expect("write the hull harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served files-lens directory hulls");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the files lens must draw directory hulls behind its file nodes, but the runtime harness \
-         failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK directory-hulls-draw-group-and-label-file-clusters-by-directory"),
-        "the hull harness must confirm the directory-hull render:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 63 c3's directory hulls (its own Done-when clause): the served page's OWN
+    /// `renderKgOverview` draws a low-contrast, labelled hull region behind each directory's file nodes
+    /// under the default (files) lens - a repo-root file groups under `(root)`, every hull renders BEHIND
+    /// the node circles, and the CODE lens (a different taxonomy, no directory concept) draws none. This
+    /// is the behavioral proof a structural grep on the served bytes cannot make.
+    the_files_lens_draws_directory_hulls_behind_its_file_nodes: node_harness_passes(HULL_HARNESS, "OK directory-hulls-draw-group-and-label-file-clusters-by-directory");
 }
 
 /// A DOM shim + test driver (JavaScript) proving the OTHER wired call site: `renderReprojection` (the
@@ -282,45 +225,10 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-hull-reprojection-harness.js" });
 "##;
 
-/// RUNTIME guard for the SECOND call site spec 63 c3's directory hulls wires: `renderReprojection`
-/// (the subject x lens re-projection panel) draws the identical directory-hull treatment as the
-/// overview - a defect at this call site alone (its own `groupOf`/`groupLabel` ternary) would not
-/// redden [`the_files_lens_draws_directory_hulls_behind_its_file_nodes`] above, which never calls it.
-#[test]
-fn the_reprojection_view_draws_directory_hulls_behind_its_file_clusters() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_reprojection_view_draws_directory_hulls_behind_its_file_clusters: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the reprojection hull harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, HULL_HARNESS_REPROJECTION).expect("write the hull harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served renderReprojection directory hulls");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "renderReprojection must draw directory hulls behind its file clusters, but the runtime \
-         harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK reprojection-draws-group-and-label-file-clusters-by-directory"),
-        "the reprojection hull harness must confirm the directory-hull render:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for the SECOND call site spec 63 c3's directory hulls wires: `renderReprojection`
+    /// (the subject x lens re-projection panel) draws the identical directory-hull treatment as the
+    /// overview - a defect at this call site alone (its own `groupOf`/`groupLabel` ternary) would not
+    /// redden [`the_files_lens_draws_directory_hulls_behind_its_file_nodes`] above, which never calls it.
+    the_reprojection_view_draws_directory_hulls_behind_its_file_clusters: node_harness_passes(HULL_HARNESS_REPROJECTION, "OK reprojection-draws-group-and-label-file-clusters-by-directory");
 }

@@ -1,6 +1,6 @@
 //! Spec 85 criterion 4 (`u85c4`), SDET periphery layer: a cross-artifact contract test for
 //! `docs/audit/2026-09-simplification-audit.md` - the report's own top-level heading-boundary
-//! structure, and (ROUND 6, see below) every `dup-NNNN` cluster citation anywhere in the report.
+//! structure, and (ROUND 6, see below) every `dup-<id>` cluster citation anywhere in the report.
 //!
 //! Boundary-surface accounting (mechanical probes against base
 //! `99b73bdb44a1e0488a6b9b18b35a693b619b2e1c`, see decision `sdet-u85c4-surface-accounting`):
@@ -17,7 +17,7 @@
 //! itself.
 //!
 //! ROUNDS 1-5 (adjudication REJECT on diffs through `619372d..099bb84..c2fbc07`): built and then
-//! repeatedly hardened a citation drift-guard, one hand-anchored check per named `dup-NNNN`
+//! repeatedly hardened a citation drift-guard, one hand-anchored check per named `dup-<id>`
 //! citation in sections 5 and 6 - each round closed a real gap (stale counts, the wrong metric
 //! checked, a citation nobody guarded, a `report:regeneration disclosed`) but round 5's own
 //! adjudication (`adj-u85c4-r5-verdict-reject`) found the anchor-per-citation MECHANISM itself
@@ -28,7 +28,7 @@
 //! `dup-id`. Operator decision `d-u85c4-round6-remedy-is-the-generic-guard` (round 6, the final
 //! attempt) named the mechanism itself as the defect and mandated its replacement: delete every
 //! section-scoped, hand-anchored check and replace them with ONE pass that mechanically finds
-//! every `dup-NNNN` citation anywhere in the whole report and checks it against the committed
+//! every `dup-<id>` citation anywhere in the whole report and checks it against the committed
 //! catalog - "by construction" ruling out anchor coupling, embedded digits, and an unguarded
 //! citation location as findings against a round that lands it.
 //!
@@ -51,20 +51,16 @@
 //! than importing `DupCluster` - the same position a real downstream reader of both committed
 //! artifacts is in.
 
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
+use common::repo::repo_root;
 use regex::Regex;
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root` and its sibling periphery files).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
 
 fn read_report() -> String {
     fs::read_to_string(repo_root().join(REPORT_PATH))
@@ -227,7 +223,7 @@ fn outermost_parens(text: &str) -> Vec<(usize, &str)> {
 /// distant one - the exact failure mode `number_before_bounded`'s own doc comment walks through.
 const MAX_GAP: usize = 40;
 
-/// Non-digit filler bytes a citation's number+keyword pair may sit away from the `(\`dup-NNNN\`)`
+/// Non-digit filler bytes a citation's number+keyword pair may sit away from the `(\`dup-<id>\`)`
 /// paren that names it (see `nearest_token_before`). Wider than `MAX_GAP` because the NUMBER and
 /// its KEYWORD are always close together (bounded by `MAX_GAP`), but the whole (number, keyword)
 /// unit can sit well before the paren that cites it (the widest real case, item 3's "60 raw
@@ -335,7 +331,7 @@ fn tokens_in(block: &str) -> Vec<(u32, &'static str, usize)> {
 /// location. These excerpts are raw, machine-copied source/doc text, not hand-authored citation
 /// prose - and because this report documents its OWN test files (this one included), an excerpt
 /// can coincidentally quote a real citation's exact wording verbatim, including its own
-/// `(\`dup-NNNN\`)` tag. Recognizing and skipping the bullet LINE itself (never its content)
+/// `(\`dup-<id>\`)` tag. Recognizing and skipping the bullet LINE itself (never its content)
 /// keeps such an excerpt from being read as a second, spurious citation of that id.
 fn is_site_listing_line(text: &str, pos: usize) -> bool {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
@@ -379,7 +375,7 @@ fn line_of(text: &str, pos: usize) -> usize {
 }
 
 /// THE GENERIC PASS (round 6's whole replacement for rounds 1-5's per-section, hand-anchored
-/// checks - see module doc). Finds every `dup-NNNN` id cited ANYWHERE in `report` together with
+/// checks - see module doc). Finds every `dup-<id>` id cited ANYWHERE in `report` together with
 /// the number(s) cited near it, never typing a single citation's own surrounding prose as an
 /// anchor. Three shapes cover every citation convention this report actually uses (verified
 /// against the real committed report - see decision `sdet-u85c4-r6-generic-scanner-design`):
@@ -394,7 +390,7 @@ fn line_of(text: &str, pos: usize) -> usize {
 ///    different cluster ids, not an exact per-id split (dup-0369 is actually 8, dup-0368 is
 ///    actually 6 - the reverse of their own textual order) - correctly left unguarded rather
 ///    than mis-asserting `dup-0369=6, dup-0368=8` in id order.
-/// 2. The id sits bare inside its own `(\`dup-NNNN\`)` with no other content - the nearest token
+/// 2. The id sits bare inside its own `(\`dup-<id>\`)` with no other content - the nearest token
 ///    before the paren supplies the number (`"the 649 \`.rigger\`-path ... sites (\`dup-0051\`)"`).
 /// 3. The id is the very first thing inside the paren, followed by its own count in the SAME
 ///    paren (`"(\`dup-0125\`, 14 sites: ...)"`) - and, when a SECOND id is named later in that
@@ -414,14 +410,16 @@ fn scan_citations(report: &str) -> Vec<Citation> {
     static PAIR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static SWEEP: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
 
-    let id_re = ID.get_or_init(|| Regex::new(r"`(dup-\d{4})`").unwrap());
-    let id_before_paren_re = ID_BEFORE_PAREN
-        .get_or_init(|| Regex::new(r"`(dup-\d{4})`(?:\s*/\s*`(dup-\d{4})`)?\s*$").unwrap());
+    let id_re = ID.get_or_init(|| Regex::new(r"`(dup-[0-9a-f]{12})`").unwrap());
+    let id_before_paren_re = ID_BEFORE_PAREN.get_or_init(|| {
+        Regex::new(r"`(dup-[0-9a-f]{12})`(?:\s*/\s*`(dup-[0-9a-f]{12})`)?\s*$").unwrap()
+    });
     let nested_re = NESTED_ID_METRIC
-        .get_or_init(|| Regex::new(r"`(dup-\d{4})`'s\s+(\d+)-(site|file)").unwrap());
+        .get_or_init(|| Regex::new(r"`(dup-[0-9a-f]{12})`'s\s+(\d+)-(site|file)").unwrap());
     let pair_re = PAIR.get_or_init(|| Regex::new(r"^\s*(\d+)\+(\d+)\s+(sites?|files?)").unwrap());
-    let sweep_re =
-        SWEEP.get_or_init(|| Regex::new(r"(\d+)\s+(site|file)\(s\)\s*-\s*`(dup-\d{4})`").unwrap());
+    let sweep_re = SWEEP.get_or_init(|| {
+        Regex::new(r"(\d+)\s+(site|file)\(s\)\s*-\s*`(dup-[0-9a-f]{12})`").unwrap()
+    });
 
     let mut out = Vec::new();
 
@@ -514,7 +512,7 @@ fn scan_citations(report: &str) -> Vec<Citation> {
         let content_trim = content.trim();
         if let Some(caps) = id_re.captures(content_trim) {
             if caps.get(0).unwrap().as_str() == content_trim {
-                // bare "(`dup-NNNN`)" - the count lives before this paren, not inside it.
+                // bare "(`dup-<id>`)" - the count lives before this paren, not inside it.
                 let id1 = caps[1].to_string();
                 let line = line_of(report, start);
                 if let Some((num, metric)) = nearest_token_before(report, start) {
@@ -603,7 +601,7 @@ fn record_mismatch(
 
 /// THE CROSS-ARTIFACT CONTRACT (round 6, replacing rounds 1-5's `section_5_named_dup_id_
 /// citations_match_the_committed_catalogs_site_counts` and `section_6_named_dup_id_citations_
-/// match_the_committed_catalogs_site_counts` - see module doc): every `dup-NNNN` cluster citation
+/// match_the_committed_catalogs_site_counts` - see module doc): every `dup-<id>` cluster citation
 /// mechanically found anywhere in `docs/audit/2026-09-simplification-audit.md` by `scan_citations`
 /// is checked against the committed `docs/audit/duplication-catalog.json`, independent of which
 /// section it sits in or whoever authored that prose.
@@ -615,12 +613,12 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
 
     let citations = scan_citations(&report);
     assert!(
-        citations.len() > 600,
+        citations.len() >= sites.len(),
         "sanity: the generic scanner found only {} citations across the whole report - expected \
-         well over 600 (674 catalog clusters plus section 5/6's own narrative citations); this \
-         smells like the scanner itself broke, not that the report suddenly has far fewer \
-         citations",
-        citations.len()
+         at least one per catalog cluster ({}), since section 2 lists every one; this smells like \
+         the scanner itself broke, not that the report suddenly has far fewer citations",
+        citations.len(),
+        sites.len()
     );
 
     let mut mismatches = Vec::new();
@@ -641,6 +639,33 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
         "{REPORT_PATH} cites stale site/file counts that no longer match the committed \
          duplication catalog:\n{}",
         mismatches.join("\n")
+    );
+}
+
+/// Every `dup-` id anywhere in the report names a cluster the committed catalog carries - a
+/// bare citation with no count beside it included, which the count check above never sees - so
+/// a stale or malformed id can never sit in the report unguarded.
+#[test]
+fn every_dup_id_anywhere_in_the_report_names_a_committed_cluster() {
+    let report = read_report();
+    let ids: std::collections::HashSet<String> =
+        load_clusters().into_iter().map(|c| c.id).collect();
+    let token = Regex::new(r"dup-[0-9A-Za-z]+").unwrap();
+    let dangling: Vec<String> = lines_with_offsets(&report)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (_, line))| {
+            token
+                .find_iter(line)
+                .filter(|m| !ids.contains(m.as_str()))
+                .map(move |m| format!("line {}: {}", n + 1, m.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "{REPORT_PATH} cites ids {CATALOG_PATH} does not carry:\n{}",
+        dangling.join("\n")
     );
 }
 

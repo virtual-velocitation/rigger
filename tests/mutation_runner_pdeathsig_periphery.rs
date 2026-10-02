@@ -20,8 +20,10 @@
 
 mod common;
 
+use common::is_running;
+
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 /// The shipped runner script, resolved the same CWD-independent way every other committed-file
@@ -53,34 +55,6 @@ fn wait_until(bound: Duration, mut pred: impl FnMut() -> bool) -> bool {
             return false;
         }
         std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Whether `pid` is a genuinely RUNNING process - unlike `common::is_alive` (a `kill(pid, 0)`-
-/// equivalent existence probe), this reports `false` for a REAPED-PENDING ZOMBIE too, which
-/// still answers alive to that probe: POSIX keeps a terminated child's process-table entry
-/// (holding no memory, no open file descriptors, no CPU time) until its parent calls `wait()`
-/// on it. This suite's OWN test binary runs as pid 1 of its own pid namespace
-/// (`.cargo/pidns-runner.sh`), so a process this fixture backgrounds and never holds a `Child`
-/// handle to gets reparented to US (the namespace's implicit reaper) the instant its own
-/// launcher exits - and this test deliberately never runs a reap loop, so a process that HAS
-/// genuinely terminated via `pdeathsig` sits as an unreaped zombie for the rest of the test,
-/// which is exactly the state this predicate must still call "not surviving" (a zombie holds
-/// no pipe open and burns no CPU - precisely what the criterion cares about). Reads
-/// `/proc/<pid>/stat`'s state field directly - a plain filesystem read, never a signal - so a
-/// genuinely absent pid and a zombie one are treated identically ("not running"). Linux-only,
-/// matching this crate's own existing `/proc`-reading conventions (`.cargo/pidns-runner.sh`,
-/// `src/reap.rs`).
-fn is_running(pid: u32) -> bool {
-    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    // Fields are "<pid> (<comm>) <state> ..."; `comm` may itself contain spaces or parens, so
-    // the state char is the first token after the LAST ')', never a naive whitespace split.
-    match stat.rfind(')') {
-        Some(idx) => !stat[idx + 1..].trim_start().starts_with('Z'),
-        None => false,
     }
 }
 
@@ -182,4 +156,140 @@ fn a_launcher_that_merely_exits_ends_the_runner_and_its_wrapped_process_with_it(
 /// escaping properly keeps this correct even if that ever changed.
 fn shell_quote(s: impl AsRef<str>) -> String {
     format!("'{}'", s.as_ref().replace('\'', r"'\''"))
+}
+
+/// Run the shipped runner around a command printing the wrapped process's `/proc/self/limits` and
+/// its `MALLOC_ARENA_MAX`, with the runner's environment `envs` (on a clean slate for the
+/// variables this suite drives, so every bound printed is the runner's own), returning what it
+/// did and printed.
+fn run_the_runner_reading_its_memory_bounds(envs: &[(&str, &str)]) -> Output {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut cmd = Command::new(pidns_runner_path());
+    cmd.arg("/bin/sh")
+        .arg("-c")
+        .arg("cat /proc/self/limits; echo \"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\"")
+        .env("RIGGER_TEST_TMPDIR", tmp.path())
+        .env_remove("RIGGER_TEST_AS_BYTES")
+        .env_remove("RIGGER_PIDNS")
+        .env_remove("MALLOC_ARENA_MAX");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("run the shipped runner")
+}
+
+/// What the wrapped process printed, for a runner invocation that ran it; one that did not run it
+/// fails the test with the runner's stderr.
+fn wrapped_output(out: &Output) -> String {
+    assert!(
+        out.status.success(),
+        "the runner must run its wrapped command; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Gap 92: the per-test cap is sized for a mutation sweep's CONCURRENCY, not for one runaway.
+/// At the old 24 GiB default, eight concurrent children of one loop mutant grew to ~5.5 GiB each
+/// and the global OOM killer took the check-in step instead; at 4 GiB each such child fails its
+/// own allocation first, and the whole suite still passes under it.
+///
+/// Every assertion runs on every host, with or without unprivileged user namespaces:
+/// - the plain path (`RIGGER_PIDNS=off`, a throwaway CI host) caps the wrapped process at 4 GiB,
+///   and an explicit `RIGGER_TEST_AS_BYTES` overrides that cap. The runner computes the cap once
+///   (`as_bytes`, one home for both paths), so the override proven here is the value the
+///   namespace path applies too.
+/// - the namespace path (the default) either runs the wrapped process under the same 4 GiB cap,
+///   on a host that can create a user+pid namespace (a workstation), or fails CLOSED on a host
+///   that cannot (a hosted CI runner): it exits non-zero with its refusal and runs nothing
+///   unsandboxed. Both outcomes are runner guarantees. The runner's own outcome is the host's
+///   capability probe, so this test never probes the host a second way.
+#[test]
+fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_runs() {
+    const FOUR_GIB: &str = "4294967296";
+    // The cap (in bytes) the wrapped process read from its own `/proc/self/limits`.
+    let applied_cap = |out: &Output| -> String {
+        let limits = wrapped_output(out);
+        limits
+            .lines()
+            .find(|l| l.starts_with("Max address space"))
+            .and_then(|l| l.split_whitespace().nth(3))
+            .unwrap_or_else(|| panic!("no address-space line in {limits}"))
+            .to_string()
+    };
+    assert_eq!(
+        applied_cap(&run_the_runner_reading_its_memory_bounds(&[(
+            "RIGGER_PIDNS",
+            "off"
+        )])),
+        FOUR_GIB,
+        "the plain path (a CI host) caps each test process at 4 GiB"
+    );
+    assert_eq!(
+        applied_cap(&run_the_runner_reading_its_memory_bounds(&[
+            ("RIGGER_PIDNS", "off"),
+            ("RIGGER_TEST_AS_BYTES", "2147483648"),
+        ])),
+        "2147483648",
+        "an explicit cap still overrides the default (lower here: this test process already \
+         runs under the 4 GiB hard limit, which no child can raise)"
+    );
+    let namespaced = run_the_runner_reading_its_memory_bounds(&[]);
+    if namespaced.status.success() {
+        assert_eq!(
+            applied_cap(&namespaced),
+            FOUR_GIB,
+            "the namespace path caps each test process the same way"
+        );
+    } else {
+        let stderr = String::from_utf8_lossy(&namespaced.stderr);
+        assert!(
+            stderr.contains(
+                "cannot create a user+pid namespace on this host; \
+                 REFUSING to run the test binary unsandboxed"
+            ),
+            "a runner that cannot create its namespace must fail closed with its refusal, and \
+             fail no other way; stderr: {stderr}"
+        );
+        assert!(
+            namespaced.stdout.is_empty(),
+            "a refusing runner must run nothing unsandboxed; stdout: {}",
+            String::from_utf8_lossy(&namespaced.stdout)
+        );
+    }
+}
+
+/// The address-space cap above measures a test's real demand only while the allocator's own
+/// reservations stay bounded: glibc malloc opens another arena, reserving 64 MiB of address space,
+/// whenever a thread finds the arenas it tried locked, up to eight per core, so a suite running
+/// its tests on many threads under load reserves gigabytes it never touches and trips the cap.
+/// The runner bounds the arena count for the wrapped process on every path it runs, beside the
+/// cap; a host that cannot create the namespace refuses to run anything, as the cap test pins.
+#[test]
+fn the_runner_bounds_each_test_process_malloc_arenas_on_every_path_it_runs() {
+    // The arena bound the wrapped process saw in its own environment.
+    let arena_bound = |out: &Output| -> String {
+        let printed = wrapped_output(out);
+        printed
+            .lines()
+            .find_map(|l| l.strip_prefix("MALLOC_ARENA_MAX="))
+            .unwrap_or_else(|| panic!("no MALLOC_ARENA_MAX line in {printed}"))
+            .to_string()
+    };
+    assert_eq!(
+        arena_bound(&run_the_runner_reading_its_memory_bounds(&[(
+            "RIGGER_PIDNS",
+            "off"
+        )])),
+        "2",
+        "the plain path (a CI host) bounds each test process at two malloc arenas"
+    );
+    let namespaced = run_the_runner_reading_its_memory_bounds(&[]);
+    if namespaced.status.success() {
+        assert_eq!(
+            arena_bound(&namespaced),
+            "2",
+            "the namespace path bounds each test process the same way"
+        );
+    }
 }

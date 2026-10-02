@@ -1,0 +1,46 @@
+[package]
+name = "console-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The Mission Control console's WebAssembly ABI: a small, dependency-free calling surface over the pure rigger core (spec 93, criterion 2)."
+
+# `cdylib` is what the nested wasm32-unknown-unknown build (spec 93, criterion 3) needs to
+# produce a loadable module; `rlib` is what lets THIS crate's own `cargo test` link and run
+# the exact same exported functions natively as ordinary Rust functions (THE MODULE AND ITS
+# ABI's own text: "tested with plain Rust tests and needs no WebAssembly runtime").
+[lib]
+name = "console_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The pure subset (THE FEATURE SPLIT, spec 93 criterion 1) is this crate's DEFAULT lane, carried
+# as a feature exactly like every other member's `default = ["store"]`, never a hardwired
+# dependency feature: Cargo unifies features across every member a build selects, so a
+# non-disableable `core` request on the domain would strip its store surface out from under the
+# adapters in a `--workspace --no-default-features` build. The nested wasm build (`-p
+# console-core`, default features) and this crate's own `cargo test` both get the pure subset;
+# `--no-default-features` hands the choice back to the rest of the workspace, and this crate
+# compiles unchanged against the domain's full surface, a superset of the pure one.
+default = ["core"]
+core = ["rigger-console/core", "rigger-domain/core"]
+
+[dependencies]
+# default-features = false drops `store`, so the default (`core`) lane of this crate - and
+# therefore the wasm32 build - never pulls rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. Both
+# are workspace members, not new external crates: the console fold and code map, and the domain
+# model they fold over.
+rigger-console = { path = "../rigger-console", default-features = false }
+rigger-domain = { path = "../rigger-domain", default-features = false }
+serde = { version = "1", features = ["derive"] }
+# `raw_value` (BUDGETS, spec 93 criterion 2): `fold_reset`/`fold_push` need an event's `data`
+# sub-object handed straight to `Event::new` as raw bytes, never round-tripped through a
+# fully parsed `serde_json::Value` tree and re-serialized - the doubled work the 10,000-
+# event/16ms budget cannot afford (measured: cut this op's own JSON overhead roughly in
+# half). A `serde_json` cargo FEATURE, not a new crate: it adds no dependency-graph edge
+# (`Cargo.lock` is byte-identical with it on), so the no-new-crate-dependency constraint
+# holds.
+serde_json = { version = "1", features = ["raw_value"] }
+
+[lints]
+workspace = true

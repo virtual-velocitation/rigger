@@ -1,0 +1,85 @@
+[package]
+name = "rigger-grounder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols index, grep and nop), the shared scoped project walk, the code, design-intent and workflow-definition emit passes and the project-source ingest walk."
+
+[lib]
+name = "rigger_grounder"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` or `feature = "symbols"` there carries the same
+# gate here, and the root forwards all three features, so every lane compiles exactly the
+# surface it did before.
+default = ["symbols", "store"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-config-files/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-config-files/core", "rigger-graph-sqlite/core"]
+symbols = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-tags",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-c-sharp",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-python",
+]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The ordered parallel map the code ingest fans out over (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
+# The workflow-definition pass reads `.rigger/workflow.yml` through the operator-tree reader (a
+# same-ring edge).
+rigger-config-files = { path = "../rigger-config-files", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
+# concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
+# definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
+# pins the runtime version; grammar crates couple only through `tree-sitter-language`, so a
+# grammar's `LANGUAGE` (a `LanguageFn`) converts to `tree_sitter::Language` via `.into()`
+# regardless of which `tree-sitter` minor built it. Unit 1 ships the Rust grammar; unit 2
+# adds the remaining four on this same base. All optional, all under the `symbols` feature.
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-tags = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+# The remaining four shipped languages (unit 2). Each couples to the runtime only through
+# `tree-sitter-language` (its `LANGUAGE` is a `LanguageFn` that `.into()`s to
+# `tree_sitter::Language`), so the pinned `tree-sitter` / `tree-sitter-tags` 0.25 ABI drives
+# resolution and these grammar minors are chosen to match it. All optional, all under the
+# `symbols` feature. The JavaScript/TypeScript family is two crates (one grammar each);
+# `tree-sitter-typescript` exposes `LANGUAGE_TYPESCRIPT` (and `LANGUAGE_TSX`), so `.ts`/`.tsx`
+# both resolve through it.
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+
+# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
+# project's own sources by honoring the repository's OWN version-control ignore rules
+# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine,
+# used only by `store`-gated code (the ingest/grounding walk) - see the target-cfg note
+# above for why it lives in this table rather than the unconditional `[dependencies]`.
+# We use only its committed-`.gitignore` matching (global + `.git/info/exclude`
+# disabled) so the scoping is machine-independent and the same tree yields a
+# byte-identical graph.
+ignore = "0.4"
+# The symbols index persist's advisory lock (`flock` under the hood).
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+# The fold tests project the emitted events through the SQLite projector (a same-ring edge).
+# `core` above forwards to it, so this crate's core-lane tests build it in the same lane as every
+# other dependency.
+rigger-graph-sqlite = { path = "../rigger-graph-sqlite", default-features = false }
+
+[lints]
+workspace = true

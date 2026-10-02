@@ -2,8 +2,8 @@
 
 **Goal:** which event-store backend a project uses is pure CONFIGURATION, with identical, reproducible
 behavior regardless of the choice. Rigger's write and read sides already speak one stable interface -
-the `EventStore` port (`src/eventstore/mod.rs`): every emitter hands the same `Event` envelope to the
-same `append`, and the backend-agnostic contract suite (`src/eventstore/contract.rs`) pins every
+the `EventStore` port (`crates/rigger-domain/src/eventstore.rs`): every emitter hands the same `Event` envelope to the
+same `append`, and the backend-agnostic contract suite (`crates/rigger-store-sqlite/src/eventstore/contract.rs`) pins every
 adapter to identical semantics. What is NOT uniform today is the WIRING: only `rigger run` resolves a
 backend through the port (`open_store`); every other command - `emit`, `result`, `status`, `step`,
 `graph build` - hardcodes the embedded sqlite adapter (`Store::open(&db_path("events.db"))`). The

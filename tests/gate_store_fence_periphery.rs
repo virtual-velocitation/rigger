@@ -159,7 +159,6 @@
 //! repository this suite itself runs inside.
 
 use std::path::Path;
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -170,19 +169,13 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
-use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::fixtures::registry_entries;
+use common::git::git_init_quiet;
+use common::git::temp_git_project_with_commit;
 use common::{rigger_bin, RestoreEnvVars};
-
-fn git_init_quiet(root: &Path) {
-    Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git init");
-}
 
 /// The real production topology (matching the implementer's own
 /// `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it`
@@ -246,28 +239,90 @@ fn emit_gate(id: &str, decision_id: &str) -> Gate {
     }
 }
 
-/// Every registry entry under `state_home`, decoded through `registry::Instance`'s own
-/// (de)serialization - mirrors `courier_registry_refresh_fence_periphery.rs`'s own identically
-/// purposed helper (each periphery suite owns its own small fixture helpers rather than sharing
-/// test-only code across files).
-fn registry_entries(state_home: &Path) -> Vec<Instance> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push(inst);
-            }
-        }
-    }
-    out
+/// Where one worktree kind's fenced courier writes: the `target_dir` and `store_fence` the caller
+/// injects into `ExecRunner::run`, and the fence directory its scratch store lands in.
+struct Fence {
+    target_dir: String,
+    store_fence: String,
+    fence_dir: String,
+}
+
+/// Create a real `kind` worktree at `<scratch root>/<leaf>` on `branch` through the SAME
+/// `Worktree::create` entry point `rigger step` uses (not a hand-built directory), run the real
+/// fenced courier `gate` in it with the fence `fence` derives from the worktree dir, then tear it
+/// down through the real `Worktree::remove` path (the production teardown entry point - never a
+/// call into the private `reclaim_cache_sibling`). Asserts the courier succeeded and left a real
+/// `events.db` at its fence, the removal reclaimed the fence, and the repo's live store stayed
+/// byte-identical throughout.
+fn assert_fenced_scratch_store_reclaimed(
+    kind: &str,
+    leaf: &str,
+    branch: &str,
+    gate: &Gate,
+    fence: impl Fn(&str) -> Fence,
+) {
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_string_lossy().into_owned();
+    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
+    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
+    std::fs::File::create(&live_events).unwrap();
+    let live_before = std::fs::read(&live_events).unwrap();
+
+    let root = rigger::worktree::scratch_root(&repo_path, "", None);
+    let worktree = Worktree::create(&repo_path, &format!("{root}/{leaf}"), branch, &root)
+        .unwrap_or_else(|e| panic!("create a real {kind} worktree: {e:?}"));
+    std::fs::create_dir_all(Path::new(&worktree.dir).join(".rigger")).unwrap();
+    std::fs::write(
+        Path::new(&worktree.dir)
+            .join(".rigger")
+            .join("workflow.yml"),
+        "stages: []\n",
+    )
+    .unwrap();
+
+    let Fence {
+        target_dir,
+        store_fence,
+        fence_dir,
+    } = fence(&worktree.dir);
+    let result = ExecRunner.run(
+        gate,
+        &worktree.dir,
+        &target_dir,
+        "",
+        "",
+        "",
+        &store_fence,
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    assert!(
+        result.pass,
+        "a real fenced courier in a {kind} worktree must succeed before this test ever tears the \
+         worktree down: {result:?}"
+    );
+    assert!(
+        Path::new(&fence_dir).join("events.db").exists(),
+        "a real fenced {kind}-worktree courier must leave a real, openable events.db at the \
+         derived fence sibling {fence_dir} - if this fails, the fence itself is broken, not the \
+         reclaim this test targets"
+    );
+
+    worktree
+        .remove()
+        .unwrap_or_else(|e| panic!("remove the real {kind} worktree: {e:?}"));
+
+    assert!(
+        !Path::new(&fence_dir).exists(),
+        "removing the {kind} worktree via the real Worktree::remove path must reclaim the real \
+         fence sibling a real fenced courier left behind, leaked at {fence_dir}"
+    );
+    let live_after = std::fs::read(&live_events).unwrap();
+    assert_eq!(
+        live_before, live_after,
+        "the repo's live store must stay byte-identical throughout a fenced {kind}-worktree \
+         courier that writes, then gets torn down and reclaimed"
+    );
 }
 
 #[test]
@@ -484,28 +539,6 @@ fn a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence() {
     );
 }
 
-/// A real `git init` + one empty commit, so `Worktree::create` has a HEAD to branch a real
-/// unit worktree off of - the shape every real `rigger step` unit worktree is created
-/// against, distinct from `build_topology`'s bare `git init` (which only ever needs a store
-/// dir, never a worktree add).
-fn init_repo_with_head() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .args(args)
-            .current_dir(p)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
-
 #[test]
 #[serial_test::serial(cwd)]
 // Spec 89 criterion 2 boundary bug (found running this file's own full-suite verification,
@@ -524,75 +557,26 @@ fn init_repo_with_head() -> tempfile::TempDir {
 // to `STORE_FENCE_ENV`/`XDG_STATE_HOME`, extended to cover `HOME` too. Pre-existing since this
 // test was added (spec 70 c3 / u3), not introduced by this unit's round 7.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed() {
-    let repo = init_repo_with_head();
-    let repo_path = repo.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
-    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
-    std::fs::File::create(&live_events).unwrap();
-    let live_before = std::fs::read(&live_events).unwrap();
-
-    // The real production derivation (conductor's `unit_worktree_dir`, mirrored here): a
-    // unit worktree lives under `<repo>/.rigger/tmp/rigger-wt-<slug>`, a sibling of its own
-    // `cargo-target-<slug>` cache. `Worktree::create` is the SAME entry point `rigger step`
-    // uses - not a hand-built directory - so this test exercises the real `git worktree add`
-    // path, not a double of it.
-    let root = rigger::worktree::scratch_root(&repo_path, "", None);
-    let worktree_dir = format!("{root}/rigger-wt-reclaim-probe");
-    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe", &root)
-        .expect("create a real unit worktree");
-    std::fs::create_dir_all(Path::new(&worktree.dir).join(".rigger")).unwrap();
-    std::fs::write(
-        Path::new(&worktree.dir)
-            .join(".rigger")
-            .join("workflow.yml"),
-        "stages: []\n",
-    )
-    .unwrap();
-
-    // The exact target_dir the conductor's own `run_gates` would pass for this worktree
-    // (Gap 19) - reconstructed via the SAME single authority `reclaim_cache_sibling` uses,
-    // so this test can never silently drift from the real derivation.
-    let target_dir =
-        unit_cache_sibling(&worktree.dir).expect("a unit worktree dir must derive a cache sibling");
-    let fence_dir = format!("{target_dir}{STORE_FENCE_SUFFIX}");
-
-    let result = ExecRunner.run(
+    // The real production derivation (conductor's `unit_worktree_dir`, mirrored here): a unit
+    // worktree lives under `<repo>/.rigger/tmp/rigger-wt-<slug>`, a sibling of its own
+    // `cargo-target-<slug>` cache. The exact target_dir the conductor's own `run_gates` would
+    // pass for it (Gap 19) is reconstructed via the SAME single authority
+    // `reclaim_cache_sibling` uses, so this test can never silently drift from the real
+    // derivation.
+    assert_fenced_scratch_store_reclaimed(
+        "unit",
+        "rigger-wt-reclaim-probe",
+        "rigger/u/reclaim-probe",
         &emit_gate("reclaim-emit", "reclaim-probe"),
-        &worktree.dir,
-        &target_dir,
-        "",
-        "",
-        "",
-        "",
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
-    assert!(
-        result.pass,
-        "a real fenced courier must succeed before this test ever tears its worktree down: \
-         {result:?}"
-    );
-    assert!(
-        Path::new(&fence_dir).join("events.db").exists(),
-        "a real fenced courier must leave a real, openable events.db at the derived fence \
-         sibling {fence_dir} - if this fails, the fence itself (test 1) is broken, not the \
-         reclaim this test targets"
-    );
-
-    // The real production teardown entry point - not a call into reclaim_cache_sibling
-    // directly, which is a private fn only Worktree::remove and sweep_terminal may reach.
-    worktree.remove().expect("remove the real unit worktree");
-
-    assert!(
-        !Path::new(&fence_dir).exists(),
-        "removing the unit worktree via the real Worktree::remove path must reclaim the \
-         real fence sibling a real fenced courier left behind, leaked at {fence_dir}"
-    );
-    let live_after = std::fs::read(&live_events).unwrap();
-    assert_eq!(
-        live_before, live_after,
-        "the repo's live store must stay byte-identical throughout a fenced courier that \
-         writes, then gets torn down and reclaimed"
+        |dir| {
+            let target_dir =
+                unit_cache_sibling(dir).expect("a unit worktree dir must derive a cache sibling");
+            Fence {
+                fence_dir: format!("{target_dir}{STORE_FENCE_SUFFIX}"),
+                target_dir,
+                store_fence: String::new(),
+            }
+        },
     );
 }
 
@@ -614,88 +598,30 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     // target_dir (the new, dir-driven signal `worktree::review_fence_sibling` adds), and
     // that the real `Worktree::remove` teardown path - the SAME one `run_fan_out_stage`
     // calls on every terminal exit - reclaims it.
-    let repo = init_repo_with_head();
-    let repo_path = repo.path().to_string_lossy().into_owned();
-    std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
-    let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
-    std::fs::File::create(&live_events).unwrap();
-    let live_before = std::fs::read(&live_events).unwrap();
-
-    // The real production derivation (conductor's `review_worktree_dir`, mirrored here): a
-    // standalone review worktree lives under
-    // `<repo>/.rigger/tmp/rigger-review-<stage>-<attempt>` - no per-unit cache sibling,
-    // unlike a unit worktree.
-    let root = rigger::worktree::scratch_root(&repo_path, "", None);
-    let review_dir = format!("{root}/rigger-review-reclaim-probe-0");
-    let review = Worktree::create(
-        &repo_path,
-        &review_dir,
+    // The real production derivation (conductor's `Throwaway::REVIEW.dir_and_branch`, mirrored here): a
+    // standalone review worktree lives under `<repo>/.rigger/tmp/rigger-review-<stage>-<attempt>`
+    // - no per-unit cache sibling, unlike a unit worktree, so its target_dir is ALWAYS empty.
+    // Its fence is derived via the real public `review_fence_sibling`, not a hand-rolled format
+    // string: this exact widen-the-fence / widen-the-reclaim pair is what the round-1 reject
+    // (`adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`) named as the failure
+    // mode - a fence and a reclaim that quietly stop sharing one derivation. `ExecRunner::run`
+    // no longer derives the fence itself from `dir` (u4 round 3): the CALLER
+    // (`conductor::run_gates`, in production) computes it and injects it as `store_fence`, so
+    // this test passes the identically-derived value production would inject.
+    assert_fenced_scratch_store_reclaimed(
+        "review",
+        "rigger-review-reclaim-probe-0",
         "rigger/review/reclaim-probe-0",
-        &root,
-    )
-    .expect("create a real review worktree");
-    std::fs::create_dir_all(Path::new(&review.dir).join(".rigger")).unwrap();
-    std::fs::write(
-        Path::new(&review.dir).join(".rigger").join("workflow.yml"),
-        "stages: []\n",
-    )
-    .unwrap();
-
-    // Derived via the real public function, not a hand-rolled format string - the SAME
-    // fidelity the unit-worktree test above holds by deriving its target_dir through
-    // `unit_cache_sibling`. Calling the real `review_fence_sibling` here (rather than
-    // re-typing `STORE_FENCE_SUFFIX` inline) is not cosmetic: this exact widen-the-fence /
-    // widen-the-reclaim pair is what the round-1 reject
-    // (`adv-u3c70-reclaim-shares-the-same-exclusion-fix-fence-alone-leaks`) named as the
-    // failure mode - a fence and a reclaim that quietly stop sharing one derivation. A
-    // hand-rolled format string here would keep passing even if `review_fence_sibling`'s
-    // formula ever drifted from what `conductor::run_gates`/`reclaim_cache_sibling` actually
-    // use, silently losing the exact regression this test exists to catch.
-    //
-    // u4 round 3 (arch-u4c70r2-fence-signal-not-injected-into-runner-review-case):
-    // `ExecRunner::run` no longer derives this fence itself from `dir` - the CALLER
-    // (`conductor::run_gates`, in production) computes it and injects it as `store_fence`,
-    // so this test - which drives `ExecRunner` directly rather than through a full
-    // conductor run - now passes the identically-derived value production would inject,
-    // exercising the real courier + reclaim integration `ExecRunner` alone can no longer
-    // wire up on its own.
-    let fence_dir = review_fence_sibling(&review.dir)
-        .expect("a review worktree dir must derive a fence sibling");
-
-    let result = ExecRunner.run(
         &emit_gate("review-reclaim-emit", "review-reclaim-probe"),
-        &review.dir,
-        "",
-        "",
-        "",
-        "",
-        &fence_dir,
-        &BuildEnv::default(),
-        &BuildBudget::default(),
-    );
-    assert!(
-        result.pass,
-        "a real fenced courier for a review worktree (empty target_dir) must succeed: {result:?}"
-    );
-    assert!(
-        Path::new(&fence_dir).join("events.db").exists(),
-        "a real fenced review-worktree courier must leave a real, openable events.db at the \
-         derived fence sibling {fence_dir} - if this fails, the fence itself is broken, not \
-         the reclaim this test targets"
-    );
-
-    review.remove().expect("remove the real review worktree");
-
-    assert!(
-        !Path::new(&fence_dir).exists(),
-        "removing the review worktree via the real Worktree::remove path must reclaim the \
-         real fence sibling too, leaked at {fence_dir}"
-    );
-    let live_after = std::fs::read(&live_events).unwrap();
-    assert_eq!(
-        live_before, live_after,
-        "the repo's live store must stay byte-identical throughout a fenced review-worktree \
-         courier that writes, then gets torn down and reclaimed"
+        |dir| {
+            let fence_dir = review_fence_sibling(dir)
+                .expect("a review worktree dir must derive a fence sibling");
+            Fence {
+                target_dir: String::new(),
+                store_fence: fence_dir.clone(),
+                fence_dir,
+            }
+        },
     );
 }
 
@@ -715,7 +641,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     // leaves behind (created by `require_store_dir`, not by the test) is the one `discard`
     // finds, nor that the real production entry point reclaims it - exactly the gap tests 4
     // and 5 above already close for the other three teardown paths.
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
@@ -830,7 +756,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
     // run's own terminal disposition is not this test's concern (mirroring
     // `tests/unified_traversal_grounding.rs`'s `run_and_capture_review_prompts`) - only the
     // real subprocess side effect the wiring produced.
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
@@ -888,6 +814,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         grounder: None,
         graph: None,
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let _ = run(&cfg, &deps);
 

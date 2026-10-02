@@ -6,7 +6,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Card, CardRef,
 //! CardResponse, card, route, ...}`), so they guard the exact boundaries the inside-out unit test
-//! (`src/dash.rs mod metadata_card_c2`, which reaches `card` via `super::` in-process) is
+//! (`crates/rigger-dash/src/dash.rs mod metadata_card_c2`, which reaches `card` via `super::` in-process) is
 //! structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the card BEHAVIOUR but never that `card` and its
@@ -29,37 +29,17 @@
 //! (neither the route nor these DTOs is feature-gated), so this guards the served contract in both
 //! lanes.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::edge;
+use common::fixtures::node_with_attrs as node;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
-    KIND_FINDING, REL_ABOUT, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
-    TIER_INFERRED,
+    Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
+    REL_ABOUT, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, TIER_INFERRED,
 };
 use rigger::dash::{card, route, Card, CardRef, CardResponse};
-
-fn node(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: attrs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    }
-}
-
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    }
-}
 
 /// A code entity `combat.rs::fire` (line 42) carrying a live default-grain `IN_COMMUNITY`
 /// membership, a `REALIZES` concept, a governing decision, and an ABOUT finding - one of every
@@ -94,12 +74,27 @@ fn fixture_graph() -> Graph {
             node("f1", KIND_FINDING, &[("summary", "the finding content")]),
         ],
         edges: vec![
-            edge("combat.rs", "combat.rs::fire", REL_CONTAINS),
-            edge("combat.rs", "combat.rs::reload", REL_CONTAINS),
-            edge("combat.rs::fire", "community/1/3", REL_IN_COMMUNITY),
-            edge("combat.rs::fire", "concept/combat", REL_REALIZES),
-            edge("d1", "combat.rs::fire", REL_GOVERNS),
-            edge("f1", "combat.rs::fire", REL_ABOUT),
+            edge("combat.rs", "combat.rs::fire", REL_CONTAINS, TIER_INFERRED),
+            edge(
+                "combat.rs",
+                "combat.rs::reload",
+                REL_CONTAINS,
+                TIER_INFERRED,
+            ),
+            edge(
+                "combat.rs::fire",
+                "community/1/3",
+                REL_IN_COMMUNITY,
+                TIER_INFERRED,
+            ),
+            edge(
+                "combat.rs::fire",
+                "concept/combat",
+                REL_REALIZES,
+                TIER_INFERRED,
+            ),
+            edge("d1", "combat.rs::fire", REL_GOVERNS, TIER_INFERRED),
+            edge("f1", "combat.rs::fire", REL_ABOUT, TIER_INFERRED),
         ],
     }
 }
@@ -303,8 +298,12 @@ fn the_served_route_carries_a_file_and_a_concept_subjects_card() {
 #[test]
 fn the_served_route_carries_each_top_evidence_members_own_kind() {
     let mut g = fixture_graph();
-    g.edges
-        .push(edge("combat.rs", "concept/combat", REL_REALIZES));
+    g.edges.push(edge(
+        "combat.rs",
+        "concept/combat",
+        REL_REALIZES,
+        TIER_INFERRED,
+    ));
     let resp = route(
         "GET",
         "/api/graph?card=concept%2Fcombat",

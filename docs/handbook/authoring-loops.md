@@ -46,8 +46,6 @@ The entry gate is real: `rigger run <spec>` refuses to start unless every accept
 The workflow is a GitHub-Actions-style DAG declaring defaults, a gate library, and stages. The example below is the Rigger repo's own `.rigger/workflow.yml` - Rigger produces itself with it, so the gates are cargo commands and the engineer is a Rust engineer. Nothing about the structure is Rust-specific: your gate library is whatever your CI runs (`npm test`, `pytest`, `go vet ./...`), and your engineer agent is whatever your stack needs.
 
 ```yaml
-name: rigger-self-hosted
-
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: symbols         # symbols | grep | nop
@@ -79,6 +77,8 @@ stages:
     coverage: "each unit is implemented, reviews itself, and integrates green"
 ```
 
+Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
+
 ### The knobs that matter
 
 **`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
@@ -102,6 +102,19 @@ Review is per unit, not a downstream stage. Each unit runs its own complete cycl
 ```
 
 Consequence worth knowing: units run as overlapping pipelines, so an earlier unit's review can complete while a later unit is still building. Progress displays group by per-unit phase labels (`u3:Build`, `u3:Review`) precisely so this does not read as stages running out of order.
+
+### The check-in mutation sweep: bounds, scope and budget
+
+The `mutation` gate is `cargo mutants` over the whole spec diff, run once by a `checkin` stage that lists it, after every implement unit has integrated: one remediation round for its survivors, then the sweep again. The scaffold `rigger init` writes lists it in its `checkin` stage; rigger's own workflow declares the gate and ships its script, but no stage runs it until issue #32 lands, and the diff-base logic below is what a re-wired stage will use. Its logic lives in `.rigger/gates/mutation.sh` (`rigger init` writes the same script into your project; point your `mutation` gate at `sh .rigger/gates/mutation.sh` for a Rust workspace). What it guarantees:
+
+- **Scope.** Mutants come from every package the diff touches (`--workspace` with `--in-diff`), and each mutant runs only the tests of those packages plus the root package's, never the whole workspace's (`--test-package`, never `--test-workspace`). The package of a file is the nearest `Cargo.toml` that declares a `[package]`. A survivor this exposes is closed with a test in the right crate, never by widening the test scope.
+- **Memory bound.** The sweep runs in its own transient systemd scope with `MemoryMax` at half of `MemAvailable` when it starts, so a runaway mutant can exhaust only the sweep's own memory - never the step that launched the gate or the operator's session. The scope carries `OOMPolicy=continue`: when the kernel's out-of-memory reaper ends a process inside it, that ends one mutant's build or test, not the whole sweep (systemd's default policy stops the entire scope). With no systemd user manager (a CI container) the sweep runs unbounded and the gate prints an advisory saying so. Separately, every test process runs under a 4 GiB address-space cap (`.cargo/pidns-runner.sh`).
+- **Memory shape.** A healthy mutant copy is small: measured on a 32-core machine, a cold 8-job test build of the root package peaks at 1.3 GiB of anonymous memory (the rest of its footprint is page cache for the artifacts it writes, which the kernel reclaims at the bound), and its nextest run peaks at 3.0 GiB at 32 test threads and 1.5 GiB at 10. What reaches the bound is a runaway mutant: every test process in flight runs the same mutated code and can grow to the 4 GiB cap, so the exposure scales with the number of test processes in flight across all copies, not with the number of copies. The gate therefore holds that total at the core count: each copy runs cores / `-j` nextest test threads (passed after `--`, which cargo-mutants hands to the test phase only). `-j` comes from the bound at 5 GiB per job, at least 1 and at most 3: 5 GiB covers one build per copy plus the one core-wide test fan-out all copies share, for any `-j`.
+- **Verdict on a reaper-ended mutant.** cargo-mutants exits 0 even when a mutant's phase was ended by a signal, so the gate reads each mutant's log. A test phase ended by a signal counts as a detection, like a timeout: the mutant made its tests grow until the reaper ended them. A build phase ended by a signal, or a compiler under it, means the mutant was never tested: the gate fails with an environment failure naming each such mutant and phase (the full list is `mutants.out/environment.tsv`), and it does not advance its incremental anchor, so the next run examines those mutants again.
+- **Budget.** A typical unit diff sweeps in minutes, not hours: the baseline tests only the mutated packages (seconds), each job's first mutant pays one build of the root package in its copy, and each caught mutant stops at its first failing test (nextest). Each mutant's test run is bounded at 300 s, and nextest ends any single hung test at 240 s; a timeout counts as a detection. Re-sweeps are incremental: only mutants in code changed since the spec's last swept tree, its earlier survivors, and catches whose catching test changed are examined again. Survivors belong to the run: each sweep records the run's base beside the tree it swept, and a later sweep whose recorded base is its own run's re-runs those survivors by name, wherever the tree sits. Narrowing also needs the tree still in its history: then the sweep covers only the changes since that tree, and a record of the run whose tree its HEAD no longer holds (a rewritten attempt) narrows nothing but still re-runs its survivors, so a rewrite never erases one. Any other record narrows nothing and carries none of its survivors, so the sweep is the whole spec diff against the run's base: an earlier spec's, wherever its tree sits - behind that base, or past it when that spec's escalated check-in is landed by hand during this run - and one with no recorded base. Catches belong to the project: whichever run recorded one, it is examined again when its catching test changed since the spec's own last swept tree, or, with none, since the run's base - so a spec that rewrites the test catching an earlier spec's mutant examines that mutant again. A run base the repository does not hold fails the gate before anything runs.
+- **The instrument is the gate's.** A unit that adds an exclusion or examine key to `.cargo/mutants.toml`, or a skip attribute in the code, fails the gate before any sweep runs.
+
+`rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, unowned agent scratch, and the shared gate build cache - and leaves any entry a live process still holds (its working directory or an open file) where it is.
 
 ## The four drivers
 

@@ -37,144 +37,19 @@
 //! is a private binary fn reachable only through the CLI, so this integration layer is the only place
 //! its degrade/extent boundary can be proven.
 
-use std::path::Path;
-use std::process::Command;
-
-use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
-use rigger::eventstore::Event;
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::rigger_bin;
 
-/// A throwaway project dir that is its own git repo, so `project_identity()` (which scopes the
-/// namespaced streams and the graph project) is stable across the seed and the binary's reads.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so the seeded `graph.db`
-/// lands under the exact project scope the compiled binary reads back: the git top-level basename
-/// (no tracked `.rigger/project.id` is seeded here), else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Create the `.rigger/` dir under `root` so `Projector::open` can lay `graph.db` beside it.
-fn seed_rigger_dir(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Opts out of the
-/// auto-started dashboard and points the instance registry at a throwaway state dir, exactly as
-/// the other CLI integration tests do, so a short-lived inspector invocation spawns nothing that
-/// outlives the test.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// Seed one code-entity DEFINITION node into the persisted `graph.db` by folding a
-/// `CodeEntityExtracted` event (the ALWAYS-compiled fold), exactly as a real extraction pass
-/// would - so this seeding is feature-lane independent (no `symbols` extractor required). The
-/// `lang` is stored as the node attr the real extraction records; the show surface re-resolves the
-/// grammar from the file EXTENSION when it derives the extent, so `lang` only needs to be truthful.
-fn seed_def_lang(
-    p: &Projector,
-    pos: u64,
-    file: &str,
-    name: &str,
-    kind: &str,
-    line: u32,
-    lang: &str,
-) {
-    let payload = format!(
-        r#"{{"file":"{file}","name":"{name}","kind":"{kind}","line":{line},"lang":"{lang}"}}"#
-    );
-    let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Seed a Rust code-entity definition (the common case). Delegates to [`seed_def_lang`].
-fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
-    seed_def_lang(p, pos, file, name, kind, line, "rust");
-}
-
-/// Open the seeded `graph.db` under `root`'s `.rigger/`, scoped to the identity the binary reads.
-fn open_graph(root: &Path) -> Projector {
-    let id = run_stream_identity(root);
-    Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap()
-}
-
-/// Count the line-numbered body lines in a `--show` output. Each body line is printed as
-/// `  <n> | <text>` (a right-padded 1-based line number, then ` | `, then the source), so a line
-/// whose text BEFORE the first ` | ` parses as a number is a body line; the site/kind/degree header
-/// and the not-found / stale / extent-unavailable notes never carry that shape.
-fn body_line_count(out: &str) -> usize {
-    out.lines()
-        .filter(|l| {
-            l.trim_start()
-                .split_once(" | ")
-                .map(|(pre, _)| pre.trim().parse::<u32>().is_ok())
-                .unwrap_or(false)
-        })
-        .count()
-}
-
-/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), a located
-/// entity's body extent cannot be derived (no grammar is linked). The show surface must degrade to
-/// the site header plus an explicit extent-unavailable note and NO body - never a hand-rolled lexer
-/// that would mis-read the grammars the graph ingests. Asserts exit-success, the note, and no body.
 #[cfg(not(feature = "symbols"))]
-fn assert_light_lane_extent_note(out: &str, ok: bool) {
-    assert!(
-        ok,
-        "a located entity in the light lane still EXITS SUCCESS (a note, never an error); got:\n{out}"
-    );
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
-    );
-    assert_eq!(
-        body_line_count(out),
-        0,
-        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
-    );
-}
+use common::cli::assert_light_lane_extent_note;
+use common::cli::body_line_count;
+use common::cli::open_graph;
+use common::cli::run_rigger;
+use common::cli::seed_rigger_dir;
+use common::cli::temp_project;
+use common::fixtures::apply_code_entity;
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
 /// (never guessing, never a stack trace), prints NO body, and EXITS SUCCESS - mirroring
@@ -189,7 +64,7 @@ fn graph_show_unknown_entity_reports_not_found() {
     // A graph that HAS entities, so a miss is a genuine no-match and not merely an empty db.
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "a.rs", "alpha", "function", 1);
+        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "does_not_exist"]);
@@ -229,8 +104,8 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
     std::fs::write(root.join("short.rs"), "fn beta() {}\n// eof\n").unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "gone.rs", "ghost", "function", 5);
-        seed_def(&p, 2, "short.rs", "beta", "function", 9);
+        apply_code_entity(&p, 1, "gone.rs", "ghost", "function", 5, "rust");
+        apply_code_entity(&p, 2, "short.rs", "beta", "function", 9, "rust");
     }
 
     // (a) Missing file -> the site header is shown, the body degrades to the stale note, exit 0.
@@ -298,7 +173,7 @@ fn graph_show_degrades_to_stale_note_when_recorded_line_is_zero() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "ghost.rs", "ghost", "function", 0);
+        apply_code_entity(&p, 1, "ghost.rs", "ghost", "function", 0, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "ghost"]);
@@ -370,7 +245,7 @@ fn graph_show_light_lane_degrades_to_extent_unavailable_note() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "present.rs", "present", "function", 1);
+        apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
     }
 
     let (out, _err, ok) = run_rigger(root, &["graph", "--show", "present"]);
@@ -380,7 +255,11 @@ fn graph_show_light_lane_degrades_to_extent_unavailable_note() {
         "the located site header is printed in the light lane; got:\n{out}"
     );
     // ...and the body degrades to the explicit extent-unavailable note, never a silent truncation.
-    assert_light_lane_extent_note(&out, ok);
+    assert!(
+        ok,
+        "a located entity in the light lane still EXITS SUCCESS (a note, never an error); got:\n{out}"
+    );
+    assert_light_lane_extent_note(&out);
     // The real body line is never shown without the grammar (no silent partial body).
     assert!(
         !out.contains("let body = 1"),
@@ -417,8 +296,8 @@ fn graph_show_bounds_body_at_the_definitions_own_extent() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "c.rs", "one", "function", 1);
-        seed_def(&p, 2, "c.rs", "two", "function", 6);
+        apply_code_entity(&p, 1, "c.rs", "one", "function", 1, "rust");
+        apply_code_entity(&p, 2, "c.rs", "two", "function", 6, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "one"]);
@@ -486,9 +365,9 @@ fn graph_show_shows_full_body_past_nested_definition() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "outer.rs", "outer", "function", 1);
-        seed_def(&p, 2, "outer.rs", "helper", "function", 2);
-        seed_def(&p, 3, "outer.rs", "sibling", "function", 9);
+        apply_code_entity(&p, 1, "outer.rs", "outer", "function", 1, "rust");
+        apply_code_entity(&p, 2, "outer.rs", "helper", "function", 2, "rust");
+        apply_code_entity(&p, 3, "outer.rs", "sibling", "function", 9, "rust");
     }
 
     // `--show outer`: the FULL body is shown, INCLUDING the nested `helper`, not truncated to the
@@ -568,8 +447,8 @@ fn graph_show_shows_full_body_of_a_destructuring_signature() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "sig.rs", "config", "function", 1);
-        seed_def(&p, 2, "sig.rs", "sibling", "function", 6);
+        apply_code_entity(&p, 1, "sig.rs", "config", "function", 1, "rust");
+        apply_code_entity(&p, 2, "sig.rs", "sibling", "function", 6, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "config"]);
@@ -623,8 +502,8 @@ fn graph_show_extent_ignores_braces_in_strings_comments_and_chars() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "tricky.rs", "tricky", "function", 1);
-        seed_def(&p, 2, "tricky.rs", "after", "function", 8);
+        apply_code_entity(&p, 1, "tricky.rs", "tricky", "function", 1, "rust");
+        apply_code_entity(&p, 2, "tricky.rs", "after", "function", 8, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "tricky"]);
@@ -671,8 +550,8 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def_lang(&p, 1, "nested.py", "outer", "function", 1, "python");
-        seed_def_lang(&p, 2, "nested.py", "inner", "function", 2, "python");
+        apply_code_entity(&p, 1, "nested.py", "outer", "function", 1, "python");
+        apply_code_entity(&p, 2, "nested.py", "inner", "function", 2, "python");
     }
 
     // `--show outer`: the FULL indented block is shown, INCLUDING the nested `inner`, then outer's
@@ -746,8 +625,8 @@ fn graph_show_does_not_overread_a_js_single_quote_brace_body() {
     .unwrap();
     {
         let p = open_graph(root);
-        seed_def_lang(&p, 1, "widget.js", "open", "function", 1, "javascript");
-        seed_def_lang(&p, 2, "widget.js", "next", "function", 5, "javascript");
+        apply_code_entity(&p, 1, "widget.js", "open", "function", 1, "javascript");
+        apply_code_entity(&p, 2, "widget.js", "next", "function", 5, "javascript");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "open"]);
@@ -797,7 +676,7 @@ fn graph_show_clamps_body_to_the_max_window() {
 
     {
         let p = open_graph(root);
-        seed_def(&p, 1, "big.rs", "big", "function", 1);
+        apply_code_entity(&p, 1, "big.rs", "big", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "big"]);
@@ -856,7 +735,7 @@ fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
         let p = open_graph(root);
         // A truthful `lang` attr is irrelevant to the extent path: the show surface re-resolves the
         // grammar from the file EXTENSION, and `.txt` is unregistered regardless of the recorded lang.
-        seed_def_lang(&p, 1, "notes.txt", "widget", "function", 1, "text");
+        apply_code_entity(&p, 1, "notes.txt", "widget", "function", 1, "text");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "widget"]);
@@ -928,7 +807,7 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     {
         let p = open_graph(root);
         // Record `moved` at the STALE line 1 (its real current site is line 4).
-        seed_def(&p, 1, "drift.rs", "moved", "function", 1);
+        apply_code_entity(&p, 1, "drift.rs", "moved", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);
@@ -996,7 +875,7 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
     {
         let p = open_graph(root);
         // Record `dup` at the STALE line 1 (neither real `dup` is there).
-        seed_def(&p, 1, "twins.rs", "dup", "function", 1);
+        apply_code_entity(&p, 1, "twins.rs", "dup", "function", 1, "rust");
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "dup"]);

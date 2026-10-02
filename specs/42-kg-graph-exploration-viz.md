@@ -14,7 +14,7 @@ event type and no external dependency.
 
 ## Design
 
-The dash is one `include_str!` page (`src/dash.html`) served by `src/dash.rs`, which projects the
+The dash is one `include_str!` page (`crates/rigger-dash/src/dash.html`) served by `crates/rigger-dash/src/dash.rs`, which projects the
 event store + context graph and renders. Spec 30 added the seeded route
 `GET /api/graph?seed=&depth=&tier=` and the panel that renders a `Neighborhood`. This spec adds the
 two projections that make the SAME panel a whole-graph explorer, and the library-free SVG viz that
@@ -22,7 +22,7 @@ draws them. It is a projection + template change: no new event type, no store wr
 build step (the dash charter: one self-contained page, all CSS and JS inline, same-origin `/api/*`
 only).
 
-### Data layer (`src/dash.rs`)
+### Data layer (`crates/rigger-dash/src/dash.rs`)
 
 - **`cluster_key(id, kind) -> String`** folds a node into its super-node. A node whose id names a
   file - a code entity (`<file>::<name>`), a rationale anchor (`<file>#L<n>`), or a path id (a file
@@ -51,7 +51,7 @@ only).
   DEFAULT KG view); a non-empty `seed` returns the spec-30 seeded neighborhood UNCHANGED. One route,
   three views, selected by parameter.
 
-### Visual layer (`src/dash.html`)
+### Visual layer (`crates/rigger-dash/src/dash.html`)
 
 A library-free, JS-driven, SVG-rendered viz fills the KG panel. It computes node positions with a
 force layout and emits `<circle>`/`<line>`/`<text>` from them (what a graph library does, minus the

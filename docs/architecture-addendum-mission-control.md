@@ -21,7 +21,7 @@ finding, stance and ruling, every merge. Two things it does not record, and five
 lacks, stand between that record and the four questions a person asks while a run is live.
 
 - **No surface answers the operator's questions.** `rigger status` prints the frontier and the
-  blocker lines; the dashboard (`src/dash.rs`, 11,240 lines, and `src/dash.html`, 2,398 lines)
+  blocker lines; the dashboard (`crates/rigger-dash/src/dash.rs`, 11,240 lines, and `crates/rigger-dash/src/dash.html`, 2,398 lines)
   renders a run tree, gate metrics and a graph panel. Both are snapshots of *state*. Neither
   says what an agent is doing at this second, what the next three steps of the run are, what
   needs a human and with which command, or why round 4 was rejected when round 3 fixed the
@@ -181,7 +181,7 @@ record). Ingestion is idempotent by (spawn, turn index): a turn is recorded once
 
 **What it closes.** The Agents transcript is the real one. The Theater card's "what" is the
 latest transcript turn when no progress line is newer (a tool call reads as `running cargo
-test --test cli`, an edit as `editing src/dash.rs`), so a silent agent is never blank. Token
+test --test cli`, an edit as `editing crates/rigger-dash/src/dash.rs`), so a silent agent is never blank. Token
 burn per unit is the cumulative usage of its spawns over time; the budget chip is the run's
 total; the Fleet's "tokens today" sums instances. The transcript is also the evidence a
 courtroom finding can link to (a finding's `about` naming a spawn turn opens it).
@@ -343,7 +343,7 @@ the selected agent's transcript, the session itself, in order:
 1. **Prompt** - the spawn's task text and persona name from `SpawnRequested` (the full prompt
    behind a disclosure, the same text `rigger prompt <id>` prints).
 2. **Turns** - each transcript turn: the agent's text as paragraphs; a tool call as the mock's
-   tool chip (`rigger graph --around src/worktree.rs`, `cargo test --test cli`); a tool result
+   tool chip (`rigger graph --around crates/rigger-worktree-git/src/worktree.rs`, `cargo test --test cli`); a tool result
    as a terminal block (a test run's lines with pass and fail coloured, a command's output
    verbatim, a truncated block carrying its omitted byte count); an edit as a diff block (the
    old text as removed lines, the new text as added lines, under the file's header); a

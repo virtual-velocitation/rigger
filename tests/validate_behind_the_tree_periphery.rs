@@ -54,6 +54,12 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
+use common::fixtures::tool_available;
+use common::git::git_ok_with_identity;
+use common::git::trimmed_stdout;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,96 +67,16 @@ use std::process::Command;
 // Harness
 // ---------------------------------------------------------------------------------------
 
-/// A throwaway project: its own git repo with a `.rigger` dir - mirrors
-/// `tests/validate_advisories.rs`'s identical fixture.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/validate_advisories.rs`'s identical helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// `git <args>` in `root` with a fixed committer identity, panicking with stderr on failure -
-/// mirrors `tests/gitsemver_worktree_periphery.rs`'s identical helper.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e")
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// `git <args>` in `root`, returning trimmed stdout, panicking with stderr on failure -
-/// mirrors `tests/gitsemver_worktree_periphery.rs`'s identical helper.
-fn git_output(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        // Same fixed identity as `git()` above: commands like `commit-tree` create
-        // commits too, and a CI runner has no global git identity to fall back on.
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e")
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout)
-        .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
-        .trim()
-        .to_string()
-}
-
-/// Same availability gate as `tests/gitsemver_derivation.rs` and `tests/gitsemver_worktree_
-/// periphery.rs`: provisioning the environment with `go-gitsemver` on PATH is criterion 3's,
-/// not this test's.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// The `objects` dir of the git repository THIS test binary was compiled from - the same
 /// object store `RIGGER_BUILD_PROVENANCE`'s commit lives in, whether this checkout is a
 /// plain clone or (as every one of this project's own spec units is built) a linked
 /// worktree, in which case `--git-common-dir` already resolves to the shared primary `.git`.
 fn source_objects_dir() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let common_dir = git_output(manifest_dir, &["rev-parse", "--git-common-dir"]);
+    let common_dir = trimmed_stdout(&git_ok_with_identity(
+        manifest_dir,
+        &["rev-parse", "--git-common-dir"],
+    ));
     let common_dir = PathBuf::from(common_dir);
     let common_dir = if common_dir.is_absolute() {
         common_dir
@@ -196,7 +122,7 @@ fn borrow_objects(root: &Path, objects_dir: &Path) {
 /// environment where this test binary's own build commit was pruned/gc'd since) - the
 /// caller skips rather than fabricating a scenario that cannot arise for real.
 fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
-    git(root, &["init", "-q"]);
+    git_ok_with_identity(root, &["init", "-q"]);
     borrow_objects(root, &source_objects_dir());
     let provenance = env!("RIGGER_BUILD_PROVENANCE");
     let resolved = Command::new("git")
@@ -220,9 +146,9 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
     )
     .expect("write fixture go-gitsemver.yml");
 
-    git(root, &["add", "-A"]);
-    let tree = git_output(root, &["write-tree"]);
-    let child = git_output(
+    git_ok_with_identity(root, &["add", "-A"]);
+    let tree = trimmed_stdout(&git_ok_with_identity(root, &["write-tree"]));
+    let child = trimmed_stdout(&git_ok_with_identity(
         root,
         &[
             "commit-tree",
@@ -232,9 +158,9 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
             "-m",
             "chore: import scaffold",
         ],
-    );
-    git(root, &["update-ref", "HEAD", &child]);
-    git(root, &["tag", "v0.9.0", &child]);
+    ));
+    git_ok_with_identity(root, &["update-ref", "HEAD", &child]);
+    git_ok_with_identity(root, &["tag", "v0.9.0", &child]);
     Some(())
 }
 
@@ -244,7 +170,7 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
 
 #[test]
 fn validate_names_the_behind_the_tree_advisory_through_the_real_binary() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
@@ -314,17 +240,9 @@ fn validate_stays_silent_on_the_version_advisories_and_leaks_no_raw_git_error_fo
         "this test's installed-version premise does not hold in this build environment"
     );
 
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on an ordinary project unrelated to rigger's own history; \
-         stderr:\n{err}"
-    );
+    let (out, err) = validate_after_init(root, |_| {});
     assert!(
         out.contains("config valid"),
         "validate must print its config summary; stdout:\n{out}"

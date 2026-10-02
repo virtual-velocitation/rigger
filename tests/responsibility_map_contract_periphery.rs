@@ -44,13 +44,17 @@
 //! by `(file, start_line)`, never `(file, name)` or bare array position: `render_section_1`
 //! re-groups entries by PROPOSED MODULE (sorted alphabetically), so the report's own citation
 //! order is a permutation of `MAP_LINES_PATH`'s array order, ruling out a positional join;
-//! `(file, name)` is not unique either - `src/conductor.rs`'s three `Error::from` impls all share
+//! `(file, name)` is not unique either - `crates/rigger-conductor/src/conductor.rs`'s three `Error::from` impls all share
 //! one bare name in one file (visible in the committed map's own `conductor::error` module
 //! group). `(file, start_line)` is the one key that is: no two function definitions can start on
 //! the same line of the same file.
 
+mod common;
+
+use common::repo::committed_json;
+use common::repo::repo_root;
+use common::repo::{assert_committed_json_round_trips, assert_committed_ledger_is_nonempty};
 use serde::Deserialize;
-use std::path::PathBuf;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `MapEntryWire` shape field-for-field, from
 /// the outside - see the module doc comment for why this is a deliberate re-declaration, not an
@@ -69,50 +73,30 @@ struct ConsumedMapEntry {
 }
 
 const MAP_PATH: &str = "docs/audit/responsibility-map.json";
-const TARGET_FILES: [&str; 3] = ["src/conductor.rs", "src/main.rs", "src/dash.rs"];
+/// The documented contract a downstream consumer decodes [`MAP_PATH`] as.
+const MAP_CONTRACT: &str =
+    "MapEntry contract (file/name/is_test/proposed_module/reason/content_hash)";
+const TARGET_FILES: [&str; 3] = [
+    "crates/rigger-conductor/src/conductor.rs",
+    "src/cli/mod.rs",
+    "crates/rigger-dash/src/dash.rs",
+];
 
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root` and `tests/no_os_kill_audit.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn read_committed_map_raw() -> String {
-    let path = repo_root().join(MAP_PATH);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{MAP_PATH} is missing or unreadable ({e})"))
-}
-
-fn deserialize_committed_map() -> Vec<ConsumedMapEntry> {
-    let raw = read_committed_map_raw();
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!(
-            "{MAP_PATH} does not deserialize as the documented MapEntry contract \
-             (file/name/is_test/proposed_module/reason/content_hash): {e}"
-        )
-    })
-}
-
-/// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
-/// (not the producer's private Rust type) can actually parse the committed artifact. This is
-/// the specific gap the boundary probe found - `Deserialize` is derived but never exercised
-/// anywhere in the unit's own tests.
-#[test]
-fn the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would() {
-    let entries = deserialize_committed_map();
-    assert!(
-        !entries.is_empty(),
-        "{MAP_PATH} deserialized to zero entries - a downstream consumer pinning counts \
-         against this file would silently see nothing"
-    );
+rigger::test_cases! {
+    /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 85's documented field shape
+    /// (not the producer's private Rust type) can actually parse the committed artifact. This is
+    /// the specific gap the boundary probe found - `Deserialize` is derived but never exercised
+    /// anywhere in the unit's own tests.
+    the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would:
+        assert_committed_ledger_is_nonempty::<ConsumedMapEntry>(MAP_PATH, MAP_CONTRACT);
 }
 
 /// Every entry names one of the three files spec 85's Done-when criterion 1 fixes by literal
-/// path (`src/conductor.rs`, `src/main.rs`, `src/dash.rs`) - a consumer filtering by file (e.g.
+/// path (`crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs`, `crates/rigger-dash/src/dash.rs`) - a consumer filtering by file (e.g.
 /// a later refactor spec pinning `conductor.rs`'s own count) must never see a stray value.
 #[test]
 fn every_deserialized_entry_names_one_of_the_three_target_files() {
-    let entries = deserialize_committed_map();
+    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
     for e in &entries {
         assert!(
             TARGET_FILES.contains(&e.file.as_str()),
@@ -129,7 +113,7 @@ fn every_deserialized_entry_names_one_of_the_three_target_files() {
 /// round-trip test below the real proof of their absence).
 #[test]
 fn every_deserialized_entry_has_a_non_empty_content_hash() {
-    let entries = deserialize_committed_map();
+    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
     for e in &entries {
         assert!(
             !e.content_hash.is_empty(),
@@ -146,7 +130,7 @@ fn every_deserialized_entry_has_a_non_empty_content_hash() {
 /// generator computed the right thing" and "the persisted artifact still says the right thing."
 #[test]
 fn unassigned_entries_in_the_committed_map_still_name_their_function() {
-    let entries = deserialize_committed_map();
+    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
     let unassigned: Vec<&ConsumedMapEntry> = entries
         .iter()
         .filter(|e| e.proposed_module.is_none())
@@ -196,7 +180,7 @@ fn unassigned_entries_in_the_committed_map_still_name_their_function() {
 /// this test: 0 violations either direction.
 #[test]
 fn is_test_rows_and_only_is_test_rows_land_in_a_tests_proposed_module() {
-    let entries = deserialize_committed_map();
+    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
     for e in &entries {
         if e.is_test {
             let module = e.proposed_module.as_deref().unwrap_or_else(|| {
@@ -229,27 +213,17 @@ fn is_test_rows_and_only_is_test_rows_land_in_a_tests_proposed_module() {
     }
 }
 
-/// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
-/// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
-/// the producer's own trailing-newline convention) reproduces the committed bytes exactly. This
-/// is the strongest form of the round-trip contract - it proves the JSON shape is lossless and
-/// canonical from an outside reader's perspective, not merely that the producer's own function
-/// agrees with itself (every one of the implementer's own drift-guard tests compares the SAME
-/// producer type/function on both sides; this test decodes and re-encodes through a
-/// SEPARATELY-declared type, the position any real future consumer will be in).
-#[test]
-fn deserializing_then_reserializing_reproduces_the_committed_bytes_exactly() {
-    let committed = read_committed_map_raw();
-    let entries = deserialize_committed_map();
-    let mut reencoded =
-        serde_json::to_string_pretty(&entries).expect("ConsumedMapEntry re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        committed, reencoded,
-        "{MAP_PATH} does not round-trip byte-for-byte through the documented MapEntry shape - \
-         a downstream consumer decoding and re-encoding this file would silently diverge from \
-         the committed artifact"
-    );
+rigger::test_cases! {
+    /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
+    /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
+    /// the producer's own trailing-newline convention) reproduces the committed bytes exactly. This
+    /// is the strongest form of the round-trip contract - it proves the JSON shape is lossless and
+    /// canonical from an outside reader's perspective, not merely that the producer's own function
+    /// agrees with itself (every one of the implementer's own drift-guard tests compares the SAME
+    /// producer type/function on both sides; this test decodes and re-encodes through a
+    /// SEPARATELY-declared type, the position any real future consumer will be in).
+    deserializing_then_reserializing_reproduces_the_committed_bytes_exactly:
+        assert_committed_json_round_trips::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
 }
 
 // -----------------------------------------------------------------------------------------
@@ -272,15 +246,6 @@ struct ConsumedMapEntryLines {
     end_line: usize,
 }
 
-fn deserialize_committed_map_lines() -> Vec<ConsumedMapEntryLines> {
-    let path = repo_root().join(MAP_LINES_PATH);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{MAP_LINES_PATH} is missing or unreadable ({e})"));
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("{MAP_LINES_PATH} does not deserialize as the documented lines contract: {e}")
-    })
-}
-
 /// The join, checked against the PERSISTED files rather than the generator's in-memory value:
 /// same length, same `(file, name)` at every index. Unlike
 /// `tests/dead_code_json_contract_periphery.rs`'s equivalent test, this does NOT also assert a
@@ -292,8 +257,8 @@ fn deserialize_committed_map_lines() -> Vec<ConsumedMapEntryLines> {
 /// introduces or this test should assert against.
 #[test]
 fn the_committed_map_and_its_lines_sibling_are_position_joined() {
-    let entries = deserialize_committed_map();
-    let lines = deserialize_committed_map_lines();
+    let entries = committed_json::<Vec<ConsumedMapEntry>>(MAP_PATH, MAP_CONTRACT);
+    let lines = committed_json::<Vec<ConsumedMapEntryLines>>(MAP_LINES_PATH, "lines contract");
     assert_eq!(
         entries.len(),
         lines.len(),
@@ -349,7 +314,7 @@ fn the_committed_report_section_1_cites_file_line_exactly_as_the_lines_sibling_r
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
     let citations = section_1_citations(&report);
-    let lines = deserialize_committed_map_lines();
+    let lines = committed_json::<Vec<ConsumedMapEntryLines>>(MAP_LINES_PATH, "lines contract");
     assert_eq!(
         citations.len(),
         lines.len(),

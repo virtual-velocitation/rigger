@@ -19,7 +19,6 @@
 # integrate - and a reject or a gate failure feeds back into that same unit's
 # remediation loop. `defaults.review` declares the panel once; every unit (the
 # `implement` stage and every planner-proposed unit) inherits it.
-name: rigger-self-hosted
 
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
@@ -115,8 +114,8 @@ defaults:
 
 build:
   # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
-  # kind is now a validation error naming this spec): no per-round sweep; mutation runs
-  # ONCE at the `checkin` stage below via the `mutation` gate, remediated once.
+  # kind is now a validation error naming this spec): no per-round sweep; the sweep is the
+  # `mutation` gate below, declared but unwired until #32 lands.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
 # Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
@@ -137,173 +136,87 @@ regenerate:
     run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
 
 gates:                      # the project's verification library, referenced by name
-  fmt:    { run: "cargo fmt --check",                        kind: core }
-  clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
-  build:  { run: "cargo build",                              kind: core }
-  test:   { run: "cargo test",                               kind: core }
-  # The style gate (Gap 4a): a mechanically-checkable style constraint becomes a
-  # gate rather than relying on ambient reviewer attention. It FAILS when the
-  # unit's OWN diff against the run base introduces an em dash (U+2014) in any
-  # added text - code, comments, docs, prompts - and PASSES on a clean diff. It
-  # runs in the unit worktree (cwd), so a three-dot diff from the run branch
-  # (`rigger-run`, with an origin/main / HEAD fallback) reports only THIS branch's
-  # changes, never the whole tree. The em dash byte pattern is generated at runtime
-  # via `printf` octal (portable to POSIX sh / dash and bash), so this gate command
-  # carries no literal em dash and therefore passes on its own diff.
-  style:
-    run: 'em=$(printf "\342\200\224"); base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); if git diff "$base"...HEAD | grep "^+" | grep -v "^+++ " | grep -qF "$em"; then echo "style gate FAILED: an em dash (U+2014) was introduced; use a hyphen"; exit 1; fi'
+  # fmt, clippy and build cover every workspace crate, never the root package alone: a bare
+  # `cargo clippy` or `cargo build` here reaches only the root package, so no crate's own code
+  # would be linted or built under any unit (a bare `cargo fmt --check` already walked every
+  # member; `--all` says so). Clippy runs one lane, the default features, as it always has.
+  fmt:    { run: "cargo fmt --all --check",                              kind: core }
+  clippy: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: core }
+  build:  { run: "cargo build --workspace",                              kind: core }
+  # The test gate runs every workspace crate's tests (a bare `cargo test` here tests the root
+  # package alone, so no crate's own unit tests would run under any unit). It first sources
+  # .rigger/gates/container-env.sh, which points the container-backed tests at the local
+  # rootless podman when no DOCKER_HOST is set, so they run instead of skipping. This string
+  # is read from the operator's workflow but runs inside the unit's worktree, whose tree may
+  # predate the snippet: a missing snippet runs the tests without it, and a snippet that fails
+  # to source fails the gate.
+  test:
+    run: "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || exit 1; fi; cargo test --workspace"
     kind: core
-  # The no-os-kill gate (spec 78): rigger issues NO OS-level kills. Process lifecycle is
-  # handle-bound (`Child::kill()`/`wait()` on a child this process spawned) or, in exactly
-  # two sanctioned places, an internal guarded signal call: the worktree reaper
-  # (src/reap.rs) and the shared test lifecycle helper (tests/common/mod.rs). Everywhere
-  # else in src/ and tests/, an added line that shells out to kill/pkill/killall, formats a
-  # negative (process-group) pid, uses the `--` argv separator, or calls a signal API
-  # directly FAILS the unit. Inside the two sanctioned files a shell-out is still a failure.
-  # Scoped to code (src, tests): prose in docs/, specs/ and .rigger/ may name the rule.
-  # WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1)
-  # and destroyed the operator's whole desktop session seven-plus times; the review
-  # panel approved each site because nothing mechanical forbade it. Now something does.
-  no-os-kill:
-    run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src tests ":(exclude)src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
+  # The lanes gate: the no-default and core feature lanes, through the one script CI runs
+  # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
+  # above never built. The script derives the core lane's members from the workspace and fails a
+  # test step that ran no test. Listed at check-in only: the post-merge re-gate then covers the
+  # merged tree too, and no implement round pays for two more lane builds. It sources the
+  # container runtime snippet first, as `test` does, so container-backed tests run, not skip.
+  lanes:
+    run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default && sh .rigger/gates/lanes.sh core"
     kind: core
-  # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
-  # sweep ONCE, at the `checkin` stage below - after every implement unit has
-  # integrated - rather than once per implementer round (spec 73's original per-round
-  # placement, retired). `$MUTANTS` is the unit-keyed mutants root the conductor
-  # exports to every gate command exactly like `CARGO_TARGET_DIR` already is
-  # (`worktree::unit_mutants_sibling`), and reaps at unit terminus alongside it
-  # (`worktree::reclaim_cache_sibling`) - this command owns creating/wiping it each
-  # run, never this crate. `$RIGGER_RUN_BASE` is the run branch's tip commit sha AT
-  # THE MOMENT this run started (`RunStarted.base_tip`, exported to every gate
-  # command the same way `$MUTANTS` is) - NEVER a `git merge-base` with the run
-  # branch: the checkin stage's own worktree branches off the run branch AFTER every
-  # implement unit has already integrated, so a merge-base there is already HEAD and
-  # would diff nothing (the whole-spec sweep would then certify zero mutants, every
-  # run, silently). A run whose `RunStarted` predates this field has no base to diff
-  # against; `test -n` refuses loud rather than sweeping an empty diff. The checkin
-  # stage's own task text (below, and the `rust-engineer` persona's checkin-stage
-  # prose) carries the kill-or-justify protocol: read `mutants.out/outcomes.json`,
-  # kill each missed mutant with a strengthened test or justify it via an
-  # `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and
-  # record the deterministic per-mutant accounting as a DecisionMade. Declaring a
-  # gate under this exact id requires `cargo-mutants` on PATH (`rigger validate`
-  # checks at run start). The gate fails on MISSED mutants only (spec 91: "fails while a
-  # missed mutant is neither killed nor justified"). A TIMEOUT is a detection, not a miss:
-  # the suite hangs or overruns under the mutant (a server that returns at once, an
-  # inverted loop guard - hang-class mutants the suite catches only by bounded waits), and
-  # cargo-mutants exits 3 for it. On the first live check-in (spec 89, 2026-09-14) the same
-  # four hang-class mutants timed out at 1.5x AND 3x the baseline with zero misses, and a
-  # remediation round of fast-failing contract tests still left two: cargo stops at the
-  # first FAILING test binary, and the binaries with the bounded waits run before the one
-  # that fails fast, so no test can make the whole suite finish early. Two green units
-  # escalated on that treadmill. The budget stays at 3x (two suites run at once); the
-  # sweep's own missed.txt is the verdict, and the accounting names every timeout.
-  #
-  # Sweep shape (2026-09-16, spec 92's 433-mutant check-in measured at 45 s per mutant
-  # and 5.4 h per pass): the tests run under nextest (`.config/nextest.toml`), which runs
-  # every binary's tests at once and stops at the first failure, so a caught mutant ends
-  # its test phase when ANY test fails and a hung test dies at the per-test bound instead
-  # of at 3x the whole suite. `env -u CARGO_TARGET_DIR` gives each mutant copy its own
-  # build dir: with the unit cache exported, every copy built into the same target,
-  # serialized on cargo's lock (so `-j` bought nothing) and left the cache holding
-  # artifacts of mutated trees. `CARGO_BUILD_JOBS=8` lifts `.cargo/config.toml`'s 4-job
-  # cap for the sweep alone; three copies at 8 jobs stay inside the sweep's memory scope.
-  # `--cargo-arg=--target-dir=target` pins each copy's build dir INSIDE the copy: the scratch
-  # root's own `.cargo/config.toml` (`worktree.rs`, the ambient catch-all that sends any
-  # cargo run without CARGO_TARGET_DIR to `cargo-target-shared`) is found by cargo's config
-  # walk from every copy, so without the flag all three copies built into that one dir,
-  # serialized on its artifact lock and replaced each other's test binaries under running
-  # tests (a copy's later tests executed another mutant's binaries).
-  # `CARGO_PROFILE_DEV_DEBUG=1` / `CARGO_PROFILE_TEST_DEBUG=1` (line tables only) shrink what
-  # every mutant relinks: with full debug info the 188 test binaries are 200-290 MB each, so
-  # three isolated build dirs (28 GB apiece) overflow the sweep's page cache and a relink that
-  # took 7 s against one hot dir took 81 s (measured 2026-09-16, 1.2 mutants a minute).
-  # Panic locations keep file:line; only symbolized backtraces lose detail, which no test reads.
-  #
-  # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
-  # the logic has changed"). The sweep leaves three facts under `$MUTANTS/last/` - the tree it
-  # examined (`tip`), its misses (`missed.txt`) and, per caught mutant, the test binary whose
-  # first failure caught it (`caught.map`, read off the nextest FAIL line in each mutant's
-  # log). `$MUTANTS` is the unit-keyed root rigger hands to BOTH the pre-merge and the
-  # post-merge run, so the next sweep on this unit reads them before wiping the root. When
-  # that tip is an ancestor of HEAD the sweep covers (a) every mutant in the diff since it -
-  # the changed logic - and (b) by name (`-F`, line numbers wildcarded so a shifted line
-  # still matches), every earlier miss plus every caught mutant whose catching binary's
-  # `tests/<binary>.rs` changed since the tip (a change under a shared tests/ directory
-  # re-runs them all); the rerun goes to `$MUTANTS/rerun`, must examine at least one mutant,
-  # and its misses join the sweep's own missed.txt so one file is the verdict (the previous
-  # sweep's mutants.out is removed up front: a delta with no mutable code writes nothing, and
-  # a stale missed.txt must never be the verdict). A mutant caught
-  # on unchanged code by an unchanged test stays caught. No `last/tip`, a tip that is not an
-  # ancestor (a reclaimed unit, a fresh spec) or the run's first sweep: the whole spec diff
-  # against `$RIGGER_RUN_BASE`, exactly as before. A solo-merging unit's post-merge re-sweep is
-  # therefore the empty merge delta and passes in seconds - the merged tree IS the examined one.
-  #
-  # THE GATE OWNS ITS INSTRUMENT (2026-09-17: remediation round 6 excluded two survivors by name
-  # in `.cargo/mutants.toml` with an equivalence argument that was wrong for one of them - `&&`
-  # binds tighter than `||`, so the "dead clause" mutant had collapsed the whole predicate).
-  # The unit diff since `$RIGGER_RUN_BASE` may add no exclusion or examine key to
-  # `.cargo/mutants.toml` and no `mutants::skip` attribute; a diff that does fails the gate
-  # before any sweep, naming the lines. A mutant no test can distinguish is dead code to
-  # delete, never a name to exclude: the graded party does not narrow the instrument.
-  #
-  # THE STATE SURVIVES A FAILING SWEEP (2026-09-17: the post-merge re-sweep of a solo merge -
-  # empty delta, no misses, no changed tests - failed on the gate's own shell, and wiping
-  # `last/` up front had already thrown the anchor away, so the next sweep would have been the
-  # whole spec again). The new tree, misses and map are written to `last.new` and swapped in
-  # only once both passes have completed; a sweep that dies earlier leaves the previous state
-  # in place. A by-name rerun whose names match no mutant (the code they mutated was rewritten)
-  # is nothing to rerun, not a failure. The map carries forward every earlier entry for a
-  # mutant this sweep did not examine, so a catch recorded three sweeps ago still re-runs when
-  # its test changes. `A || B && C` in sh is `(A || B) && C`: the rerun block is braced whole.
-  #
-  # THE RERUN IS A DIFF, NOT A NAME FILTER. cargo-mutants 27.1 lets every "delete field"
-  # mutant through `-F`/`-E` (all 22 of this crate's, measured: `--list -F <matches nothing>`
-  # lists exactly them), so a by-name rerun silently cost 22 extra mutants each time. The gate
-  # therefore resolves the names first (`--list -F ...`, kept only where they really match the
-  # regexes), writes a one-line synthetic hunk per (file, line) it found - the line's own text,
-  # which cargo-mutants checks against the source - and runs the rerun with `--in-diff` on
-  # that, still intersected with the names; `--in-diff` is honoured by every mutant kind.
-  mutation:
+  # The content gates: checks over the lines a diff adds - `style` (Gap 4a: no em dash, U+2014,
+  # in any added text) and `no-os-kill` (spec 78: no OS-level kill, process-group target or
+  # direct signal call in code outside the two sanctioned lifecycle helpers). The checks, and the
+  # why of each, live in `.rigger/gates/content.sh`. A unit's gates check the unit's own diff,
+  # three-dot from the run branch, so a unit is never failed by a change it did not make; the
+  # check-in stage's `-spec` gates check the whole spec diff, from `$RIGGER_RUN_BASE` (the run
+  # branch's tip when the run started, which the conductor exports to every gate), so operator
+  # commits that landed on the run branch directly are checked too, never only the check-in
+  # branch's own commits. `tests/cli.rs` drives both forms on a fixture repository.
+  style:           { run: "sh .rigger/gates/content.sh style",                         kind: core }
+  no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core }
+  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core }
+  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core }
+  # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
+  # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
+  # the test), when production code constructs an adapter (a store, a graph, an agent driver)
+  # outside the composition root, or when an item exempts itself from a denied principle
+  # lint. Each rule's allowlist of today's offenders only shrinks. The adjudicator treats a red boundary gate as non-negotiable.
+  boundary: { run: "cargo test --test boundary_audit", kind: core }
+  # The audit gate (workspace split, step 0): DRY and YAGNI as a red gate. The simplification
+  # audit fails on any duplicate cluster left open, any dead-code ledger entry and any
+  # disposition that names no cluster. `docs/audit/*` is generated, so two units that each
+  # regenerate it on their own branch leave the merged tree's catalog stale even when both
+  # are clean: the gate therefore regenerates the catalog in its own worktree FIRST and only
+  # then asserts, so a landing is never red on drift alone. It runs before `test`, whose
+  # plain `cargo test` includes the audit's drift guards. A regenerated catalog the unit has
+  # not committed is named on its own line (the attempt checkpoint commits it), never
+  # reported as a failure.
+  audit:
     run: >-
-      test -n "$RIGGER_RUN_BASE" &&
-      last="${MUTANTS:-/nonexistent}/last" &&
-      anchor="$(cat "$last/tip" 2>/dev/null || true)" &&
-      { test -n "$anchor" && test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0 || anchor=""; } &&
-      rerun="$( if test -n "$anchor"; then
-      cat "$last/missed.txt" 2>/dev/null;
-      changed="$(git diff --name-only "$anchor" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)";
-      test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set) { print $1 }' "$last/caught.map" 2>/dev/null;
-      fi | sort -u )" &&
-      { if test -n "$anchor"; then git diff "$anchor" -- '*.rs' > unit.diff; else git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff; fi; } &&
-      { ! { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_BASE" -- '*.rs'; } | grep -E '^\+.*(exclude_re|examine_re|exclude_globs|examine_globs|mutants::skip)' || { echo "mutation gate: the unit narrows the sweep itself (an exclusion in .cargo/mutants.toml or a mutants::skip in the code); the gate owns its instrument - remove it and pin the mutant with a test or delete the code it mutates"; false; }; } &&
-      rm -rf "${MUTANTS:?}"/rerun "$MUTANTS"/rerun.args "$MUTANTS"/rerun.re "$MUTANTS"/rerun.all "$MUTANTS"/rerun.list "$MUTANTS"/rerun.diff "$MUTANTS"/last.new "$MUTANTS"/examined.txt "$MUTANTS"/cargo-mutants-* mutants.out mutants.out.old && mkdir -p "$MUTANTS/last.new" mutants.out &&
-      { test -z "$rerun" || printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args"; } &&
-      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
-      cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
-      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
-      { test ! -s "$MUTANTS/rerun.args" ||
-      { grep -v '^-F$' "$MUTANTS/rerun.args" > "$MUTANTS/rerun.re" &&
-      env -u CARGO_TARGET_DIR xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --list > "$MUTANTS/rerun.all" &&
-      { grep -E -f "$MUTANTS/rerun.re" "$MUTANTS/rerun.all" | sort -u > "$MUTANTS/rerun.list"; true; } &&
-      { { test ! -s "$MUTANTS/rerun.list" && echo "rerun: none of the listed mutants exists in this tree"; } ||
-      { sed -E 's/^([^:]+):([0-9]+):.*/\1 \2/' "$MUTANTS/rerun.list" | sort -u | while read -r f l; do printf -- '--- a/%s\n+++ b/%s\n@@ -%s,1 +%s,1 @@\n' "$f" "$f" "$l" "$l"; sed -n "${l}p" "$f" | sed 's/^/-/'; sed -n "${l}p" "$f" | sed 's/^/+/'; done > "$MUTANTS/rerun.diff" &&
-      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
-      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
-      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
-      test -s "$MUTANTS/rerun/mutants.out/outcomes.json" &&
-      { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; }; }; }; } &&
-      git rev-parse HEAD > "$MUTANTS/last.new/tip" &&
-      { cp mutants.out/missed.txt "$MUTANTS/last.new/missed.txt" 2>/dev/null || : > "$MUTANTS/last.new/missed.txt"; } &&
-      { for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do test -f "$f" || continue;
-      awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); sub(/^rigger::/, "", b); print name "\t" b; exit } }' "$f"; done > "$MUTANTS/last.new/caught.map"; } &&
-      { cat mutants.out/*.txt "$MUTANTS"/rerun/mutants.out/*.txt 2>/dev/null | sort -u > "$MUTANTS/examined.txt";
-      awk -F '\t' 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($1 in seen)' "$MUTANTS/examined.txt" "$last/caught.map" 2>/dev/null >> "$MUTANTS/last.new/caught.map";
-      sort -u -o "$MUTANTS/last.new/caught.map" "$MUTANTS/last.new/caught.map"; } &&
-      rm -rf "$last" && mv "$MUTANTS/last.new" "$last" &&
-      test ! -s mutants.out/missed.txt
+      RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit > /dev/null 2>&1;
+      cargo test --test simplification_audit ||
+      { echo "error[audit]: the simplification audit is red - close each open duplicate cluster or record why it is not one in docs/audit/duplication-dispositions.json, delete each dead-code ledger entry, and fix each disposition that names no cluster; the failing assertion is above"; exit 1; };
+      if test -n "$(git status --porcelain -- docs/audit)"; then
+      echo "audit: docs/audit was regenerated for this tree and is not committed - commit the regenerated files with the change (drift alone never fails this gate)"; fi
     kind: core
+  # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
+  # branch's first commit that touches `src/` or `crates/<name>/src/` must be preceded by, or
+  # itself carry, a test change (a `tests` file, an added `#[test]` item, or a hunk reaching the
+  # file's test module - from the first column-0 `#[cfg(test)]` that opens a `mod` body to the
+  # end of the file). The logic lives in
+  # `.rigger/gates/red-before-green.sh`; `tests/principle_gates_wiring.rs` drives it on
+  # fixture repositories. The reviewer lens checks the same order.
+  red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
+  # The check-in-stage mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run
+  # ONCE by a `checkin` stage that lists it - after every implement unit has integrated - never
+  # per implementer round. The `checkin` stage below leaves it unwired until #32 lands. The
+  # logic lives in `.rigger/gates/mutation.sh` (its header carries the
+  # why of every clause: the `$RIGGER_RUN_BASE` diff base, the whole-workspace mutation with
+  # diff-scoped test packages, the sweep's own memory-bounded scope and `-j` sizing, the
+  # incremental anchor, the instrument-narrowing refusal and the survivor lines);
+  # `tests/checkin_mutation_diff_base_periphery.rs` drives it on fixture repositories, and
+  # `rigger init` writes the same script into a consumer project. Declaring a gate under this
+  # exact id requires `cargo-mutants` on PATH (`rigger validate` checks at run start).
+  mutation: { run: "sh .rigger/gates/mutation.sh", kind: core }
 
 stages:
   # 1. Refine the spec's decomposition. The conductor itself creates one baseline
@@ -352,7 +265,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, style, no-os-kill]
+    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary, red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -361,14 +274,14 @@ stages:
   #    unit it expanded into has integrated (an escalated or still-open unit leaves it
   #    unsatisfied, so the run's escalated fixpoint stays loud) - never before every
   #    unit has landed, and never per implementer round the way spec 73's original
-  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree,
-  #    THEN sweeps mutants; `max_retries: 2` overrides `defaults.max_retries` for this
-  #    stage alone - one remediation round for the WHOLE spec diff's mutants, then
-  #    integrate or escalate with the accounting already on record.
+  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree;
+  #    `max_retries: 2` overrides `defaults.max_retries` for this stage alone - one
+  #    remediation round for the WHOLE spec diff, then integrate or escalate.
   checkin:
     needs: [implement]
     agent: rust-engineer
-    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
-    gates: [fmt, clippy, build, test, style, no-os-kill, mutation]
+    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
+    # The `mutation` gate is declared above but unwired from this stage until #32 lands.
+    gates: [fmt, clippy, build, audit, test, lanes, style-spec, no-os-kill-spec, boundary]
     on_pass: merge
-    coverage: "mutation efficacy of the whole spec diff"
+    coverage: "the whole spec diff passes every gate on the merged tree"

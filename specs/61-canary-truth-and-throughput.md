@@ -64,7 +64,7 @@ takes (issues #24 and #22). Three defects:
   defaulted value. The model-drift warning (`rigger validate` and `--if-model-changed`)
   keys on these authoritative per-tier ids, so a worker's mistaken claim can neither
   forge nor mask drift.
-- **Per-spawn timing in stats** (`src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
+- **Per-spawn timing in stats** (`crates/rigger-domain/src/metrics.rs` / `src/main.rs::cmd_stats`): `rigger stats`
   pairs each recorded spawn request with its result by spawn id and reports duration
   aggregates (per tier/agent: count, total, mean). An unpaired request (dead worker) is
   excluded from every aggregate and reported as its own count - a fabricated or zero

@@ -14,12 +14,12 @@
 //!   - `blocker.rs`'s own `mod tests` proves `classify` renders the recorded cause on the
 //!     `RejectRecurrence` line, and defaults an empty one to `"unknown"`.
 //!   - `main.rs`'s own `mod tests`
-//!     (`status_and_dashboard_render_the_same_current_blocker_lines`) proves `status_blocker_
-//!     lines` and `dash::build_state` render BYTE-IDENTICAL lines, in process, for a fixed
-//!     `Vec<Event>` it builds by hand.
+//!     (`status_and_dashboard_render_the_same_current_blocker_lines`) proves `console::fold`
+//!     (what `cmd_status` renders) and `dash::build_state` render BYTE-IDENTICAL lines, in
+//!     process, for a fixed `Vec<Event>` it builds by hand.
 //!
-//! None of those ever cross a real process boundary. `status_blocker_lines` and `cmd_status`
-//! are PRIVATE free functions in the `rigger` BINARY crate (`src/main.rs`) - unreachable from an
+//! None of those ever cross a real process boundary. `cmd_status` is a PRIVATE free
+//! function in the `rigger` BINARY crate (`src/main.rs`) - unreachable from an
 //! integration-test crate under `tests/` by any means other than spawning the compiled binary
 //! (mirrors `tests/watchdog_cli_periphery.rs`'s identical situation for `cmd_watch`, and
 //! `tests/cli.rs`'s release-ready periphery section for `cmd_status` itself, which notes the
@@ -30,7 +30,7 @@
 //!
 //! This file drives the compiled `rigger status` binary against a real, on-disk, namespaced
 //! event store - closing both gaps at once: real `argv` -> `main()` dispatch -> `cmd_status` ->
-//! `status_blocker_lines` wiring, and a real SQLite round trip for the additive, serde-defaulted
+//! `console::fold` wiring, and a real SQLite round trip for the additive, serde-defaulted
 //! `cause` field (spec 69, criterion 3's back-compat contract).
 //!
 //! NOT OWNED HERE: `gate_failure_cause`'s `"{gate}: {evidence}"` parsing, and which of the seven
@@ -42,94 +42,9 @@
 
 mod common;
 
-use std::path::Path;
-use std::process::Command;
-
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-/// A throwaway project: its own git repo (so `project_identity()` resolves deterministically),
-/// with no `.rigger` dir yet. Mirrors `tests/cli.rs`'s `temp_project`.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root` - stands in for the store a
-/// prior `rigger run`/`step` would have created. Mirrors `tests/cli.rs`'s `seed_store`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s
-/// `run_stream_identity`, itself mirroring `StoreLocation::identity`'s precedence: the tracked
-/// `.rigger/project.id` at the git top-level when present, else the git top-level basename,
-/// else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a REAL `Store::open` /
-/// SQLite round trip - standing in for the conductor minting them (or, for the back-compat
-/// case, for a run that predates this criterion having already minted them). Mirrors
-/// `tests/cli.rs`'s `seed_run_events`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cli.rs`'s `run_rigger`.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
+use common::cli::run_rigger;
+use common::cli::seed_run_events;
+use common::cli::temp_store_project;
 
 /// The headline boundary proof: all four members of the closed vocabulary
 /// (`reject` | `gate:<name>` | `integrate-conflict` | `infra:<kind>`) - a distinct failed unit
@@ -137,9 +52,8 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// compiled binary against a REAL on-disk store, exactly as an operator would see them.
 #[test]
 fn all_four_closed_vocabulary_causes_surface_on_reject_recurrence_lines_through_the_real_binary() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -193,9 +107,8 @@ fn all_four_closed_vocabulary_causes_surface_on_reject_recurrence_lines_through_
 /// `"unknown"` rather than crashing or silently dropping the unit from the blocker list.
 #[test]
 fn a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_renders_unknown() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -223,9 +136,8 @@ fn a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_ren
 #[test]
 fn the_reject_recurrence_line_names_the_latest_of_several_recorded_causes_through_the_real_binary()
 {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[

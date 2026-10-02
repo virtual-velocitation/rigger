@@ -15,8 +15,8 @@ humans own release).
 ## Design
 
 The conductor creates a run branch, and per unit an isolated worktree on a `rigger/u/<unit>` branch;
-`on_pass: merge` integrates an approved+green unit onto the run branch (`src/conductor.rs`
-integration path; `src/worktree.rs` for worktree/branch creation and teardown). Three additions,
+`on_pass: merge` integrates an approved+green unit onto the run branch (`crates/rigger-conductor/src/conductor.rs`
+integration path; `crates/rigger-worktree-git/src/worktree.rs` for worktree/branch creation and teardown). Three additions,
 all in the conductor's lifecycle - no new event type beyond what integration already emits:
 
 - **Branch-GC on integrate.** When a unit reaches `integrated`, delete its `rigger/u/<unit>` branch

@@ -9,17 +9,17 @@ First of the three unified-KG specs (section 6): it lands the code half of the o
 ## Design
 
 The tree-sitter touch point today is `extract::extract(source, lang, ts_language, tags_query) ->
-FileSymbols` (`src/grounder/symbols/extract.rs`), driven by `build_index` -> `index_one_file`
-(`src/grounder/symbols/mod.rs`) into the parser-free model (`Lang`/`Kind`/`Def`/`SymRef`/
-`FileSymbols`/`SymbolIndex`, `src/grounder/symbols/model.rs`). This spec keeps that extraction but
+FileSymbols` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`), driven by `build_index` -> `index_one_file`
+(`crates/rigger-grounder/src/grounder/symbols/mod.rs`) into the parser-free model (`Lang`/`Kind`/`Def`/`SymRef`/
+`FileSymbols`/`SymbolIndex`, `crates/rigger-grounder/src/grounder/symbols/model.rs`). This spec keeps that extraction but
 routes its output through the event log:
 
 - **Emit.** The per-file extraction emits `CodeEntityExtracted` (one per definition) and
   `EdgeInferred` (one per reference) events. Extraction stays in the `symbols` feature; the emit +
   fold is always compiled.
-- **Fold.** New fold arms in `Projection::apply` -> `fold` (`src/contextgraph/sqlite.rs`) turn
+- **Fold.** New fold arms in `Projection::apply` -> `fold` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) turn
   those events into `code-entity` nodes (kind added alongside the existing `KIND_*` consts in
-  `src/contextgraph/mod.rs`), a `file` container node, and structural edges.
+  `crates/rigger-domain/src/contextgraph.rs`), a `file` container node, and structural edges.
 - **Tier.** Each structural edge carries a confidence tier: explicit-in-source
   (calls / imports / inherits) folds as EXTRACTED; derived (transitive / re-export) as INFERRED;
   grep-visible-only (macro body / reflection string / dynamic) as AMBIGUOUS. The tier is a first-

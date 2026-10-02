@@ -96,7 +96,7 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
         vec![false, true],
         "the STRUCTURAL sentinel (is_test: false, extract_events) comes first, then the \
          EVIDENCE sentinel (is_test: true, proof_events) - the same composition order \
-         `index_events`/`project_batches_paced` always use; got {blank_events:?}"
+         `project_batches_paced` always use; got {blank_events:?}"
     );
 
     // Barren root: a directory with NO FILES AT ALL yields an EMPTY batch set (never a panic) - the

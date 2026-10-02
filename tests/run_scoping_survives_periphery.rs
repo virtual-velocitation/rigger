@@ -21,7 +21,7 @@
 //!    exercised here". A hand-spelled key cannot prove that a REAL RUN ever mints one of that
 //!    shape; if it never did, the type gate would be guarding nothing on the run path. These tests
 //!    close that with the run's OWN minted lifecycle key, read back off the log.
-//! 3. The seam is `conductor::run` -> `ingest::project_scoped_replay_keys` across a module
+//! 3. The seam is `conductor::run` -> `ingest::project_scoped_latest_generations` across a module
 //!    boundary, observed through the public `eventstore` read path. Neither module's own tests see
 //!    both halves at once from outside.
 //!
@@ -32,18 +32,20 @@
 //! (criterion 3) and the store-layer append guard (criterion 4) are owned by sibling units and are
 //! deliberately not exercised here.
 
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
-};
+mod common;
+
+use common::fixtures::count_of_type;
+use common::fixtures::reference_replay_keys;
+use common::fixtures::run_log;
+use common::fixtures::NoopDriver;
+use rigger::conductor::{run, Deps, META_REPLAY_KEY};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::{TYPE_EDGE_INFERRED, TYPE_GATE_VERDICT};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
-use rigger::ingest::project_scoped_replay_keys;
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use rigger::run::{current_run, TYPE_RUN_STARTED};
-use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// The stage id is `gc` - the CODE INGEST'S OWN batch prefix - and the gate id carries an `@`, the
@@ -53,27 +55,6 @@ use std::collections::BTreeSet;
 /// minted key really is that shape is ASSERTED below off the recorded log, never assumed.
 const UNIT: &str = "gc";
 const GATE: &str = "g@h1";
-
-/// A driver that does nothing and reports nothing. Criterion 2 is about what the RUN records at its
-/// own seeding seam, so the agent's work is irrelevant - the stage only has to reach its gates and
-/// integrate, which an empty result and a `true` gate do.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
 
 /// One campaign over `store`, differing from its sibling ONLY in its criterion - so the run
 /// authority MINTS a second `RunStarted` (a genuinely fresh run) while the stage keeps its id, and
@@ -115,6 +96,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         grounder: None,
         graph: None,
         criteria: vec![criterion.to_string()],
+        log: &|_| {},
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }
@@ -128,14 +110,6 @@ fn keys_of(events: &[Event], type_: &str) -> Vec<String> {
         .filter(|e| e.type_ == type_)
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect()
-}
-
-fn read(store: &Store) -> Vec<Event> {
-    store.read_stream(STREAM, 0, Direction::Forward).unwrap()
-}
-
-fn count_of_type(events: &[Event], type_: &str) -> usize {
-    events.iter().filter(|e| e.type_ == type_).count()
 }
 
 /// CONTRACT at the crate boundary: a run's own keyed lifecycle emits are RUN-scoped, so what a
@@ -164,7 +138,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
         "sanity: the first campaign must actually run the unit, else it records no key to collide \
          with"
     );
-    let after_one = read(&store);
+    let after_one = run_log(&store);
     let first_started = keys_of(current_run(&after_one), TYPE_UNIT_STARTED);
     let first_verdict = keys_of(current_run(&after_one), TYPE_GATE_VERDICT);
     assert_eq!(
@@ -185,7 +159,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
         Status::Integrated,
         "the second campaign must run the unit again - a prior run's residue is not this run's work"
     );
-    let after_two = read(&store);
+    let after_two = run_log(&store);
     assert_eq!(
         count_of_type(&after_two, TYPE_RUN_STARTED),
         2,
@@ -221,7 +195,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
 /// rather than hand-spelled ones.
 ///
 /// The claim stops at that arm, deliberately, because that is where the type test lives
-/// (`ingest::project_scoped_replay_keys` skips a non-derived event before it ever reads that
+/// (`ingest::project_scoped_latest_generations` skips a non-derived event before it ever reads that
 /// event's key). What both arms pour into is ONE flat key set, and the suppression DECISION
 /// downstream is a plain membership test on it with no type test of its own - so this pins what
 /// ENTERS the set, and never the stronger claim that a lifecycle emit cannot be suppressed.
@@ -243,7 +217,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
 fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_the_seed_arm() {
     let store = Store::open(":memory:").unwrap();
     assert_eq!(campaign(&store, "only criterion"), Status::Integrated);
-    let log = read(&store);
+    let log = run_log(&store);
 
     let verdict_keys: BTreeSet<String> = keys_of(&log, TYPE_GATE_VERDICT).into_iter().collect();
     assert!(
@@ -258,7 +232,7 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
         .iter()
         .map(|k| Event::new(TYPE_EDGE_INFERRED, Vec::new()).with_meta(META_REPLAY_KEY, k))
         .collect();
-    let eligible = project_scoped_replay_keys(&as_derived);
+    let eligible = reference_replay_keys(&as_derived);
     let missed: Vec<&String> = verdict_keys
         .iter()
         .filter(|k| !eligible.contains(*k))
@@ -274,9 +248,9 @@ fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_th
     // events, the predicate offers nothing at all. No domain or lifecycle event a run records
     // contributes a key to the project-scoped arm of the seed, however its key is spelled.
     assert!(
-        project_scoped_replay_keys(&log).is_empty(),
+        reference_replay_keys(&log).is_empty(),
         "a non-derived event is ineligible for the project-scoped arm of the seed whatever its \
          key looks like; over a real run's log the predicate returned {:?}",
-        project_scoped_replay_keys(&log)
+        reference_replay_keys(&log)
     );
 }

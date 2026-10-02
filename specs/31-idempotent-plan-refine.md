@@ -13,7 +13,7 @@ unit in place (a refinement); a NEW unit-id is a genuinely new unit (a split sib
 
 ## Design
 
-`harvest_proposed` (`src/conductor.rs`) folds each run-scoped `UnitProposed` into the DAG. Today it
+`harvest_proposed` (`crates/rigger-conductor/src/conductor.rs`) folds each run-scoped `UnitProposed` into the DAG. Today it
 short-circuits an already-known unit: `if u.id.is_empty() || proposed.contains(&u.id) { continue }`
 and `if stages.contains_key(&u.id) { continue }`. That skip is why a same-id refinement is a no-op.
 Separately, a planner unit serving criterion C SUPERSEDES C's synthesized BASELINE stage (matched by
@@ -31,7 +31,7 @@ Two coupled changes:
    effective, so the planner never needs a new id to make a re-emit "take".
 
 2. **Refine instruction reuses ids.** The plan-critique / re-emit directive the conductor gives the
-   planner (the reviewer/refine prompt built around the plan-critique gate, `src/conductor.rs`)
+   planner (the reviewer/refine prompt built around the plan-critique gate, `crates/rigger-conductor/src/conductor.rs`)
    states the rule explicitly: to REFINE an existing unit, re-emit it under its EXACT existing id
    (the refinement updates it in place); use a NEW id ONLY for a genuinely new/split unit. This
    closes the id-change that triggered the duplication.

@@ -16,87 +16,21 @@
 //! registry's own idle-window judgment (`is_stale`) already considers aged out, with no driver
 //! and no heartbeat thread involved at all.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 use std::time::Duration;
 
-use rigger::eventstore::sqlite::Store;
-use rigger::registry::{self, Instance, DEFAULT_IDLE_MS};
+use rigger::registry::{self, DEFAULT_IDLE_MS};
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::RestoreEnvVars;
-
-/// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
-/// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
-/// to fabricate one from a cwd with no existing store (spec 05).
-fn courier_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    Store::open(
-        rigger_dir
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the event log initializes");
-    dir
-}
-
-/// Run `rigger <args...>` in `root` through the COMPILED binary, with the machine-global
-/// registry redirected into the CALLER-OWNED `state_home` - shared across several calls within
-/// one test (unlike a fresh-per-call temp dir), so the SAME registry directory is read back and
-/// re-written across a sequence of courier invocations.
-fn run_rigger(root: &Path, state_home: &Path, args: &[&str]) -> Output {
-    common::rigger_courier()
-        .args(args)
-        .current_dir(root)
-        // Never let a short-lived courier spawn a real dashboard under test.
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state_home)
-        .output()
-        .expect("the rigger binary runs")
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// a raw directory read, so a test can see exactly what a courier wrote without depending on
-/// `read_live`'s pruning (which mutates the directory as a side effect of reading it).
-fn registry_entries(state_home: &Path) -> Vec<(PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
-}
+use common::cli::courier_project;
+use common::cli::progress_under_an_ambient_kurrentdb_conn;
+use common::cli::run_rigger_in_state_home;
+use common::fixtures::registry_entries;
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// EACH of the three courier commands - `progress`, `emit`, `result` - refreshes the project's
 /// registry entry, and repeated calls refresh the SAME entry in place rather than accumulating a
@@ -110,7 +44,7 @@ fn progress_emit_and_result_each_refresh_one_registry_entry_in_place() {
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     let before = registry::now_ms();
-    let out1 = run_rigger(root, state.path(), &["progress", "u1/impl#0", "step one"]);
+    let out1 = run_rigger_in_state_home(root, state.path(), &["progress", "u1/impl#0", "step one"]);
     assert_ok(&out1, &["progress", "u1/impl#0", "step one"]);
     let after1 = registry::now_ms();
 
@@ -128,7 +62,7 @@ fn progress_emit_and_result_each_refresh_one_registry_entry_in_place() {
     );
 
     std::thread::sleep(Duration::from_millis(5));
-    let out2 = run_rigger(
+    let out2 = run_rigger_in_state_home(
         root,
         state.path(),
         &["emit", "DecisionMade", r#"{"id":"d1","summary":"s"}"#],
@@ -156,7 +90,7 @@ fn progress_emit_and_result_each_refresh_one_registry_entry_in_place() {
     );
 
     std::thread::sleep(Duration::from_millis(5));
-    let out3 = run_rigger(root, state.path(), &["result", "u1/impl#0", "done"]);
+    let out3 = run_rigger_in_state_home(root, state.path(), &["result", "u1/impl#0", "done"]);
     assert_ok(&out3, &["result", "u1/impl#0", "done"]);
     let entries3 = registry_entries(state.path());
     assert_eq!(
@@ -190,7 +124,7 @@ fn a_courier_call_revives_an_entry_the_registrys_own_idle_window_already_calls_s
     let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
 
     // Learn the real id/root/store this project resolves to, from one genuine courier write.
-    let seed = run_rigger(
+    let seed = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "first activity"],
@@ -222,7 +156,7 @@ fn a_courier_call_revives_an_entry_the_registrys_own_idle_window_already_calls_s
 
     // ONE courier call - the exact traffic this criterion covers - and nothing else: no driver,
     // no heartbeat thread.
-    let revive = run_rigger(
+    let revive = run_rigger_in_state_home(
         root,
         state.path(),
         &["progress", "u1/impl#0", "second activity"],
@@ -307,24 +241,7 @@ fn a_homeless_environment_never_fails_a_courier_command() {
 #[serial_test::serial(kurrentdb_conn_env)]
 fn an_ambient_kurrentdb_conn_never_leaks_into_a_courier_spawned_through_the_shared_helper() {
     let project = courier_project();
-    let root = project.path();
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
-
-    let _restore = RestoreEnvVars::capture(&["KURRENTDB_CONN"]);
-    std::env::set_var("KURRENTDB_CONN", "kurrentdb://127.0.0.1:1/");
-
-    let out = run_rigger(
-        root,
-        state.path(),
-        &["progress", "u1/impl#0", "did a thing"],
-    );
-    assert!(
-        out.status.success(),
-        "a courier spawned through the shared rigger_courier() helper must resolve the \
-         fixture's local sqlite store, not attempt a real gRPC connection to whatever \
-         KURRENTDB_CONN this test process's own environment carries; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let out = progress_under_an_ambient_kurrentdb_conn(project.path());
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("progress recorded for u1/impl#0"),
         "the courier's own output is unaffected by the ambient KURRENTDB_CONN once stripped: {}",

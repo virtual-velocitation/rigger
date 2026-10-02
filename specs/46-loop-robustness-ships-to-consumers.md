@@ -38,7 +38,7 @@ the setup summary exactly as the other appended patterns are). A repo that alrea
 whole `.rigger/` runtime) gets no duplicate. This makes a fresh consumer's dash breadcrumbs
 ignored-by-default, so `git add` never sweeps them and the merge-abort never happens.
 
-### Graph-hygiene guidance in the rendered skill (`src/docs.rs`)
+### Graph-hygiene guidance in the rendered skill (`crates/rigger-domain/src/docs.rs`)
 
 `discipline_body` (the shared body both the `using-rigger` skill and the handbook chapter render from)
 gains a graph-hygiene section. Every fact stays code-derived (interpolated from `DocsContext` where it

@@ -19,88 +19,27 @@
 //!    the serialized body carries NONE of their keys - byte-identical to the pre-criterion-2 shape a
 //!    files or full-derived cell already emitted - and the body is deterministic across re-projections.
 
-use std::collections::HashMap;
+mod common;
 
+use common::fixtures::def_node as def;
+use common::fixtures::edge;
+use common::fixtures::node_with_optional_attrs;
+use common::lens::{lens, shared_member_graph, SHARED_MEMBER, SUB_C};
+use common::served::served_json;
+use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
-    REL_REALIZES,
+    Graph, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
+    reproject, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
     REPROJECT_NO_CONCEPT,
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
 
-/// A code-entity DEFINITION node (its `name` attr marks it a real definition, so a files re-grain
-/// folds it under its OWN file and a derived lens reads its memberships).
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A plain node of a given kind (a `community` / `concept` super-node carrying its display `label`).
-fn node(id: &str, kind: &str, label: Option<&str>) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    };
-    if let Some(l) = label {
-        n.attrs.insert("label".to_string(), l.to_string());
-    }
-    n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: "extracted".to_string(),
-    }
-}
-
-fn code_lens() -> Lens {
-    Lens::from_query(Some("code"), Some("1"))
-}
-
-fn concepts_lens() -> Lens {
-    Lens::from_query(Some("concepts"), Some("1"))
-}
-
 /// The bucket keys a re-projection rendered, in order.
 fn keys(re: &rigger::dash::Reprojection) -> Vec<&str> {
     re.clusters.iter().map(|c| c.key.as_str()).collect()
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(resp.status, 200, "GET {target} must be served 200");
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 const WIDE_CONCEPT: &str = "concept/2/0";
@@ -110,23 +49,32 @@ const WIDE_CONCEPT: &str = "concept/2/0";
 /// (one bucket of size `big`, whose key sorts AFTER every `src/fNN.rs`). A coupling edge `f00 -> f01`
 /// is always added so a within-kept-set super-edge is present to assert against.
 fn per_file_graph(single: usize, big: usize) -> Graph {
-    let mut nodes = vec![node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide"))];
+    let mut nodes = vec![node_with_optional_attrs(
+        WIDE_CONCEPT,
+        KIND_CONCEPT,
+        &[("label", Some("wide"))],
+    )];
     let mut edges = Vec::new();
     for i in 0..single {
         // Zero-padded so the file KEY order is lexicographic 00 < 01 < ... : the largest fNN key is
         // the one a (count-tie, key-asc) rank drops first.
         let id = format!("src/f{i:02}.rs::e{i}");
         nodes.push(def(&id, &format!("e{i}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     for j in 0..big {
         let id = format!("src/zz.rs::b{j}");
         nodes.push(def(&id, &format!("b{j}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     if single >= 2 {
         // A cross-file coupling edge wholly within the smallest-key buckets, so it is always kept.
-        edges.push(edge("src/f00.rs::e0", "src/f01.rs::e1", REL_CALLS));
+        edges.push(edge(
+            "src/f00.rs::e0",
+            "src/f01.rs::e1",
+            REL_CALLS,
+            TIER_EXTRACTED,
+        ));
     }
     Graph { nodes, edges }
 }
@@ -227,34 +175,6 @@ fn an_over_budget_cap_keeps_the_largest_bucket_by_count_not_the_lowest_key() {
 
 // --- THE SERVED SEAM: shared + truncated ride the route -----------------------------------------
 
-const SUB_C: &str = "concept/1/0";
-const OTHER_D: &str = "concept/1/1";
-const SHARED_MEMBER: &str = "src/a.rs::m";
-const SOLO_MEMBER: &str = "src/b.rs::n";
-
-/// Concept `C` has members `{m, n}`; `m` ALSO realizes `D`, and `D` (three realizers) is the larger
-/// concept, so it is `m`'s PRIMARY. A concepts re-grain of `C` folds `m` under `D` once and flags it
-/// `shared`.
-fn shared_member_graph() -> Graph {
-    Graph {
-        nodes: vec![
-            node(SUB_C, KIND_CONCEPT, Some("cc")),
-            node(OTHER_D, KIND_CONCEPT, Some("dd")),
-            def(SHARED_MEMBER, "m"),
-            def(SOLO_MEMBER, "n"),
-            def("src/c.rs::p", "p"),
-            def("src/d.rs::q", "q"),
-        ],
-        edges: vec![
-            edge(SHARED_MEMBER, SUB_C, REL_REALIZES),
-            edge(SOLO_MEMBER, SUB_C, REL_REALIZES),
-            edge(SHARED_MEMBER, OTHER_D, REL_REALIZES),
-            edge("src/c.rs::p", OTHER_D, REL_REALIZES),
-            edge("src/d.rs::q", OTHER_D, REL_REALIZES),
-        ],
-    }
-}
-
 /// The served `/api/graph?seed=&lens=concepts` route carries the `shared` flag end-to-end, so the
 /// panel marks the multi-concept member without a second request. The mechanics served test only
 /// drives the empty-cell message; the shared flag has no served coverage without this.
@@ -318,17 +238,17 @@ const COMM_B: &str = "community/1/1";
 fn full_in_budget_graph() -> Graph {
     Graph {
         nodes: vec![
-            node(PLAIN_CONCEPT, KIND_CONCEPT, Some("plain")),
-            node(COMM_A, KIND_COMMUNITY, Some("a")),
-            node(COMM_B, KIND_COMMUNITY, Some("b")),
+            node_with_optional_attrs(PLAIN_CONCEPT, KIND_CONCEPT, &[("label", Some("plain"))]),
+            node_with_optional_attrs(COMM_A, KIND_COMMUNITY, &[("label", Some("a"))]),
+            node_with_optional_attrs(COMM_B, KIND_COMMUNITY, &[("label", Some("b"))]),
             def("src/one.rs::x", "x"),
             def("src/two.rs::y", "y"),
         ],
         edges: vec![
-            edge("src/one.rs::x", PLAIN_CONCEPT, REL_REALIZES),
-            edge("src/two.rs::y", PLAIN_CONCEPT, REL_REALIZES),
-            edge("src/one.rs::x", COMM_A, REL_IN_COMMUNITY),
-            edge("src/two.rs::y", COMM_B, REL_IN_COMMUNITY),
+            edge("src/one.rs::x", PLAIN_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/two.rs::y", PLAIN_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/one.rs::x", COMM_A, REL_IN_COMMUNITY, TIER_EXTRACTED),
+            edge("src/two.rs::y", COMM_B, REL_IN_COMMUNITY, TIER_EXTRACTED),
         ],
     }
 }
@@ -341,7 +261,7 @@ fn full_in_budget_graph() -> Graph {
 fn a_full_in_budget_re_grain_omits_every_defaulted_criterion_2_field() {
     let graph = full_in_budget_graph();
 
-    for lens in [Lens::Files, code_lens()] {
+    for lens in [Lens::Files, lens("code")] {
         let re = reproject(&graph, PLAIN_CONCEPT, &lens);
         // Sanity: this really is a full, in-budget, non-shared cell (not accidentally empty).
         assert_eq!(
@@ -395,8 +315,8 @@ fn a_re_projection_serializes_byte_identically_across_calls() {
 
     // And a concepts re-grain with a shared flag is equally stable.
     let cg = shared_member_graph();
-    let a = serde_json::to_vec(&reproject(&cg, SUB_C, &concepts_lens())).unwrap();
-    let b = serde_json::to_vec(&reproject(&cg, SUB_C, &concepts_lens())).unwrap();
+    let a = serde_json::to_vec(&reproject(&cg, SUB_C, &lens("concepts"))).unwrap();
+    let b = serde_json::to_vec(&reproject(&cg, SUB_C, &lens("concepts"))).unwrap();
     assert_eq!(a, b, "a concepts re-grain is byte-identical across polls");
 }
 
@@ -410,13 +330,18 @@ fn the_empty_cell_message_constants_hold_their_documented_values() {
     // And the constants are exactly what a memberless derived cell emits (constant <-> behavior).
     let graph = Graph {
         nodes: vec![
-            node("concept/9/0", KIND_CONCEPT, Some("idea")),
+            node_with_optional_attrs("concept/9/0", KIND_CONCEPT, &[("label", Some("idea"))]),
             def("src/z.rs::only", "only"),
         ],
-        edges: vec![edge("src/z.rs::only", "concept/9/0", REL_REALIZES)],
+        edges: vec![edge(
+            "src/z.rs::only",
+            "concept/9/0",
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     };
     assert_eq!(
-        reproject(&graph, "concept/9/0", &code_lens())
+        reproject(&graph, "concept/9/0", &lens("code"))
             .empty_state
             .as_deref(),
         Some(REPROJECT_NO_COMMUNITY),

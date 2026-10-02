@@ -38,60 +38,23 @@
 //! secret channel, the full precedence, verbatim pass-through, and the projection boundary are
 //! owned by their own criteria and are not asserted here.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use tempfile::TempDir;
+use std::path::Path;
+use std::process::Output;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-
-/// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
-/// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the
-/// command and is removed on drop.
-fn empty_project() -> TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-/// The path where the embedded sqlite EVENT LOG would live for a project rooted at `root`. The
-/// single-authority guarantee is that a server-configured courier never fabricates this file.
-fn local_event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-/// Run `rigger result <id> --error <msg>` in `root` - the exact courier surface a worker's bare
-/// self-report uses, and the one whose store the single authority must keep aligned with the
-/// run's. `conn` sets `KURRENTDB_CONN` (`Some("")` sets it empty; `None` removes it so the case
-/// is truly unset regardless of the ambient environment). `RIGGER_NO_DASH` keeps the run's
-/// dashboard from starting under test. `XDG_STATE_HOME` is redirected to a per-call temp dir
-/// (spec 62, "couriers count as activity"): `result` now refreshes the machine-global instance
-/// registry too, so an unredirected call here would otherwise seed a phantom, since-deleted-
-/// tempdir entry into the operator's real `~/.local/state/rigger/instances`.
-fn run_bare_result(root: &Path, conn: Option<&str>) -> Output {
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    let mut cmd = common::rigger_courier();
-    cmd.args(["result", "u/impl#0", "--error", "a self-report"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .env_remove("KURRENTDB_CONN");
-    if let Some(c) = conn {
-        cmd.env("KURRENTDB_CONN", c);
-    }
-    cmd.output().expect("spawn rigger result")
-}
+use common::cli::rigger_file;
+use common::cli::temp_rigger_project;
+use common::cli::{courier_project, emit};
+#[path = "common/store_courier.rs"]
+mod store_courier;
+use store_courier::run_bare_result;
 
 #[test]
 fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlite() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     // A well-formed but unreachable server address: nothing listens on this loopback port, so the
@@ -120,7 +83,7 @@ fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlit
     // The event log is the SERVER's, so no local sqlite event log is fabricated - the
     // state-fracture stays closed even with the server unreachable.
     assert!(
-        !local_event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a server-configured courier must NOT create a local .rigger/events.db - that is the \
          state-fracture this criterion closes, and it must hold even when the server is down"
     );
@@ -128,7 +91,7 @@ fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlit
 
 #[test]
 fn a_courier_with_no_server_configured_resolves_the_local_sqlite_log() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     let out = run_bare_result(root, None);
@@ -151,14 +114,14 @@ fn a_courier_with_no_server_configured_resolves_the_local_sqlite_log() {
         "an unconfigured courier must not reach for a server backend: {stderr}"
     );
     assert!(
-        !local_event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "the refuse-to-fabricate guard must leave no local events.db behind: {stderr}"
     );
 }
 
 #[test]
 fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
 
     // A stray empty `KURRENTDB_CONN=` (e.g. an unset shell variable expanded to nothing) must NOT
@@ -178,7 +141,7 @@ fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
          {stderr}"
     );
     assert!(
-        !local_event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "an empty-conn courier resolves local sqlite and fabricates nothing: {stderr}"
     );
 }
@@ -222,7 +185,7 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
 
     // CONTROL: nothing configured -> the single authority defaults to the LOCAL sqlite log, whose
     // file is absent on a never-run project, so the guard fires and the command reports empty.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     let out = run_read(root, args, None);
     let ctrl_stdout = String::from_utf8_lossy(&out.stdout);
@@ -238,14 +201,14 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
          control proving the sqlite arm takes the absent-db guard; stdout:\n{ctrl_stdout}"
     );
     assert!(
-        !local_event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a read command must never fabricate a local events.db (control arm)"
     );
 
     // SERVER-configured, unreachable (nothing listens on this loopback port, so the eager connect
     // is refused fast): the single authority selects the server, the guard must NOT fire, and the
     // read resolves - and fails inside - the SERVER backend, never the local-absent sentinel.
-    let project = empty_project();
+    let project = temp_rigger_project();
     let root = project.path();
     let out = run_read(root, args, Some("kurrentdb://127.0.0.1:65533?tls=false"));
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -269,29 +232,61 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
          against a live server; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        !local_event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a server-configured read must not fabricate a local events.db either"
     );
 }
 
-#[test]
-fn prime_resolves_the_configured_server_never_the_local_absent_sentinel() {
+rigger::test_cases! {
     // `rigger prime` (cmd_prime) guards `selection.is_sqlite() && !events.db exists` before its
     // `read_all`, printing "no decisions recorded yet" on the sqlite arm.
-    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
-        &["prime"],
-        "no decisions recorded yet",
-    );
-}
-
-#[test]
-fn stats_resolves_the_configured_server_never_the_local_absent_sentinel() {
+    prime_resolves_the_configured_server_never_the_local_absent_sentinel:
+        a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+            &["prime"],
+            "no decisions recorded yet",
+        );
     // `rigger stats` (cmd_stats -> stats_lines) guards `sel.is_sqlite() && !events.db exists`
     // before its namespace-scoped run-stream read, printing "no runs recorded yet" on the sqlite
     // arm. A second command through a distinct code path (the `stats_lines` helper, not cmd_prime's
     // inline guard) so the sentinel class is proven, not a single site.
-    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
-        &["stats"],
-        "no runs recorded yet",
+    stats_resolves_the_configured_server_never_the_local_absent_sentinel:
+        a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+            &["stats"],
+            "no runs recorded yet",
+        );
+}
+
+/// `rigger prime` resolves its store through the ONE store-location authority every courier uses,
+/// never the raw cwd: a session started in a subdirectory of the project (or a unit worktree)
+/// prints the project's own decisions - the same store and identity `rigger status` reads - rather
+/// than namespacing to the cwd and reporting none.
+#[test]
+fn prime_from_a_subdirectory_reads_the_projects_store_not_its_raw_cwd() {
+    let project = courier_project();
+    let root = project.path();
+    emit(
+        root,
+        "DecisionMade",
+        r#"{"id":"d-root","summary":"chose the root store"}"#,
+    );
+    let sub = root.join("src").join("nested");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let from_root = run_read(root, &["prime"], None);
+    let from_sub = run_read(&sub, &["prime"], None);
+    let root_out = String::from_utf8_lossy(&from_root.stdout);
+    let sub_out = String::from_utf8_lossy(&from_sub.stdout);
+    assert!(
+        root_out.contains("- d-root: chose the root store"),
+        "control: prime at the project root prints its decision; stdout:\n{root_out}"
+    );
+    assert!(
+        from_sub.status.success(),
+        "prime from a subdirectory must succeed; stderr:\n{}",
+        String::from_utf8_lossy(&from_sub.stderr)
+    );
+    assert_eq!(
+        sub_out, root_out,
+        "prime from a subdirectory must read the project's store, exactly as at the root"
     );
 }

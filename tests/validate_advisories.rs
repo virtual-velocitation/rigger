@@ -29,75 +29,21 @@
 
 mod common;
 
+use common::cli::rigger_file;
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_rigger_project;
+use common::cli::validate_after_init;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
 use rigger::grounder::symbols::store as symstore;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_derived_compaction.rs's conventions)
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway project: its own git repo, so `project_identity()` resolves to the directory's
-/// basename exactly as it does for a real project, and a seed appended under that identity lands
-/// in the stream the compiled binary reads back.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success). The dashboard and the
-/// machine-global instance registry are stubbed out so a short-lived invocation never leaves a
-/// live process or a phantom registry entry behind.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
 
 /// Persist a `symbols` index directly (no tree-sitter needed - the staleness check is ungated),
 /// one entry per `(rel_path, content)`, its hash recorded from the CONTENT GIVEN (so a caller can
@@ -105,7 +51,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 fn persist_index(root: &Path, entries: &[(&str, &str)]) {
     let mut idx = SymbolIndex::default();
     for (path, content) in entries {
-        idx.insert_file(
+        idx.insert_hashed_file(
             (*path).to_string(),
             FileSymbols {
                 lang: Lang::Rust,
@@ -121,8 +67,8 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                 refs: vec![],
                 partial: false,
             },
+            symstore::content_hash(content),
         );
-        idx.set_hash((*path).to_string(), symstore::content_hash(content));
     }
     symstore::save(&idx, root.to_str().unwrap()).unwrap();
 }
@@ -131,16 +77,21 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
 /// project's own namespaced stream - the exact duplication `rigger reset --derived` prunes and
 /// the bloat advisory measures.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    seed_derived_keys(root, &vec!["gc/src/a.rs@h1#0"; rounds]);
+}
+
+/// Seed one `CodeEntityExtracted` per entry of `keys`, in order, each carrying that replay key.
+fn seed_derived_keys(root: &Path, keys: &[&str]) {
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
-    for _ in 0..rounds {
+    for &key in keys {
         events.push(
             Event::new(
                 rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
                 b"{}".to_vec(),
             )
-            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+            .with_meta(rigger::ingest::META_REPLAY_KEY, key),
         );
     }
     store
@@ -154,7 +105,7 @@ fn seed_duplicated_key(root: &Path, rounds: usize) {
 /// type's own delete only ever sees its own one row), so the bloat measurement's per-type
 /// scoping must never merge these into a false duplicate pair.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
@@ -175,46 +126,91 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 // (a) INDEX STALENESS
 // ---------------------------------------------------------------------------------------
 
-#[test]
-fn validate_warns_of_index_staleness_and_names_reindex() {
-    let dir = temp_project();
+/// `rigger validate`'s stderr over a fresh `rigger init` project that `prepare` then edited;
+/// validate must still succeed - an advisory never fails its exit status.
+fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, prepare);
+    err
+}
 
-    // Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
-    // reindexing - the drift a path-set-only check cannot see (same path, changed content).
-    std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
-    persist_index(root, &[("a.rs", "fn one() {}\n")]);
-    std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
+/// Validate's stderr after `prepare` carries an advisory naming (case-insensitively) at least one
+/// of `any_of` (`warning_why`), and every `(needle, why)` of `names` - the fix it points at among
+/// them.
+fn assert_validate_advises(
+    prepare: impl FnOnce(&Path),
+    any_of: &[&str],
+    warning_why: &str,
+    names: &[(&str, &str)],
+) {
+    let err = validate_stderr_after(prepare);
+    let lower = err.to_lowercase();
+    assert!(
+        any_of.iter().any(|w| lower.contains(w)),
+        "{warning_why}; stderr:\n{err}"
+    );
+    for (needle, why) in names {
+        assert!(err.contains(needle), "{why}; stderr:\n{err}");
+    }
+}
 
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
+rigger::test_cases! {
+    /// Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
+    /// reindexing - the drift a path-set-only check cannot see (same path, changed content).
+    validate_warns_of_index_staleness_and_names_reindex: assert_validate_advises(
+        |root| {
+            std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
+            persist_index(root, &[("a.rs", "fn one() {}\n")]);
+            std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
+        },
+        &["drift", "stale"],
+        "validate must warn that the symbols index has drifted",
+        &[(
+            "rigger reindex",
+            "the staleness warning must name `rigger reindex` as the fix",
+        )],
     );
-    assert!(
-        err.to_lowercase().contains("drift") || err.to_lowercase().contains("stale"),
-        "validate must warn that the symbols index has drifted; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger reindex"),
-        "the staleness warning must name `rigger reindex` as the fix; stderr:\n{err}"
+    /// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
+    /// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
+    /// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
+    /// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
+    /// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
+    /// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
+    /// the light lane, so "no warning" is trivially true there too).
+    ///
+    /// The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without an
+    /// integration ever reindexing it into the graph - the exact drift the audit
+    /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
+    /// tree has since moved past.
+    #[cfg(feature = "symbols")]
+    validate_warns_of_graph_index_lag_and_names_reindex: assert_validate_advises(
+        |root| {
+            std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
+            seed_graph_generation(root, "churn.rs");
+            std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+        },
+        &["context graph", "graph index lag", "fallen behind"],
+        "validate must warn that the context graph has fallen behind",
+        &[
+            ("churn.rs", "the warning must name the lagging file"),
+            (
+                "rigger reindex",
+                "the graph-lag warning must name `rigger reindex` as the fix",
+            ),
+        ],
     );
 }
 
 #[test]
 fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let content = "fn one() {}\n";
-    std::fs::write(root.join("a.rs"), content).unwrap();
-    persist_index(root, &[("a.rs", content)]);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, |root| {
+        let content = "fn one() {}\n";
+        std::fs::write(root.join("a.rs"), content).unwrap();
+        persist_index(root, &[("a.rs", content)]);
+    });
     assert!(
         !err.contains("rigger reindex"),
         "an index that matches the tree must draw no staleness warning; stderr:\n{err}"
@@ -226,11 +222,11 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
     // `SymbolIndex` gained a persisted `hashes` field (spec 68) alongside its pre-existing
     // `files` field. An index written by a binary from BEFORE this field existed has no
     // "hashes" key at all on disk. This drives the REAL persisted file (not an in-memory
-    // struct built via the current `set_hash`) through the compiled binary, proving an
+    // struct built via the current `insert_hashed_file`) through the compiled binary, proving an
     // operator's pre-upgrade index still loads without crashing and never manufactures a
     // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
     // load, and every path's hash reads as "unknown", which is nothing to compare against.
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -270,17 +266,9 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
 
 #[test]
 fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_duplicated_key(root, 6);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    let (_out, err) = validate_after_init(root, |root| seed_duplicated_key(root, 6));
     assert!(
         err.to_lowercase().contains("duplicat") || err.to_lowercase().contains("bloat"),
         "validate must warn of derived-index duplication; stderr:\n{err}"
@@ -296,50 +284,72 @@ fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived(
     );
 }
 
+/// Spec 101, criterion 4: the advisory measures the ONE selection `rigger reset --derived` acts
+/// on, so a log whose every key is recorded once but which holds five superseded generations of
+/// one file (six generations, only the latest of which a compaction keeps) is 6.0x bloated.
 #[test]
-fn validate_is_silent_on_log_bloat_when_every_key_is_recorded_once() {
-    let dir = temp_project();
+fn validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations() {
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_duplicated_key(root, 1);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, |root| {
+        seed_derived_keys(
+            root,
+            &[
+                "gc/src/a.rs@h1#0",
+                "gc/src/a.rs@h2#0",
+                "gc/src/a.rs@h3#0",
+                "gc/src/a.rs@h4#0",
+                "gc/src/a.rs@h5#0",
+                "gc/src/a.rs@h6#0",
+            ],
+        )
+    });
     assert!(
-        !err.contains("rigger reset --derived"),
-        "a log with no duplication must draw no bloat warning; stderr:\n{err}"
+        err.contains("6.0") && err.contains("rigger reset --derived"),
+        "six generations of which a compaction keeps one must warn at the measured 6.0x and name \
+         `rigger reset --derived`; stderr:\n{err}"
     );
 }
 
-#[test]
-fn validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types() {
-    // spec 68 Global constraints: "one measurement authority per advisory ... no shadow
-    // accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
-    // deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
-    // against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
-    // DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
-    // therefore two independent single-row groups to the real prune, which reclaims NOTHING
-    // for it - so the bloat advisory must draw no warning either. A measurement that merges
-    // duplicate-detection ACROSS types would read this as one key recorded twice (a false
-    // factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
-    // exactly the shadow, independently-re-derived definition of "duplicated" the design
-    // forbids.
-    let dir = temp_project();
+/// `rigger validate` over an initialized project whose log `seed` shaped succeeds (`ok_why`
+/// when it does not) and draws no bloat warning (`why` when it does).
+fn assert_validate_draws_no_bloat_warning(seed: impl FnOnce(&Path), ok_why: &str, why: &str) {
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0");
+    seed(root);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
+    assert!(ok, "{ok_why}; stderr:\n{err}");
     assert!(
         !err.contains("rigger reset --derived"),
+        "{why}; stderr:\n{err}"
+    );
+}
+
+rigger::test_cases! {
+    validate_is_silent_on_log_bloat_when_every_key_is_recorded_once: assert_validate_draws_no_bloat_warning(
+        |root| seed_duplicated_key(root, 1),
+        "validate must succeed",
+        "a log with no duplication must draw no bloat warning",
+    );
+    /// spec 68 Global constraints: "one measurement authority per advisory ... no shadow
+    /// accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
+    /// deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
+    /// against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
+    /// DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
+    /// therefore two independent single-row groups to the real prune, which reclaims NOTHING
+    /// for it - so the bloat advisory must draw no warning either. A measurement that merges
+    /// duplicate-detection ACROSS types would read this as one key recorded twice (a false
+    /// factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
+    /// exactly the shadow, independently-re-derived definition of "duplicated" the design
+    /// forbids.
+    validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types: assert_validate_draws_no_bloat_warning(
+        |root| seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0"),
+        "an advisory must never fail validate's exit status",
         "the same key recorded once under two different covered types is not duplication a \
-         real prune can reclaim, and must draw no bloat warning; stderr:\n{err}"
+         real prune can reclaim, and must draw no bloat warning",
     );
 }
 
@@ -351,7 +361,7 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
     // happens to sit beside it - this proves the guard gates on the resolved `StoreSelection`
     // itself, not merely on whether a local file with duplication happens to exist (the sibling
     // tests above already cover THAT half with no `KURRENTDB_CONN` set at all).
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -399,7 +409,7 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 /// seeds a file's CURRENT content and never edits it afterward is recording a graph that agrees
 /// with the tree; editing the file afterward (without re-seeding) is what provokes disagreement.
 fn seed_graph_generation(root: &Path, file: &str) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
     rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &[file.to_string()], |keyed| {
@@ -416,85 +426,100 @@ fn seed_graph_generation(root: &Path, file: &str) {
         .unwrap();
 }
 
-/// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
-/// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
-/// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
-/// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
-/// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
-/// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
-/// the light lane, so "no warning" is trivially true there too).
-#[cfg(feature = "symbols")]
+/// A project `prepare` left in a state with nothing to compare, or nothing that disagrees, draws
+/// no graph index-lag warning from validate (`why`).
+fn assert_validate_is_silent_on_graph_index_lag(prepare: impl FnOnce(&Path), why: &str) {
+    let err = validate_stderr_after(prepare);
+    assert!(
+        !err.to_lowercase().contains("fallen behind"),
+        "{why}; stderr:\n{err}"
+    );
+}
+
+rigger::test_cases! {
+    /// The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
+    /// graph, exactly what an integration that just reindexed it leaves behind.
+    validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree:
+        assert_validate_is_silent_on_graph_index_lag(
+            |root| {
+                std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
+                seed_graph_generation(root, "churn.rs");
+            },
+            "a graph that agrees with the tree must draw no index-lag warning",
+        );
+    /// No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
+    /// compare, so this must never manufacture a warning from the mere absence of a graph.
+    validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing:
+        assert_validate_is_silent_on_graph_index_lag(
+            |root| std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap(),
+            "a project the graph has never indexed must draw no index-lag warning",
+        );
+}
+
+// ---------------------------------------------------------------------------------------
+// (d) NO UNGATED FAN-OUT TEMPLATE (spec 103, criterion 2)
+// ---------------------------------------------------------------------------------------
+
+/// Strip the scaffolded `implement` template's gate list
+/// (`gates: [build, audit, test, lint, boundary, red-before-green]`) down to `gates: []` in the
+/// REAL persisted `.rigger/workflow.yml` `rigger init` just wrote - the exact on-disk edit an
+/// author makes to (deliberately or accidentally) declare a gate-less fan-out template. Matches
+/// on the closing `]` immediately after `red-before-green`, which only the `implement` stage's
+/// own gate list carries, never `checkin`'s `gates: [build, audit, test, lint, boundary,
+/// mutation]`.
+fn strip_implement_gates(root: &Path) {
+    let path = root.join(".rigger").join("workflow.yml");
+    let raw = std::fs::read_to_string(&path).expect("read the scaffolded workflow");
+    let needle = "gates: [build, audit, test, lint, boundary, red-before-green]";
+    assert!(
+        raw.contains(needle),
+        "fixture bug: the scaffolded workflow's `implement` gate list has drifted from what \
+         this test edits; workflow.yml:\n{raw}"
+    );
+    std::fs::write(&path, raw.replacen(needle, "gates: []", 1))
+        .expect("rewrite workflow.yml with an ungated implement template");
+}
+
 #[test]
-fn validate_warns_of_graph_index_lag_and_names_reindex() {
-    let dir = temp_project();
+fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without
-    // an integration ever reindexing it into the graph - the exact drift the audit
-    // (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
-    // tree has since moved past.
-    std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
-    seed_graph_generation(root, "churn.rs");
-    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    let (_out, err) = validate_after_init(root, strip_implement_gates);
     assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
+        err.contains("fan-out template 'implement' declares no gates"),
+        "validate must warn of the ungated fan-out template, naming it; stderr:\n{err}"
     );
     assert!(
-        err.to_lowercase().contains("context graph")
-            || err.to_lowercase().contains("graph index lag")
-            || err.to_lowercase().contains("fallen behind"),
-        "validate must warn that the context graph has fallen behind; stderr:\n{err}"
+        err.contains("gates:"),
+        "the warning must name the fix (adding a `gates:` list); stderr:\n{err}"
+    );
+    // The scaffold's OTHER gate-less stages - `plan` (a producer: `produces: dag`) and
+    // `plan-critique` (review-only: no `agent`) - are not fan-out templates at all and must
+    // draw no warning of their own. Proven against the REAL, multi-stage scaffolded config
+    // (never a synthetic single-stage fixture), so this is the only place `is_fan_out_template`'s
+    // full predicate is exercised against real coexisting stage shapes that could plausibly be
+    // confused for a fan-out template.
+    assert_eq!(
+        err.matches("declares no gates").count(),
+        1,
+        "only the one genuine ungated fan-out template may be named; stderr:\n{err}"
     );
     assert!(
-        err.contains("churn.rs"),
-        "the warning must name the lagging file; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger reindex"),
-        "the graph-lag warning must name `rigger reindex` as the fix; stderr:\n{err}"
+        !err.contains("template 'plan'") && !err.contains("template 'plan-critique'"),
+        "a non-fan-out stage with no gates must never be misidentified as an ungated fan-out \
+         template; stderr:\n{err}"
     );
 }
 
 #[test]
-fn validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree() {
-    let dir = temp_project();
+fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
+    let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
-    // graph, exactly what an integration that just reindexed it leaves behind.
-    std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
-    seed_graph_generation(root, "churn.rs");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
+    let (_out, err) = validate_after_init(root, |_| {});
     assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "a graph that agrees with the tree must draw no index-lag warning; stderr:\n{err}"
-    );
-}
-
-#[test]
-fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
-    // No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
-    // compare, so this must never manufacture a warning from the mere absence of a graph.
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap();
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
-    assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "a project the graph has never indexed must draw no index-lag warning; stderr:\n{err}"
+        !err.contains("declares no gates"),
+        "the scaffolded `implement` template declares gates and must draw no warning; \
+         stderr:\n{err}"
     );
 }
 
@@ -504,18 +529,11 @@ fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
 
 #[test]
 fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
     // itself leaves a fresh project in.
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed on a clean project; stderr:\n{err}"
-    );
+    let (out, err) = validate_after_init(root, |_| {});
     assert!(
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"
@@ -531,5 +549,10 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     assert!(
         !err.to_lowercase().contains("fallen behind"),
         "a project the graph has never indexed must draw no graph-index-lag warning; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("declares no gates"),
+        "the freshly-scaffolded `implement` template declares gates and must draw no \
+         ungated-fan-out-template warning; stderr:\n{err}"
     );
 }

@@ -9,7 +9,7 @@ Measured value: ~21% duplication on lessons cross-run; lower on findings/decisio
 ## Design
 
 Prompt assembly caps three sections through one shared writer, `write_capped_section`
-(`src/conductor.rs`), called by `write_capped_decisions`, `write_capped_lessons`, and
+(`crates/rigger-conductor/src/conductor.rs`), called by `write_capped_decisions`, `write_capped_lessons`, and
 `write_capped_findings`. Lessons already rank `by_relevance` (blast-radius overlap); decisions and
 findings do not. This spec adds two passes to the shared writer, BEFORE the recent-N / byte-budget
 truncation:

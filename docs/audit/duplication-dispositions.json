@@ -1,0 +1,1022 @@
+[
+  {
+    "id": "dup-dc79af9af1c6",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
+  },
+  {
+    "id": "dup-02b6d2bbb967",
+    "disposition": "not-a-duplicate",
+    "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
+  },
+  {
+    "id": "dup-670e6a1d59fa",
+    "disposition": "not-a-duplicate",
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`."
+  },
+  {
+    "id": "dup-088ec120e4ac",
+    "disposition": "not-a-duplicate",
+    "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
+  },
+  {
+    "id": "dup-0e7d0c54553e",
+    "disposition": "not-a-duplicate",
+    "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
+  },
+  {
+    "id": "dup-bd75ff76a467",
+    "disposition": "not-a-duplicate",
+    "reason": "`usage` prints the CLI usage text to stderr while `print_scaffold_pointer` prints the post-setup starter-fleet pointer to stdout: one print call each, with different text and a different stream."
+  },
+  {
+    "id": "dup-5e94519ad1f0",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unit tests asserting substrings of two different constants (the workflow step schema and the no-runs message); only the assert shape is shared."
+  },
+  {
+    "id": "dup-6b5ddf643eb6",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line unit tests over two different functions (`order_signature_advisories` staying silent on an empty list, `parse_guard_write_roots` refusing one)."
+  },
+  {
+    "id": "dup-6ffa6e5d1f83",
+    "disposition": "not-a-duplicate",
+    "reason": "Seven metric accessors, each naming a different ratio over different fields through the one shared `ratio` helper, so the shared logic already lives once."
+  },
+  {
+    "id": "dup-e7182e4e126f",
+    "disposition": "not-a-duplicate",
+    "reason": "Three test fixtures building three different event types with different payloads through the one shared `ev` helper."
+  },
+  {
+    "id": "dup-4efef9d45e3e",
+    "disposition": "not-a-duplicate",
+    "reason": "`scratch_root` creates and sweeps the scratch root while `scratch_root_path` only resolves it: thin env-injecting entry points to two different resolvers."
+  },
+  {
+    "id": "dup-e08d5a3a5d94",
+    "disposition": "not-a-duplicate",
+    "reason": "The `*_from_env` pair feeds the `RIGGER_TMPDIR` override to two different resolvers (create versus locate-only); only the call shape is shared."
+  },
+  {
+    "id": "dup-e0f2896fa7de",
+    "disposition": "not-a-duplicate",
+    "reason": "`real_files`, `real_workspace_files` and `real_map` memoize three different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
+  },
+  {
+    "id": "dup-be7f6094aaff",
+    "disposition": "not-a-duplicate",
+    "reason": "`any_finding_is_critical` checks a canary prompt for its critical-defect marker while `is_handbook_path` classifies a design-doc path: one `contains` call each, on different inputs for different decisions."
+  },
+  {
+    "id": "dup-0a701eb6cf8d",
+    "disposition": "not-a-duplicate",
+    "reason": "Six one-line accessors on six different types, each reading a different field (community nodes, a child process id, store placements, failure rules, the adversary's survival)."
+  },
+  {
+    "id": "dup-a9ed3e0e9d47",
+    "disposition": "not-a-duplicate",
+    "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
+  },
+  {
+    "id": "dup-27610bbbcb28",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
+  },
+  {
+    "id": "dup-360e8b87398d",
+    "disposition": "not-a-duplicate",
+    "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
+  },
+  {
+    "id": "dup-227133ad22cd",
+    "disposition": "not-a-duplicate",
+    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
+  },
+  {
+    "id": "dup-b43ee3b4b5bb",
+    "disposition": "not-a-duplicate",
+    "reason": "Two regression tests pinning the empty-scratch-root guard at two different call sites (`spawn_scratch_path` and `marker_path`), each deliberately tested where callers reach it."
+  },
+  {
+    "id": "dup-d340e212490f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `new() -> Self::default()` constructors on two unrelated types, the idiomatic pairing clippy's `new_without_default` asks every `new` to have."
+  },
+  {
+    "id": "dup-bb7aa56f67d8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
+  },
+  {
+    "id": "dup-e7252bf71441",
+    "disposition": "not-a-duplicate",
+    "reason": "`factor` and `cost_per_upheld` are different ratios over different fields with different zero-denominator answers (1.0 versus 0.0)."
+  },
+  {
+    "id": "dup-3b3a41e03376",
+    "disposition": "not-a-duplicate",
+    "reason": "Three predicates over two different enums, each excluding a different variant (`Product`, `Infra`, `Deferred`) for a different policy."
+  },
+  {
+    "id": "dup-9f14620abab1",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unit tests over two different functions (`marker_filename` and `heading_level`) each asserting their own `None` boundary."
+  },
+  {
+    "id": "dup-a8049539272a",
+    "disposition": "not-a-duplicate",
+    "reason": "Two platform-tolerance tests over two different functions (`leaked_process_advisories` and `processes_rooted_under`) on an absent directory."
+  },
+  {
+    "id": "dup-c16dbfd88b00",
+    "disposition": "not-a-duplicate",
+    "reason": "`changed` and `is_error` test emptiness of two different fields on two different types for two different questions."
+  },
+  {
+    "id": "dup-9c8fbf2fd88a",
+    "disposition": "not-a-duplicate",
+    "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
+  },
+  {
+    "id": "dup-49d4d9f335fc",
+    "disposition": "not-a-duplicate",
+    "reason": "Unit tests of two different functions, `width_threshold`'s nearest-rank split point over a width distribution and `full_fraction`'s strictly-greater share over a threshold; only the assert_eq shape is shared."
+  },
+  {
+    "id": "dup-f6925ead8f1a",
+    "disposition": "not-a-duplicate",
+    "reason": "The outcome and the header serialize different payloads (one item's score versus the batch's build, corpus and resolved models) through the one shared `canary_event` constructor, so only the json! literal shape is shared."
+  },
+  {
+    "id": "dup-183455104b30",
+    "disposition": "not-a-duplicate",
+    "reason": "Three contract checks of different clauses (revision assignment and order on append, backward-read order and inclusive lower bound, forward-read inclusive `from`) that share only the append-then-read setup every contract check performs."
+  },
+  {
+    "id": "dup-4b942d7302a6",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different enum mappings: `ConceptKind::node_kind` names a design concept's node kind while `LinkRel::rel` names a design link's edge relation; only the match-to-constant shape is shared."
+  },
+  {
+    "id": "dup-09fd5c38b65b",
+    "disposition": "not-a-duplicate",
+    "reason": "Two public record entry points for different report types (a spawn launch, a stop-failure hook firing) that already delegate their shared append contract to `append_stamped` and differ only in the record they name."
+  },
+  {
+    "id": "dup-10504155864a",
+    "disposition": "not-a-duplicate",
+    "reason": "Opposite outcomes of `ensure_started`: the same criteria adopt the existing run and append nothing, while changed criteria mint a distinct run with its own boundary and move the current-run pointer."
+  },
+  {
+    "id": "dup-5dc33b6ca236",
+    "disposition": "not-a-duplicate",
+    "reason": "Different build-env facets over the shared `run_once` and `assert_reaches_both` helpers: a configured wrapper plus the default-off control run versus an `auto` wrapper resolved from a staged fake binary."
+  },
+  {
+    "id": "dup-e4e39c11c4c2",
+    "disposition": "not-a-duplicate",
+    "reason": "One folds a whole run's mixed stream and pins every machinery arm dropped and every content arm kept, the other pins only the actor-metadata path (a decision-only actor, a finding whose actor differs from its `by`), both over the shared `apply_json_as` fold."
+  },
+  {
+    "id": "dup-5c52773cc009",
+    "disposition": "not-a-duplicate",
+    "reason": "The two parse different agent frontmatter keys - `tools` plus the prompt body, versus the `model_ladder` list with an absent `model` - and share only the `parse_agent` call."
+  },
+  {
+    "id": "dup-3d575d71e10f",
+    "disposition": "not-a-duplicate",
+    "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
+  },
+  {
+    "sweep": "Command::new call sites",
+    "disposition": "not-a-duplicate",
+    "reason": "The mandatory Command::new sweep now holds only the process-spawn port's own construction site plus test code spawning distinct fixture processes (the rigger binary under test, git fixtures, shells); every production spawn routes through src/subprocess.rs, which the process-spawn port gate pins."
+  },
+  {
+    "id": "dup-23cb89af01e7",
+    "disposition": "not-a-duplicate",
+    "reason": "Four converters projecting two different ledger types (a duplication cluster, a dead-code candidate) onto their two different wire shapes (guarded line-free JSON, unguarded line sidecar); each maps a distinct field set, so only the struct-literal shape is shared."
+  },
+  {
+    "id": "dup-e9f78fd7efcc",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line cwd adapters over two different resolvers: `project_identity` names the project that scopes the streams, `git_repo` returns the owning repository root."
+  },
+  {
+    "id": "dup-4e9eb933164b",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `run_graph_pass`; each supplies a different derivation (community detection over the coupling layer vs concept derivation over the intent layer) and its own summary."
+  },
+  {
+    "id": "dup-2cd309ca2b08",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build their fixture through the shared `linear_history`; they test two different git queries (ancestry order vs commit distance) with different expectations."
+  },
+  {
+    "id": "dup-03a673792149",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `db_with_one_result`; one proves an unanswered spawn id reads as unreported, the other proves the read is scoped to its own project namespace."
+  },
+  {
+    "id": "dup-4a813209194e",
+    "disposition": "not-a-duplicate",
+    "reason": "Both use the shared `reset_modes_of`/`reset_refusal`; they pin two different flags' rules (`--force-live` never implying a mode vs `--build-cache` composing with other modes)."
+  },
+  {
+    "id": "dup-c76c4d91d8a8",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `raw_rows`; one selects every edge row's project tag, the other the schema's own index names from `sqlite_master`."
+  },
+  {
+    "id": "dup-30a334181642",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already build through the shared `community_graph`; they are two different fixtures (one three-function district with a caller and a callee, two districts joined by one cross-district call)."
+  },
+  {
+    "id": "dup-b8d5ee4b6f2b",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different map queries over one fixture: landmark ranking by degree, case-insensitive name search, and the kind/degree fields a search hit carries."
+  },
+  {
+    "id": "dup-c650c3e62b50",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already read through the shared `call_edge_rows`; they are the two opposite directions of a direct CALLS hop (a node's callees vs its callers), each with its own query."
+  },
+  {
+    "id": "dup-42b8a5023d8d",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
+  },
+  {
+    "id": "dup-831910355599",
+    "disposition": "not-a-duplicate",
+    "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
+  },
+  {
+    "id": "dup-9408447d0007",
+    "disposition": "not-a-duplicate",
+    "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
+  },
+  {
+    "id": "dup-84342f753367",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different fold arms with different fixtures and assertions: the five design-intent link relations vs workflow stage/gate/agent nodes and their needs/runs/reviews edges."
+  },
+  {
+    "id": "dup-d36198b3982d",
+    "disposition": "not-a-duplicate",
+    "reason": "Both build through the shared `grounder_over`; they pin two different ranking rules (definition over reference, exact over contains tier)."
+  },
+  {
+    "id": "dup-56485f8d4262",
+    "disposition": "not-a-duplicate",
+    "reason": "Three different reindex scenarios with different steps and assertions: a concurrent peer's persisted write, a changed file, and a deleted file."
+  },
+  {
+    "id": "dup-233d5e6363a7",
+    "disposition": "not-a-duplicate",
+    "reason": "Opposite halves of the proof-staging contract: a forward reference is staged then reconciled, while the empty-name boundary sentinel must never stage anything."
+  },
+  {
+    "id": "dup-1cee568104ee",
+    "disposition": "not-a-duplicate",
+    "reason": "Different concerns sharing a lookup shape: one reaches a decision's summary through GOVERNS, the other proves recording a proof merges into and never wipes an entity's attrs."
+  },
+  {
+    "id": "dup-8743cc5db2b4",
+    "disposition": "not-a-duplicate",
+    "reason": "The two conflict drivers share only the shared barrier and side-write helpers; their retry arms run different recovery protocols (two re-park rounds that stage a placeholder first, versus one round that commits the source and then simulates a crash)."
+  },
+  {
+    "id": "dup-333ec555460f",
+    "disposition": "not-a-duplicate",
+    "reason": "The row-1 and row-4 before-record crash tests use different crash drivers, obstructions and cleanup (an untracked file in the unit worktree versus a FIFO in the run branch) and assert different boundary markers."
+  },
+  {
+    "id": "dup-5f516fce9f0b",
+    "disposition": "not-a-duplicate",
+    "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
+  },
+  {
+    "id": "dup-4cf25824ad00",
+    "disposition": "not-a-duplicate",
+    "reason": "The two backstop tests seed different interleavings that guard different defects (the emit-only-approve backstop itself, and a parked-unanswered sibling suppressing it); their seeding and assertions already go through the shared helpers."
+  },
+  {
+    "id": "dup-4fbc57c56116",
+    "disposition": "not-a-duplicate",
+    "reason": "One test drives the reference fold arm's own supersede on a refs-only file; the other pins that re-extracting file A leaves file B's reference edge live - a different arm and a different scope boundary."
+  },
+  {
+    "id": "dup-a34b5b595e15",
+    "disposition": "not-a-duplicate",
+    "reason": "concept_events and link_events are the two typed callers of the shared sorted_events emitter; each supplies its own sort order, event type and payload."
+  },
+  {
+    "id": "dup-18409566d0bb",
+    "disposition": "not-a-duplicate",
+    "reason": "One test pins that a failing gate within one attempt is not masked by a trailing pass, the other that a later all-green attempt supersedes an earlier red; these are opposite outcomes of different battery histories, and both already build their batteries through implement_battery."
+  },
+  {
+    "sweep": "error-shaping helper functions",
+    "disposition": "not-a-duplicate",
+    "reason": "Re-checked for repeated error shaping: the retired-key refusals now share one `reject_retired_key`; the remaining sites (a failure-marker constructor, a review-tree guard, the retired-grounder message and tests of distinct error paths) share only the word, not one error-shaping concern."
+  },
+  {
+    "sweep": ".rigger-path string literals",
+    "disposition": "not-a-duplicate",
+    "reason": "Production code builds every .rigger path from the one `RIGGER_DIR` constant (config::RIGGER_DIR); the remaining literals are messages, documentation text, gitignore entries, shell-script text and test fixtures that name the directory rather than compose a path."
+  },
+  {
+    "id": "dup-08ca12f5868a",
+    "disposition": "not-a-duplicate",
+    "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
+  },
+  {
+    "id": "dup-ece6988d7484",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line adapters fitting two different static documents (the planning-a-spec skill body and the planning field guide page) to the uniform `fn(&DocsContext) -> String` render signature; no logic is repeated."
+  },
+  {
+    "id": "dup-c5777007a33f",
+    "disposition": "not-a-duplicate",
+    "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
+  },
+  {
+    "id": "dup-3d5ea11431d3",
+    "disposition": "not-a-duplicate",
+    "reason": "Two per-operation skill renders passing their own content, each interpolating a different code-derived fact (`max_retries` versus the reject-recurrence diagnose threshold), to the one shared `render_operation_skill` skeleton."
+  },
+  {
+    "id": "dup-d07779dc106d",
+    "disposition": "not-a-duplicate",
+    "reason": "One pins per-actor finding survival (`finding_survival` raised/upheld) and the other per-tier review cost (`tier_cost` spawns/upheld): different metrics of the fold that only share the courier fixture builders."
+  },
+  {
+    "id": "dup-6a304442d31e",
+    "disposition": "not-a-duplicate",
+    "reason": "One pins the unattributed-correct-reject count over planted items and the other the control and control-false-positive counts over known-good items: different canary metrics that only share the `canary_outcome` fixture."
+  },
+  {
+    "id": "dup-edcfd444cd88",
+    "disposition": "not-a-duplicate",
+    "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
+  },
+  {
+    "id": "dup-6fdd86ee972f",
+    "disposition": "not-a-duplicate",
+    "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
+  },
+  {
+    "id": "dup-c1d968c10781",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
+  },
+  {
+    "id": "dup-6741e1f3023b",
+    "disposition": "not-a-duplicate",
+    "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
+  },
+  {
+    "id": "dup-6bdc4cb72e31",
+    "disposition": "not-a-duplicate",
+    "reason": "Two light-lane no-op stubs of two different functions (the full per-file lag check and its bounded sample), each returning an empty list because no extraction pass is compiled."
+  },
+  {
+    "id": "dup-90067fabd6a8",
+    "disposition": "not-a-duplicate",
+    "reason": "`commit` and `commit_checkpoint` are the two named entry points to the one `commit_with`, differing in whether the repository's hooks run (agent commits) or are bypassed (machine bookkeeping)."
+  },
+  {
+    "id": "dup-c36d696064fd",
+    "disposition": "not-a-duplicate",
+    "reason": "Four stub accessors each reading a different per-agent spawn log (prompts, dirs, system prompt, title) through the one shared `cached` lookup."
+  },
+  {
+    "id": "dup-4cd3708b516f",
+    "disposition": "not-a-duplicate",
+    "reason": "`initialized_project` and `initialized_git_project` are one-line named fixtures that pass different base projects (an unborn repo vs one with a commit) to the one shared `rigger_initialized`."
+  },
+  {
+    "id": "dup-edb646ecd5e8",
+    "disposition": "not-a-duplicate",
+    "reason": "`path_with_fake_sccache` and `stage_rigger_shim` are one-line named fixtures over two different shared helpers (a fake build wrapper on PATH vs an exec shim of the built binary)."
+  },
+  {
+    "id": "dup-84fea880d212",
+    "disposition": "not-a-duplicate",
+    "reason": "Both read the consumer docs through the shared `consumer_docs_written_by_the_binary` but assert different shipped content: the three lookup verbs and the grep-fallback line vs the MCP registration, hook event, bounce message and retired tree list."
+  },
+  {
+    "id": "dup-21b08556e493",
+    "disposition": "not-a-duplicate",
+    "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
+  },
+  {
+    "id": "dup-cd5c22f2a701",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
+  },
+  {
+    "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
+    "disposition": "not-a-duplicate",
+    "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
+  },
+  {
+    "id": "dup-03666ae1d685",
+    "disposition": "not-a-duplicate",
+    "reason": "`workflowdef::project_events` lowers `.rigger/workflow.yml` into definition events, while the test fixture flattens the symbols ingest's per-file batches for a whole project: different sources and different events."
+  },
+  {
+    "id": "dup-8dd44d643a5c",
+    "disposition": "not-a-duplicate",
+    "reason": "The cli fixture writes a worker agent plus a one-stage workflow with an appended block, while the probe fixture writes a caller-given body verbatim into a bare `.rigger` dir for the lightweight readers."
+  },
+  {
+    "id": "dup-df1f9764f4e9",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
+  },
+  {
+    "sweep": "sqlite Connection::open call sites",
+    "disposition": "not-a-duplicate",
+    "reason": "Every store connection opens through the one `sqlite::open_connection`, which applies the shared write-ahead-log and busy-timeout settings; the remaining sites are that opener and tests that open a raw connection to inspect or corrupt a store file."
+  },
+  {
+    "sweep": "/proc-path string literals",
+    "disposition": "not-a-duplicate",
+    "reason": "The literals name different kernel files for different questions (the socket table and per-pid fds for a port holder, the process list and cwd for reaping, stat and status fields) or are test messages and this audit's own sweep strings; the one stat parser is `reap::stat_field_after_comm`."
+  },
+  {
+    "sweep": "/proc/<pid>/stat or /proc/<pid>/status field-extraction functions",
+    "disposition": "not-a-duplicate",
+    "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
+  },
+  {
+    "id": "dup-2b572fcabbd4",
+    "disposition": "not-a-duplicate",
+    "reason": "`SpawnResult::liveness_fault` is the product constructor, and the test fixture calls it and encodes the result as an event for a fold input."
+  },
+  {
+    "id": "dup-178d86dd6b19",
+    "disposition": "not-a-duplicate",
+    "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
+  },
+  {
+    "id": "dup-781b5348543b",
+    "disposition": "not-a-duplicate",
+    "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
+  },
+  {
+    "id": "dup-2a5626cb9627",
+    "disposition": "not-a-duplicate",
+    "reason": "`as_str` and `name` map two different enums to their own wire strings; only the exhaustive `match` shape is shared."
+  },
+  {
+    "id": "dup-f13596146362",
+    "disposition": "not-a-duplicate",
+    "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
+  },
+  {
+    "id": "dup-e2420edc22e9",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
+  },
+  {
+    "id": "dup-ebee743f02de",
+    "disposition": "not-a-duplicate",
+    "reason": "Accessors that each clone a different recorded field of a different test double or channel (spawn ids, calls, targets, mutants dirs, store fences, build-cache guards, placements, receiver, error, counted reads); the lock-and-clone line is the whole body."
+  },
+  {
+    "id": "dup-60da41568392",
+    "disposition": "not-a-duplicate",
+    "reason": "`spawned` reads a test driver's spawn log while `covers` tests an interval against a position; the shared shape is a one-line lookup."
+  },
+  {
+    "id": "dup-97f834a327e5",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `AgentDriver::spawn` doubles scripted for different scenarios (a conductor unit test versus the post-merge gate error-cleanup periphery), each returning its own canned output."
+  },
+  {
+    "id": "dup-ae7ef878296c",
+    "disposition": "not-a-duplicate",
+    "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
+  },
+  {
+    "id": "dup-b91a09b322bf",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
+  },
+  {
+    "id": "dup-53e62db783ac",
+    "disposition": "not-a-duplicate",
+    "reason": "`is_empty`/`is_any` report emptiness of four different types (a config section, a failure filter, a CLI selection, a run's unended spawns) over their own fields."
+  },
+  {
+    "id": "dup-619325cc4dc0",
+    "disposition": "not-a-duplicate",
+    "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
+  },
+  {
+    "id": "dup-947acd1ae58d",
+    "disposition": "not-a-duplicate",
+    "reason": "Unit tests of three different parsers (emit-payload literal binding, uuid8 recognition, error-shaping detection) with their own inputs and expectations."
+  },
+  {
+    "id": "dup-f61039476fc4",
+    "disposition": "not-a-duplicate",
+    "reason": "Three struct projections into different output shapes (a map candidate, the responsibility-map wire record and its line-number record) over different source types."
+  },
+  {
+    "id": "dup-cf5c8cd56db9",
+    "disposition": "not-a-duplicate",
+    "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
+  },
+  {
+    "id": "dup-b5bd50de3e2a",
+    "disposition": "not-a-duplicate",
+    "reason": "`apply_code_entity_partial` and `apply_community` fold two different event types with different payload fields over the shared `apply_json`."
+  },
+  {
+    "id": "dup-554a83a84ac8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two projector tests with different seeded event orders and different assertions (inferred-tier order independence versus no demotion of an extracted reference)."
+  },
+  {
+    "id": "dup-3cee929a82ba",
+    "disposition": "not-a-duplicate",
+    "reason": "`edge_desc` renders a graph edge; `pruned_line` renders what a run-closure prune removed, the one report `rigger reset --runs` and `rigger setup` both print; `runs_menu_line` renders the reset menu's preview of what a prune would remove and the command that reclaims it. Three different sentences over different states."
+  },
+  {
+    "id": "dup-4a57ceb2e317",
+    "disposition": "not-a-duplicate",
+    "reason": "Each store adapter's one forward read of a stream over its own backend: the sqlite `read_forward` steps one SQL statement over the events table, spelling a failure as its caller asks, the kurrentdb `read_forward` takes the first events of the gRPC forward read `forward_records` pulls. One per adapter is the design (spec 101); neither can serve the other's backend."
+  },
+  {
+    "id": "dup-a2973e00918e",
+    "disposition": "not-a-duplicate",
+    "reason": "Tests that each assert a different property of a different served page or shipped file; only the fetch-then-contains shape is shared."
+  },
+  {
+    "id": "dup-e79afb3298c3",
+    "disposition": "not-a-duplicate",
+    "reason": "Route tests over different query parameters asserting different outcomes (explain absent, cluster drill, unknown card subject)."
+  },
+  {
+    "id": "dup-b3200e581798",
+    "disposition": "not-a-duplicate",
+    "reason": "`card_graph` and `fixture_graph` seed different nodes and edges for the metadata-card tests they each serve."
+  },
+  {
+    "id": "dup-fae663db78c7",
+    "disposition": "not-a-duplicate",
+    "reason": "Card-route tests asserting different fields for different subjects (known versus unknown, code subject, membership-less entity, param precedence)."
+  },
+  {
+    "id": "dup-7ce260b96af1",
+    "disposition": "not-a-duplicate",
+    "reason": "Three spawn-option builders with different field values for different drivers (the replay driver, the stream host, the conductor implementer)."
+  },
+  {
+    "id": "dup-8c5011c59ed1",
+    "disposition": "not-a-duplicate",
+    "reason": "`stage` builds a review-less never-merging `Stage` for the replay tests while `agent_with_prompt` builds an `AgentDef`; they construct different types."
+  },
+  {
+    "id": "dup-207b5aa153cb",
+    "disposition": "not-a-duplicate",
+    "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
+  },
+  {
+    "id": "dup-9a07b087e8f1",
+    "disposition": "not-a-duplicate",
+    "reason": "`as_str` maps three different enums (failure cause, gate outcome, ledger status) to their own strings."
+  },
+  {
+    "id": "dup-e3c162b7bd56",
+    "disposition": "not-a-duplicate",
+    "reason": "Three predicates over different inputs (a markdown path extension, a spec element start, an error-shaping identifier)."
+  },
+  {
+    "id": "dup-415d2df07b98",
+    "disposition": "not-a-duplicate",
+    "reason": "Two cold-start tests over different readers (the spec store load and the workflow-definition projection), each asserting its own empty result."
+  },
+  {
+    "id": "dup-e9220ec4784e",
+    "disposition": "not-a-duplicate",
+    "reason": "`derived_key_parts` is the production splitter while the periphery `split` is the test's independent oracle that must not reuse it."
+  },
+  {
+    "id": "dup-a5bfac770233",
+    "disposition": "not-a-duplicate",
+    "reason": "Two injectivity tests over different functions (liveness marker filenames, origin-URL normalization) with different inputs."
+  },
+  {
+    "id": "dup-b7ec46dde247",
+    "disposition": "not-a-duplicate",
+    "reason": "`find_store_dir_from` walks up ancestors for a store while `scan_target_files` walks down a tree collecting source files."
+  },
+  {
+    "id": "dup-7b4605d9ccc9",
+    "disposition": "not-a-duplicate",
+    "reason": "`dir_size_bytes` is the production measure while the periphery `dir_bytes` is the test's independent oracle with its own symlink handling."
+  },
+  {
+    "id": "dup-df893b1b93d7",
+    "disposition": "not-a-duplicate",
+    "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
+  },
+  {
+    "id": "dup-58e746ca5c35",
+    "disposition": "not-a-duplicate",
+    "reason": "The two canary suites' `spawn` doubles script different reviewer verdicts for their own scenarios (false-positive controls versus an unattributed correct reject)."
+  },
+  {
+    "id": "dup-d887cb6f63f7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two canary scoring tests with different seeded items and different expected counts."
+  },
+  {
+    "id": "dup-9da3f693c2b7",
+    "disposition": "not-a-duplicate",
+    "reason": "Source-drift guards pinning different sentences in different files (the worker scratch policy versus the workerLabel wiring)."
+  },
+  {
+    "id": "dup-d46432042e0c",
+    "disposition": "not-a-duplicate",
+    "reason": "The two lens suites seed different graphs (code entities under communities versus design docs under concepts)."
+  },
+  {
+    "id": "dup-14f55a46039c",
+    "disposition": "not-a-duplicate",
+    "reason": "Lens-selector tests asserting different arms (fallback to files versus the concepts lens)."
+  },
+  {
+    "id": "dup-b58b0ff72b22",
+    "disposition": "not-a-duplicate",
+    "reason": "Three backend-selection checks asserting different outcomes (server selected, sqlite selected, server reached with credentials redacted)."
+  },
+  {
+    "id": "dup-c99581d3e41e",
+    "disposition": "not-a-duplicate",
+    "reason": "`write_workflow` and `write_store_conn` write different files (the committed workflow versus the per-machine secret)."
+  },
+  {
+    "id": "dup-515218e72204",
+    "disposition": "not-a-duplicate",
+    "reason": "`doc` and `link` build two different event types with different payload fields."
+  },
+  {
+    "id": "dup-c49b09543e58",
+    "disposition": "not-a-duplicate",
+    "reason": "Three suites' fixture graphs seed different nodes and edges for different route assertions."
+  },
+  {
+    "id": "dup-626b09960195",
+    "disposition": "not-a-duplicate",
+    "reason": "Contract tests over two different artifacts (the dead-code JSON and the duplication catalog) checking their own fields."
+  },
+  {
+    "id": "dup-c06e1c41c352",
+    "disposition": "not-a-duplicate",
+    "reason": "Citation extractors for different report sections of different artifacts."
+  },
+  {
+    "id": "dup-fa251330d936",
+    "disposition": "not-a-duplicate",
+    "reason": "Served-page tests asserting different mechanism tokens (layered path, adaptive labels, density spread, collision separation)."
+  },
+  {
+    "id": "dup-0f2d7b120d84",
+    "disposition": "not-a-duplicate",
+    "reason": "Two dedup tests over different scenarios (repeated governs edges versus arrival-order independence) with different assertions."
+  },
+  {
+    "id": "dup-269f626ea28e",
+    "disposition": "not-a-duplicate",
+    "reason": "`graph show` face tests over different degraded states that call the already-shared helpers with different arguments and assert different notes."
+  },
+  {
+    "id": "dup-d558d72a9443",
+    "disposition": "not-a-duplicate",
+    "reason": "Audit tests with different planted sources and different assertions (remove_dir_all, worktree remove, finding location, wrapped args)."
+  },
+  {
+    "id": "dup-cb850da85ff9",
+    "disposition": "not-a-duplicate",
+    "reason": "`rows` and `raw_rows` read different column sets into different row types."
+  },
+  {
+    "id": "dup-6adbc1efd3a6",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
+  },
+  {
+    "id": "dup-adfce3b42b86",
+    "disposition": "not-a-duplicate",
+    "reason": "`walk` is the recursive helper that `fingerprint_subtree` calls, not a second copy of it."
+  },
+  {
+    "id": "dup-ece604793e18",
+    "disposition": "not-a-duplicate",
+    "reason": "Named constructors of one port double that each delegate to the shared `built` with different arguments."
+  },
+  {
+    "id": "dup-56fda398784b",
+    "disposition": "not-a-duplicate",
+    "reason": "The store-secrets `write_store_conn` also locks the file to owner-only so the permission warning stays out of its cases; the precedence one writes it plain."
+  },
+  {
+    "id": "dup-5f1cbfb1ea59",
+    "disposition": "not-a-duplicate",
+    "reason": "Store-resolution tests asserting different resolution outcomes (server, local sqlite, empty conn treated as unset)."
+  },
+  {
+    "id": "dup-498b51115191",
+    "disposition": "not-a-duplicate",
+    "reason": "Fixture graphs with different memberships (communities without concepts, mixed membership, files over code)."
+  },
+  {
+    "id": "dup-06ffd3c67857",
+    "disposition": "not-a-duplicate",
+    "reason": "Fixture graphs with different shapes (a full in-budget graph versus communities over concepts)."
+  },
+  {
+    "id": "dup-659554f6286f",
+    "disposition": "not-a-duplicate",
+    "reason": "`seed_workflow_yml` and `seed_js_files` seed different files for different constants checks."
+  },
+  {
+    "id": "dup-c6dfc41a628c",
+    "disposition": "not-a-duplicate",
+    "reason": "Two constructors of two different test doubles (the conductor Stub answering one output, the plan-amend driver naming its planner); each sets its own type's one field over its own defaults."
+  },
+  {
+    "id": "dup-ce4fa432a6da",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line edge constructors for different relations with different liveness: a live community-membership edge in the map tests and an extracted reference edge through the shared `edge` fixture."
+  },
+  {
+    "id": "dup-22a325f863b8",
+    "disposition": "not-a-duplicate",
+    "reason": "Unrelated tests sharing only a short arrange-assert shape: the dash serving the embedded wasm artifact, and two scanner cases about where a cfg(test) attribute sits."
+  },
+  {
+    "id": "dup-9904088ec60d",
+    "disposition": "not-a-duplicate",
+    "reason": "Lookups over two different read models: a dash Neighborhood node's optional layer, and a call-graph node's layer in the shared graph fixtures."
+  },
+  {
+    "id": "dup-282069e7109f",
+    "disposition": "not-a-duplicate",
+    "reason": "Struct builders for different types and fields: a sonnet agent with tools, a fan-out stage with needs and gates, and an agent with a model ladder."
+  },
+  {
+    "id": "dup-41d8b1c33d44",
+    "disposition": "not-a-duplicate",
+    "reason": "Unrelated tests sharing only the assert-contains shape: the spec-lint next-step line, and two checks on the native driver's source text."
+  },
+  {
+    "id": "dup-da72fb2d69f3",
+    "disposition": "not-a-duplicate",
+    "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
+  },
+  {
+    "id": "dup-81e8434ac795",
+    "disposition": "not-a-duplicate",
+    "reason": "Scanner unit tests that each feed a different text shape and assert a different outcome (a fail-closed quote state, scanning resuming after Notes, a bodiless trait method); they share only the parse-then-assert idiom."
+  },
+  {
+    "id": "dup-5a3cb86b6dd7",
+    "disposition": "not-a-duplicate",
+    "reason": "Integration of uncommitted work versus integration of a pre-committed artifact, where the second asserts the merged commit is exactly the gated one."
+  },
+  {
+    "id": "dup-71aadfa4568e",
+    "disposition": "not-a-duplicate",
+    "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
+  },
+  {
+    "id": "dup-82f5fd8ce76a",
+    "disposition": "not-a-duplicate",
+    "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
+  },
+  {
+    "id": "dup-751f1b83af79",
+    "disposition": "not-a-duplicate",
+    "reason": "Multi-step scenario tests over different workflows (budget halt, hung unbounded spawn, recurrence and stalled frontier) through the shared step_line fixture; each asserts a different attention sequence."
+  },
+  {
+    "id": "dup-ea8a80f3da16",
+    "disposition": "not-a-duplicate",
+    "reason": "Two-line tests that each hand a different fixture project to a different scenario body (a manual-review pause, an ambient kurrentdb connection)."
+  },
+  {
+    "id": "dup-2a101767f24d",
+    "disposition": "not-a-duplicate",
+    "reason": "Named fixture projects, each a base project plus a different seeding (the event log, the .rigger directory, the store, or a committed repo with a store); only the compose-and-return is shared."
+  },
+  {
+    "id": "dup-c3c8358993cf",
+    "disposition": "not-a-duplicate",
+    "reason": "Fold fixtures applying two different inferred-edge payloads (a reference and a call with its caller) through the one shared apply_json."
+  },
+  {
+    "id": "dup-9c3b5c80063e",
+    "disposition": "not-a-duplicate",
+    "reason": "Sorted id collections over different graph parts with different filters: nodes of a kind, a member's live community edges, and a file's contains edges."
+  },
+  {
+    "id": "dup-d5a2e2020223",
+    "disposition": "not-a-duplicate",
+    "reason": "Assertions over two different audit scanners in two suites (the OS-kill scan and the same-named-helper clustering), each with its own finding type and message."
+  },
+  {
+    "id": "dup-78c48ff4c88e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two levels of one rule, not two copies: `ReviewPanel::gating_agent_ids` names one panel's gating agents, and the config-level `gating_agent_ids` unions that method over the default panel and every stage's panel plus each stage's standalone adjudicator. The workspace split put the panel method in the domain crate and the Config-level fold beside `Config`, so the two same-named functions now sit in different files."
+  },
+  {
+    "id": "dup-557d6899b868",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different sums that share only the shape `a + b`: the metrics total of two token counts, and the one-shot fixture's read cost (the run's own events plus the carried-over events)."
+  },
+  {
+    "id": "dup-8bed086eddda",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name, stripping the prefix from what comes back) is already the one `scoped`/`strip` pair both call."
+  },
+  {
+    "id": "dup-c82a46fd1fec",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of `SilentStore`, each answering its own read empty - the double's whole contract, one line per method the port requires."
+  },
+  {
+    "id": "dup-9d4ce6bab62d",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the capped-reads test double, each forwarding its own inner read after the one shared `charge` of the read cap."
+  },
+  {
+    "id": "dup-161c827c2a70",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the failing-read test double, each answering the one shared `read_failure`."
+  },
+  {
+    "id": "dup-c138bb72172b",
+    "disposition": "not-a-duplicate",
+    "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, the per-run progress stream name, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
+  },
+  {
+    "id": "dup-4e1d0e78e3c6",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::read::read_current_run` is the one composition of the run read, its slice and its id; the conductor's `RunCtx` method and the MCP server method only bind their own store and stream to it and map its error into their own error type."
+  },
+  {
+    "id": "dup-17929143626a",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
+  },
+  {
+    "id": "dup-3f117fd28c02",
+    "disposition": "not-a-duplicate",
+    "reason": "`McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor; six call sites open a plain `rigger mcp` session through it."
+  },
+  {
+    "id": "dup-e3a49d3d408e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
+  },
+  {
+    "id": "dup-49b57537de27",
+    "disposition": "not-a-duplicate",
+    "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
+  },
+  {
+    "id": "dup-c51171ae2133",
+    "disposition": "not-a-duplicate",
+    "reason": "Non-boundary tests for two different layers (community assignment versus concept derivation) with different event types and folds."
+  },
+  {
+    "id": "dup-ddaf372936d3",
+    "disposition": "not-a-duplicate",
+    "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
+  },
+  {
+    "id": "dup-19f9cf9e5fab",
+    "disposition": "not-a-duplicate",
+    "reason": "Payload builders for two different event types (a `CommunityAssigned` membership versus a `CodeEntityExtracted` definition) whose only shared shape is serializing a `json!` literal."
+  },
+  {
+    "id": "dup-5f6fcac3a66f",
+    "disposition": "not-a-duplicate",
+    "reason": "Accessors of two different optional fields on two different types (the config's traversal depth versus the content-identity policy's declared fact identity); the shared token shape is a one-line `as_ref`."
+  },
+  {
+    "id": "dup-cfb679088c89",
+    "disposition": "not-a-duplicate",
+    "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
+  },
+  {
+    "id": "dup-31c9f1cd288f",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
+  },
+  {
+    "id": "dup-0b2669324614",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different event types' de-noise rules: a DecisionMade keeps its GOVERNS edge and drops DECIDED, a ReviewFinding keeps its finding node and drops RAISED."
+  },
+  {
+    "id": "dup-36ebafe7bb7e",
+    "disposition": "not-a-duplicate",
+    "reason": "`holds_table` asks a graph.db's sqlite_master whether a named table exists through the file's one `exists` query helper, while `poison` rewrites a run stream's meta column to invalid bytes through `rewrite_run_stream`; they share only a one-call delegating body."
+  },
+  {
+    "id": "dup-05f8d05060a7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the capped-reads test double, each forwarding its own inner call uncharged: the boundary lookup and the group lookup are distinct `EventStore` methods every implementation owes, and neither is a read the cap charges."
+  },
+  {
+    "id": "dup-4979c76ee36f",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the failing-read test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup), each with the answer that method's contract takes."
+  },
+  {
+    "id": "dup-f5125f873960",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the `Namespaced` decorator, each forwarding its own inner call; the shared work (scoping the stream name) is already the one `scoped` both call."
+  },
+  {
+    "id": "dup-b4990598bfd7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different SQL statements over the one shared `group_expr`: the partial group index's `CREATE INDEX` and the lookup's `SELECT` that seeks it; the shared expression is already the one function both call."
+  },
+  {
+    "id": "dup-3eb116c3c4c8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the silent test double answering their own distinct `EventStore` methods (the boundary lookup and the group lookup) with the empty answer each contract allows."
+  },
+  {
+    "id": "dup-6ef712aab260",
+    "disposition": "not-a-duplicate",
+    "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
+  },
+  {
+    "id": "dup-649d686bdf2a",
+    "disposition": "not-a-duplicate",
+    "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
+  },
+  {
+    "id": "dup-5e40086810a8",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
+  },
+  {
+    "id": "dup-e10b6988960c",
+    "disposition": "not-a-duplicate",
+    "reason": "The folding store forwards two different port methods (the boundary lookup and the group lookup) to the store it wraps; each is a one-line delegation the port's signature makes look alike."
+  },
+  {
+    "id": "dup-2423568cdaba",
+    "disposition": "not-a-duplicate",
+    "reason": "Three port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the group-lookup-only double panics on any other read, the append-only port double refuses every read; the port method's signature is what makes them look alike."
+  },
+  {
+    "id": "dup-cb25e49f6e22",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
+  },
+  {
+    "id": "dup-932054f9660d",
+    "disposition": "not-a-duplicate",
+    "reason": "`shape` is the helper nested inside `check_fold_payload` that its match arms call; the scanner counts the nested body inside the outer function too, which is the only overlap."
+  },
+  {
+    "id": "dup-f0e40001391f",
+    "disposition": "not-a-duplicate",
+    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
+  },
+  {
+    "id": "dup-57c1e8124510",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line accessors on two different types reading two different fields (the content-identity policy's metadata key versus the graph file a rebuild lock excludes)."
+  },
+  {
+    "id": "dup-8f0f2622431b",
+    "disposition": "not-a-duplicate",
+    "reason": "Two runtime driver tests, each running a different scripted harness (per-unit pipelining, a worker settling during the courier step) through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
+  },
+  {
+    "id": "dup-b4d4329417cc",
+    "disposition": "not-a-duplicate",
+    "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
+  },
+  {
+    "id": "dup-d0dab916f0d7",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line `format!` builders of different values: the workflow file's path under the rigger directory, and the unit size cap's sentence the plan protocol and the DAG critique share; they share only the one-interpolation token shape."
+  }
+]

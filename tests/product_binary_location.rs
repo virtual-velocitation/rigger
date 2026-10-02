@@ -17,6 +17,7 @@
 
 mod common;
 
+use common::repo::{for_each_rs_file, repo_root};
 use std::path::{Path, PathBuf};
 
 /// The derivation, as a pure function of where the test executable sits: cargo runs an
@@ -101,41 +102,29 @@ fn the_resolved_product_binary_exists_in_the_target_dir_this_suite_runs_from() {
 fn no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority() {
     let needle = format!("CARGO_BIN{}EXE_rigger", "_");
     let invocation = format!("env!(\"{needle}\")");
-    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let tests_dir = repo_root().join("tests");
     let mut offenders: Vec<String> = Vec::new();
     let mut authority_sites = 0usize;
-    let mut walk = vec![tests_dir.clone()];
-    while let Some(dir) = walk.pop() {
-        for entry in std::fs::read_dir(&dir).expect("the tests dir is readable") {
-            let path = entry.expect("a readable dir entry").path();
-            if path.is_dir() {
-                walk.push(path);
-                continue;
-            }
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(&tests_dir)
-                .expect("a path under tests/")
-                .to_string_lossy()
-                .into_owned();
-            if rel == "product_binary_location.rs" {
-                continue;
-            }
-            let source = std::fs::read_to_string(&path).expect("a readable test source");
-            if rel == "common/mod.rs" {
-                // The authority may DISCUSS the macro in prose; what is counted is the one
-                // invocation it is allowed to make.
-                authority_sites += source.matches(&invocation).count();
-                continue;
-            }
-            let hits = source.matches(&needle).count();
-            if hits > 0 {
-                offenders.push(format!("{rel} ({hits})"));
-            }
+    for_each_rs_file(&tests_dir, &mut |path, source| {
+        let rel = path
+            .strip_prefix(&tests_dir)
+            .expect("a path under tests/")
+            .to_string_lossy()
+            .into_owned();
+        if rel == "product_binary_location.rs" {
+            return;
         }
-    }
+        if rel == "common/mod.rs" {
+            // The authority may DISCUSS the macro in prose; what is counted is the one
+            // invocation it is allowed to make.
+            authority_sites += source.matches(&invocation).count();
+            return;
+        }
+        let hits = source.matches(&needle).count();
+        if hits > 0 {
+            offenders.push(format!("{rel} ({hits})"));
+        }
+    });
     offenders.sort();
     assert!(
         offenders.is_empty(),

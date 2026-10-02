@@ -1,7 +1,7 @@
 //! Periphery (API / integration) tests for spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED:
 //! the workflow-definition indexer (`src/grounder/workflowdef.rs`, new pub `extract_events` /
 //! `project_events` / `project_batches`, plus new pub `KIND_STAGE` / `REL_NEEDS` / `REL_RUNS` /
-//! `REL_REVIEWS`) and the JavaScript plain-constant tags fix (`src/grounder/symbols/registry.rs`).
+//! `REL_REVIEWS`) and the JavaScript plain-constant tags fix (`crates/rigger-grounder/src/grounder/symbols/registry.rs`).
 //!
 //! Every existing test of this criterion's new code (`workflowdef::tests`, the new
 //! `contextgraph::sqlite::tests::workflow_definition_events_fold_into_...` fold test, and
@@ -44,7 +44,7 @@
 //!    (`FileSymbols::partial`, threaded through `CodeEntityExtracted`/`EdgeInferred`, stamped onto
 //!    the file node's `partial` attr by `contextgraph::sqlite`'s fold). Round 4's own tests
 //!    (`extract.rs`, `events.rs`) prove this by calling `extract()` / `build_index()` /
-//!    `index_events()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
+//!    `project_batches()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
 //!    never through the CLI's actual cold-build entry point (`cmd_graph_build`) writing the REAL
 //!    persisted `graph.db` a reader's `--around` then queries. Proven here instead: a real
 //!    malformed `workflows/*.js` file run through a real `rigger graph build`, read back from the
@@ -63,85 +63,20 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;
-#[cfg(feature = "symbols")]
-use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves, and
 // every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
-/// A throwaway project dir that is its own git repo, so `cmd_graph_build`'s root resolution (the
-/// git top-level) and `project_identity()` (which scopes the graph read `--show`/`--around` use)
-/// are both stable and match between the seed and the binary's own reads.
 #[cfg(feature = "symbols")]
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Run `rigger <args...>` in `cwd` through the COMPILED binary, returning (stdout, stderr,
-/// success). Opts out of the auto-started dashboard and points the instance registry at a
-/// throwaway state dir, exactly as the other CLI integration tests do, so a short-lived
-/// invocation spawns nothing that outlives the test.
+use common::cli::ingested_count;
 #[cfg(feature = "symbols")]
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("a temp XDG_STATE_HOME for the rigger invocation");
-    let out = Command::new(common::rigger_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// The project identity `cmd_graph_build`/`cmd_graph`'s `--show`/`--around` scope their graph read
-/// under (the basename of the git top-level; `project_identity_at` in `src/main.rs`, not itself
-/// exported) - a fresh `temp_project()` mints no `.rigger/project.id`, so this is the pre-spec-09
-/// legacy basename identity both the CLI and this direct-open read must agree on for item 6's
-/// `Projector::open` to see the SAME store the CLI just wrote. Named to match the identical
-/// helper already cataloged across this suite's sibling periphery files (e.g.
-/// `tests/graph_show_periphery.rs`'s own `run_stream_identity`), so this site joins that existing
-/// duplication cluster rather than minting a new, distinctly-named one.
+use common::cli::run_rigger;
 #[cfg(feature = "symbols")]
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// How many events `rigger graph build` reported ingesting, parsed from the line it prints - the
-/// shipped observable for "this build did something".
+use common::cli::run_stream_identity;
 #[cfg(feature = "symbols")]
-fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
-}
+use common::cli::temp_project;
 
 /// Write a `.rigger/workflow.yml` mirroring the Design text's own example (`stage:implement`,
 /// `gate:mutation`, `agent:rust-engineer`) closely enough to exercise every relation source this
@@ -413,7 +348,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
 /// configured, end to end through the CLI: round 5's fix (`u2c2-r5-reviews-light-distinct-relation`)
 /// split `workflowdef::reviewers_of` into a full roster and a light roster so a `tiers.light`-only
 /// reviewer is never indistinguishable from a full-panel one on the same stage - proven here only
-/// in-process (an in-memory fixture and `config::load_workflow`), never through the compiled
+/// in-process (an in-memory fixture and `config_store::load_workflow`), never through the compiled
 /// binary's cold `rigger graph build` -> persisted `graph.db` -> `--around` path a reader actually
 /// queries, nor through the new `REL_REVIEWS_LIGHT` fold arm (`contextgraph/sqlite.rs` `fold()`)
 /// which this exercises for the first time off REAL extraction output. Covers BOTH call sites the

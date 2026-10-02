@@ -5,7 +5,7 @@
 //! Two boundaries neither of those reaches:
 //!
 //!  - The Done-when, driven end to end through the crate's PUBLIC API (`build_index` ->
-//!    `index_events` -> `Projector` -> `dash::card`), from OUTSIDE the crate, over a fixture of its
+//!    `project_batches` -> `Projector` -> `dash::card`), from OUTSIDE the crate, over a fixture of its
 //!    own. The implementer's own `events.rs` unit test
 //!    (`a_product_entity_referenced_by_two_tests_carries_proven_by_2_and_renders_on_its_card`)
 //!    already proves this same pipeline, but IN-CRATE and over the implementer's OWN fixture - that
@@ -17,7 +17,7 @@
 //!    that arm (`sqlite.rs::proof_evidence_c2::an_unresolvable_test_reference_is_staged_and_
 //!    reconciled_once_its_definition_later_folds`) hand-builds the two events directly against the
 //!    fold, which proves the fold logic is correct IF handed such a sequence but never proves the
-//!    real sorted-path pipeline (`project_batches_paced`/`index_events` over `BTreeMap<String,
+//!    real sorted-path pipeline (`project_batches_paced` over `BTreeMap<String,
 //!    FileSymbols>`) ever PRODUCES one - a genuinely different fact this test pins by naming its
 //!    fixture files so a `tests/`-dir file sorts alphabetically BEFORE the product file it
 //!    references. Both tests live in the `symbols` lane only (they drive the real tree-sitter
@@ -53,6 +53,11 @@
 //!    (`crate::ingest::key_batch`, driven by `RunCtx::ingest_project_batches` in production) does,
 //!    per [`events_for_file`]'s own doc below.
 
+mod common;
+
+use common::served::body_of;
+use common::served::fetch_served;
+
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
 /// A fixture independent of the implementer's own (`product_fn`/`unused_fn`/`helper`): a product
@@ -87,11 +92,9 @@ fn an_outside_combat_test() {
 #[cfg(feature = "symbols")]
 #[test]
 fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_fixture() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, KIND_FILE};
-    use rigger::dash::card;
-    use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("combat.rs"), STRIKE_PRODUCT_SRC).unwrap();
@@ -103,12 +106,11 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
     )
     .unwrap();
 
-    let idx = build_index(root.path().to_str().unwrap(), None);
-    let mut events = index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
-        p.apply(event).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(event));
     }
 
     let seed_files = [
@@ -177,7 +179,7 @@ fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_f
 
 /// A `tests/`-dir file whose path sorts ALPHABETICALLY BEFORE the product file it references
 /// (`tests/aaa_check.rs` < `zzz_product.rs`), so the real sorted-path pipeline
-/// (`project_batches_paced`/`index_events` over `BTreeMap<String, FileSymbols>`) folds this
+/// (`project_batches_paced` over `BTreeMap<String, FileSymbols>`) folds this
 /// evidence event BEFORE `finisher`'s own definition exists - the forward-reference case
 /// `pending_proof`/`reconcile_pending_proof` exists for, produced here by the REAL pipeline rather
 /// than a hand-built event sequence.
@@ -196,11 +198,10 @@ fn checks_finisher() {
 #[test]
 fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_its_definition_later_folds(
 ) {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
     use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("zzz_product.rs"), FINISHER_PRODUCT_SRC).unwrap();
@@ -217,11 +218,11 @@ fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_it
         idx.files().keys().collect::<Vec<_>>()
     );
 
-    let mut events = index_events(&idx);
+    let mut events = common::project_events(root.path().to_str().unwrap());
     let p = Projector::open(":memory:", "test").unwrap();
     for (zero_based, event) in events.iter_mut().enumerate() {
         event.position = zero_based as u64 + 1;
-        p.apply(event).unwrap();
+        common::fixtures::folds(&p, std::slice::from_ref(event));
     }
 
     let g = p
@@ -261,7 +262,7 @@ fn root_write(root: &tempfile::TempDir, rel: &str, contents: &str) {
 }
 
 /// One file's own event batch at a given `SymbolIndex` snapshot - the SAME composition
-/// `index_events`/`project_batches_paced` use for every file (structural events, then this
+/// `project_batches_paced` uses for every file (structural events, then this
 /// file's own test-origin evidence via `proof_events`), but scoped to ONE named file so a
 /// round-2 re-extraction can be simulated by feeding only the file that actually changed. That
 /// is exactly what the real replay-key content-hash suppression accomplishes in production
@@ -297,11 +298,10 @@ fn apply_events(
     events: &mut [rigger::eventstore::Event],
     next_position: &mut u64,
 ) {
-    use rigger::contextgraph::Projection;
     for event in events.iter_mut() {
         event.position = *next_position;
         *next_position += 1;
-        p.apply(event).unwrap();
+        common::fixtures::folds(p, std::slice::from_ref(event));
     }
 }
 
@@ -319,6 +319,68 @@ fn reextract_file(
 ) {
     let idx = rigger::grounder::symbols::build_index(root.path().to_str().unwrap(), None);
     apply_events(p, &mut events_for_file(&idx, path), next_position);
+}
+
+/// A real project root folded, file by file through the real extraction pipeline, onto ONE
+/// in-memory `Projector` - the position sequence continuing across every (re-)extraction exactly
+/// as a real multi-generation run appends them (see [`reextract_file`]).
+#[cfg(feature = "symbols")]
+struct Pipeline {
+    root: tempfile::TempDir,
+    p: rigger::contextgraph::sqlite::Projector,
+    next_position: u64,
+}
+
+#[cfg(feature = "symbols")]
+impl Pipeline {
+    /// A fresh root holding each `(rel, contents)` of `files`, nothing extracted yet.
+    fn holding(files: &[(&str, &str)]) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        for (rel, contents) in files {
+            root_write(&root, rel, contents);
+        }
+        Pipeline {
+            root,
+            p: rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap(),
+            next_position: 1,
+        }
+    }
+
+    /// Overwrite `rel` with `contents`, the way a real edit does.
+    fn write(&self, rel: &str, contents: &str) {
+        root_write(&self.root, rel, contents);
+    }
+
+    /// (Re-)extract each of `paths`, in order, alone.
+    fn extract(&mut self, paths: &[&str]) {
+        for path in paths {
+            reextract_file(&self.root, &self.p, path, &mut self.next_position);
+        }
+    }
+
+    /// The subgraph within two hops of `file`.
+    fn around(&self, file: &str) -> rigger::contextgraph::Graph {
+        use rigger::contextgraph::Projection;
+        self.p.subgraph(&[file.to_string()], 2).unwrap()
+    }
+
+    /// The card of `id`, read from the subgraph around `file`.
+    fn card(&self, file: &str, id: &str) -> rigger::contextgraph::query::Card {
+        rigger::contextgraph::query::card(&self.around(file), id)
+            .unwrap_or_else(|| panic!("{id} is a graph node"))
+    }
+}
+
+/// `card` is proven exactly once, its one piece of evidence `evidence` (`why` says why it must
+/// be).
+#[cfg(feature = "symbols")]
+fn assert_proven_once_by(card: &rigger::contextgraph::query::Card, evidence: &str, why: &str) {
+    assert_eq!(card.proven_by, 1, "{why}; card: {card:?}");
+    assert_eq!(
+        card.proof_evidence,
+        vec![evidence.to_string()],
+        "{why}; card: {card:?}"
+    );
 }
 
 /// Fixture for [`cross_file_proof_survives_a_real_reextraction_of_the_defining_file`]: `watch`
@@ -352,56 +414,35 @@ fn checks_watch() {
 #[cfg(feature = "symbols")]
 #[test]
 fn cross_file_proof_survives_a_real_reextraction_of_the_defining_file() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    use rigger::dash::card;
-
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "sentinel.rs", SENTINEL_V1_SRC);
-    root_write(&root, "tests/sentinel_periphery.rs", SENTINEL_TEST_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/sentinel_periphery.rs", &mut next_position);
-
-    let baseline = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
-    let watch = card(&baseline, "sentinel.rs::watch").expect("sentinel.rs::watch is a graph node");
-    assert_eq!(
-        watch.proven_by, 1,
-        "sanity: the cross-file test proves watch before any re-extraction; card: {watch:?}"
-    );
-    assert_eq!(
-        watch.proof_evidence,
-        vec!["tests/sentinel_periphery.rs:3".to_string()]
+    let mut pl = Pipeline::holding(&[
+        ("sentinel.rs", SENTINEL_V1_SRC),
+        ("tests/sentinel_periphery.rs", SENTINEL_TEST_SRC),
+    ]);
+    pl.extract(&["sentinel.rs", "tests/sentinel_periphery.rs"]);
+    assert_proven_once_by(
+        &pl.card("sentinel.rs", "sentinel.rs::watch"),
+        "tests/sentinel_periphery.rs:3",
+        "sanity: the cross-file test proves watch before any re-extraction",
     );
 
     // sentinel.rs is edited (unrelated to watch) and re-extracts ALONE; the test file is
     // untouched and its batch is never re-applied here.
-    root_write(&root, "sentinel.rs", SENTINEL_V2_SRC);
-    reextract_file(&root, &p, "sentinel.rs", &mut next_position);
+    pl.write("sentinel.rs", SENTINEL_V2_SRC);
+    pl.extract(&["sentinel.rs"]);
 
-    let after = p.subgraph(&["sentinel.rs".to_string()], 2).unwrap();
-    let watch_after =
-        card(&after, "sentinel.rs::watch").expect("sentinel.rs::watch survives the re-extraction");
-    assert_eq!(
-        watch_after.proven_by, 1,
-        "re-extracting sentinel.rs must not silently drop the proof a DIFFERENT, untouched file \
-         already established; card: {watch_after:?}"
+    assert_proven_once_by(
+        &pl.card("sentinel.rs", "sentinel.rs::watch"),
+        "tests/sentinel_periphery.rs:3",
+        "re-extracting sentinel.rs must not silently drop the proof, or its evidence entry, a \
+         DIFFERENT, untouched file already established",
     );
     assert_eq!(
-        watch_after.proof_evidence,
-        vec!["tests/sentinel_periphery.rs:3".to_string()],
-        "the evidence entry itself must survive too; card: {watch_after:?}"
-    );
-    let idle_after = card(&after, "sentinel.rs::idle").expect("sentinel.rs::idle is a graph node");
-    assert_eq!(
-        idle_after.proven_by, 0,
+        pl.card("sentinel.rs", "sentinel.rs::idle").proven_by,
+        0,
         "idle is never referenced by any test"
     );
-    let alert_after = card(&after, "sentinel.rs::alert")
-        .expect("the newly added alert folded structurally alongside watch/idle");
-    assert_eq!(alert_after.proven_by, 0);
+    // The newly added alert folded structurally alongside watch/idle.
+    assert_eq!(pl.card("sentinel.rs", "sentinel.rs::alert").proven_by, 0);
 }
 
 #[cfg(feature = "symbols")]
@@ -446,9 +487,9 @@ fn checks_right() {
 #[test]
 fn a_real_reextraction_of_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence()
 {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
 
     // One step of the walk below: `tests/duo_periphery.rs` is (re-)written to `src` and
     // re-extracted fresh, and `left`/`right` must land at exactly `want_left`/`want_right`
@@ -548,11 +589,10 @@ fn checks_shared() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
     use rigger::grounder::symbols::build_index;
-    use rigger::grounder::symbols::events::index_events;
 
     let root = tempfile::tempdir().unwrap();
     root_write(&root, "alpha.rs", ALPHA_V1_SRC);
@@ -569,7 +609,11 @@ fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_r
 
     let p = Projector::open(":memory:", "test").unwrap();
     let mut next_position = 1u64;
-    apply_events(&p, &mut index_events(&idx1), &mut next_position);
+    apply_events(
+        &p,
+        &mut common::project_events(root.path().to_str().unwrap()),
+        &mut next_position,
+    );
 
     let seeds = ["alpha.rs".to_string(), "beta.rs".to_string()];
     let before = p.subgraph(&seeds, 2).unwrap();
@@ -640,38 +684,23 @@ const GONE_TEST_V2_SRC: &str = "// the test that proved vanish() was deleted\n";
 #[cfg(feature = "symbols")]
 #[test]
 fn a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    use rigger::dash::card;
-
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "gone.rs", GONE_PRODUCT_SRC);
-    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V1_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "gone.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
-
-    let baseline = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
-    let vanish = card(&baseline, "gone.rs::vanish").expect("gone.rs::vanish is a graph node");
-    assert_eq!(
-        vanish.proven_by, 1,
-        "sanity: the test proves vanish before its reference is deleted; card: {vanish:?}"
-    );
-    assert_eq!(
-        vanish.proof_evidence,
-        vec!["tests/gone_periphery.rs:3".to_string()]
+    let mut pl = Pipeline::holding(&[
+        ("gone.rs", GONE_PRODUCT_SRC),
+        ("tests/gone_periphery.rs", GONE_TEST_V1_SRC),
+    ]);
+    pl.extract(&["gone.rs", "tests/gone_periphery.rs"]);
+    assert_proven_once_by(
+        &pl.card("gone.rs", "gone.rs::vanish"),
+        "tests/gone_periphery.rs:3",
+        "sanity: the test proves vanish before its reference is deleted",
     );
 
     // The test's ONLY reference is deleted (replaced with a plain comment); the test file
     // re-extracts ALONE, its evidence set now EMPTY.
-    root_write(&root, "tests/gone_periphery.rs", GONE_TEST_V2_SRC);
-    reextract_file(&root, &p, "tests/gone_periphery.rs", &mut next_position);
+    pl.write("tests/gone_periphery.rs", GONE_TEST_V2_SRC);
+    pl.extract(&["tests/gone_periphery.rs"]);
 
-    let after = p.subgraph(&["gone.rs".to_string()], 2).unwrap();
-    let vanish_after =
-        card(&after, "gone.rs::vanish").expect("gone.rs::vanish still exists as a graph node");
+    let vanish_after = pl.card("gone.rs", "gone.rs::vanish");
     assert_eq!(
         vanish_after.proven_by, 0,
         "a deleted test reference must retract its own stale proof, not strand it forever; card: \
@@ -714,20 +743,10 @@ fn checks_heard() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
-    use rigger::dash::card;
+    let mut pl = Pipeline::holding(&[("tests/blank_helper.rs", BLANK_TESTS_DIR_SRC)]);
+    pl.extract(&["tests/blank_helper.rs"]);
 
-    let root = tempfile::tempdir().unwrap();
-    root_write(&root, "tests/blank_helper.rs", BLANK_TESTS_DIR_SRC);
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut next_position = 1u64;
-    reextract_file(&root, &p, "tests/blank_helper.rs", &mut next_position);
-
-    let blank_only = p
-        .subgraph(&["tests/blank_helper.rs".to_string()], 2)
-        .unwrap();
+    let blank_only = pl.around("tests/blank_helper.rs");
     assert!(
         blank_only.nodes.is_empty() && blank_only.edges.is_empty(),
         "a reference-free tests/-dir file's first extraction is a lone empty-boundary sentinel - \
@@ -739,22 +758,16 @@ fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_
     // An unrelated product/test pair extracted afterward, in the SAME store, must prove normally -
     // the earlier no-op sentinel left no pending_proof residue or empty-named entity for anything
     // to (mis)inherit.
-    root_write(&root, "quiet.rs", QUIET_PRODUCT_SRC);
-    root_write(&root, "tests/quiet_check.rs", QUIET_TEST_SRC);
-    reextract_file(&root, &p, "quiet.rs", &mut next_position);
-    reextract_file(&root, &p, "tests/quiet_check.rs", &mut next_position);
+    pl.write("quiet.rs", QUIET_PRODUCT_SRC);
+    pl.write("tests/quiet_check.rs", QUIET_TEST_SRC);
+    pl.extract(&["quiet.rs", "tests/quiet_check.rs"]);
 
-    let g = p.subgraph(&["quiet.rs".to_string()], 2).unwrap();
-    let heard = card(&g, "quiet.rs::heard").expect("quiet.rs::heard is a graph node");
-    assert_eq!(
-        heard.proven_by, 1,
-        "an unrelated pair extracted after the empty sentinel proves normally; card: {heard:?}"
+    assert_proven_once_by(
+        &pl.card("quiet.rs", "quiet.rs::heard"),
+        "tests/quiet_check.rs:3",
+        "an unrelated pair extracted after the empty sentinel proves normally",
     );
-    assert_eq!(
-        heard.proof_evidence,
-        vec!["tests/quiet_check.rs:3".to_string()]
-    );
-    let quiet = card(&g, "quiet.rs::quiet").expect("quiet.rs::quiet is a graph node");
+    let quiet = pl.card("quiet.rs", "quiet.rs::quiet");
     assert_eq!(
         quiet.proven_by, 0,
         "quiet is never referenced by a test; card: {quiet:?}"
@@ -762,94 +775,6 @@ fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_
 }
 
 // ---- the SERVED /api/graph?card= wire contract (both lanes) --------------------------------
-
-/// Start `serve` on a fresh ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` on a genuine socket-level failure. Mirrors
-/// `dash_kg_graph_route.rs::try_fetch_served` verbatim - the established per-file duplication
-/// convention for this class of served-route periphery test in this codebase (each `tests/*.rs`
-/// integration test compiles as its own independent crate, so the harness plumbing cannot be shared
-/// via a plain `use`). See that file's own doc for why the listener is handed to `serve_on` rather
-/// than dropped and re-bound.
-fn try_fetch_served(path: &str, graph: rigger::contextgraph::Graph) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::time::{Duration, Instant};
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    let graph_provider = {
-        let graph = graph.clone();
-        move |_instance: Option<&str>| -> rigger::contextgraph::Graph { graph.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<rigger::dash::DashInputs, String> {
-        Ok((
-            Vec::new(),
-            graph.clone(),
-            Vec::new(),
-            std::collections::HashMap::new(),
-        ))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = rigger::dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
-/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, retrying on
-/// a socket-level transient. Mirrors `dash_kg_graph_route.rs::fetch_served` verbatim.
-fn fetch_served(path: &str, graph: &rigger::contextgraph::Graph) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone()) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator). Mirrors
-/// `dash_kg_graph_route.rs::body_of` verbatim.
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
-}
 
 /// A minimal graph with one PROVEN code entity (`proven_by`/`proof_evidence` attrs already folded)
 /// and one UNPROVEN one (neither attr present) - built by hand, mirroring how the real fold leaves

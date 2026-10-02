@@ -14,32 +14,11 @@
 //! by their own criteria; here we only prove that every command constructs its backend
 //! through the one resolver, and that the resolver genuinely reaches a server.
 
-use std::path::Path;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------------------
 // Structural single-authority: the sqlite event-log constructor lives at exactly one site.
 // ---------------------------------------------------------------------------------------
-
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped. The single-authority rule
-/// governs SHIPPING code: test code legitimately opens throwaway sqlite stores (`:memory:`,
-/// temp files) directly, and must not be counted as a command's construction path.
-fn production_main_rs() -> String {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read src/main.rs");
-    strip_unit_test_module(&src)
-}
-
-/// Everything before the file's `#[cfg(test)]\nmod tests {` marker (the unit tests are the
-/// final block of `src/main.rs`, running to EOF). Falls back to the whole source when the
-/// marker is absent, so a future reshaping of the tests never makes this scan silently pass.
-fn strip_unit_test_module(src: &str) -> String {
-    match src.find("#[cfg(test)]\nmod tests {") {
-        Some(cut) => src[..cut].to_string(),
-        None => src.to_string(),
-    }
-}
 
 /// The nearest enclosing top-level function for source line `idx` (0-based): the last line
 /// at or above it that opens a top-level `fn` (column 0). The event-log construction lives in
@@ -142,69 +121,11 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`), mirrored here so a read-back of the server binds the exact
-/// `proj-<id>-run` stream a courier's write landed in.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
-/// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as
-/// the backend-agnostic contract suite does.
-fn start_kurrentdb(
-    rt: &tokio::runtime::Runtime,
-) -> Option<(
-    testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    String,
-)> {
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
-        .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-        .with_mapped_port(21134, 2113.tcp())
-        .with_env_var("KURRENTDB_INSECURE", "true")
-        .with_env_var("KURRENTDB_MEM_DB", "true")
-        .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-        .with_env_var("KURRENTDB_NODE_PORT", "2113");
-    let container = match rt.block_on(image.start()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping server-wiring test (no container runtime?): {e}");
-            return None;
-        }
-    };
-    // The readiness log line precedes gRPC accept, and the couriers these tests spawn
-    // connect eagerly with no retry - so poll the adapter's own connect until it succeeds
-    // instead of trusting a fixed grace (PR #27's CI caught a courier connecting into the
-    // gap a 2s sleep left on a slow VM). open_server carries the 60s deadline.
-    let conn = "kurrentdb://localhost:21134?tls=false".to_string();
-    drop(open_server(&conn));
-    Some((container, conn))
-}
+use common::cli::run_stream_identity;
+use common::fixtures::with_kurrentdb;
+use common::repo::production_main_rs;
 
 /// Open the server store as a namespaced port, retrying briefly while it finishes coming up
 /// (the adapter connects eagerly). Panics only after the deadline, matching the contract test.
@@ -224,12 +145,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         // A throwaway project, its own git repo (so the identity is stable), configured for the
         // server-backed store purely by the KURRENTDB_CONN environment - no per-command flag.
         let project = tempfile::tempdir().unwrap();
@@ -255,7 +171,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
                 r#"{"id":"d-server-wire","summary":"resolved through the server","governs":["src/lib.rs"],"supersedes":""}"#,
             ])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -276,7 +192,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
         );
 
         // And the decision is readable back FROM the server, in the project's own stream.
-        let backend = open_server(&conn);
+        let backend = open_server(conn);
         let store = Namespaced::new(&backend, &run_stream_identity(root));
         let events = store
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -289,12 +205,7 @@ fn a_courier_in_a_project_configured_for_the_server_resolves_the_server_store() 
              store (found {} event(s))",
             events.len()
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }
 
 #[test]
@@ -302,23 +213,13 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    with_kurrentdb(|conn| {
         // A main repo with one commit (so `git worktree add` has a base), configured for the
         // server-backed store purely by the KURRENTDB_CONN environment - no per-command flag.
         let project = tempfile::tempdir().unwrap();
         let root = project.path();
         let git = |args: &[&str]| {
-            let ok = Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+            let ok = run_git(root, args).status.success();
             assert!(ok, "git {args:?} must succeed");
         };
         git(&["init", "-q"]);
@@ -341,12 +242,9 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
         // OWNING root via `main_repo_root` (whose `git-common-dir` resolves to the main repo).
         let nested = root.join(".rigger").join("tmp").join("rigger-wt-nested");
         std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
-        let ok = Command::new("git")
-            .args(["worktree", "add", "-q", nested.to_str().unwrap()])
-            .current_dir(root)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        let ok = run_git(root, &["worktree", "add", "-q", nested.to_str().unwrap()])
+            .status
+            .success();
         assert!(ok, "git worktree add (nested) must succeed");
 
         // A bare courier - `rigger emit`, no `--eventstore` flag - run FROM the nested worktree,
@@ -361,7 +259,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
                 r#"{"id":"d-nested-wt","summary":"filed under the owning root","governs":["src/lib.rs"],"supersedes":""}"#,
             ])
             .current_dir(&nested)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -383,7 +281,7 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             "a server-configured courier must not create a local events.db in the worktree"
         );
 
-        let backend = open_server(&conn);
+        let backend = open_server(conn);
 
         // The event landed in the OWNING ROOT's run stream - the identity the conductor reads.
         let root_id = run_stream_identity(root);
@@ -420,10 +318,5 @@ fn a_server_courier_in_a_nested_worktree_files_under_the_owning_root_identity() 
             "the courier must NOT misfile under the worktree identity {wt_id:?} - landing there is \
              the `proj-<worktree>-run` state-fracture the owning-root binding closes"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }

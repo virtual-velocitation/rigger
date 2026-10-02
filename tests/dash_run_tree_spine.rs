@@ -28,11 +28,16 @@
 //! BOTH the default and the `--no-default-features` lane - none is feature-gated - so these guard
 //! the boundary in both lanes.
 
+mod common;
+
+use rigger::spawn::SpawnEvent;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::net::TcpListener;
 
+use common::fixtures::ev;
+use common::fixtures::positioned;
+use common::served::connect_with_retry;
 use rigger::conductor::META_REPLAY_KEY;
 use rigger::contextgraph::{Graph, TYPE_GATE_VERDICT};
 use rigger::dash::{self, DashInputs};
@@ -46,20 +51,6 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 // Fixtures: build the exact serialized events a real run folds, over the public API only.
 // ---------------------------------------------------------------------------
-
-/// One event of `type_` with a JSON body, positioned by the caller via [`positioned`].
-fn ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
-}
-
-/// Stamp 1-based stream positions the way the store would, so the snapshot's cursor and any
-/// position-ordered fold see a realistic monotonic stream.
-fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-    for (i, e) in events.iter_mut().enumerate() {
-        e.position = (i + 1) as u64;
-    }
-    events
-}
 
 /// A recorded SUCCESS result answering a spawn (so its agent leaf reads `done`, not `running`).
 fn ok_result(req: &SpawnRequest) -> Event {
@@ -120,6 +111,21 @@ fn state_json(events: &[Event], progress: &[Event], liveness: &HashMap<String, u
     serde_json::to_value(&state).expect("the state view serializes")
 }
 
+/// The `u30-c1` implement battery's five gate verdicts at `attempt`, in run order, with only
+/// `failing` (if any) red - `style` always passes LAST, the trailing pass a last-write-wins fold
+/// would mistake for the unit's outcome.
+fn implement_battery(attempt: u32, failing: Option<&str>) -> Vec<Event> {
+    ["fmt", "clippy", "build", "test", "style"]
+        .into_iter()
+        .map(|gate| gate_verdict("u30-c1", gate, attempt, Some(gate) != failing))
+        .collect()
+}
+
+/// The run tree's first spec root rendered from `events`, with no progress or liveness.
+fn spec_root(events: &[Event]) -> Value {
+    state_json(events, &[], &HashMap::new())["tree"][0].clone()
+}
+
 /// The child node labeled `label` under `node` (panics naming the miss, so a broken spine fails
 /// loudly rather than silently navigating to `null`).
 fn child<'a>(node: &'a Value, label: &str) -> &'a Value {
@@ -142,8 +148,8 @@ fn child<'a>(node: &'a Value, label: &str) -> &'a Value {
 /// in-process builder the inside-out test exercises.
 #[test]
 fn run_tree_spine_crosses_the_http_state_boundary() {
-    let a_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
-    let b_impl = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
+    let a_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
+    let b_impl = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "impl B");
 
     // Unit A (u30-c1): fully integrated. Unit B (u30-c2): implementer parked with NO result yet.
     let events = positioned(vec![
@@ -276,19 +282,6 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     );
 }
 
-/// Connect to `addr`, retrying briefly while the detached `serve_on` thread reaches its first
-/// accept. The port is already bound when this is called, so the retry only covers a scheduler
-/// stall, never a lost port.
-fn connect_with_retry(addr: SocketAddr) -> TcpStream {
-    for _ in 0..200 {
-        if let Ok(s) = TcpStream::connect(addr) {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("the dash server never became reachable on {addr}");
-}
-
 // ---------------------------------------------------------------------------
 // 2. Contract: the `doing` field's skip-when-absent serialization shape.
 // ---------------------------------------------------------------------------
@@ -299,8 +292,8 @@ fn connect_with_retry(addr: SocketAddr) -> TcpStream {
 /// reported line omits the key entirely (absent, never a JSON `null`).
 #[test]
 fn tree_node_doing_is_omitted_when_absent_and_carried_when_live() {
-    let loud = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "loud");
-    let quiet = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "quiet");
+    let loud = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "loud");
+    let quiet = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "quiet");
 
     // Both implementers are parked (running); only `loud` has a live progress report.
     let events = positioned(vec![
@@ -351,7 +344,7 @@ fn tree_node_doing_is_omitted_when_absent_and_carried_when_live() {
 /// this guards the `errored` arm of the projection and the `failed` branch of the status rollup.
 #[test]
 fn run_tree_reads_a_failed_agent_and_rolls_failure_up() {
-    let a_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
+    let a_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "impl A");
     let failed = SpawnResult::failed(a_impl.id.clone(), "the build did not compile")
         .to_event()
         .unwrap();
@@ -362,8 +355,7 @@ fn run_tree_reads_a_failed_agent_and_rolls_failure_up() {
         failed,
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
     let implement = child(child(spec, "u30-c1"), "Implement");
 
     assert_eq!(
@@ -396,7 +388,7 @@ fn run_tree_reads_a_failed_agent_and_rolls_failure_up() {
 /// failure at Implement and shows no phantom Gates line.
 #[test]
 fn a_crashed_implementer_renders_no_gates_node() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
         impl0.to_event().unwrap(),
@@ -405,14 +397,21 @@ fn a_crashed_implementer_renders_no_gates_node() {
         failed_result(&impl0.id, "the implementer process exited non-zero"),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
+    let spec = spec_root(&events);
+    let unit = child(&spec, "u30-c1");
 
     // The Implement stage carries the crash; the Gates stage is ABSENT (no gate ran or can run).
+    assert_crash_at_implement_and_no_gates(unit, "u30-c1");
+}
+
+/// `unit_id`'s crashed implementer surfaces its failure at the Implement stage, and the unit
+/// renders NO Gates node: no gate ran or can run without a successful implementer, so the spine
+/// cannot fabricate a Gates line (least of all a `passed` one) for gates that never ran.
+fn assert_crash_at_implement_and_no_gates(unit: &Value, unit_id: &str) {
     assert_eq!(
         child(unit, "Implement")["status"],
         "failed",
-        "the crashed implementer surfaces its failure at the Implement stage"
+        "{unit_id}'s crashed implementer surfaces its failure at the Implement stage"
     );
     let stage_labels: Vec<&str> = unit["children"]
         .as_array()
@@ -422,7 +421,7 @@ fn a_crashed_implementer_renders_no_gates_node() {
         .collect();
     assert!(
         !stage_labels.contains(&"Gates"),
-        "a crashed implementer renders no Gates node (no gate ran without a successful implementer): {stage_labels:?}"
+        "{unit_id} renders no Gates node - no gate ran without a successful implementer: {stage_labels:?}"
     );
 }
 
@@ -480,8 +479,9 @@ fn run_tree_groups_units_by_spec_and_falls_back_to_a_generic_bucket() {
 /// this a still-hung or hung-then-recovered agent would render a FALSE failure and roll it up.
 #[test]
 fn a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done() {
-    let recovered = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "recovered");
-    let still_hung = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "still hung");
+    let recovered = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "recovered");
+    let still_hung =
+        common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "still hung");
 
     // u30-c1: a hung agent's liveness fault, THEN a real success answers the same spawn.
     // u30-c2: a hung agent with ONLY the liveness fault - re-parked, awaiting a real result.
@@ -495,8 +495,7 @@ fn a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done() {
         liveness_fault(&still_hung.id),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
 
     // (a) The recovered agent: its newest result wins, so it reads done - not the stale fault.
     let recovered_agent = child(
@@ -539,7 +538,7 @@ fn a_re_parked_liveness_fault_reads_running_and_a_superseding_ok_reads_done() {
 /// `building` forever). None of these arms is driven by the inside-out test.
 #[test]
 fn an_escalated_unit_renders_gates_failed_and_surfaces_at_the_spec_root() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -552,8 +551,7 @@ fn an_escalated_unit_renders_gates_failed_and_surfaces_at_the_spec_root() {
         ev("UnitEscalated", r#"{"id":"u30-c1"}"#),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
 
     // The unit node carries its terminal live status.
     let unit = child(spec, "u30-c1");
@@ -589,27 +587,29 @@ fn an_escalated_unit_renders_gates_failed_and_surfaces_at_the_spec_root() {
 /// rolls up to the spec root. This fixture makes the mask impossible to re-green.
 #[test]
 fn an_escalated_units_gate_failure_is_not_masked_by_a_trailing_passing_gate() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
 
-    let events = positioned(vec![
-        ev("UnitStarted", r#"{"id":"u30-c1"}"#),
-        impl0.to_event().unwrap(),
-        // The implementer SUCCEEDED (it wrote code); the gate battery is what failed.
-        ok_result(&impl0),
-        // The real 5-gate implement battery at attempt 0, in run order: `test` FAILS, then
-        // `style` passes LAST - the trailing pass a last-write-wins fold would mistake for the
-        // unit's outcome.
-        gate_verdict("u30-c1", "fmt", 0, true),
-        gate_verdict("u30-c1", "clippy", 0, true),
-        gate_verdict("u30-c1", "build", 0, true),
-        gate_verdict("u30-c1", "test", 0, false),
-        gate_verdict("u30-c1", "style", 0, true),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"red"}"#),
-        ev("UnitEscalated", r#"{"id":"u30-c1"}"#),
-    ]);
+    let events = positioned(
+        [
+            vec![
+                ev("UnitStarted", r#"{"id":"u30-c1"}"#),
+                impl0.to_event().unwrap(),
+                // The implementer SUCCEEDED (it wrote code); the gate battery is what failed.
+                ok_result(&impl0),
+                // The real 5-gate implement battery at attempt 0, in run order: `test` FAILS, then
+                // `style` passes LAST - the trailing pass a last-write-wins fold would mistake for the
+                // unit's outcome.
+            ],
+            implement_battery(0, Some("test")),
+            vec![
+                ev("UnitStatus", r#"{"id":"u30-c1","status":"red"}"#),
+                ev("UnitEscalated", r#"{"id":"u30-c1"}"#),
+            ],
+        ]
+        .concat(),
+    );
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
     let unit = child(spec, "u30-c1");
 
     // The Gates node reads the AND across the attempt's gates: the `test` failure is NOT masked by
@@ -646,8 +646,8 @@ fn an_escalated_units_gate_failure_is_not_masked_by_a_trailing_passing_gate() {
 /// phantom `Gates:passed` returns, reddening this test.
 #[test]
 fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
-    let esc_impl = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "crash");
-    let fail_impl = SpawnRequest::new("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "crash");
+    let esc_impl = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "crash");
+    let fail_impl = common::spawn_request("u30-c2", "implement", ROLE_IMPLEMENTER, 0, "crash");
 
     let events = positioned(vec![
         // u30-c1: crash-to-exhaustion. The implementer crashed (an error result), the gate block was
@@ -667,8 +667,7 @@ fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
         ev("UnitFailed", r#"{"id":"u30-c2","attempts":1}"#),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
 
     // Both off-linear terminals: each carries its REAL live status and renders NO phantom Gates line.
     for (unit_id, want_status) in [("u30-c1", "escalated"), ("u30-c2", "reject-recurrence")] {
@@ -677,24 +676,7 @@ fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
             unit["status"], want_status,
             "{unit_id} carries its real off-linear status, not a masked one"
         );
-        // The crash surfaces at the Implement stage...
-        assert_eq!(
-            child(unit, "Implement")["status"],
-            "failed",
-            "{unit_id}'s crashed implementer surfaces its failure at the Implement stage"
-        );
-        // ...and there is NO Gates node: no gate ran (crashed implementer, no recorded verdict), so
-        // the spine cannot fabricate a `passed` for gates that never ran.
-        let stage_labels: Vec<&str> = unit["children"]
-            .as_array()
-            .expect("the unit has a children array")
-            .iter()
-            .map(|c| c["label"].as_str().unwrap())
-            .collect();
-        assert!(
-            !stage_labels.contains(&"Gates"),
-            "{unit_id} (off-linear, no recorded verdict) renders NO Gates node - no phantom passed: {stage_labels:?}"
-        );
+        assert_crash_at_implement_and_no_gates(unit, unit_id);
     }
 }
 
@@ -708,38 +690,38 @@ fn an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed() {
 /// the masked-failure test guards `Some(false)`, this guards the latest-attempt `Some(true)`.
 #[test]
 fn a_regated_green_unit_renders_gates_passed_despite_an_earlier_failed_attempt() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let impl1 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl1 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
 
-    let events = positioned(vec![
-        ev("UnitStarted", r#"{"id":"u30-c1"}"#),
-        // Attempt 0: the implementer wrote code, but the gate battery FAILED on `test` (with
-        // `style` passing LAST at the same attempt), so the unit went red.
-        impl0.to_event().unwrap(),
-        ok_result(&impl0),
-        gate_verdict("u30-c1", "fmt", 0, true),
-        gate_verdict("u30-c1", "clippy", 0, true),
-        gate_verdict("u30-c1", "build", 0, true),
-        gate_verdict("u30-c1", "test", 0, false),
-        gate_verdict("u30-c1", "style", 0, true),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"red"}"#),
-        // Attempt 1: the retried implementer succeeded and the WHOLE battery passed, so the unit
-        // re-gated green and integrated. The earlier attempt's red is a distinct, superseded run.
-        impl1.to_event().unwrap(),
-        ok_result(&impl1),
-        gate_verdict("u30-c1", "fmt", 1, true),
-        gate_verdict("u30-c1", "clippy", 1, true),
-        gate_verdict("u30-c1", "build", 1, true),
-        gate_verdict("u30-c1", "test", 1, true),
-        gate_verdict("u30-c1", "style", 1, true),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"green"}"#),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"verified"}"#),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"reviewed"}"#),
-        ev("UnitIntegrated", r#"{"id":"u30-c1","commit":"def"}"#),
-    ]);
+    let events = positioned(
+        [
+            vec![
+                ev("UnitStarted", r#"{"id":"u30-c1"}"#),
+                // Attempt 0: the implementer wrote code, but the gate battery FAILED on `test` (with
+                // `style` passing LAST at the same attempt), so the unit went red.
+                impl0.to_event().unwrap(),
+                ok_result(&impl0),
+            ],
+            implement_battery(0, Some("test")),
+            vec![
+                ev("UnitStatus", r#"{"id":"u30-c1","status":"red"}"#),
+                // Attempt 1: the retried implementer succeeded and the WHOLE battery passed, so the unit
+                // re-gated green and integrated. The earlier attempt's red is a distinct, superseded run.
+                impl1.to_event().unwrap(),
+                ok_result(&impl1),
+            ],
+            implement_battery(1, None),
+            vec![
+                ev("UnitStatus", r#"{"id":"u30-c1","status":"green"}"#),
+                ev("UnitStatus", r#"{"id":"u30-c1","status":"verified"}"#),
+                ev("UnitStatus", r#"{"id":"u30-c1","status":"reviewed"}"#),
+                ev("UnitIntegrated", r#"{"id":"u30-c1","commit":"def"}"#),
+            ],
+        ]
+        .concat(),
+    );
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let spec = &v["tree"][0];
+    let spec = &spec_root(&events);
     let unit = child(spec, "u30-c1");
 
     // The Gates node reads the LATEST attempt's AND: attempt 1's all-green battery, NOT attempt 0's
@@ -773,8 +755,8 @@ fn a_regated_green_unit_renders_gates_passed_despite_an_earlier_failed_attempt()
 /// Gates node must read the RECORDED gate verdict, not `ledger::Status`.
 #[test]
 fn a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_the_reject() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let adj0 = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adjudicator");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let adj0 = common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adjudicator");
 
     let events = positioned(vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
@@ -790,8 +772,8 @@ fn a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_t
         ev("UnitFailed", r#"{"id":"u30-c1","attempts":1}"#),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
+    let spec = spec_root(&events);
+    let unit = child(&spec, "u30-c1");
 
     // The Gates node reads the REAL (passing) gate outcome - a review reject is not a gate fail.
     let gates = child(unit, "Gates");
@@ -811,89 +793,63 @@ fn a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_t
     );
 }
 
-/// The BETWEEN-STEPS window: an implementer RESULT is recorded but the green `UnitStatus` has not
-/// been emitted yet, so the unit is still `grounding` and NO gate has run (no recorded verdict).
-/// The Gates node renders (the implementer answered), but the gates have not run - so it must NOT
-/// read `failed`. Sourcing it from ledger status (`Grounding`) fabricated a gate failure before
-/// any gate ran; sourcing it from the recorded verdict (absent) reads it as still running.
-#[test]
-fn a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed() {
-    use rigger::ledger;
-
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let events = positioned(vec![
+/// A unit whose implementer answered and whose ledger then advanced through `statuses`, with NO
+/// gate verdict recorded in the slice: the ledger folds it to `ledger_status` (the precondition)
+/// and its Gates node renders `gates_status` - `why` naming the case.
+fn assert_verdictless_gates(statuses: &[&str], ledger_status: &str, gates_status: &str, why: &str) {
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let mut events = vec![
         ev("UnitStarted", r#"{"id":"u30-c1"}"#),
         impl0.to_event().unwrap(),
-        // The implementer finished; gates have not run yet, so no gate verdict is recorded.
         ok_result(&impl0),
-    ]);
+    ];
+    for status in statuses {
+        events.push(ev(
+            "UnitStatus",
+            &format!(r#"{{"id":"u30-c1","status":"{status}"}}"#),
+        ));
+    }
+    let events = positioned(events);
 
-    // Precondition: the unit is still grounding (no green UnitStatus emitted yet).
-    let run = ledger::project(&events).expect("the run projects");
+    let run = rigger::ledger::project(&events).expect("the run projects");
     assert_eq!(
         run.units["u30-c1"].status.as_str(),
-        "grounding",
-        "precondition: the implementer answered but the unit has not reached green"
+        ledger_status,
+        "precondition: no gate verdict is recorded in the slice"
     );
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
-    let gates = child(unit, "Gates");
-    assert_ne!(
-        gates["status"], "failed",
-        "a pre-gate unit (implementer done, no gate run yet) must not fabricate Gates:failed"
-    );
-    assert_eq!(
-        gates["status"], "running",
-        "with no recorded gate verdict the Gates node reads running, never a failure before gates ran"
-    );
+    let spec = spec_root(&events);
+    let gates = child(child(&spec, "u30-c1"), "Gates");
+    assert_eq!(gates["status"], gates_status, "{why}");
 }
 
-/// The OTHER `None` (no recorded verdict) sub-case, distinct from the pre-gate window above: a
-/// unit the ledger already advanced to green or beyond - which it does ONLY after its gates PASS -
-/// whose event slice carries NO recorded gate verdict (a windowed / pruned slice, or a log from
-/// before the verdict was recorded). Its gates are ALREADY CLEARED, so the Gates node must render
-/// `passed` via the rank fallback, never regress to `running` as if the gates were still in flight
-/// (nor `failed`). This pins the `None if rank >= Green => "passed"` arm: dropping it would render
-/// every verdict-less integrated unit as Gates:running, misreporting a fully-landed unit as one
-/// whose gates never finished - and every sibling gate-outcome test still passes without it.
-#[test]
-fn a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed() {
-    use rigger::ledger;
-
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let events = positioned(vec![
-        ev("UnitStarted", r#"{"id":"u30-c1"}"#),
-        impl0.to_event().unwrap(),
-        ok_result(&impl0),
-        // The unit's gates cleared and it landed - but no gate verdict is present in this slice.
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"green"}"#),
-        ev("UnitStatus", r#"{"id":"u30-c1","status":"integrated"}"#),
-    ]);
-
-    // Precondition: the unit is integrated (rank >= Green) and NO gate verdict is recorded, so
-    // `recorded_gate_outcome` is `None` and only the rank fallback can decide passed-vs-running.
-    let run = ledger::project(&events).expect("the run projects");
-    assert_eq!(
-        run.units["u30-c1"].status.as_str(),
+rigger::test_cases! {
+    /// The BETWEEN-STEPS window: an implementer RESULT is recorded but the green `UnitStatus` has not
+    /// been emitted yet, so the unit is still `grounding` and NO gate has run (no recorded verdict).
+    /// The Gates node renders (the implementer answered), but the gates have not run - so it must NOT
+    /// read `failed`. Sourcing it from ledger status (`Grounding`) fabricated a gate failure before
+    /// any gate ran; sourcing it from the recorded verdict (absent) reads it as still running.
+    // The implementer finished; gates have not run yet, so no gate verdict is recorded.
+    a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed: assert_verdictless_gates(
+        &[],
+        "grounding",
+        "running",
+        "with no recorded gate verdict the Gates node reads running, never a failure before gates ran",
+    );
+    /// The OTHER `None` (no recorded verdict) sub-case, distinct from the pre-gate window above: a
+    /// unit the ledger already advanced to green or beyond - which it does ONLY after its gates PASS -
+    /// whose event slice carries NO recorded gate verdict (a windowed / pruned slice, or a log from
+    /// before the verdict was recorded). Its gates are ALREADY CLEARED, so the Gates node must render
+    /// `passed` via the rank fallback, never regress to `running` as if the gates were still in flight
+    /// (nor `failed`). This pins the `None if rank >= Green => "passed"` arm: dropping it would render
+    /// every verdict-less integrated unit as Gates:running, misreporting a fully-landed unit as one
+    /// whose gates never finished - and every sibling gate-outcome test still passes without it.
+    // The unit's gates cleared and it landed - but no gate verdict is present in this slice.
+    a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed: assert_verdictless_gates(
+        &["green", "integrated"],
         "integrated",
-        "precondition: the unit landed (gates cleared) with no recorded verdict in the slice"
-    );
-
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
-    let gates = child(unit, "Gates");
-    assert_ne!(
-        gates["status"], "running",
-        "a gates-cleared (integrated) unit must not regress to running as if its gates never finished"
-    );
-    assert_ne!(
-        gates["status"], "failed",
-        "an integrated unit whose gates cleared has no failure to fabricate"
-    );
-    assert_eq!(
-        gates["status"], "passed",
-        "a green+ unit with no recorded verdict renders Gates:passed via the gates-already-cleared fallback"
+        "passed",
+        "a green+ unit with no recorded verdict renders Gates:passed via the gates-already-cleared fallback",
     );
 }
 
@@ -907,13 +863,14 @@ fn a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed() {
 /// DISTINCT sibling (`attempt#0 retry2`), never collapsing into the original's identical label.
 #[test]
 fn multi_attempt_and_gap18_retry_spawns_render_as_distinct_sibling_agents() {
-    let impl0 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
-    let impl1 = SpawnRequest::new("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
+    let impl0 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 0, "attempt 0");
+    let impl1 = common::spawn_request("u30-c1", "implement", ROLE_IMPLEMENTER, 1, "attempt 1");
 
     // A degenerate adjudicator result (empty) triggers a Gap-18 respawn under a ~retry2 id that
     // shares the original's attempt ordinal 0.
-    let adj0 = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj original");
-    let mut adj0_retry = SpawnRequest::new("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj respawn");
+    let adj0 = common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj original");
+    let mut adj0_retry =
+        common::spawn_request("u30-c1", "review", ROLE_ADJUDICATOR, 0, "adj respawn");
     adj0_retry.id = spawn_retry_id("u30-c1", ROLE_ADJUDICATOR, 0, 2);
     assert_eq!(
         adj0_retry.id, "u30-c1/adjudicator#0~retry2",
@@ -932,8 +889,8 @@ fn multi_attempt_and_gap18_retry_spawns_render_as_distinct_sibling_agents() {
         ok_result(&adj0_retry),
     ]);
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
+    let spec = spec_root(&events);
+    let unit = child(&spec, "u30-c1");
 
     // Two implementer attempts: two distinct sibling agents in ordinal order.
     let impl_role = child(child(unit, "Implement"), "implementer");
@@ -1004,8 +961,8 @@ fn an_in_flight_units_node_status_is_the_shared_blocker_classification() {
         "precondition: the shared classifier tags a verified unit reviewing"
     );
 
-    let v = state_json(&events, &[], &HashMap::new());
-    let unit = child(&v["tree"][0], "u30-c1");
+    let spec = spec_root(&events);
+    let unit = child(&spec, "u30-c1");
     assert_eq!(
         unit["status"], kind,
         "an in-flight unit's node status IS the shared blocker kind_tag, reused not re-derived"

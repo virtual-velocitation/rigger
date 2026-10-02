@@ -19,65 +19,18 @@
 //! ambient/real registry directory completely untouched, while the courier's real work (and its
 //! best-effort, warn-only degrade contract) is unaffected.
 
-use std::path::Path;
-use std::process::{Command, Output};
-
 use rigger::gate::STORE_FENCE_ENV;
-use rigger::registry::{self, Instance};
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::temp_store_project;
+use common::fixtures::registry_entries;
 use common::RestoreEnvVars;
-
-/// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
-/// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
-/// to fabricate one from a cwd with no existing store (spec 05).
-fn courier_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    std::fs::File::create(rigger_dir.join("events.db")).expect("seed an initialized event log");
-    dir
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// mirrors the read helper in the sibling periphery suites (each periphery suite owns its own
-/// small fixture helpers rather than sharing test-only code across files).
-fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
-}
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// THE REGRESSION: a courier invoked exactly as `gate::ExecRunner::run` invokes one of a unit-
 /// worktree gate's own spawned test binaries - `STORE_FENCE_ENV` pinned to a scratch dir the
@@ -87,7 +40,7 @@ fn assert_ok(out: &Output, args: &[&str]) {
 /// (`src/main.rs` lines ~6599/6655/8231).
 #[test]
 fn a_fenced_courier_never_writes_the_ambient_registry() {
-    let project = courier_project();
+    let project = temp_store_project();
     let root = project.path();
     // The simulated REAL, machine-global state home - what `default_dir()` would resolve to
     // absent any fence. Never pre-created: proves the fenced call does not even create it.
@@ -140,7 +93,7 @@ fn a_fenced_courier_never_writes_the_ambient_registry() {
 /// at all (e.g. a homeless environment).
 #[test]
 fn an_unfenced_courier_against_the_same_fixture_does_write_the_ambient_registry() {
-    let project = courier_project();
+    let project = temp_store_project();
     let root = project.path();
     let ambient_state = tempfile::tempdir().expect("a temp ambient XDG_STATE_HOME");
 
@@ -179,7 +132,7 @@ fn an_unfenced_courier_against_the_same_fixture_does_write_the_ambient_registry(
 #[test]
 #[serial_test::serial(kurrentdb_conn_env)]
 fn an_ambient_kurrentdb_conn_never_leaks_into_an_unfenced_courier() {
-    let project = courier_project();
+    let project = temp_store_project();
     let root = project.path();
     let ambient_state = tempfile::tempdir().expect("a temp ambient XDG_STATE_HOME");
 

@@ -15,7 +15,7 @@ byte-identical graph and index.
 
 ## Design
 
-### 1. Parallel parse, ordered emit, batched fold (`src/ingest.rs`, the code-ingest fold)
+### 1. Parallel parse, ordered emit, batched fold (`crates/rigger-grounder/src/ingest.rs`, the code-ingest fold)
 
 The walk currently parses, emits, and folds one file at a time, one event at a time. Split the
 pipeline:
@@ -42,7 +42,7 @@ The grounding index's freshen must re-embed a chunk ONLY when that chunk's CONTE
 - The existing behavior - `reindex` re-embeds exactly the named files; the freshen never double-embeds
   them - is preserved.
 
-### 3. Scope the walk to the project (`src/ingest.rs` - and this is de-noise, not just speed)
+### 3. Scope the walk to the project (`crates/rigger-grounder/src/ingest.rs` - and this is de-noise, not just speed)
 
 The walk today has NO exclusions: it descends into VCS internals, rigger's own runtime directory, tool
 caches, and build outputs, and it can escape the repository root through parent-relative paths - the

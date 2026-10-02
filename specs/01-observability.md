@@ -18,7 +18,7 @@ The projection pattern already exists twice - `ledger::project` (folds run event
 
 Add a `metrics` projection and a `rigger stats` CLI command that prints it.
 
-- **New module `src/metrics.rs`** (registered in `lib.rs` next to `ledger`). It defines a `Metrics` struct and a `pub fn project(events: &[Event]) -> Metrics` that folds an ordered event slice, mirroring `ledger::project`. It reuses the event-type constants from `ledger` and `contextgraph` (e.g. `ledger::TYPE_UNIT_STARTED`, `contextgraph::TYPE_GATE_VERDICT`); it does not re-declare them.
+- **New module `crates/rigger-domain/src/metrics.rs`** (registered in `lib.rs` next to `ledger`). It defines a `Metrics` struct and a `pub fn project(events: &[Event]) -> Metrics` that folds an ordered event slice, mirroring `ledger::project`. It reuses the event-type constants from `ledger` and `contextgraph` (e.g. `ledger::TYPE_UNIT_STARTED`, `contextgraph::TYPE_GATE_VERDICT`); it does not re-declare them.
 - **Metrics computed** (all derivable from the named events):
   - **First-pass yield** - the count and percentage of units that reached `Integrated` with zero `UnitFailed` events for that unit id (a clean first pass), over total units started.
   - **Per-gate remediation counts** - per `gate` id from `GateVerdict`, the number of `pass:true` and `pass:false` verdicts, so a gate that fails repeatedly before passing is visible (gate noise). The artifact-tagged `GateVerdict`s emitted at integrate time (those carrying an `artifact` field) are excluded so the count reflects real gate runs, not the GATED_BY bookkeeping.

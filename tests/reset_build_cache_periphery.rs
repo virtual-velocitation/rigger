@@ -30,61 +30,23 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::cli::run_rigger;
+use common::cli::temp_store_project;
+use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+/// The shared gate build cache's entry name under the default scratch root.
+const SHARED_CACHE: &str = "cargo-target";
 
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
+/// The shared cache's guard lock file's entry name under the default scratch root.
+const CACHE_GUARD: &str = "cargo-target.lock";
 
-/// Seed an initialized, otherwise-empty `.rigger/events.db`, standing in for the store a prior
-/// `rigger run`/`step` would have created (an empty file is a valid empty SQLite database;
-/// `Store::open` adds the schema on first open). `reset --build-cache` needs a resolvable store
-/// only to anchor the scratch root at the SAME repo root every other scratch-touching command
-/// uses - it never reads or writes a single event.
-fn seed_store(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::File::create(event_log(root)).unwrap();
-}
-
-/// The shared gate build cache's resolved path for a `temp_project()` with no `defaults.workdir`
-/// override: `<default scratch root>/cargo-target` (spec 89, criterion 2 - the default
-/// scratch root itself no longer nests inside the repo's own `.rigger`; see
-/// [`common::default_scratch_root`]).
-fn shared_cache_dir(root: &Path) -> PathBuf {
-    common::default_scratch_root(root).join("cargo-target")
-}
-
-fn guard_path(root: &Path) -> PathBuf {
-    common::default_scratch_root(root).join("cargo-target.lock")
-}
-
-fn write_file(path: &Path, bytes: &[u8]) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, bytes).unwrap();
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
+/// `entry`'s resolved path under the default scratch root of a `temp_project()` with no
+/// `defaults.workdir` override (spec 89, criterion 2 - the default scratch root itself no
+/// longer nests inside the repo's own `.rigger`; see [`common::default_scratch_root`]).
+fn scratch_entry(root: &Path, entry: &str) -> PathBuf {
+    common::default_scratch_root(root).join(entry)
 }
 
 /// Total bytes of every regular file under `path`, recursively (a missing path sizes to 0) -
@@ -111,10 +73,9 @@ fn dir_bytes(path: &Path) -> u64 {
 
 #[test]
 fn reset_build_cache_deletes_a_real_populated_cache_and_reports_its_bytes() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 5_000]);
     write_file(&cache.join("debug").join("b.rlib"), &[0u8; 2_500]);
     let bytes = dir_bytes(&cache);
@@ -140,9 +101,8 @@ fn reset_build_cache_deletes_a_real_populated_cache_and_reports_its_bytes() {
 
 #[test]
 fn reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     // No cache ever created at all.
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
@@ -170,10 +130,12 @@ fn reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_any
 
 #[test]
 fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    write_file(&shared_cache_dir(root).join("x.rlib"), &[0u8; 10]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("x.rlib"),
+        &[0u8; 10],
+    );
     let (out, err, ok) = run_rigger(root, &["reset", "--runs", "--build-cache", "--derived"]);
     assert!(
         ok,
@@ -184,13 +146,16 @@ fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
         "each mode's own report line must appear: {out:?}"
     );
     assert!(
-        !shared_cache_dir(root).exists(),
+        !scratch_entry(root, SHARED_CACHE).exists(),
         "the composed call must still reclaim the cache"
     );
 
     // The reverse order, against a freshly re-seeded cache, must succeed identically -
     // composition is order-independent.
-    write_file(&shared_cache_dir(root).join("y.rlib"), &[0u8; 10]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("y.rlib"),
+        &[0u8; 10],
+    );
     let (_out, err, ok) = run_rigger(root, &["reset", "--build-cache", "--runs"]);
     assert!(
         ok,
@@ -200,9 +165,8 @@ fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
 
 #[test]
 fn reset_build_cache_flag_is_registered_and_rejects_a_duplicate() {
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
 
     let (_out, err, ok) = run_rigger(root, &["reset", "--build-cache", "--build-cache"]);
     assert!(!ok, "a duplicate --build-cache must be refused");
@@ -220,10 +184,9 @@ fn reset_build_cache_is_not_dropped_when_composed_with_derived_on_a_server_backe
     // only its own accumulation. Selects the server backend the same way an operator would
     // (KURRENTDB_CONN alone, rung 2 of the store-selection precedence) - unreachable is
     // fine, since `--build-cache` never opens the store at all.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("x.rlib"), &[0u8; 16]);
 
     let mut cmd = common::rigger_courier();
@@ -266,12 +229,11 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     // for a build's duration - `gate::ExecRunner::run`'s own shape) with a real external
     // `flock -s`, then run the real compiled binary against the identical guard path it
     // independently derives.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
-    let guard = guard_path(root);
+    let guard = scratch_entry(root, CACHE_GUARD);
     std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
     std::fs::write(&guard, b"").unwrap();
 
@@ -351,12 +313,11 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // trailing `sh -c "singlecommand"`). Killing ONLY the orchestrator's own pid
     // (`Child::kill`, which signals that one pid, never a process group) must leave the
     // backgrounded flock/sh chain alive and STILL holding the guard.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
-    let guard = guard_path(root);
+    let guard = scratch_entry(root, CACHE_GUARD);
     std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
 
     let markers = tempfile::tempdir().expect("tempdir for markers");
@@ -457,9 +418,8 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
     // read_scratch_workdir` exists specifically so `reset --build-cache` tracks a configured
     // `defaults.workdir` - prove it end to end through the real binary, not merely the
     // lib-level contract already pinned in tests/scratch_workdir_config.rs.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
     let scratch = tempfile::tempdir().expect("create a separate configured scratch root");
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
@@ -470,7 +430,10 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
     // A decoy at the DEFAULT (unconfigured) location: present so that a bug which ignores
     // the configured workdir and falls back to the default would still find something to
     // reclaim, silently masking the divergence instead of surfacing a mismatched byte count.
-    write_file(&shared_cache_dir(root).join("decoy.bin"), &[0u8; 999]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("decoy.bin"),
+        &[0u8; 999],
+    );
     // The real cache, at the CONFIGURED scratch root - a sibling of `scratch`, never a
     // subdirectory of the project root at all.
     let real_cache = scratch.path().join("cargo-target");
@@ -490,7 +453,7 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
         "the cache at the configured scratch root must actually be reclaimed: {real_cache:?}"
     );
     assert!(
-        shared_cache_dir(root).join("decoy.bin").exists(),
+        scratch_entry(root, SHARED_CACHE).join("decoy.bin").exists(),
         "the default-path decoy must be left completely untouched - reset must resolve the \
          CONFIGURED workdir, never silently fall back to the project-relative default"
     );
@@ -524,10 +487,9 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
     // proving no lock was ever taken - AND the gate command's own `CARGO_TARGET_DIR` must never
     // have equaled `build_cache_dir` in the first place, proving a real build was never pointed
     // at the directory the concurrent reclaim just freely reaped out from under it.
-    let project = temp_project();
+    let project = temp_store_project();
     let root = project.path();
-    seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("preexisting.rlib"), &[0u8; 64]);
 
     // A guard path under a directory that is never created: `build_cache_guard_is_usable`
@@ -611,5 +573,112 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
     assert!(
         !cache.exists(),
         "the cache must actually be reclaimed, unimpeded by the degraded gate build: {cache:?}"
+    );
+}
+
+/// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
+/// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
+/// dead spawn's registered scratch (under agent-scratch and under the mutation-scratch root),
+/// and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
+/// process still holds (here: an open file descriptor in this test process) and everything
+/// that is not dead footprint (the sweep's mutation anchor).
+#[test]
+fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_held_dir() {
+    let project = temp_store_project();
+    let root = project.path();
+    let scratch = common::default_scratch_root(root);
+    let cache_home = scratch
+        .parent()
+        .and_then(Path::parent)
+        .expect("the scratch root nests two levels under the cache home")
+        .to_path_buf();
+    let mutation_root = rigger::driver::replay::mutation_scratch_root(&cache_home);
+
+    let dead_unit_cache = scratch.join("cargo-target-gone-unit");
+    write_file(&dead_unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
+    let held_unit_cache = scratch.join("cargo-target-held-unit");
+    write_file(&held_unit_cache.join("debug").join("b.rlib"), &[0u8; 300]);
+    let dead_spawn_leaf = scratch
+        .join("agent-scratch")
+        .join("run-gone")
+        .join("spawn-gone");
+    write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
+    let dead_mutation_leaf = mutation_root.join("spawn-gone");
+    write_file(&dead_mutation_leaf.join("d"), &[0u8; 100]);
+    let unowned = scratch.join("agent-scratch").join("adhoc-target");
+    write_file(&unowned.join("CACHEDIR.TAG"), &[0u8; 50]);
+    let anchor = scratch.join("mutation-anchor").join("tip");
+    write_file(&anchor, b"0123abcd\n");
+
+    // The live holder: this process keeps a file inside the held cache open.
+    let holder = std::fs::File::open(held_unit_cache.join("debug").join("b.rlib"))
+        .expect("open the held cache's file");
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    drop(holder);
+    assert!(
+        ok,
+        "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
+    );
+    for (what, dir) in [
+        ("the dead per-unit cache", &dead_unit_cache),
+        ("the dead agent-scratch spawn leaf", &dead_spawn_leaf),
+        ("the dead mutation-scratch leaf", &dead_mutation_leaf),
+        ("the unowned agent scratch", &unowned),
+    ] {
+        assert!(
+            !dir.exists(),
+            "{what} must be reclaimed: {dir:?}; stdout {out:?}"
+        );
+    }
+    assert!(
+        out.contains("1000 byte(s)") && out.contains("per-unit caches"),
+        "the report names each class and its measured bytes: {out:?}"
+    );
+    assert!(
+        held_unit_cache.join("debug").join("b.rlib").exists(),
+        "a dead dir a live process holds is never removed: {out:?}"
+    );
+    assert!(
+        out.contains("cargo-target-held-unit") && out.contains("live process"),
+        "the report names the held dir and why it stayed: {out:?}"
+    );
+    assert!(
+        anchor.exists(),
+        "the mutation anchor is not dead footprint and must survive"
+    );
+}
+
+/// Gap 96, FAIL CLOSED: when the run log cannot be read, nothing says which units and spawns
+/// are live, so `rigger reset --build-cache` reclaims nothing from the per-unit and scratch
+/// classes and says why - it never reads "unknown" as "every unit is dead". The holder check is
+/// the second line of defence, not the first.
+#[test]
+fn reset_build_cache_reclaims_no_unit_or_scratch_class_when_the_run_log_is_unreadable() {
+    let project = temp_store_project();
+    let root = project.path();
+    std::fs::write(
+        common::cli::rigger_file(root, "events.db"),
+        b"not a sqlite database",
+    )
+    .expect("corrupt the run log");
+    let scratch = common::default_scratch_root(root);
+    let unit_cache = scratch.join("cargo-target-maybe-live-unit");
+    write_file(&unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
+    let spawn_leaf = scratch.join("agent-scratch").join("run-x").join("spawn-x");
+    write_file(&spawn_leaf.join("c"), &[0u8; 200]);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        unit_cache.join("debug").join("a.rlib").exists() && spawn_leaf.join("c").exists(),
+        "an unreadable run log must reclaim nothing liveness-dependent; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        !ok,
+        "the refusal is loud (non-zero exit); stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        err.contains("cannot be read") && err.contains("live"),
+        "the refusal names why: {err:?}"
     );
 }

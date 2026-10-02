@@ -1,13 +1,13 @@
 # 93 - The console core compiles to WebAssembly
 
-**Goal:** the projection code the conductor runs is already pure Rust - `src/ledger.rs`,
-`src/metrics.rs`, `src/progress.rs`, `src/blocker.rs`, `src/run.rs`, `src/community.rs`,
-`src/concepts.rs`, `src/contextgraph/mod.rs` and the fold half of `src/spawn.rs` import no
+**Goal:** the projection code the conductor runs is already pure Rust - `crates/rigger-domain/src/ledger.rs`,
+`crates/rigger-domain/src/metrics.rs`, `crates/rigger-domain/src/progress.rs`, `crates/rigger-domain/src/blocker.rs`, `crates/rigger-domain/src/run.rs`, `crates/rigger-domain/src/community.rs`,
+`crates/rigger-domain/src/concepts.rs`, `crates/rigger-domain/src/contextgraph.rs` and the fold half of `crates/rigger-domain/src/spawn.rs` import no
 `rusqlite`, `tokio`, `std::fs`, `std::process` or `std::net` - yet the library cannot be built
 without its I/O dependencies, because every one of them (`rusqlite`, `kurrentdb`, `tokio`,
 `rustix`, `fs2`, `ignore`, `uuid`) is unconditional in `Cargo.toml`. So the dashboard page
-reimplements the fold and the graph queries in JavaScript (`src/dash.html`, 2,398 lines) over
-payloads `src/dash.rs` (11,240 lines) computes, and a fourth copy of the fold is written every
+reimplements the fold and the graph queries in JavaScript (`crates/rigger-dash/src/dash.html`, 2,398 lines) over
+payloads `crates/rigger-dash/src/dash.rs` (11,240 lines) computes, and a fourth copy of the fold is written every
 time an operator scripts against the store. The Mission Control console
 (docs/architecture-addendum-mission-control.md) requires the library's own fold and graph
 queries to run inside the page, which means the pure subset must build for
@@ -64,8 +64,21 @@ ONE FOLD, decided: `rigger status` prints its first line and its needs-you lines
 parity test folds a recorded stream through `console::fold` and through the status
 projection and asserts identical unit statuses, blockers, attention entries and statusline.
 
-BUDGETS, decided: the module is under 3 MB; a fold of 10,000 console events completes in
-under 16 ms natively in release mode (the page-side bound follows from the same code).
+THE QUERY ENGINE MOVES WITH THE OPS, decided: the graph queries the dashboard computes
+today (`neighborhood`, `card`, `path`, `clustered_overview` and `cluster_detail` in
+`crates/rigger-dash/src/dash.rs`, with their `Lens`, `Neighborhood` and `ClusterOverview` result types) are
+pure over `contextgraph::Graph` and relocate into `contextgraph` (the "model and queries" the
+feature split names as core), where `communities` and `search` are authored beside them;
+`dash.rs` stays wholly behind `store` and calls the relocated functions. "The graph ops" of criterion 5
+ARE this relocated engine plus the two new queries behind `graph_load`/`graph_query`: the
+relocation is criterion 5's work, no other unit touches those functions, and "the library's
+own query functions" in criterion 5 means these, in core. The map engine remains spec 84's.
+
+BUDGETS, decided: the module is under 3 MB - criterion 3's bound, measured on the artifact -
+and a fold of 10,000 console events completes in under 16 ms natively in release mode (the
+page-side bound follows from the same code) - criterion 2's bound, asserted by its natively
+compiled ABI tests driving `fold_reset`/`fold_push`, since those tests already exercise the
+fold through the same surface the page will call.
 
 CONSTRAINTS WALK: target missing - the named error, no silent skip. `--no-default-features`
 alone - unchanged (light lane, no core). Core lane natively - builds and its tests run on the
@@ -78,8 +91,9 @@ state; a page re-sends the snapshot.
 
 The `console` view-model functions are consumed by specs 94-98; this spec ships them with
 their types and the fold, proven by the parity and ABI tests, and no page. The CLI keeps
-`rigger graph`'s text renderers; only the query functions move into the core surface. The
-JavaScript loader that calls the ABI is spec 94's.
+`rigger graph`'s text renderers; only the query functions move into the core surface, and
+that move is criterion 5's (see THE QUERY ENGINE MOVES WITH THE OPS). The JavaScript loader
+that calls the ABI is spec 94's.
 
 ## Global constraints
 

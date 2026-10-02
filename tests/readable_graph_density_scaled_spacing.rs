@@ -7,7 +7,7 @@
 //! every edge's endpoints end up separated by at least the sum of their node radii, so an edge is
 //! drawable as a visible relationship rather than a zero-length stub inside the clump.
 //!
-//! The layout is client-side JS in `src/dash.html` (`forceLayout` scaled by `kgSpread`, then the c1
+//! The layout is client-side JS in `crates/rigger-dash/src/dash.html` (`forceLayout` scaled by `kgSpread`, then the c1
 //! `kgSeparate`). Following the spec-42/55/59-c1 precedent this is a read-only presentation change, so
 //! the proof is a RUNTIME harness (node's built-in `vm`, hermetic, no npm) that extracts the served
 //! page's own `<script>` and EXECUTES the layout to assert on the resulting positions. Two layers:
@@ -29,31 +29,10 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
-use std::process::Command;
+mod common;
 
+use common::served::node_harness_passes;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// absent on the shim-only lane); the runtime harness SKIPs rather than fails when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// STRUCTURAL: the served page SHIPS the density-spread lever AND wires the radius/label accessors
 /// into the force layout, so the scaling governs the actual force-laid views. Bound to the c2
@@ -211,45 +190,10 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-spacing-harness.js" });
 "##;
 
-/// RUNTIME proof of the done-when: the served page's own force layout spreads with density - a 160-node
-/// overview occupies a strictly larger extent than a 60-node one, longer labels take strictly more room
-/// than short ones at a fixed node count, and after the full pipeline every edge's endpoints are at
-/// least the sum of their node radii apart - deterministically across two runs.
-#[test]
-fn the_layout_extent_scales_with_density_and_edges_are_drawable() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_layout_extent_scales_with_density_and_edges_are_drawable: no `node` runtime on \
-             PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
-             install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the spacing harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, SPACING_HARNESS).expect("write the spacing harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served layout");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the layout must scale its extent with density and keep edges drawable, but the runtime \
-         harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK density-scaled-spacing"),
-        "the spacing harness must confirm density-scaled spacing:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME proof of the done-when: the served page's own force layout spreads with density - a 160-node
+    /// overview occupies a strictly larger extent than a 60-node one, longer labels take strictly more room
+    /// than short ones at a fixed node count, and after the full pipeline every edge's endpoints are at
+    /// least the sum of their node radii apart - deterministically across two runs.
+    the_layout_extent_scales_with_density_and_edges_are_drawable: node_harness_passes(SPACING_HARNESS, "OK density-scaled-spacing");
 }

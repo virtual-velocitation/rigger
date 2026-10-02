@@ -10,11 +10,11 @@ active run (which would throw away the memory). This spec implements Workstream 
 ## Design
 
 Builds on the whole-stream context graph (`Projector`, `src/contextgraph/`), the run
-boundary (`RunStarted`, `current_run`, `start_fresh` in `src/run.rs`), and the read paths
-`rigger peers` and grounding (`graph_context` in `src/conductor.rs`). The graph has no
+boundary (`RunStarted`, `current_run`, `start_fresh` in `crates/rigger-domain/src/run.rs`), and the read paths
+`rigger peers` and grounding (`graph_context` in `crates/rigger-conductor/src/conductor.rs`). The graph has no
 run column today; attribution is derived from the event stream.
 
-**Unit 1 - RunStarted-boundary attribution (touches `src/contextgraph/`, `src/run.rs`).**
+**Unit 1 - RunStarted-boundary attribution (touches `src/contextgraph/`, `crates/rigger-domain/src/run.rs`).**
 Derive, for each decision/finding node, the run it belongs to: the run whose
 `[RunStarted, next RunStarted)` event-position window contains the event that produced the
 node. `LessonLearned` is exempt - it is durable cross-run value and is never attributed
@@ -30,7 +30,7 @@ except the active one) from the graph, while PRESERVING `LessonLearned` and the 
 run's decisions and findings. It is the supported way to shed dead-run noise without
 deleting the whole store; there is no way to do this today short of wiping `graph.db`.
 
-**Unit 3 - `rigger peers` provenance labels (touches `src/main.rs`, `src/conductor.rs`).**
+**Unit 3 - `rigger peers` provenance labels (touches `src/main.rs`, `crates/rigger-conductor/src/conductor.rs`).**
 `rigger peers` presents live and historical decisions identically. Label each decision as
 LIVE (from the active run) or HISTORICAL (from a superseded run), using the same
 attribution as Unit 1. Grounding still INCLUDES cross-run decisions by default (the

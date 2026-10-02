@@ -1,11 +1,11 @@
 # 84 - The code lens is a labelled map: districts, semantic zoom, and exploration without vocabulary
 
-**Goal:** the dash's code lens has three render modes in `src/dash.rs` - a clustered
+**Goal:** the dash's code lens has three render modes in `crates/rigger-dash/src/dash.rs` - a clustered
 OVERVIEW of community super-nodes (spec 42 c3's render-budget answer to a 21k-node graph, spec
 63 c6's collapse), a DRILL into one cluster, and a seeded NEIGHBORHOOD / directed-call view -
 and it LANDS on the overview. At this repo's real scale (21,394 nodes, ~150 communities) the
 communities form by file co-location, so their dominant-member labels are file names
-(`src/dash.rs (256)`, `tests/cli.rs (253)`), inter-community edges are sparse, and the first
+(`crates/rigger-dash/src/dash.rs (256)`, `tests/cli.rs (253)`), inter-community edges are sparse, and the first
 screen reads as a worse files lens: disjointed blobs named after files. The view the operator
 actually wants - functions and their typed call relations around something they care about -
 is the neighborhood mode, unreachable from the landing page. Spec 63's purity criteria all hold

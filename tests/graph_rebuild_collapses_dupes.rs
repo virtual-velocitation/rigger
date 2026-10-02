@@ -25,46 +25,13 @@
 //! not exercise. It leans on (but does not own) the upsert-live `add_edge` fold arm that landed in
 //! criterion 1.
 
+mod common;
+
+use common::cli::nanos;
+use common::fixtures::apply_governs_at;
+use common::fixtures::governs;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Edge, Graph, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
-use rigger::eventstore::Event;
-use std::time::{Duration, UNIX_EPOCH};
-
-/// Fold a `DecisionMade` (`id` GOVERNS `path`) built from its raw on-log JSON at `pos` - deliberately
-/// bypassing the in-crate payload struct so the test pins the JSON contract, not the Rust type.
-/// GOVERNS is the surviving content edge the dedup is demonstrated over after the spec 43 de-noise
-/// dropped the old TOUCHES machinery vehicle. `secs` sets the event's valid-from so a test can assert
-/// the collapsed edge keeps the EARLIEST assertion time; `pos` becomes the edge's `source`, so the
-/// LATEST assertion wins. `apply` returns `Err` on a fold failure, so a successful call is itself
-/// evidence the payload folded.
-fn apply_governs(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
-    let payload = serde_json::json!({
-        "id": id, "summary": "x", "governs": [path], "supersedes": "",
-    });
-    let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap())
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// The nanosecond `valid_from` an edge carries for a fact that became true `secs` after the epoch -
-/// the public mirror of the crate-private `to_nanos`, computed here so the external test never
-/// reaches into the crate for it.
-fn nanos(secs: u64) -> i64 {
-    Duration::from_secs(secs).as_nanos() as i64
-}
-
-/// Every live `GOVERNS` edge in a public `subgraph` result as `(from, to, source, valid_from)`,
-/// sorted, so a test can COUNT the rows the public projection exposes and read their provenance.
-fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
-    let mut out: Vec<_> = graph_edges
-        .iter()
-        .filter(|e| e.rel == REL_GOVERNS)
-        .map(|e| (e.from.clone(), e.to.clone(), e.source, e.valid_from))
-        .collect();
-    out.sort();
-    out
-}
+use rigger::contextgraph::{Graph, Projection};
 
 /// A REBUILD: fold the canonical criterion-3 log from scratch into a FRESH, empty projection and
 /// return the public `subgraph` over both governed files. Each call is an independent rebuild - a new
@@ -78,10 +45,10 @@ fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
 fn rebuild() -> Graph {
     let p = Projector::open(":memory:", "test").unwrap();
     for pos in 1..=45u64 {
-        apply_governs(&p, pos, "d1", "src/f.rs", 100 * pos);
+        apply_governs_at(&p, pos, "d1", "src/f.rs", 100 * pos);
     }
-    apply_governs(&p, 46, "d2", "src/f.rs", 5000);
-    apply_governs(&p, 47, "d1", "src/g.rs", 6000);
+    apply_governs_at(&p, 46, "d2", "src/f.rs", 5000);
+    apply_governs_at(&p, 47, "d1", "src/g.rs", 6000);
     // Seed BOTH files so the reachable set is {src/f.rs, src/g.rs, d1, d2} and every edge above has
     // both endpoints in scope - the one query surfaces all three distinct live edges.
     p.subgraph(&["src/f.rs".to_string(), "src/g.rs".to_string()], 1)

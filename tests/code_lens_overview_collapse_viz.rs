@@ -18,31 +18,11 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the client seam in both lanes.
 
-use std::process::Command;
+mod common;
 
+use common::served::node_harness_passes;
+use common::served::vm_harness;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// The minimal DOM shim the overview render path touches (node `vm`, no npm): innerHTML on the
 /// panel element, a stubbed `querySelector` so `bindKgView`'s post-render lookups resolve without
@@ -67,55 +47,6 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
-
-/// Assemble a complete node `vm` program: the DOM shim, then the served page script (read from
-/// `argv[2]`), then the driver - which shares the page's own scope, so it calls the page's real
-/// `renderKgOverview` and reads its module state directly.
-fn build_harness(driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__COLLAPSE_SHIM__`;
-const DRIVER = String.raw`__COLLAPSE_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-overview-collapse-harness.js" });
-"##;
-    TEMPLATE
-        .replace("__COLLAPSE_SHIM__", DOM_SHIM)
-        .replace("__COLLAPSE_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
-/// script from `argv[2]` and drives it under the DOM shim), asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the overview collapse client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the overview collapse seam, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
 
 /// Driver: feeds `renderKgOverview` a `Lens::Code`-shaped overview - TWO communities of eight total
 /// members (six and two), the larger one carrying a deterministic display label, the smaller one
@@ -192,24 +123,13 @@ const COLLAPSE_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard (spec 63 c6, OVERVIEW COLLAPSE): the served page's `renderKgOverview` collapses a
-/// `Lens::Code` overview into sized, labelled community super-nodes and never a storage-schema name.
-/// Dropping the collapse (rendering members instead of clusters), the count-based sizing, the
-/// id-not-kind label fallback, or leaking a schema token onto the canvas each reddens this.
-#[test]
-fn the_overview_collapses_to_sized_labelled_community_super_nodes_purely() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_overview_collapses_to_sized_labelled_community_super_nodes_purely: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(COLLAPSE_DRIVER),
-        "OK overview-collapses-to-sized-labelled-community-super-nodes-purely",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 63 c6, OVERVIEW COLLAPSE): the served page's `renderKgOverview` collapses a
+    /// `Lens::Code` overview into sized, labelled community super-nodes and never a storage-schema name.
+    /// Dropping the collapse (rendering members instead of clusters), the count-based sizing, the
+    /// id-not-kind label fallback, or leaking a schema token onto the canvas each reddens this.
+    the_overview_collapses_to_sized_labelled_community_super_nodes_purely:
+        node_harness_passes(&vm_harness(DOM_SHIM, COLLAPSE_DRIVER, "dash-overview-collapse-harness.js"), "OK overview-collapses-to-sized-labelled-community-super-nodes-purely");
 }
 
 /// STRUCTURAL companion (the fallback proof when `node` is unavailable): the served page's

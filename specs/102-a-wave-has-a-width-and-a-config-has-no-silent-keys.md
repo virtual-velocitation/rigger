@@ -7,13 +7,13 @@ no code read the key: the spec-92 run had five units in flight, three per-unit b
 of 54 GB each (162 GB), and every unit's four reviewers re-running both test lanes at once -
 the baseline the day's memory overrun landed on. `rigger validate` reported nothing, because
 `config::Defaults` and its siblings derive `Deserialize` without `deny_unknown_fields`
-(`src/config.rs:357`) and unknown keys are dropped on load.
+(`crates/rigger-domain/src/config.rs:362`) and unknown keys are dropped on load.
 
 ## Design
 
 **THE WIDTH IS A CONFIG KEY THE CONDUCTOR ENFORCES.** `defaults.max_parallel_units`
 (the key the config already carries) bounds the stages in flight across a wave: within each
-batch `run_wave` (`src/conductor.rs:3785`) admits at most that many stages; a stage not
+batch `run_wave` (`crates/rigger-conductor/src/conductor.rs:3449`) admits at most that many stages; a stage not
 admitted is neither failed nor terminal - it waits, and starts when a slot frees in this
 step's wave or a later one. `0` means unbounded and is the default, so an existing consumer's
 behavior does not change until it writes the key; `rigger init` and `rigger setup` scaffold
@@ -29,13 +29,22 @@ driver would resume with every slot free while spawns are still running).
 (`defaults.max_parallel_unitz: unknown key`). `rigger validate` surfaces the same error, so
 the mistake is found before a run spends a step on it.
 
+**THE DOTTED PATH IS TRACKED STRUCTURALLY, decided here so no unit has to.** The path comes
+from `serde_path_to_error` wrapping the deserializer at the config parse sites (the
+workflow file and the agent frontmatter); it is never recovered by searching the rendered
+error text, because a key or a value can echo any delimiter the search would anchor on and
+the recovered message is then wrong. The unknown-key line is composed from the tracker's
+path and the inner error's field name; every other parse error is rendered with the same
+tracked path prefix and its message otherwise unchanged.
+
 **REVIEWER BUILD CONCURRENCY IS OUT OF SCOPE.** A spawn's own `cargo test` runs outside
 `build.max_concurrent` (spec 65); bounding them is a separate spec.
 
 ## Global constraints
 
 - Hyphens, never em dashes, in every added line.
-- No new event type; no new dependency.
+- No new event type; no new dependency except `serde_path_to_error`, the standard serde path
+  tracker, which the dotted-path rule above requires.
 - Both feature lanes green (fmt, clippy, test on default and --no-default-features).
 
 ## Done when

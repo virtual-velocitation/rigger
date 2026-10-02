@@ -26,9 +26,15 @@
 //! real wire round trip over four independently-varying items, not just a fixture typed
 //! to match it.
 
-use rigger::canary::{default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_LENS};
+mod common;
+
+use common::fixtures::cfg_for;
+use common::fixtures::lens_only_panel;
+use common::fixtures::marked_item as item;
+use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
+use rigger::canary_store::{default_jobs, run_canary};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
-use rigger::config::{AgentDef, Config, ReviewPanel};
+use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
@@ -107,46 +113,6 @@ impl AgentDriver for UnattributedDriver {
     }
 }
 
-fn agent(id: &str) -> AgentDef {
-    AgentDef {
-        id: id.to_string(),
-        ..Default::default()
-    }
-}
-
-fn cfg(ids: &[&str]) -> Config {
-    let mut c = Config::default();
-    for id in ids {
-        c.agents.insert((*id).to_string(), agent(id));
-    }
-    c
-}
-
-fn panel() -> ReviewPanel {
-    ReviewPanel {
-        lenses: vec!["lens".to_string()],
-        adversary: String::new(),
-        adjudicator: "adj".to_string(),
-        tiers: None,
-    }
-}
-
-fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: anchor.into(),
-        expected_verdict: verdict.into(),
-        expected_tier: String::new(),
-        review: format!("fn {id}() {{ /* {marker} */ }}"),
-    }
-}
-
 /// Drives `run_canary` over four independently-varying planted/control items and proves
 /// `metrics::project_canary`'s new fold arm counts EXACTLY the one item that is both
 /// correctly rejected and unattributed - never the attributed sibling (real catch), the
@@ -155,8 +121,8 @@ fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> C
 /// read back through the actual store, not a hand-typed fixture.
 #[test]
 fn run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_only_it() {
-    let cfg = cfg(&["lens", "adj"]);
-    let panel = panel();
+    let cfg = cfg_for(&["lens", "adj"]);
+    let panel = lens_only_panel();
 
     let corpus = vec![
         // Correctly rejected; the reject-worthy finding names a DIFFERENT file than the

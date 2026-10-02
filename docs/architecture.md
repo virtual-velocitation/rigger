@@ -51,6 +51,16 @@
 >   inference) and runs a world reconciler that converges the filesystem toward a
 >   desired state derived from the event log; git is the retention system, disk holds
 >   only what is live, and the command line (and the workflow's couriers) are clients.
+> - [Native Claude Code integration](architecture-addendum-claude-code-integration.md) -
+>   rigger owns the run as a supervised process, hosts every agent as a headless Claude
+>   Code session it reads through the typed message stream, holds the run through an API
+>   or credential outage and resumes it by itself, and meets the operator's session
+>   through a plugin; every seam is a documented Claude Code surface.
+> - [The Owned Store](architecture-addendum-the-owned-store.md) - the storage engine under
+>   the hive's memory, written in the tree with no database engine underneath: the log is a
+>   sequence of sealed per-run segments, the graph is a memory-mapped queryable file, and a
+>   project is mounted only while it has workloads, admitted against a measured machine-wide
+>   memory budget.
 
 ---
 
@@ -214,9 +224,6 @@ event-store backend (section 5.1.1) and `dash:` opts the always-on dashboard in 
 
 ```yaml
 # .rigger/workflow.yml - a GitHub-Actions-style DAG for the producing loop
-name: produce-from-spec
-on: { spec: { path: "specs/**.md" } }      # what kicks off a run
-
 store:                                      # the committed event-store selection (section 5.1.1)
   backend: sqlite                           # sqlite (default) | kurrentdb (shared server)
   # url: kurrentdb://db.internal:2113       # optional NON-SECRET host/port for the server backend;
@@ -316,7 +323,7 @@ just entries in a project's `gates:` map. Rigger ships **zero** gates.
 ### 4.1 The pipeline, now *declared*
 
 A fixed pipeline bakes one team's process into the tool. Rigger's `conductor::run`
-(`src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
+(`crates/rigger-conductor/src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
 topo-sorts the stages, runs the ready set wave by wave (independent stages concurrently),
 defers the coverage gate past a `produces` planner stage, trips the budget breaker before
 each wave, and projects the final `RunState`. The canonical pipeline above is simply the
@@ -368,7 +375,7 @@ stream up front and skips units already integrated. The Conductor is the sole wr
 *projections*; agents only ever *append events*.
 
 ```rust
-// src/ledger.rs - RunState is projected from the event log by folding the run
+// crates/rigger-domain/src/ledger.rs - RunState is projected from the event log by folding the run
 // events; the conductor is the only writer. `ledger::project(events)` rebuilds it.
 pub struct RunState {
     pub units: BTreeMap<String, Unit>,
@@ -455,7 +462,7 @@ and catch-up subscriptions that replay then go live. Both backends implement exa
 so swapping backends is a configuration change, not an architecture change.
 
 ```rust
-// src/eventstore/mod.rs
+// crates/rigger-domain/src/eventstore.rs
 pub trait EventStore: Send + Sync {
     /// Append events to the end of a stream under an optimistic-concurrency
     /// expectation, reporting what was ACTUALLY written: one slot per event handed in,
@@ -617,7 +624,7 @@ its **design intent**, and the **decisions** that shaped it. Event sourcing is t
 persistence mechanism underneath, not the framing.
 
 ```rust
-// src/contextgraph/mod.rs
+// crates/rigger-domain/src/contextgraph.rs
 pub struct Node {
     pub id: String,                       // stable id (entity-resolved)
     pub kind: String,                     // "decision" | "artifact" | "concept" | "lesson" | ...
@@ -667,11 +674,11 @@ request-time computations, which would jitter the view on every poll and break t
 rebuildable-projection invariant. Each runs as a deterministic pass over the projection and
 records its result as events, so a rebuild reproduces it byte-identically:
 
-- **Coupling communities** (`rigger graph communities`, `src/community.rs`) - community
+- **Coupling communities** (`rigger graph communities`, `crates/rigger-domain/src/community.rs`) - community
   detection over the call/reference edges, seeded over a deterministic edge ordering, emitting
   `IN_COMMUNITY` membership edges at a chosen resolution grain. This is "which functions
   actually work together", a different grouping from the directory tree.
-- **Intent concepts** (`rigger graph concepts`, `src/concepts.rs`) - a grouping over the
+- **Intent concepts** (`rigger graph concepts`, `crates/rigger-domain/src/concepts.rs`) - a grouping over the
   design-intent layer into the ideas a project is *about* ("the grounding pipeline"), emitting
   concept nodes and `REALIZES` membership edges, labelled deterministically with a
   model-assisted refinement that has a deterministic fallback.
@@ -744,7 +751,7 @@ this document.
 ### 5.5 The ingest: parallel, incremental, project-scoped  **[AS-BUILT]**
 
 Populating the graph from a project's source is one walk-and-content-key authority
-(`src/ingest.rs`, `ingest::ingest_project`) that both the live run and the standalone
+(`crates/rigger-grounder/src/ingest.rs`, `ingest::ingest_project_batched`) that both the live run and the standalone
 `rigger graph build` (a cold checkout, no run required) share, so the content key an event
 is deduped under can never drift between them. Four properties define it:
 
@@ -761,20 +768,31 @@ is deduped under can never drift between them. Four properties define it:
   was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
 - **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). One predicate (`ingest::project_scoped_replay_keys`, beside the key authority that
-  builds that format) decides what a fresh emit is redundant against, and both sinks - the run's
-  keyed emit and a cold `graph build` - call it rather than carrying their own copy. It applies
-  three rules in order:
+  design). Every derived event is built by one helper (`ingest::keyed_derived_event`) that stamps
+  it with that key AND with its GROUP (`eventstore::META_GROUP`): the batch identity
+  `<prefix>/<file>` cut from the key by the one key parser. The store answers, per group, the newest
+  event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
+  its own group index - a partial expression index on the embedded store, one link stream per
+  identity on the server-backed one - so the question "what is this file's latest recorded
+  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks - the run's keyed
+  emit and a cold `graph build` - seed through one first-sight helper
+  (`ingest::batch_is_latest_recorded`): the first time a process meets an identity it asks the
+  lookup, and when the answer is the batch's own generation it installs the batch's keys (a key is
+  a pure function of the batch's bytes, so they are the recorded keys) and appends nothing;
+  otherwise it appends the batch. From then on the process's own record of each identity's
+  generation governs. The decision applies three rules in order:
   - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
-    `DocConceptExtracted`, `DocLinkExtracted`) are eligible. Every other event is passed over
-    whatever its replay key looks like, so no domain event can be dropped by this path and the
-    partition is a property of the code, not of a naming convention.
-  - **Project scope, not run scope.** The eligible keys are read from the WHOLE stream, because a
+    `DocConceptExtracted`, `DocLinkExtracted`) answer a generation. A newest group member of any
+    other type, or one whose key does not parse, answers none, so the batch re-emits - the
+    fail-safe direction - and no domain event can be dropped by this path; the partition is a
+    property of the code, not of a naming convention.
+  - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
     file's content hash does not change because a new run started. A derived index fact is a fact
     about the project's files; run scoping belongs to keys whose recurrence is a property of one
     run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
     slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
-    stops re-accumulating a re-derivable index.
+    stops re-accumulating a re-derivable index - and a step that ingests reads no derived event to
+    decide it. A lookup the store cannot answer fails the ingest; it is never read as "recorded".
   - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
     equals the hash of the LATEST batch recorded for that same file. A changed file - **including
     one reverted to content it held at an earlier recorded generation** - differs from its latest
@@ -786,7 +804,7 @@ is deduped under can never drift between them. Four properties define it:
     spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
     adds its edges without retiring the ones its earlier generation left live.
 
-  The net contract is stated against the LOG, because the log is the only thing this predicate
+  The net contract is stated against the LOG, because the log is the only thing the skip
   decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
   generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
   qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
@@ -905,7 +923,7 @@ measurement and the push/pull split.
 ## 6. The agent driver: pluggable spawning  **[AS-BUILT]**
 
 ```rust
-// src/conductor.rs
+// crates/rigger-conductor/src/conductor.rs
 pub trait AgentDriver: Send + Sync {
     /// Spawn one agent to completion. The agent records events it emits during its run by
     /// calling `emit` (the workflow driver wires it to an in-process tool; the cli driver,
@@ -953,7 +971,7 @@ conflict and an agent cannot fan out.
 
 An observer wants ONE place to watch every run on their machine. If each observation point
 bound its own address, that view would scatter across an unpredictable set of addresses and
-force the observer to hunt for the right one. So `rigger dash` (`src/dash.rs`) binds a
+force the observer to hunt for the right one. So `rigger dash` (`crates/rigger-dash/src/dash.rs`) binds a
 **machine-level singleton at a fixed, stable address**: `http://127.0.0.1:7420/`
 (`dash::DEFAULT_PORT`) - a second `rigger dash` recognizes the running singleton and exits
 without binding a second one, never searching upward. The loop driver's native step path
@@ -972,7 +990,7 @@ The fixed singleton above is the shared, always-on observation point that `rigge
 the `rigger step` loop bind; the port-searching per-run dash is `rigger run`'s private view,
 not the machine singleton.
 
-- **An instance registry** (`src/registry.rs`) makes discovery a lookup, not a protocol.
+- **An instance registry** (`crates/rigger-store-sqlite/src/registry.rs`) makes discovery a lookup, not a protocol.
   Every `rigger` invocation that starts or advances a run registers its instance - the
   project identity, the project root, a **credential-free** store identity, and a heartbeat
   it refreshes while it works - as pure discovery metadata under the machine's state
@@ -1077,10 +1095,27 @@ structurally.
 
 ## 10. Repo layout & `cargo install` usage  **[AS-BUILT]**
 
-A single Rust crate: a library (`src/lib.rs`) plus a binary (`src/main.rs`), with the ports
-and adapters as modules under `src/`. One cargo feature (`symbols`) is ON BY
-DEFAULT (`default = ["symbols"]`), so a plain `cargo build` ships the structural grounder;
-`--no-default-features` is the deliberate LIGHT opt-out that drops it (leaving the
+A Cargo workspace whose crates sit in Clean Architecture rings, innermost first; a crate
+depends only on crates in its own ring or an inner one, pinned by `tests/boundary_audit.rs`.
+
+- Ring 1, entities and ports: `rigger-domain` holds the entities, the use-case rules and the
+  ports, and knows no file, process, network, clock, store or agent host.
+- Ring 2, application: `rigger-conductor` is the conductor use case that walks the stage DAG,
+  runs each stage's agent and gates and emits the event stream.
+- Ring 3, adapters: `rigger-store-sqlite` (the event stores), `rigger-graph-sqlite` (the
+  context-graph projector), `rigger-process` (process spawn, the reaper and the build budget),
+  `rigger-worktree-git` (per-unit worktrees and landing), `rigger-gates-shell` (the gate
+  runner), `rigger-driver` (the agent hosts), `rigger-grounder` (the grounders and the source
+  ingest) and `rigger-config-files` (the operator's `.rigger/` tree) implement the ports.
+- Ring 4, delivery: `rigger-console` (the console fold shared by `rigger status` and the
+  console page), `rigger-dash` (the HTTP dashboard and the MCP server) and `console-core` (the
+  console's WebAssembly ABI) present the run.
+- Ring 5, composition root: the root `rigger` crate is the binary (`src/main.rs` and its
+  `src/cli/` handlers) that wires every adapter, plus a library facade the integration tests
+  import.
+
+One cargo feature (`symbols`) is ON BY DEFAULT, so a plain `cargo build` ships the structural
+grounder; `--no-default-features` is the deliberate LIGHT opt-out that drops it (leaving the
 self-contained `grep` grounder). The server event-store backend has **no** feature flag and is
 always in the binary.
 
@@ -1192,7 +1227,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
     a cargo feature.
   - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner)
     are traits; the adapters depend inward; use cases depend only on ports; a single
-    composition root (`src/main.rs`) constructs the concrete adapters and injects them. No
+    composition root (`src/main.rs` and its `src/cli/` command modules) constructs the concrete adapters and injects them. No
     globals, no module-level singletons, no type building its own dependencies.
   - R9 PROJECT-SCOPED DATA, ONE MECHANISM: event streams and the knowledge graph are segregated
     per project by a single scoping decorator over the EventStore port, a project namespace

@@ -1,5 +1,5 @@
 //! Periphery for spec 77's Option-returning `crate::liveness::marker_path` contract at the MCP
-//! `rigger_activity` seam (`src/mcpserver.rs::tool_activity`) - the one consumer of that changed
+//! `rigger_activity` seam (`crates/rigger-dash/src/mcpserver.rs::tool_activity`) - the one consumer of that changed
 //! contract this unit's own diff left with ZERO test coverage of the `Some(path)` arm.
 //!
 //! WHY THIS GAP SURVIVED. Round 7 (spec 77 Design `d77-injective-scratch-naming`) changed
@@ -20,9 +20,9 @@
 //!
 //! WHY NOT A `rigger serve` SUBPROCESS (the usual periphery pattern for this MCP surface, see
 //! `tests/workflow_driver_resolved_model_periphery.rs`). Investigated and rejected: under the
-//! WORKFLOW driver `rigger serve` composes `Server` with (`src/driver/workflow.rs::Driver`), a
+//! WORKFLOW driver `rigger serve` composes `Server` with (`crates/rigger-driver/src/driver/workflow.rs::Driver`), a
 //! parked spawn is tracked purely in an in-memory queue and NEVER appended to the run's event
-//! log as a `TYPE_SPAWN_REQUESTED` event - only the REPLAY driver (`src/driver/replay.rs`,
+//! log as a `TYPE_SPAWN_REQUESTED` event - only the REPLAY driver (`crates/rigger-driver/src/driver/replay.rs`,
 //! `rigger step`'s driver) parks that way. `tool_activity`'s frontier is
 //! `spawn::step_result(run_events)?.wave`, which folds exactly those `TYPE_SPAWN_REQUESTED`
 //! events - so under a real `rigger serve` process the frontier that array is built from is
@@ -48,33 +48,18 @@
 //!   shape via the `rigger result <id>` positional's own lack of format validation and is
 //!   exactly what the round 3/5/7 regression tests in `tests/cli.rs` already close end to end.
 
+mod common;
+
+use common::cli::plant_marker;
+use rigger::spawn::SpawnEvent;
 use std::io::Cursor;
-use std::path::Path;
-use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
 use rigger::driver::workflow::Driver;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::mcpserver::Server;
-use rigger::sidecar::Sidecar;
-use rigger::spawn::SpawnRequest;
-
-/// Plant a real marker file at `path`, backdated by `secs_ago` seconds - mirrors `tests/cli.rs`'s
-/// `plant_stale_marker`, generalized to an arbitrary (non-stale) age so the test can assert the
-/// consolidated view reports roughly that age rather than merely "present".
-fn plant_marker(path: &Path, secs_ago: u64) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, b"heartbeat").unwrap();
-    let when = SystemTime::now() - Duration::from_secs(secs_ago);
-    std::fs::File::options()
-        .write(true)
-        .open(path)
-        .unwrap()
-        .set_modified(when)
-        .unwrap();
-}
 
 /// The `Some(path)` arm of `tool_activity`'s liveness-age loop (`mcpserver.rs`, changed by this
 /// unit's round-7 diff to skip a `None` from the now-`Option`-returning `marker_path`): a real
@@ -88,13 +73,12 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
     let store = Store::open(":memory:").unwrap();
     let progress = Store::open(":memory:").unwrap();
     let driver = Driver::new();
-    let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
     // A run: a unit started, its implementer parked (in-flight, no result yet) - the exact
     // frontier shape `mcpserver.rs::activity_tool_presents_the_live_per_agent_view` seeds,
     // since only THIS shape (a persisted `TYPE_SPAWN_REQUESTED` event) is what
     // `spawn::step_result` folds into `tool_activity`'s frontier.
-    let run_id = rigger::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+    let run_id = rigger::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
     store
         .append(
             "run",
@@ -102,7 +86,7 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
             &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
         )
         .unwrap();
-    let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+    let req = common::spawn_request("u", "u", "implementer", 0, "do it");
     store
         .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
         .unwrap();
@@ -118,8 +102,7 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
     let secs_ago = 5u64;
     plant_marker(&marker, secs_ago);
 
-    let server =
-        Server::new(&driver, &store, "run", &peers).with_progress(&progress, &scratch_root);
+    let server = Server::new(&driver, &store, "run").with_progress(&progress, &scratch_root);
     let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
     let mut output = Vec::new();
     server.run(Cursor::new(input), &mut output).unwrap();
@@ -164,9 +147,8 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
     let store = Store::open(":memory:").unwrap();
     let progress = Store::open(":memory:").unwrap();
     let driver = Driver::new();
-    let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
-    rigger::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+    rigger::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
     store
         .append(
             "run",
@@ -174,7 +156,7 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
             &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
         )
         .unwrap();
-    let req = SpawnRequest::new("u", "u", "implementer", 0, "do it");
+    let req = common::spawn_request("u", "u", "implementer", 0, "do it");
     store
         .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
         .unwrap();
@@ -184,8 +166,7 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
     let scratch_dir = tempfile::tempdir().unwrap();
     let scratch_root = scratch_dir.path().to_str().unwrap().to_string();
 
-    let server =
-        Server::new(&driver, &store, "run", &peers).with_progress(&progress, &scratch_root);
+    let server = Server::new(&driver, &store, "run").with_progress(&progress, &scratch_root);
     let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
     let mut output = Vec::new();
     server.run(Cursor::new(input), &mut output).unwrap();

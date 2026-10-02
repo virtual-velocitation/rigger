@@ -7,7 +7,7 @@
 //!
 //!  - the inside-out unit tests drive the run's ingest SINK (a conductor test with in-crate spies)
 //!    and the sqlite `Projector::apply_batch` OVERRIDE (in-crate `super::` paths). Nothing there
-//!    drives the shared authority `rigger::ingest::append_and_fold_batch` through its PUBLIC boundary
+//!    drives the shared authority `rigger::ingest::FoldingStore::append_and_fold` through its PUBLIC boundary
 //!    as an external consumer would, so nothing pins its documented POSITION-STAMPING contract
 //!    (every folded event carries the position THE STORE REPORTED for it, taken from the store's own
 //!    per-event report rather than derived from a single "last" value) nor that its fold is
@@ -18,26 +18,26 @@
 //!    DEFAULT `apply_batch` - the backend-agnostic contract any other `Projection` inherits - is
 //!    tested nowhere. A backend with no cheaper batch path must still fold every event through
 //!    `apply`, in order, short-circuiting on the first error;
-//!  - the criterion-1 periphery suite drives only the PER-EVENT `ingest_project`; the new BATCHED
-//!    public entries (`ingest_project_batched` / `_paced`) are driven nowhere, so nothing pins that a
-//!    file arrives as ONE whole keyed batch and that flattening the batched walk is byte-identical to
-//!    the per-event walk it is a thin view over.
+//!  - nothing else pins that the public ingest entries (`ingest_project_batched` / `_paced`) hand a
+//!    file over as ONE whole keyed batch.
 //!
-//! `append_and_fold_batch`, the trait method, and the sqlite/eventstore backends are all compiled
+//! `FoldingStore::append_and_fold`, the trait method, and the sqlite/eventstore backends are all compiled
 //! UNCONDITIONALLY, so the append/fold/default-contract tests are UNGATED and run in BOTH feature
 //! lanes. The tests that drive the extraction WALK (`ingest_project_batched`) are `symbols`-gated
 //! exactly like the sibling ingest suites; a light-lane test pins the walk's no-op there. Both lanes
 //! stay green.
 
+mod common;
+
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Error as CgError, Graph, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
+use rigger::contextgraph::{Error as CgError, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// A `Projection` that records the positions handed to each `apply_batch` call (grouped per call)
-/// and counts any per-event `apply`, so a test can prove `append_and_fold_batch` folds a batch
+/// and counts any per-event `apply`, so a test can prove `FoldingStore::append_and_fold` folds a batch
 /// through `apply_batch` at the store-assigned positions and NEVER through a per-event `apply`.
 /// `fail` makes `apply_batch` return `Err` so the best-effort contract can be exercised.
 #[derive(Default)]
@@ -48,11 +48,15 @@ struct CapturingProjection {
 }
 
 impl Projection for CapturingProjection {
-    fn apply(&self, _e: &Event) -> Result<(), CgError> {
+    fn apply(&self, _e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         self.per_event_applies.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-    fn apply_batch(&self, events: &[Event]) -> Result<(), CgError> {
+    fn apply_batch(
+        &self,
+        events: &[Event],
+        _access: rigger::contextgraph::FoldAccess,
+    ) -> Result<(), CgError> {
         self.batch_positions
             .lock()
             .unwrap()
@@ -62,12 +66,7 @@ impl Projection for CapturingProjection {
         }
         Ok(())
     }
-    fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, CgError> {
-        Ok(Graph::default())
-    }
-    fn resolve(&self, _mention: &str) -> Result<Option<String>, CgError> {
-        Ok(None)
-    }
+    crate::projection_reads_nothing!();
 }
 
 /// A `Projection` that records the positions handed to `apply` (in call order) and does NOT override
@@ -80,7 +79,7 @@ struct RecordingProjection {
 }
 
 impl Projection for RecordingProjection {
-    fn apply(&self, e: &Event) -> Result<(), CgError> {
+    fn apply(&self, e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         if self.fail_at == Some(e.position) {
             return Err(CgError(format!("apply failed at position {}", e.position)));
         }
@@ -88,15 +87,10 @@ impl Projection for RecordingProjection {
         Ok(())
     }
     // apply_batch is deliberately NOT overridden: this projection inherits the trait DEFAULT.
-    fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, CgError> {
-        Ok(Graph::default())
-    }
-    fn resolve(&self, _mention: &str) -> Result<Option<String>, CgError> {
-        Ok(None)
-    }
+    crate::projection_reads_nothing!();
 }
 
-/// The shared authority `rigger::ingest::append_and_fold_batch` stamps each folded event with the
+/// The shared authority `rigger::ingest::FoldingStore::append_and_fold` stamps each folded event with the
 /// position THE STORE REPORTED for it and folds the whole batch through `apply_batch` - never a
 /// per-event `apply`. Its documented contract (every folded event carries a position the store
 /// issued, derived from the store's own report rather than arithmetic over a single "last" value)
@@ -104,7 +98,7 @@ impl Projection for RecordingProjection {
 /// and the sqlite unit test PRE-SETS positions before folding. This pins it at the crate boundary
 /// against a real store's own assignment.
 #[test]
-fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per_event() {
+fn append_and_fold_stamps_the_store_assigned_positions_and_never_folds_per_event() {
     let store = Store::open(":memory:").unwrap();
 
     // Advance the stream first, so the batch's base position is NOT the trivial 1 - proving the
@@ -121,13 +115,11 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
         .collect();
 
     let cap = CapturingProjection::default();
-    let appended = rigger::ingest::append_and_fold_batch(
-        &store,
-        Some(&cap as &dyn Projection),
-        "main",
-        &batch,
-    )
-    .unwrap();
+    let appended = rigger::ingest::folding_into(&store, Some(&cap as &dyn Projection), &SILENT)
+        .append_and_fold("main", ExpectedRevision::Any, &batch)
+        .unwrap();
+    assert_eq!(appended.fold, rigger::contextgraph::Fold::Folded);
+    let appended = appended.appended;
 
     // The store's own assignment is the oracle: read the stream and pick out this batch's events by
     // id, in stream order.
@@ -154,7 +146,7 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
     assert_eq!(
         *cap.batch_positions.lock().unwrap(),
         vec![store_positions.clone()],
-        "append_and_fold_batch folds exactly ONE batch, each event stamped with the position the \
+        "append_and_fold folds exactly ONE batch, each event stamped with the position the \
          STORE reported for it"
     );
     assert!(
@@ -175,20 +167,26 @@ fn append_and_fold_batch_stamps_the_store_assigned_positions_and_never_folds_per
     );
 }
 
-/// `append_and_fold_batch` folds BEST-EFFORT - a fold error never fails an append that already
+/// `FoldingStore::append_and_fold` folds BEST-EFFORT - a fold error never fails an append that already
 /// landed durably in the log - and the empty batch is a total no-op. Neither is pinned in-crate: the
 /// sqlite unit test asserts the OVERRIDE rolls back, but nothing asserts the ingest authority
 /// SWALLOWS that error and still returns the durable last position, nor the empty-batch/`None`-graph
 /// paths.
 #[test]
-fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() {
+fn append_and_fold_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch() {
     let store = Store::open(":memory:").unwrap();
 
     // Empty batch: appends nothing, folds nothing, reports nothing, leaves the stream untouched.
     let cap0 = CapturingProjection::default();
-    let n =
-        rigger::ingest::append_and_fold_batch(&store, Some(&cap0 as &dyn Projection), "main", &[])
-            .unwrap();
+    let n = rigger::ingest::folding_into(&store, Some(&cap0 as &dyn Projection), &SILENT)
+        .append_and_fold("main", ExpectedRevision::Any, &[])
+        .unwrap();
+    assert_eq!(
+        n.fold,
+        rigger::contextgraph::Fold::Folded,
+        "an empty batch is nothing to fold"
+    );
+    let n = n.appended;
     assert_eq!(n.handed(), 0, "an empty batch hands the store no events");
     assert_eq!(
         n.last(),
@@ -208,7 +206,7 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     );
 
     // Fold error: a Projection whose apply_batch ERRORS must NOT fail the append - the batch already
-    // landed durably. append_and_fold_batch still returns Ok(last), and the events are readable.
+    // landed durably. append_and_fold still returns Ok(last), and the events are readable.
     let failing = CapturingProjection {
         fail: true,
         ..Default::default()
@@ -216,13 +214,17 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let batch: Vec<Event> = (0..2)
         .map(|i| Event::new("Batched", format!("b{i}").into_bytes()))
         .collect();
-    let appended = rigger::ingest::append_and_fold_batch(
-        &store,
-        Some(&failing as &dyn Projection),
-        "main",
-        &batch,
-    )
-    .expect("a fold error must NOT fail the append - the batch already landed durably in the log");
+    let appended = rigger::ingest::folding_into(&store, Some(&failing as &dyn Projection), &SILENT)
+        .append_and_fold("main", ExpectedRevision::Any, &batch)
+        .expect(
+            "a fold error must NOT fail the append - the batch already landed durably in the log",
+        );
+    assert_eq!(
+        appended.fold,
+        rigger::contextgraph::Fold::NotFolded("graph: fold failed".to_string()),
+        "the fold error is returned beside the append, for the caller to report"
+    );
+    let appended = appended.appended;
     assert_eq!(
         failing.batch_positions.lock().unwrap().len(),
         1,
@@ -245,7 +247,15 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     let batch2: Vec<Event> = (0..2)
         .map(|i| Event::new("Batched", format!("c{i}").into_bytes()))
         .collect();
-    let appended2 = rigger::ingest::append_and_fold_batch(&store2, None, "main", &batch2).unwrap();
+    let appended2 = rigger::ingest::folding_into(&store2, None, &SILENT)
+        .append_and_fold("main", ExpectedRevision::Any, &batch2)
+        .unwrap();
+    assert_eq!(
+        appended2.fold,
+        rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+        "graph=None folds nothing and says so"
+    );
+    let appended2 = appended2.appended;
     assert_eq!(
         store2
             .read_stream("main", 0, Direction::Forward)
@@ -261,14 +271,14 @@ fn append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_ba
     );
 }
 
-/// End-to-end integration seam: `rigger::ingest::append_and_fold_batch` folds a whole batch through a
+/// End-to-end integration seam: `rigger::ingest::FoldingStore::append_and_fold` folds a whole batch through a
 /// REAL sqlite `Projector` (its ONE-transaction `apply_batch` override), reached here through the
 /// PUBLIC ingest authority rather than the in-crate `super::` path the unit test uses. Building
 /// `DecisionMade` events (whose fold is always compiled, so this runs in both lanes) and reading the
 /// result back through the public `subgraph` proves the ingest -> contextgraph seam: one live
 /// `GOVERNS` edge per decision, folded from the batch alone.
 #[test]
-fn append_and_fold_batch_folds_a_whole_batch_through_a_real_projector() {
+fn append_and_fold_folds_a_whole_batch_through_a_real_projector() {
     let store = Store::open(":memory:").unwrap();
     let projector = Projector::open(":memory:", "test").unwrap();
 
@@ -284,13 +294,10 @@ fn append_and_fold_batch_folds_a_whole_batch_through_a_real_projector() {
         decision("d3", "c.rs"),
     ];
 
-    rigger::ingest::append_and_fold_batch(
-        &store,
-        Some(&projector as &dyn Projection),
-        "main",
-        &batch,
-    )
-    .unwrap();
+    let done = rigger::ingest::folding_into(&store, Some(&projector as &dyn Projection), &SILENT)
+        .append_and_fold("main", ExpectedRevision::Any, &batch)
+        .unwrap();
+    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
 
     let g = projector
         .subgraph(
@@ -312,7 +319,7 @@ fn append_and_fold_batch_folds_a_whole_batch_through_a_real_projector() {
             ("d2".to_string(), "b.rs".to_string()),
             ("d3".to_string(), "c.rs".to_string()),
         ],
-        "append_and_fold_batch folds the whole batch through the real Projector: one live GOVERNS \
+        "append_and_fold folds the whole batch through the real Projector: one live GOVERNS \
          edge per decision, from the batch alone"
     );
 }
@@ -332,7 +339,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
 
     // The default apply_batch folds every event through apply, in order.
     let default_proj = RecordingProjection::default();
-    default_proj.apply_batch(&batch).unwrap();
+    common::fixtures::folds(&default_proj, &batch);
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
         vec![1, 2, 3],
@@ -343,7 +350,7 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     // default's RESULT is exactly what applying each event in order would produce.
     let per_event = RecordingProjection::default();
     for e in &batch {
-        per_event.apply(e).unwrap();
+        common::fixtures::folds(&per_event, std::slice::from_ref(e));
     }
     assert_eq!(
         *default_proj.applied.lock().unwrap(),
@@ -357,8 +364,12 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
         fail_at: Some(2),
         ..Default::default()
     };
-    assert!(
-        failing.apply_batch(&batch).is_err(),
+    assert_eq!(
+        rigger::contextgraph::Fold::of_batch(
+            || rigger::contextgraph::wired(Some(&failing)),
+            &batch
+        ),
+        rigger::contextgraph::Fold::NotFolded("graph: apply failed at position 2".to_string()),
         "an apply error must surface from the default apply_batch"
     );
     assert_eq!(
@@ -369,16 +380,14 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
     );
 }
 
-/// The new BATCHED public entry `ingest_project_batched` hands the sink each file's WHOLE keyed
-/// batch at once, and flattening that walk is byte-identical to the PER-EVENT `ingest_project` it is
-/// a thin view over. The criterion-1 periphery suite drives only the per-event entry, so nothing
-/// else pins the batched entry: that a file arrives as ONE `on_batch` call carrying all its events,
+/// The BATCHED public entry `ingest_project_batched` hands the sink each file's WHOLE keyed
+/// batch at once: that a file arrives as ONE `on_batch` call carrying all its events,
 /// that the keys of a batch share one `<prefix>/<file>@<hash>` and enumerate `#0,#1,...`, that
 /// batches arrive in sorted file-path order, and that the batching is width-invariant (parse width
 /// changes only criterion 1's parallelism, never the per-file batching).
 #[cfg(feature = "symbols")]
 #[test]
-fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event_walk() {
+fn ingest_project_batched_hands_whole_file_batches() {
     use std::collections::BTreeSet;
 
     // Each file carries a def AND a reference to it, so its batch is MULTI-EVENT (a
@@ -406,23 +415,9 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
     let mut batches: Vec<Vec<Triple>> = Vec::new();
     let bstats = rigger::ingest::ingest_project_batched(root, |keyed| batches.push(triples(keyed)));
 
-    // Drive the PER-EVENT public entry over the same tree.
-    let mut per_event: Vec<Triple> = Vec::new();
-    let pstats = rigger::ingest::ingest_project(root, |k, ev| {
-        per_event.push((k.to_string(), ev.type_.clone(), ev.data.clone()));
-    });
-
     assert!(
         !batches.is_empty(),
         "the four-file fixture yields code-ingest batches"
-    );
-
-    // The batched walk is the SAME walk the per-event view flattens.
-    let flattened: Vec<Triple> = batches.iter().flatten().cloned().collect();
-    assert_eq!(
-        flattened, per_event,
-        "ingest_project_batched flattened == ingest_project: same keys, types, and payload bytes, \
-         in the same order"
     );
 
     // One on_batch call PER FILE, and at least one file's batch is multi-event (a def + its
@@ -431,10 +426,6 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
         batches.len(),
         bstats.batches_emitted,
         "ingest_project_batched calls on_batch exactly once per file batch"
-    );
-    assert_eq!(
-        bstats.batches_emitted, pstats.batches_emitted,
-        "the batched and per-event walks emit the same number of file batches"
     );
     assert!(
         batches.iter().any(|b| b.len() >= 2),
@@ -491,9 +482,8 @@ fn ingest_project_batched_hands_whole_file_batches_and_flattens_to_the_per_event
 }
 
 /// The light lane compiles no extraction pass, so its `ingest_project_batched` is a no-op that hands
-/// the sink NO batches - the batched analogue of the light-lane `ingest_project`, and what lets a
-/// cold `graph build` degrade to an empty graph in the light lane. Pinned directly at the public
-/// boundary in that lane.
+/// the sink NO batches - what lets a cold `graph build` degrade to an empty graph in the light
+/// lane. Pinned directly at the public boundary in that lane.
 #[cfg(not(feature = "symbols"))]
 #[test]
 fn light_lane_ingest_project_batched_hands_no_batches() {
@@ -506,5 +496,424 @@ fn light_lane_ingest_project_batched_hands_no_batches() {
     assert_eq!(
         calls, 0,
         "the light lane compiles no extraction pass, so ingest_project_batched hands no batches"
+    );
+}
+
+/// Given a store wrapped to fold what is appended through it, when a caller appends a batch under
+/// an expectation the stream meets, then the batch lands, is folded in one `apply_batch` at the
+/// positions the store issued, and the log sink hears nothing; when the expectation fails, the
+/// conflict is the caller's answer and nothing is appended or folded.
+#[test]
+fn a_folding_store_folds_what_it_appends_at_the_issued_positions_under_the_callers_expectation() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(
+            "other",
+            ExpectedRevision::Any,
+            &[Event::new("Prior", b"p".to_vec())],
+        )
+        .unwrap();
+    let cap = CapturingProjection::default();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let folding = rigger::ingest::FoldingStore::new(
+        &store,
+        Some(|| rigger::contextgraph::wired(Some(&cap))),
+        &log,
+    );
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    let appended = folding
+        .append("run", ExpectedRevision::NoStream, &batch)
+        .unwrap();
+    assert_eq!(
+        (
+            appended.placed().collect::<Vec<_>>(),
+            cap.batch_positions.lock().unwrap().clone(),
+            cap.per_event_applies.load(Ordering::SeqCst),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 2), (1, 3)],
+            vec![vec![2, 3]],
+            0,
+            Vec::<String>::new()
+        ),
+        "the batch lands at 2 and 3, folds once at exactly those positions, and says nothing"
+    );
+    let refused = folding.append(
+        "run",
+        ExpectedRevision::NoStream,
+        &[Event::new("C", b"c".to_vec())],
+    );
+    assert_eq!(
+        (
+            matches!(
+                refused,
+                Err(rigger::eventstore::Error::Conflict { actual: 1, .. })
+            ),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            cap.batch_positions.lock().unwrap().len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (true, 2, 1, Vec::<String>::new()),
+        "a failed expectation appends and folds nothing"
+    );
+}
+
+/// Given a store wrapped to fold into a graph that refuses the fold, when a caller appends, then
+/// the events are on the log and the lost fold is said through the injected sink - how many events
+/// were recorded and why they were not folded; wrapped with no graph at all, it appends and folds
+/// nothing and has nothing to say.
+#[test]
+fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_silent() {
+    let store = Store::open(":memory:").unwrap();
+    let cap = CapturingProjection {
+        fail: true,
+        ..Default::default()
+    };
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    rigger::ingest::FoldingStore::new(
+        &store,
+        Some(|| rigger::contextgraph::wired(Some(&cap))),
+        &log,
+    )
+    .append("run", ExpectedRevision::Any, &batch)
+    .unwrap();
+    rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log)
+        .append("run", ExpectedRevision::Any, &batch[..1])
+        .unwrap();
+    assert_eq!(
+        (
+            store.read_stream("run", 0, Direction::Forward).unwrap().len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            3,
+            vec![
+                "rigger: recorded 2 run event(s); not folded into the context graph: graph: fold failed"
+                    .to_string()
+            ]
+        ),
+        "every append lands; only the refused fold into a wired graph is said"
+    );
+}
+
+/// A log sink that hears nothing: `append_and_fold` answers its fold to the caller instead.
+const SILENT: fn(&str) = |_| {};
+
+/// The one append-then-fold body answers a caller of `append_and_fold` and a caller of the store
+/// port's `append` alike: an empty batch under `Any` appends and folds nothing through either and
+/// is reported as an absence; an unmet expectation - on an empty batch or not - is the store's
+/// conflict through either, and nothing is appended or folded.
+#[test]
+fn append_and_fold_and_the_folding_append_agree_on_an_empty_batch_and_the_expected_revision() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("Prior", b"p".to_vec())],
+        )
+        .unwrap();
+    let cap = CapturingProjection::default();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let folding = rigger::ingest::folding_into(&store, Some(&cap as &dyn Projection), &log);
+    let conflict = |r: Result<rigger::eventstore::Appended, rigger::eventstore::Error>| match r {
+        Err(rigger::eventstore::Error::Conflict { actual, .. }) => Some(actual),
+        _ => None,
+    };
+    let empty = folding
+        .append_and_fold("run", ExpectedRevision::Any, &[])
+        .unwrap();
+    let empty_append = folding.append("run", ExpectedRevision::Any, &[]).unwrap();
+    let one = [Event::new("C", b"c".to_vec())];
+    assert_eq!(
+        (
+            (empty.appended.handed(), empty.appended.last(), empty.fold),
+            (empty_append.handed(), empty_append.last()),
+            conflict(
+                folding
+                    .append_and_fold("run", ExpectedRevision::Exact(5), &[])
+                    .map(|d| d.appended)
+            ),
+            conflict(folding.append("run", ExpectedRevision::Exact(5), &[])),
+            conflict(
+                folding
+                    .append_and_fold("run", ExpectedRevision::NoStream, &one)
+                    .map(|d| d.appended)
+            ),
+            conflict(folding.append("run", ExpectedRevision::NoStream, &one)),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            cap.batch_positions.lock().unwrap().len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            (0, None, rigger::contextgraph::Fold::Folded),
+            (0, None),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            1,
+            0,
+            Vec::<String>::new(),
+        ),
+        "both callers get the store's answer for an empty batch and an unmet expectation, and \
+         nothing is appended, folded or said"
+    );
+}
+
+/// A folding store wired with no graph opener at all: an offline replay's isolated re-drive.
+const NO_GRAPH: Option<OpenGraph> = None;
+
+/// How a folding store opens its graph on demand.
+type OpenGraph = fn() -> Result<Box<dyn Projection>, rigger::contextgraph::Error>;
+
+/// Given a store wrapped to fold into a graph it opens on demand, when a caller appends, then the
+/// graph is opened only once the events are on the log - so a graph that cannot be had costs the
+/// append nothing but its fold, which is said with the reason.
+#[test]
+fn a_folding_store_opens_its_graph_only_after_the_append_is_on_the_log() {
+    let store = Store::open(":memory:").unwrap();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let seen_at_open = Mutex::new(Vec::<usize>::new());
+    let open = || -> Result<Box<dyn Projection>, rigger::contextgraph::Error> {
+        seen_at_open.lock().unwrap().push(
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+        );
+        Err(rigger::contextgraph::Error(
+            "file is not a database".to_string(),
+        ))
+    };
+    let appended = rigger::ingest::FoldingStore::new(&store, Some(open), &log)
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("A", b"a".to_vec())],
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            appended.placed().collect::<Vec<_>>(),
+            seen_at_open.lock().unwrap().clone(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 1)],
+            vec![1],
+            vec![
+                "rigger: recorded 1 run event(s); not folded into the context graph: graph: file \
+                 is not a database"
+                    .to_string()
+            ]
+        ),
+        "the event is on the log before the graph is opened, once, and the lost fold is said"
+    );
+}
+
+/// Given a store wrapped to fold, when a caller reads through it, then every read answers exactly
+/// what the wrapped store answers.
+#[test]
+fn a_folding_store_reads_exactly_what_the_store_it_wraps_holds() {
+    let store = Store::open(":memory:").unwrap();
+    let events: Vec<Event> = ["A", "B", "A"]
+        .iter()
+        .map(|t| Event::new(*t, t.as_bytes().to_vec()))
+        .collect();
+    store.append("run", ExpectedRevision::Any, &events).unwrap();
+    let log = |_: &str| {};
+    let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
+    let ids = |es: Vec<Event>| es.into_iter().map(|e| e.position).collect::<Vec<_>>();
+    let filter = rigger::eventstore::Filter::default();
+    let first = |s: rigger::eventstore::Subscription| {
+        s.recv_timeout(std::time::Duration::from_secs(5))
+            .map(|e| e.position)
+    };
+    assert_eq!(
+        (
+            ids(folding.read_stream("run", 1, Direction::Forward).unwrap()),
+            ids(folding.read_all(1, Direction::Forward, &filter).unwrap()),
+            ids(folding
+                .read_stream_typed("run", 0, rigger::eventstore::TypeSelection::Only(&["A"]))
+                .unwrap()),
+            folding.last_position("run", "A").unwrap(),
+            first(folding.subscribe_all(2, &filter).unwrap()),
+            first(folding.subscribe_stream("run", 1).unwrap()),
+        ),
+        (
+            vec![2, 3],
+            vec![2, 3],
+            vec![1, 3],
+            Some(2),
+            Some(3),
+            Some(2)
+        ),
+        "each read passes through to the wrapped store"
+    );
+}
+
+/// Given a store wrapped to fold, when a caller reads it in batches, by positions alone, or by a
+/// group's newest member, then each read hands exactly what the wrapped store hands: the same
+/// events from the same revision in the same bounded batches with the same head, the same
+/// positions in the same batches, the same group head - and a sink's error ends the read with it.
+#[test]
+fn a_folding_store_hands_the_batched_positions_and_group_reads_of_the_store_it_wraps() {
+    use rigger::eventstore::{Error, GroupHead, META_GROUP};
+    let store = Store::open(":memory:").unwrap();
+    let at = |t: &str| Event::new(t, t.as_bytes().to_vec());
+    store
+        .append("other", ExpectedRevision::Any, &[at("X")])
+        .unwrap();
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[
+                at("A"),
+                at("B").with_meta(META_GROUP, "g"),
+                at("C"),
+                at("D").with_meta(META_GROUP, "g"),
+                at("E"),
+            ],
+        )
+        .unwrap();
+    let log = |_: &str| {};
+    let folding = rigger::ingest::FoldingStore::new(&store, NO_GRAPH, &log);
+    type Batches = Vec<(Vec<(u64, String)>, u64)>;
+    let batched = |s: &dyn EventStore, from| -> Batches {
+        let mut out = Vec::new();
+        s.read_stream_batched("run", from, 2, &mut |events, head| {
+            out.push((
+                events
+                    .iter()
+                    .map(|e| (e.position, e.type_.clone()))
+                    .collect(),
+                head,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let positions = |s: &dyn EventStore| -> Vec<Vec<u64>> {
+        let mut out = Vec::new();
+        s.read_stream_positions("run", 3, &mut |ps| {
+            out.push(ps.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        out
+    };
+    let head = |t: &str, position| GroupHead {
+        position,
+        type_: t.to_string(),
+        meta: [(META_GROUP.to_string(), "g".to_string())].into(),
+    };
+    let s = |p: u64, t: &str| (p, t.to_string());
+    assert_eq!(
+        (
+            batched(&folding, 1),
+            positions(&folding),
+            folding.latest_in_group("run", "g").unwrap(),
+            folding.latest_in_group("run", "absent").unwrap(),
+        ),
+        (
+            vec![
+                (vec![s(3, "B"), s(4, "C")], 6),
+                (vec![s(5, "D"), s(6, "E")], 6)
+            ],
+            vec![vec![2, 3, 4], vec![5, 6]],
+            Some(head("D", 5)),
+            None,
+        ),
+        "the batched read from revision 1, the positions read and the group lookup pass through"
+    );
+    assert_eq!(
+        (batched(&folding, 0), positions(&folding)),
+        (batched(&store, 0), positions(&store)),
+        "every read answers exactly what the wrapped store answers"
+    );
+    let mut calls = 0;
+    let refused = folding.read_stream_batched("run", 0, 2, &mut |_, _| {
+        calls += 1;
+        Err(Error::Backend("the sink refused".to_string()))
+    });
+    assert_eq!(
+        (refused.map_err(|e| e.to_string()), calls),
+        (Err("event store: the sink refused".to_string()), 1),
+        "a sink's error ends the read through the wrapper with that error"
+    );
+}
+
+/// Given a graph the caller already holds open, when a writer appends through `folding_into` over
+/// it, then the batch lands and folds into that graph in one batch at the positions the store
+/// issued, and nothing is said; over no graph, the batch lands, nothing folds and nothing is said.
+#[test]
+fn folding_into_a_held_graph_folds_there_and_over_none_folds_nothing() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(
+            "other",
+            ExpectedRevision::Any,
+            &[Event::new("Prior", b"p".to_vec())],
+        )
+        .unwrap();
+    let cap = CapturingProjection::default();
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let batch = [
+        Event::new("A", b"a".to_vec()),
+        Event::new("B", b"b".to_vec()),
+    ];
+    let held = rigger::ingest::folding_into(&store, Some(&cap as &dyn Projection), &log)
+        .append_and_fold("run", ExpectedRevision::NoStream, &batch)
+        .unwrap();
+    let none = rigger::ingest::folding_into(&store, None, &log)
+        .append_and_fold("run", ExpectedRevision::Exact(1), &batch[..1])
+        .unwrap();
+    assert_eq!(
+        (
+            held.appended.placed().collect::<Vec<_>>(),
+            held.fold == rigger::contextgraph::Fold::Folded,
+            none.appended.placed().collect::<Vec<_>>(),
+            none.fold,
+            cap.batch_positions.lock().unwrap().clone(),
+            cap.per_event_applies.load(Ordering::SeqCst),
+            store
+                .read_stream("run", 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            lines.lock().unwrap().clone(),
+        ),
+        (
+            vec![(0, 2), (1, 3)],
+            true,
+            vec![(0, 4)],
+            rigger::contextgraph::Fold::NotFolded("graph: no context graph is wired".to_string()),
+            vec![vec![2, 3]],
+            0,
+            3,
+            Vec::<String>::new()
+        ),
+        "the held graph folds its batch once at 2 and 3; over none the event lands at 4 unfolded"
     );
 }

@@ -21,31 +21,10 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
-use std::process::Command;
+mod common;
 
+use common::served::node_harness_passes;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// The SERVED root page SHIPS the whole-graph exploration viz (spec 42 c5): the deterministic
 /// force layout, the SVG emit (`<circle>`/`<line>`/`<text>`), the overview + drill renderers, the
@@ -348,47 +327,12 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-viz-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 42 c5's exploration viz: the served page's OWN viz LAYS OUT and DISPATCHES.
-/// It drives the real page script under a DOM shim (node's `vm`): the on-load default renders the
-/// clustered overview with clickable clusters, a `data-cluster` click drills, a `data-kgback` click
-/// returns to the overview, `forceLayout` converges to finite positions, and an empty graph degrades
-/// to a message. This is the behavioral proof the grep test cannot make - dropping the data-cluster
-/// dispatch, or a non-finite layout, makes it go red.
-#[test]
-fn the_exploration_viz_lays_out_and_dispatches_overview_drill_and_back() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_exploration_viz_lays_out_and_dispatches_overview_drill_and_back: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the viz harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, VIZ_HARNESS).expect("write the viz harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served exploration viz");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the exploration viz must lay out and dispatch overview/drill/back, but the runtime harness \
-         failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK exploration-viz-drives-and-dispatches"),
-        "the viz harness must confirm the overview/drill/back path:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 42 c5's exploration viz: the served page's OWN viz LAYS OUT and DISPATCHES.
+    /// It drives the real page script under a DOM shim (node's `vm`): the on-load default renders the
+    /// clustered overview with clickable clusters, a `data-cluster` click drills, a `data-kgback` click
+    /// returns to the overview, `forceLayout` converges to finite positions, and an empty graph degrades
+    /// to a message. This is the behavioral proof the grep test cannot make - dropping the data-cluster
+    /// dispatch, or a non-finite layout, makes it go red.
+    the_exploration_viz_lays_out_and_dispatches_overview_drill_and_back: node_harness_passes(VIZ_HARNESS, "OK exploration-viz-drives-and-dispatches");
 }

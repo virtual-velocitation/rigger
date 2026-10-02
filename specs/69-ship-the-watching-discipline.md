@@ -51,7 +51,7 @@ skills, and push-side guardrails that land anomalies in the orchestrator's own s
   anomalies once - correct for a fresh observer). `--once` prints standing anomalies and
   exits (cron/CI); streaming is the harness-monitor default. Reads only store, process
   table, and status - never the driver, which is exactly the process that may be dead.
-- **A failed unit names its cause; recurrence counts per cause** (`src/conductor.rs`
+- **A failed unit names its cause; recurrence counts per cause** (`crates/rigger-conductor/src/conductor.rs`
   `TYPE_UNIT_FAILED` emit sites, the ledger fold, `cmd_status`, watch/attention): the
   conductor is in a distinct branch for each failure mode but emits a bare `{id, attempts}`.
   Stamp an additive serde-defaulted `cause` at each emit site from that branch (`reject`,
@@ -65,7 +65,7 @@ skills, and push-side guardrails that land anomalies in the orchestrator's own s
   `dashboard: not serving (marker names dead pid <N>) - run 'rigger dash' or the next step
   restarts it`. `--json` carries the same truth.
 - **The step wire carries attention; the driver relays it** (`src/main.rs::cmd_step` /
-  `src/spawn.rs::Step`, then `workflows/rigger.js`): ONE additive, serde-defaulted
+  `crates/rigger-domain/src/spawn.rs::Step`, then `workflows/rigger.js`): ONE additive, serde-defaulted
   `attention` array on the step's JSON line, stamped by `rigger step` from live conductor
   state exactly as `halted` is - the driver never scrapes or infers. Entries: unit ESCALATED,
   run HALTED with reason, Nth worker death on one unit, budget crossing its final tenth, and

@@ -11,8 +11,8 @@ facing usage docs are deliberately OUT of scope.
 
 A docs/design-intent extraction pass emits `DocConceptExtracted` (one per design-intent node) and
 `DocLinkExtracted` (one per link) events, folded by new arms in `Projection::apply` -> `fold`
-(`src/contextgraph/sqlite.rs`) into these node kinds (added alongside the existing `KIND_*` consts
-in `src/contextgraph/mod.rs`):
+(`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) into these node kinds (added alongside the existing `KIND_*` consts
+in `crates/rigger-domain/src/contextgraph.rs`):
 
 - `design-doc` - a reference architecture / `architecture.md` / an addendum (the DESIGN-INTENT
   layer);

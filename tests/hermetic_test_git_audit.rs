@@ -41,6 +41,10 @@
 //! outranks whatever a `GIT_CONFIG_GLOBAL`-pointed file says, verified by this file's own
 //! control/treatment pair, so that pre-existing use cannot defeat the runner's hermeticity).
 
+mod common;
+
+use common::repo::collect_rs_files;
+use common::repo::repo_text;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,16 +80,6 @@ fn expected_hermetic_git_block() -> BTreeMap<&'static str, &'static str> {
     ]
     .into_iter()
     .collect()
-}
-
-/// The committed test runner's raw text, resolved from the crate manifest dir (never the
-/// process CWD, so this is stable regardless of where `cargo test` is invoked from).
-fn runner_script_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(".cargo")
-        .join("pidns-runner.sh");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read test runner at {}: {e}", path.display()))
 }
 
 /// Parse every simple, unquoted, non-interpolated `KEY=value` shell assignment line in `script`
@@ -134,7 +128,7 @@ fn exported_names(script: &str) -> Vec<String> {
 /// them (an assignment alone does not reach a child process the runner then `exec`s).
 #[test]
 fn runner_exports_the_fixed_hermetic_git_identity_block() {
-    let script = runner_script_text();
+    let script = repo_text(".cargo/pidns-runner.sh");
     let assignments = parse_shell_assignments(&script);
     let exported = exported_names(&script);
     let expected = expected_hermetic_git_block();
@@ -159,24 +153,12 @@ fn runner_exports_the_fixed_hermetic_git_identity_block() {
 /// workflow rather than running it, like `tests/ci_lanes.rs`.
 #[test]
 fn ci_workflow_env_block_matches_the_runners_exported_git_identity_set() {
-    let runner_script = runner_script_text();
+    let runner_script = repo_text(".cargo/pidns-runner.sh");
     let runner_block = parse_shell_assignments(&runner_script);
 
-    let workflow_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(".github")
-        .join("workflows")
-        .join("rust.yml");
-    let workflow_text = std::fs::read_to_string(&workflow_path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read CI workflow at {}: {e}",
-            workflow_path.display()
-        )
-    });
+    let workflow_text = repo_text(".github/workflows/rust.yml");
     let workflow: serde_yaml::Value = serde_yaml::from_str(&workflow_text).unwrap_or_else(|e| {
-        panic!(
-            "CI workflow at {} is not valid YAML: {e}",
-            workflow_path.display()
-        )
+        panic!("CI workflow .github/workflows/rust.yml is not valid YAML: {e}")
     });
     let workflow_env = workflow
         .get("env")
@@ -335,23 +317,6 @@ fn a_test_commit_succeeds_with_the_fixed_identity_and_no_gpg_invocation_under_th
         "the committed author/committer must be the runner's fixed identity, not the hostile \
          global config's"
     );
-}
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
-/// ordered.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// Criterion 4: the two literal tokens the runner's OWN signing-suppression mechanism owns

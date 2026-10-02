@@ -86,104 +86,15 @@
 
 mod common;
 
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
+use common::git::git_answer;
+use common::git::git_ok;
+use common::git::init_repo;
+use common::git::temp_git_project_with_commit;
+use rigger::spawn::SpawnEvent;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git project with a real commit, so `rigger step`'s run-branch anchoring (a base
-/// ref like `HEAD` must resolve) works. Mirrors `tests/cli.rs`'s identical helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
-
-/// A bare (no commit-required) git repo for the pure library-boundary test: `git init` plus
-/// identity config and one empty commit, so `HEAD` resolves for `Worktree::create`'s
-/// branch-from-HEAD path.
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
-
-/// Run `git <args...>` in `cwd` and assert it succeeds.
-fn git_ok(cwd: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git {args:?} must succeed");
-}
-
-/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
-fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("git must be runnable");
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s identical
-/// `run_stream_identity` helper (a repo with no `.rigger/project.id` falls through to the git
-/// toplevel's own basename).
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// Append raw events built through the crate's PUBLIC `rigger::spawn`/`rigger::eventstore` API
 /// (never a hand-typed JSON guess at the wire shape) directly into the same real on-disk store
@@ -205,56 +116,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap();
     }
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s identical `run_rigger` helper (opts out of the auto-started dashboard and
-/// the machine-global instance registry, exactly as every other periphery suite that spawns the
-/// product does).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// A single reviewless git-backed unit stage - mirrors `tests/cli.rs`'s identical
-/// `write_reviewless_git_unit_workflow`. Its only purpose here is to give `rigger step` a
-/// real workflow to bootstrap a run (and the `rigger-run` branch) against; the units this file
-/// actually tests (`fenced`, `hung`) are manufactured directly as foreign worktrees/events,
-/// exactly as `tests/cli.rs`'s `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_
-/// reclaims_a_dead_ancestor_leftover` already does for its own "leftover-orphan" branch.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: fencetest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
 }
 
 /// Spec 83, criterion 1 (THE FENCE), driven at the real binary boundary across THREE separate
@@ -298,7 +159,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     // Step 1: bootstraps the store and the `rigger-run` branch, and parks the workflow's own
     // "solo" implementer (unrelated to the two foreign units this test actually probes).
@@ -365,7 +226,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"fenced","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+            common::spawn_request("fenced", "fenced", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             rigger::eventstore::Event::new(
@@ -376,7 +237,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"hung","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("hung", "hung", "implementer", 0, "task")
+            common::spawn_request("hung", "hung", "implementer", 0, "task")
                 .to_event()
                 .unwrap(),
         ],
@@ -495,7 +356,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
     // own best-effort `Worktree::delete_branch` call underneath; only the duplicate LOG
     // line is suppressed, never the underlying cleanup.
     assert!(
-        git_out(
+        git_answer(
             root,
             &[
                 "rev-parse",
@@ -508,7 +369,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         "the hung unit's now-orphaned branch ref must still be reclaimed (silently), even \
          though its removal is no longer independently logged"
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
         !list.contains("rigger/u/hung"),
         "the reclaimed `hung` worktree must be fully DEREGISTERED from git: {list}"
@@ -581,7 +442,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     // Step 1: bootstraps the store and the `rigger-run` branch; unrelated to `settled`, which
     // this test manufactures directly, exactly like `fenced`/`hung` above.
@@ -617,7 +478,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
                 rigger::ledger::TYPE_UNIT_INTEGRATED,
                 br#"{"id":"settled","commit":"deadbeef"}"#.to_vec(),
             ),
-            rigger::spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+            common::spawn_request("settled", "settled", "adversary", 0, "verify")
                 .to_event()
                 .unwrap(),
             rigger::spawn::SpawnResult::ok("settled/adversary#0", "approve")
@@ -660,7 +521,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
          assertion above no longer gives: {err}"
     );
     assert!(
-        git_out(
+        git_answer(
             root,
             &[
                 "rev-parse",
@@ -699,7 +560,6 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
     use rigger::run::{current_run, TYPE_RUN_STARTED};
-    use rigger::spawn::SpawnRequest;
     use rigger::worktree::{scratch_root, sweep_terminal, Worktree};
 
     let repo = tempfile::tempdir().unwrap();
@@ -721,7 +581,7 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
             )],
         )
         .unwrap();
-    let dead_req = SpawnRequest::new("orphan-slug", "orphan-slug", "implementer", 0, "task");
+    let dead_req = common::spawn_request("orphan-slug", "orphan-slug", "implementer", 0, "task");
     store
         .append(
             STREAM,

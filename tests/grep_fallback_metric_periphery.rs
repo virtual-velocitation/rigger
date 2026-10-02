@@ -7,7 +7,7 @@
 //! (`rigger::progress::{AgentProgress, GREP_FALLBACK_PREFIX, record, STREAM}`,
 //! `rigger::metrics::grep_fallbacks`, `rigger::dash::{build_state, state_json, MetricsView}`), so
 //! they guard exactly the boundaries the inside-out unit tests (`src/metrics.rs mod tests` and
-//! `src/dash.rs mod tests`, which reach the same functions via `super::` and hand-build events
+//! `crates/rigger-dash/src/dash.rs mod tests`, which reach the same functions via `super::` and hand-build events
 //! with `Event::new`) are structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit tests reach the metric, the predicate, the prefix const, and
@@ -16,7 +16,7 @@
 //!    test fails to COMPILE - the inside-out tests would stay green.
 //!  - THE WRITER->READER WIRE FORM. The unit tests hand-build `Event::new(TYPE_AGENT_PROGRESS,
 //!    to_vec(&ap))` directly, bypassing the REAL writer path `progress::record` -> the private
-//!    `AgentProgress::to_event` (which also stamps `META_RUN_ID`). The round-trip test drives the
+//!    `AgentProgress::to_stamped_event` (which also stamps `META_RUN_ID`). The round-trip test drives the
 //!    real writer into an in-memory store, reads the exact stored bytes back, and counts them -
 //!    proving the serialized form the writer actually emits is what the counter counts.
 //!  - THE PREFIX SINGLE-SOURCE-OF-TRUTH. `GREP_FALLBACK_PREFIX` is documented as the one
@@ -35,21 +35,21 @@
 //! `progress`, `metrics`, `dash`, and `eventstore::sqlite` are not feature-gated, so this guards
 //! the counted-fallback contract on BOTH the default and the `--no-default-features` lane.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::ev;
+use common::fixtures::positioned;
 use rigger::contextgraph::Graph;
 use rigger::dash::{build_state, state_json};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, Position};
+use rigger::eventstore::Event;
 use rigger::metrics::grep_fallbacks;
 use rigger::progress::{self, AgentProgress, GREP_FALLBACK_PREFIX};
+use rigger::progress_store;
 
 // --- helpers -------------------------------------------------------------------------------------
-
-/// A run-stream event with JSON `data` (the shape the ledger fold reads).
-fn run_ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
-}
 
 /// An `AgentProgress` event as it lives in the progress store, built through the PUBLIC
 /// `AgentProgress` type + `serde_json` (the counter reads exactly this typed slice).
@@ -62,15 +62,6 @@ fn progress_ev(id: &str, activity: &str) -> Event {
         progress::TYPE_AGENT_PROGRESS,
         serde_json::to_vec(&ap).unwrap(),
     )
-}
-
-/// Give a slice 1-based positions, as the store would on append, so position-sensitive reads
-/// (`consolidate`, `/api/events?since=`) are exercised realistically.
-fn positioned(mut events: Vec<Event>) -> Vec<Event> {
-    for (i, e) in events.iter_mut().enumerate() {
-        e.position = (i + 1) as Position;
-    }
-    events
 }
 
 // --- (4) + (5) prefix single-source-of-truth + public reachability -------------------------------
@@ -129,7 +120,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
 // --- (3) round-trip through the REAL writer path -------------------------------------------------
 
 /// ROUND-TRIP / API EDGE: drive the actual writer `progress::record` (which serializes through the
-/// crate-private `AgentProgress::to_event`, stamping `META_RUN_ID`) into an in-memory store, read
+/// crate-private `AgentProgress::to_stamped_event`, stamping `META_RUN_ID`) into an in-memory store, read
 /// the exact stored bytes back off `progress::STREAM`, and count them with the public
 /// `metrics::grep_fallbacks`. This proves the serialized wire form the writer REALLY emits - not a
 /// hand-built `Event` - is exactly what the counter counts, and that a run-id-stamped event still
@@ -139,7 +130,7 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     let store = Store::open(":memory:").unwrap();
     let run_id = "436b81a9-run";
 
-    progress::record(
+    progress_store::record(
         &store,
         run_id,
         "u1/implementer#0",
@@ -147,8 +138,8 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     )
     .unwrap();
     // Ordinary narration through the same writer - must NOT count.
-    progress::record(&store, run_id, "u1/implementer#0", "cargo build green").unwrap();
-    progress::record(
+    progress_store::record(&store, run_id, "u1/implementer#0", "cargo build green").unwrap();
+    progress_store::record(
         &store,
         run_id,
         "u1/adversary#0",
@@ -156,10 +147,8 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     )
     .unwrap();
 
-    // Read the exact bytes the writer stored, off the progress stream.
-    let stored = store
-        .read_stream(progress::STREAM, 0, Direction::Forward)
-        .unwrap();
+    // Read the exact bytes the writer stored, off the run's progress stream.
+    let stored = progress::read_run(&store, run_id).unwrap();
     assert_eq!(
         stored.len(),
         3,
@@ -201,9 +190,9 @@ fn metrics_without_fallbacks(m: &rigger::dash::MetricsView) -> serde_json::Value
 fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchanged() {
     // A run-stream slice that yields units_started=1 and review_approve=1 (a `reviewed` UnitStatus).
     let events = positioned(vec![
-        run_ev("UnitStarted", r#"{"id":"u1"}"#),
-        run_ev("UnitStatus", r#"{"id":"u1","status":"green"}"#),
-        run_ev("UnitStatus", r#"{"id":"u1","status":"reviewed"}"#),
+        ev("UnitStarted", r#"{"id":"u1"}"#),
+        ev("UnitStatus", r#"{"id":"u1","status":"green"}"#),
+        ev("UnitStatus", r#"{"id":"u1","status":"reviewed"}"#),
     ]);
 
     // A progress slice with two `grep-fallback:` lines and one ordinary line.
@@ -273,7 +262,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
 /// panel's `metrics.grep_fallbacks || 0` always reads a number, never `undefined`.
 #[test]
 fn the_state_json_body_always_carries_the_grep_fallbacks_key_even_at_zero() {
-    let events = positioned(vec![run_ev("UnitStarted", r#"{"id":"u1"}"#)]);
+    let events = positioned(vec![ev("UnitStarted", r#"{"id":"u1"}"#)]);
     let empty: Vec<Event> = Vec::new();
     let liveness = HashMap::new();
 

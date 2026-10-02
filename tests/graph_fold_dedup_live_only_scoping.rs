@@ -24,25 +24,11 @@
 //! fold (criterion 1) lives in `graph_fold_dedup_live_edge.rs`; the rebuild-collapse of pre-existing
 //! duplicates (criterion 3) is owned by a sibling unit and is not exercised here.
 
-use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Edge, Projection, REL_GOVERNS, TYPE_DECISION_MADE};
-use rigger::eventstore::Event;
+mod common;
+use common::fixtures::apply_decision;
 
-/// Fold a `DecisionMade` built from its raw on-log JSON at `pos` - exactly the event the loop
-/// records when an agent emits a decision - deliberately bypassing the in-crate payload struct so
-/// the test pins the JSON contract, not the Rust type. Each entry in `governs` folds a
-/// `decision --GOVERNS--> file` edge; a non-empty `supersedes` folds `decision --SUPERSEDES--> <id>`
-/// and INVALIDATES (stamps `valid_to` on, never deletes) the superseded decision's live `GOVERNS`
-/// edges. `apply` returns `Err` on a fold failure, so a successful call is itself evidence the
-/// payload folded.
-fn apply_decision(p: &Projector, pos: u64, id: &str, governs: &[&str], supersedes: &str) {
-    let payload = serde_json::json!({
-        "id": id, "summary": "", "governs": governs, "supersedes": supersedes,
-    });
-    let mut e = Event::new(TYPE_DECISION_MADE, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+use rigger::contextgraph::sqlite::Projector;
+use rigger::contextgraph::{Edge, Projection, REL_GOVERNS};
 
 /// The `(from, to)` of every LIVE `GOVERNS` edge a public `subgraph` result exposes, sorted, so a
 /// test can COUNT the governance edges the projection actually surfaces to a grounding consumer.
@@ -70,7 +56,7 @@ fn subgraph_shows_a_superseded_governs_edge_live_again_after_re_assertion() {
     let p = Projector::open(":memory:", "test").unwrap();
 
     // 1) d1 governs mod.rs -> the projection surfaces exactly one live d1->mod.rs GOVERNS edge.
-    apply_decision(&p, 1, "d1", &["mod.rs"], "");
+    apply_decision(&p, 1, "d1", "", &["mod.rs"], "");
     let after_assert = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
     assert_eq!(
         governs_edges(&after_assert.edges),
@@ -80,7 +66,7 @@ fn subgraph_shows_a_superseded_governs_edge_live_again_after_re_assertion() {
 
     // 2) d2 supersedes d1 -> d1's GOVERNS edge is INVALIDATED, so the projection a consumer reads no
     //    longer surfaces d1 governing mod.rs (the invalidated edge is filtered out of the live view).
-    apply_decision(&p, 2, "d2", &[], "d1");
+    apply_decision(&p, 2, "d2", "", &[], "d1");
     let after_supersede = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
     assert!(
         !governs_edges(&after_supersede.edges)
@@ -96,7 +82,7 @@ fn subgraph_shows_a_superseded_governs_edge_live_again_after_re_assertion() {
     //    again, and exactly ONCE (the re-assertion is neither swallowed into the dead row nor
     //    duplicated). This reddens if the dedup dropped `AND valid_to IS NULL`: the re-assert would
     //    update the dead row without clearing valid_to and the relationship would stay invisible.
-    apply_decision(&p, 3, "d1", &["mod.rs"], "");
+    apply_decision(&p, 3, "d1", "", &["mod.rs"], "");
     let after_reassert = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
     assert_eq!(
         governs_edges(&after_reassert.edges),
@@ -117,8 +103,8 @@ fn subgraph_collapses_a_governs_re_assert_with_no_intervening_supersession_to_on
     // So the fold dedups live edges, and ONLY live edges.
     let p = Projector::open(":memory:", "test").unwrap();
 
-    apply_decision(&p, 1, "d1", &["mod.rs"], "");
-    apply_decision(&p, 2, "d1", &["mod.rs"], ""); // re-assert, no supersession between
+    apply_decision(&p, 1, "d1", "", &["mod.rs"], "");
+    apply_decision(&p, 2, "d1", "", &["mod.rs"], ""); // re-assert, no supersession between
 
     let g = p.subgraph(&["mod.rs".to_string()], 2).unwrap();
     assert_eq!(

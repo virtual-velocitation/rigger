@@ -1,0 +1,69 @@
+[package]
+name = "rigger-conductor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's application ring: the conductor use case that walks the stage DAG, runs each stage's agent and gates, advances units under the safety rails and emits the event stream the ledger and the context graph project from."
+
+[lib]
+name = "rigger_conductor"
+path = "src/lib.rs"
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): a module gated
+# `any(feature = "store", not(feature = "core"))` or `feature = "symbols"` there carries the same
+# gate here, and the root forwards all three features, so every lane compiles exactly the
+# surface it did before.
+default = ["symbols", "store"]
+store = [
+    "rigger-domain/store",
+    "rigger-store-sqlite/store",
+    "rigger-process/store",
+    "rigger-worktree-git/store",
+    "rigger-gates-shell/store",
+    "rigger-driver/store",
+    "rigger-grounder/store",
+    "rigger-config-files/store",
+]
+core = [
+    "rigger-domain/core",
+    "rigger-store-sqlite/core",
+    "rigger-process/core",
+    "rigger-worktree-git/core",
+    "rigger-gates-shell/core",
+    "rigger-driver/core",
+    "rigger-grounder/core",
+    "rigger-config-files/core",
+    "rigger-graph-sqlite/core",
+]
+symbols = ["rigger-grounder/symbols"]
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The adapters the conductor still calls directly (workspace split, ring 3). Each edge points
+# outward and is recorded in tests/boundary_audit.rs EDGE_ALLOWLIST with the lesson naming the
+# port that removes it.
+rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }
+rigger-process = { path = "../rigger-process", default-features = false }
+rigger-worktree-git = { path = "../rigger-worktree-git", default-features = false }
+rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false }
+rigger-driver = { path = "../rigger-driver", default-features = false }
+rigger-grounder = { path = "../rigger-grounder", default-features = false }
+rigger-config-files = { path = "../rigger-config-files", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The canary corpus items are YAML-frontmatter files.
+serde_yaml = "0.9"
+
+# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+# The tests project the run's events through the SQLite projector. `core` above forwards to it, so
+# this crate's core-lane tests build it in the same lane as every other dependency.
+rigger-graph-sqlite = { path = "../rigger-graph-sqlite", default-features = false }
+
+[lints]
+workspace = true

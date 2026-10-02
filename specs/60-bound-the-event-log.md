@@ -8,14 +8,14 @@ and 47.9x on THIS repo's own store (1.32M of 1.48M events are `EdgeInferred`; 98
 re-derivable index). The spec-49 keyed-batch dedup machinery is correct and already stamps every
 ingest event with its `<prefix>/<file>@<hash>#<i>` replay key - the defect is one scoping line:
 `replayed_keys` is seeded from `crate::run::current_run(&all_prior)` (the CURRENT run's slice,
-`src/conductor.rs` around line 1339), so a NEW run sees none of the prior runs' ingest keys and
+`crates/rigger-conductor/src/conductor.rs` around line 1339), so a NEW run sees none of the prior runs' ingest keys and
 re-appends the whole index. Run-scoping is right for unit-lifecycle replay (the Gap 11 zombie
 fix) and wrong for derived project facts, which are project-scoped: a file's content hash does
 not change because a new run started.
 
 ## Design
 
-- **Project-scoped ingest dedup** (`src/conductor.rs`): the dedup consulted by the ingest emit
+- **Project-scoped ingest dedup** (`crates/rigger-conductor/src/conductor.rs`): the dedup consulted by the ingest emit
   path is project-scoped, derived from the whole stream (`all_prior`, already read at run start
   - no extra store round-trip), not from the current-run slice. The comparison is LATEST-PER-FILE,
   not ever-recorded: a file's batch is suppressed only when its content hash equals the hash of
@@ -27,7 +27,7 @@ not change because a new run started.
   exactly as today. Key shape is read only AFTER the type says the event is derived, and then
   it is the WHOLE key that identifies the file and its generation
   (`<prefix>/<file>@<hash>#<i>`: the remainder must carry an `@` and a `#<digits>` tail), never
-  a sniff of the leading `gc/` / `gd/` segment - `src/ingest.rs::key_batch` takes its prefix
+  a sniff of the leading `gc/` / `gd/` segment - `crates/rigger-grounder/src/ingest.rs::key_batch` takes its prefix
   from the CALLER, so a prefix sniff rests on an unenforced cross-module naming habit and a
   unit or stage id equal to `gc` or `gd` would make its own lifecycle keys read as project
   facts. Type-first is what makes Global constraint 3 a property of the code rather than of a
@@ -60,7 +60,7 @@ not change because a new run started.
   derived types' replay keys, created lazily; the observable contract is the no-op, and a no-op
   must never cost more than an index seek on a log of any size. Because a suppressed append
   writes fewer events than it was handed, what the append REPORTS BACK has to say what it wrote:
-  the one shared append-and-fold authority (`src/ingest.rs::append_and_fold_batch`) derives each
+  the one shared append-and-fold authority (`crates/rigger-grounder/src/ingest.rs::append_and_fold_batch`) derives each
   event's fold position arithmetically as `base = last + 1 - n`, which is only true when all `n`
   events were written, so a short write must be observable at the port or every event in that
   batch folds at a position the store never issued. BACKEND SCOPE, decided here so no unit has
@@ -69,7 +69,7 @@ not change because a new run started.
   only ever write MORE, never drop), and its module says so in one line. The HONESTY half is a
   PORT obligation every adapter owes, because it is what keeps the shared append-and-fold
   authority correct for whichever store is wired: the backend-agnostic contract suite
-  (`src/eventstore/contract.rs`, which both adapters' tests run) is where it is pinned, so a
+  (`crates/rigger-store-sqlite/src/eventstore/contract.rs`, which both adapters' tests run) is where it is pinned, so a
   caller can never derive a position the store did not issue on ANY backend. This criterion's
   own suppression test therefore drives the STORE PORT directly rather than the run's ingest
   path - it must, because the sink above it is built to never hand the store a redundant append
@@ -87,14 +87,14 @@ not change because a new run started.
   `--derived` is implemented there and, on any other configured backend, FAILS LOUDLY naming the
   backend it needs. Never a silent no-op: reporting a prune that did not happen is the one
   outcome an operator cannot detect.
-- **Docs** (`docs/architecture.md` + the handbook prose rendered by `src/docs.rs`): whatever
+- **Docs** (`docs/architecture.md` + the handbook prose rendered by `crates/rigger-domain/src/docs.rs`): whatever
   prose describes the ingest dedup or `rigger reset` re-renders to the new truth, so the drift
   gates stay green. Each prose site is named with its OWNER, so no unit inherits another's
   paragraph and none is left for a reviewer to demand of whoever is nearest: the content-keyed
   skip paragraph in `docs/architecture.md` (section 5.5) states the dedup rule and belongs to
-  the criterion that changes that rule; the `rigger reset` prose rendered by `src/docs.rs` -
+  the criterion that changes that rule; the `rigger reset` prose rendered by `crates/rigger-domain/src/docs.rs` -
   which today names `--runs` as THE prune command, and whose own drift assertions in that file
-  check that wording - belongs to the criterion that adds `--derived`, and `src/docs.rs` is that
+  check that wording - belongs to the criterion that adds `--derived`, and `crates/rigger-domain/src/docs.rs` is that
   criterion's file to edit, nobody else's. A paragraph lands in the SAME unit as the code it
   describes, never in a later one.
 
@@ -141,13 +141,13 @@ not change because a new run started.
 - [ ] a test proves UNCHANGED-TREE RUNS APPEND NOTHING: a second run (fresh `RunStarted`) over an
   unchanged tree appends zero derived-index events, because the ingest dedup keys are seeded from
   the whole stream rather than the current run's slice. This criterion OWNS the seeding fix at
-  BOTH ingest sinks, named: the run's keyed emit in `src/conductor.rs` (the `replayed_keys`
+  BOTH ingest sinks, named: the run's keyed emit in `crates/rigger-conductor/src/conductor.rs` (the `replayed_keys`
   seeding at run start and the keyed batch emit) AND the cold graph build in `src/main.rs`, which
   today collects every event's replay key with no type test at all (ever-recorded AND type-blind)
   and is the larger of the two edits. It owns with them the type-first suppression predicate
   itself - the predicate IS the seeding fix, so writing it is this criterion's work and no
   reviewer may charge it to criterion 2. ONE predicate, written ONCE beside the key authority
-  `key_batch` in `src/ingest.rs` and called from both sinks, never copied into either caller,
+  `key_batch` in `crates/rigger-grounder/src/ingest.rs` and called from both sinks, never copied into either caller,
   because the `<prefix>/<file>@<hash>#<i>` format is built there and must not drift; adding it
   there touches no contract of `append_and_fold_batch`, which is criterion 4's and stays so.
   It is the AUTHORITATIVE layer:
@@ -179,11 +179,11 @@ not change because a new run started.
   event (e.g. `ReviewFinding`) still appends a new row. This criterion OWNS the store-layer
   defense, and with it the honesty of the shared append-and-fold authority under a partially
   suppressed append: what the append reports back must name what was written, so
-  `src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
-  issue. WHAT THIS CRITERION OWNS IN `src/ingest.rs` IS THAT AUTHORITY, NOT THE FILE:
+  `crates/rigger-grounder/src/ingest.rs::append_and_fold_batch` never folds an event at a position the store did not
+  issue. WHAT THIS CRITERION OWNS IN `crates/rigger-grounder/src/ingest.rs` IS THAT AUTHORITY, NOT THE FILE:
   `append_and_fold_batch`'s contract, its signature, and its honesty under a partially suppressed
   append - and nothing else in that file. Criterion 1 MAY add the one shared type-first,
-  whole-key, latest-per-file predicate beside `key_batch` in `src/ingest.rs`, which is where it
+  whole-key, latest-per-file predicate beside `key_batch` in `crates/rigger-grounder/src/ingest.rs`, which is where it
   belongs (the `<prefix>/<file>@<hash>#<i>` format is BUILT by `key_batch` there, the module
   exports no parser for it, and the module doc says that key must never fork), and no reviewer
   may reject criterion 1 for adding it there: a sibling helper beside `key_batch` alters no
@@ -198,8 +198,8 @@ not change because a new run started.
   derived events keeps the latest event per distinct key, preserves every non-derived event,
   shrinks the file, and leaves a store that `rigger validate` reads clean and whose fold yields
   the unchanged live graph. This criterion OWNS the `rigger reset` prose rendered by
-  `src/docs.rs` and its drift assertions there (they name `--runs` as THE prune command today),
-  so `src/docs.rs` is this criterion's file to change and no other's.
+  `crates/rigger-domain/src/docs.rs` and its drift assertions there (they name `--runs` as THE prune command today),
+  so `crates/rigger-domain/src/docs.rs` is this criterion's file to change and no other's.
 - [ ] both feature lanes green (fmt, clippy, test on default and `--no-default-features`).
   This criterion OWNS the second lane end to end: it runs the sweep over the INTEGRATED change
   set of the five criteria above, records the transcript as the evidence (no gate in this

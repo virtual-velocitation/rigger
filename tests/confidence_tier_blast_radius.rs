@@ -30,38 +30,19 @@
 //! The tier filter and the audit fields are always compiled, so these guard the boundary in BOTH
 //! feature lanes.
 
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_BLAST_RADIUS_COMPUTED,
-};
+use rigger::conductor::{run, Deps, STREAM, TYPE_BLAST_RADIUS_COMPUTED};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
+use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::grounder::{BlastRadius, Grounder, Ref};
 use serde_json::{json, Value};
 
-/// A driver that returns an empty result without doing anything. The blast radius is RECORDED before
-/// the spawn (`run_stage`), so the run's terminal disposition is irrelevant to what this periphery
-/// layer observes - it only needs the run to reach the record.
-#[derive(Default)]
-struct NoopDriver;
-
-impl AgentDriver for NoopDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        _opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        Ok(AgentResult {
-            output: String::new(),
-            resolved_model: String::new(),
-        })
-    }
-}
+mod common;
+use common::fixtures::apply_next_json;
+use common::fixtures::NoopDriver;
 
 /// A STRUCTURAL grounder double - the shape criterion 2's graph arm and the audit actually key off,
 /// which a grep grounder cannot stand in for:
@@ -105,15 +86,6 @@ impl Grounder for StampedGrounder {
     }
 }
 
-/// Fold one event, built from its serialized JSON payload, into the graph at `pos` - the public
-/// event API a real run folds through.
-fn fold(g: &Projector, pos: &mut u64, type_: &str, payload: Value) {
-    *pos += 1;
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = *pos;
-    g.apply(&e).unwrap();
-}
-
 /// A real projector populated with a production-faithful multi-tier neighborhood of the seed file
 /// `combat.rs`, folded through the public event API (`CodeEntityExtracted` / `EdgeInferred`) exactly
 /// as a live run would: `combat.rs` DEFINES `apply_damage` and references it same-file (EXTRACTED),
@@ -124,14 +96,14 @@ fn tiered_projector() -> Projector {
     let g = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
     // combat.rs defines apply_damage (EXTRACTED CONTAINS) ...
-    fold(
+    apply_next_json(
         &g,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
         json!({ "file": "combat.rs", "name": "apply_damage", "kind": "function", "line": 1, "lang": "rust" }),
     );
     // ... and util.rs defines shared, so combat.rs's reference to it resolves cross-file (INFERRED).
-    fold(
+    apply_next_json(
         &g,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
@@ -140,7 +112,7 @@ fn tiered_projector() -> Projector {
     // combat.rs references apply_damage (same-file: EXTRACTED), shared (cross-file: INFERRED), and
     // magic (defined nowhere: AMBIGUOUS) - one reference per confidence tier.
     for name in ["apply_damage", "shared", "magic"] {
-        fold(
+        apply_next_json(
             &g,
             &mut pos,
             TYPE_EDGE_INFERRED,
@@ -184,6 +156,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         grounder: Some(&grounder),
         graph: graph.map(|g| g as _),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // The radius is recorded before the spawn, so the run's terminal disposition is irrelevant.
     let _ = run(&cfg, &deps);

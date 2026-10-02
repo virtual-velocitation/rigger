@@ -65,110 +65,12 @@
 mod common;
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::process::Command;
 
+use common::cli::read_run_events;
+use common::cli::run_rigger;
+use common::cli::seed_run_events;
+use common::cli::temp_store_project;
 use rigger::contextgraph::Graph;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-/// A throwaway project: its own git repo (so `project_identity()` resolves
-/// deterministically), with no `.rigger` dir yet. Mirrors `tests/cli.rs`'s `temp_project`
-/// and `tests/cause_wire_periphery.rs`'s identically-named helper.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Seed an initialized, empty `.rigger/events.db` under `root` - stands in for the store a
-/// prior `rigger run`/`step` would have created. Mirrors `tests/cause_wire_periphery.rs`.
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root` - mirrors
-/// `tests/cause_wire_periphery.rs`'s identically-named helper, itself mirroring
-/// `StoreLocation::identity`'s precedence.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Append `events` directly to `root`'s namespaced run stream through a REAL `Store::open`
-/// / SQLite round trip - standing in for the conductor (or `cmd_resume_unit`) minting them,
-/// or for a run that predates this criterion. Mirrors `tests/cause_wire_periphery.rs`.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// Read `root`'s namespaced run stream back through a REAL `Store::open` round trip, for
-/// the dashboard-consistency test below to feed into `dash::build_state` exactly as the
-/// serving path would.
-fn read_run_events(root: &Path) -> Vec<Event> {
-    let db = root.join(".rigger").join("events.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(
-            rigger::conductor::STREAM,
-            0,
-            rigger::eventstore::Direction::Forward,
-        )
-        .unwrap()
-}
-
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/cause_wire_periphery.rs`'s identically-named helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
 
 // ---------------------------------------------------------------------------------------
 // Gap 1: the event's wire contract, independent of `cmd_resume_unit`.
@@ -181,9 +83,8 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// today.
 #[test]
 fn a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_without_the_command() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -217,9 +118,8 @@ fn a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_with
 #[test]
 fn a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_real_store_round_trip(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -260,9 +160,8 @@ fn a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_re
 #[test]
 fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_real_store_round_trip(
 ) {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -334,9 +233,8 @@ fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_
 /// again only after a SECOND failure/escalation).
 #[test]
 fn the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_resolved() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -370,70 +268,41 @@ fn the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_r
 // Gap 5: `resume-unit`'s own argument-parsing edges and the "already-landed" refusal.
 // ---------------------------------------------------------------------------------------
 
-/// A non-numeric `--attempts` value refuses loudly, naming the bad value - no store is
-/// ever touched (argument parsing fails first), so an arbitrary empty directory suffices.
-#[test]
-fn resume_unit_rejects_a_non_numeric_attempts_value() {
+/// `rigger resume-unit` with `args` refuses before any store is touched (argument parsing fails
+/// first, so an arbitrary empty directory suffices), its stderr naming `named` and carrying the
+/// lowercase explanation `explains`.
+fn resume_unit_refuses(args: &[&str], named: &str, explains: &str) {
     let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts", "abc"]);
-    assert!(!ok, "a non-numeric --attempts must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("abc") && err.to_lowercase().contains("positive integer"),
-        "the refusal must name the bad value and explain the constraint; stderr: {err:?}"
-    );
-}
-
-/// `--attempts 0` refuses: a grant must add at least one real attempt.
-#[test]
-fn resume_unit_rejects_a_zero_attempts_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts", "0"]);
-    assert!(!ok, "--attempts 0 must refuse; stdout: {out:?}");
-    assert!(
-        err.contains('0') && err.to_lowercase().contains("positive integer"),
-        "the refusal must name the value and explain the constraint; stderr: {err:?}"
-    );
-}
-
-/// A dangling `--attempts` with no following value refuses with a usage-shaped message,
-/// rather than panicking on an out-of-bounds arg read.
-#[test]
-fn resume_unit_rejects_a_dangling_attempts_flag_with_no_value() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--attempts"]);
-    assert!(!ok, "a dangling --attempts must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("--attempts") && err.to_lowercase().contains("expects a number"),
-        "the refusal must name the flag and what it expects; stderr: {err:?}"
-    );
-}
-
-/// An unrecognized flag refuses, rather than being silently swallowed or misread as a
-/// second unit id.
-#[test]
-fn resume_unit_rejects_an_unknown_flag() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit", "u", "--bogus"]);
-    assert!(!ok, "an unknown flag must refuse; stdout: {out:?}");
-    assert!(
-        err.contains("--bogus") && err.to_lowercase().contains("unknown argument"),
-        "the refusal must name the offending argument; stderr: {err:?}"
-    );
-}
-
-/// No unit id at all refuses with a usage-shaped message.
-#[test]
-fn resume_unit_rejects_when_no_unit_id_is_given() {
-    let dir = tempfile::tempdir().unwrap();
-    let (out, err, ok) = run_rigger(dir.path(), &["resume-unit"]);
+    let (out, err, ok) = run_rigger(dir.path(), args);
     assert!(
         !ok,
-        "a bare resume-unit with no id must refuse; stdout: {out:?}"
+        "`rigger {}` must refuse; stdout: {out:?}",
+        args.join(" ")
     );
     assert!(
-        err.to_lowercase().contains("expected a unit id"),
-        "the refusal must say a unit id was expected; stderr: {err:?}"
+        err.contains(named) && err.to_lowercase().contains(explains),
+        "the refusal must name {named:?} and explain {explains:?}; stderr: {err:?}"
     );
+}
+
+rigger::test_cases! {
+    /// A non-numeric `--attempts` value refuses loudly, naming the bad value.
+    resume_unit_rejects_a_non_numeric_attempts_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts", "abc"], "abc", "positive integer");
+    /// `--attempts 0` refuses: a grant must add at least one real attempt.
+    resume_unit_rejects_a_zero_attempts_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts", "0"], "0", "positive integer");
+    /// A dangling `--attempts` with no following value refuses with a usage-shaped message,
+    /// rather than panicking on an out-of-bounds arg read.
+    resume_unit_rejects_a_dangling_attempts_flag_with_no_value:
+        resume_unit_refuses(&["resume-unit", "u", "--attempts"], "--attempts", "expects a number");
+    /// An unrecognized flag refuses, rather than being silently swallowed or misread as a
+    /// second unit id.
+    resume_unit_rejects_an_unknown_flag:
+        resume_unit_refuses(&["resume-unit", "u", "--bogus"], "--bogus", "unknown argument");
+    /// No unit id at all refuses with a usage-shaped message.
+    resume_unit_rejects_when_no_unit_id_is_given:
+        resume_unit_refuses(&["resume-unit"], "", "expected a unit id");
 }
 
 /// An unknown unit id - absent from the current run entirely - refuses by name. A
@@ -442,9 +311,8 @@ fn resume_unit_rejects_when_no_unit_id_is_given() {
 /// unit`), rather than resting the accounting on that implementer-authored fixture alone.
 #[test]
 fn resume_unit_rejects_an_unknown_unit_absent_from_the_run() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -470,9 +338,8 @@ fn resume_unit_rejects_an_unknown_unit_absent_from_the_run() {
 /// `branch_exists`' false path through the real binary and a real git repo.
 #[test]
 fn resume_unit_refuses_when_the_recorded_branch_was_never_created() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[
@@ -501,9 +368,8 @@ fn resume_unit_refuses_when_the_recorded_branch_was_never_created() {
 /// escalated` already covers - refuses by name.
 #[test]
 fn resume_unit_refuses_an_already_integrated_unit() {
-    let proj = temp_project();
+    let proj = temp_store_project();
     let root = proj.path();
-    seed_store(root);
     seed_run_events(
         root,
         &[

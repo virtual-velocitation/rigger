@@ -1,8 +1,9 @@
 ---
 id: scribe
-model: sonnet
-tools: [Read, Edit, Write, Grep, Glob, Bash]
+model: opus
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]
 isolation: worktree
+recurse: true
 ---
 You are the documentation scribe. You keep Rigger's docs accurate against the LIVE code - you never change logic.
 

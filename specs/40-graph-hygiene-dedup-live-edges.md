@@ -1,7 +1,7 @@
 # 40 - Graph hygiene: at most one live edge per relationship (fold dedup)
 
 **Goal:** stop the context graph from accumulating duplicate live edges. `add_edge`
-(`src/contextgraph/sqlite.rs`) is a bare `INSERT ... valid_to = NULL`, so every fold that
+(`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) is a bare `INSERT ... valid_to = NULL`, so every fold that
 re-asserts a relationship appends another identical live row. Measured on the live `.rigger/graph.db`:
 **60% of the live graph is redundant** - 39,340 of 65,415 live edges are exact duplicates, e.g.
 `rust-engineer --TOUCHES--> src/conductor.rs` holds **45 identical live rows** because every
@@ -14,7 +14,7 @@ duplicates for free.
 
 ## Design
 
-`add_edge` (`src/contextgraph/sqlite.rs`, ~line 1141) unconditionally inserts a new
+`add_edge` (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, ~line 1141) unconditionally inserts a new
 `valid_to = NULL` row. Every fold arm that re-asserts a relationship over time therefore accumulates
 duplicates: `TYPE_FILE_TOUCHED` (line 452) folds `agent --TOUCHES--> file` on EVERY touch with no
 supersession - the worst case; decision `GOVERNS` / `ABOUT` and any relationship re-added across runs

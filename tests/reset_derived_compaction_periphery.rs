@@ -53,17 +53,7 @@
 //!      `rigger validate` read the compacted store correctly. `validate` is pinned by the unit's
 //!      own suite; `status` walks a different path from either that suite or item 8 above - the
 //!      per-stream read, the current-run slice, and the replay driver's frontier.
-//!  11. **The rows the prune shares with the STORAGE GUARD.** The compaction is not the only
-//!      thing in this store that reads a replay key: the spec-60 storage guard decides whether an
-//!      append is redundant by asking which generation a subject is CURRENTLY at, and it answers
-//!      that from the very rows the prune deletes (the latest recorded position of each covered
-//!      key) inside the very file the prune then `VACUUM`s. So "keep the latest recording of every
-//!      key" is not only a statement about what survives - it is the precondition of a defense
-//!      that suppresses. A prune that kept the WRONG recording of a key would leave a log an
-//!      operator cannot tell apart from a healthy one and a guard that has quietly changed its
-//!      mind about which content is current. Neither layer's own tests can see this: the guard's
-//!      suite never prunes and the compaction's suite never configures a guard.
-//!  12. **The compare-and-append that rides ABOVE the gaps.** The derived index shares the run
+//!  11. **The compare-and-append that rides ABOVE the gaps.** The derived index shares the run
 //!      stream with the run's own events, so this compaction is the first and only thing in the
 //!      project that deletes rows from a stream an operator keeps writing to - and the prune
 //!      accounts for the holes it leaves against exactly ONE consumer, the sqlite `append`, whose
@@ -75,7 +65,7 @@
 //!      failed write - the loop re-reads and retries it forever. Invisible to both sides: the
 //!      compaction suites record no result, and every test of that write runs on a densely
 //!      numbered stream, where the two cursors agree.
-//!  13. **The OTHER reader that same sentence names.** The shipped paragraph promises the run
+//!  12. **The OTHER reader that same sentence names.** The shipped paragraph promises the run
 //!      history "`rigger stats` and replay read" survives the prune. Item 8 above proves the
 //!      `stats` half; `replay` is the other name in the sentence and it reaches the log by a
 //!      THIRD path again - it lifts its BASELINE through the per-stream `read_stream`, which
@@ -90,18 +80,23 @@
 //! most once, and the two modes composing in EITHER order.
 
 mod common;
+use common::git::run_git;
 
+use common::cli::keyed;
+use common::cli::reported_reclaimed_bytes;
+use common::cli::rigger_file;
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::temp_rigger_project;
+use common::fixtures::{meta_replay_key, plant_free_pages, pragma_i64};
+use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::{PrunedDerived, Store};
-use rigger::eventstore::{
-    ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision, META_GUARD_DEGRADED,
-};
+use rigger::eventstore::{ContentIdentity, Direction, Error, Event, EventStore, ExpectedRevision};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------------------
@@ -145,26 +140,12 @@ fn rows_in(rows: &[Row], prefix: &str) -> Vec<Row> {
         .collect()
 }
 
-/// The replay key a row carries, if any, read out of its metadata exactly as the store reads it.
-fn replay_key(row: &Row) -> Option<String> {
-    let meta: serde_json::Value = serde_json::from_str(&row.5).ok()?;
-    meta.get(rigger::ingest::META_REPLAY_KEY)?
-        .as_str()
-        .map(str::to_string)
-}
-
 /// The SAME two replay keys are recorded in EVERY seeded namespace below. A prune that partitioned
 /// by content key alone - forgetting that the key is only meaningful WITHIN a stream - would sweep
 /// every project's recordings of these keys together, which is precisely the failure the
 /// namespace assertions exist to catch.
 const KEY_DEF: &str = "gc/src/a.rs@h1#0";
 const KEY_REF: &str = "gc/src/a.rs@h1#1";
-
-fn keyed(type_: &str, data: Vec<u8>, key: &str, secs: u64) -> Event {
-    Event::new(type_, data)
-        .with_meta(rigger::ingest::META_REPLAY_KEY, key)
-        .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-}
 
 fn entity(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -216,22 +197,18 @@ fn prune_all_types(backend: &Store, prefix: &str) -> PrunedDerived {
 }
 
 /// The SHIPPED derived-index policy with one field varied - the API-edge tests below have to drive
-/// a metadata key nothing carries and a covered-type list the caller chose. They vary exactly that
-/// field of the real policy (its key SPLIT comes straight off it), so no test ever stands up a
-/// second, hand-written parser of the same key form to test the prune against.
+/// a metadata key nothing carries and a covered-type list the caller chose.
 ///
 /// The valid-time partition is re-declared over the varied type list, because the prune refuses a
 /// declaration naming a type the policy does not cover: narrowing the covered types narrows the
 /// declaration with it, which is exactly what a composition root varying this policy would have to
 /// do. The membership is still the shipped answer, never a hand-written one.
 fn identity_with(meta_key: &str, types: &[&str]) -> ContentIdentity {
-    let shipped = rigger::ingest::derived_index_identity();
     let reasserting: Vec<&str> = rigger::ingest::reasserted_derived_types()
         .into_iter()
         .filter(|t| types.contains(t))
         .collect();
-    ContentIdentity::new(meta_key, types.to_vec(), shipped.split())
-        .with_reasserting_types(reasserting)
+    ContentIdentity::new(meta_key, types.to_vec()).with_reasserting_types(reasserting)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -295,7 +272,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -304,7 +281,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
         );
         let latest = rows_in(&before, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the seed recorded this key in the target namespace");
@@ -463,7 +440,6 @@ fn a_prune_whose_policy_never_declared_the_valid_time_partition_is_refused_untou
     let undeclared = ContentIdentity::new(
         rigger::ingest::META_REPLAY_KEY,
         rigger::ingest::DERIVED_INDEX_TYPES,
-        shipped.split(),
     );
     assert!(
         undeclared.reasserting().is_none() && shipped.reasserting().is_some(),
@@ -485,7 +461,6 @@ fn a_prune_whose_policy_never_declared_the_valid_time_partition_is_refused_untou
     let stray = ContentIdentity::new(
         rigger::ingest::META_REPLAY_KEY,
         rigger::ingest::DERIVED_INDEX_TYPES,
-        shipped.split(),
     )
     .with_reasserting_types(["ReviewFinding"]);
     let refused = backend
@@ -509,7 +484,6 @@ fn a_prune_whose_policy_never_declared_the_valid_time_partition_is_refused_untou
     let declared_empty = ContentIdentity::new(
         rigger::ingest::META_REPLAY_KEY,
         rigger::ingest::DERIVED_INDEX_TYPES,
-        shipped.split(),
     )
     .with_reasserting_types(Vec::<String>::new());
     let pruned = backend
@@ -596,66 +570,9 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
 // 3. The cross-module seam: the command prunes what `ingest` declares, and nothing else decides
 // ---------------------------------------------------------------------------------------
 
-/// A throwaway project whose identity resolves the same way it does for a real one.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-/// The project identity the binary resolves for `root`, mirrored here so a seed lands in the very
-/// stream the compiled binary reads back.
-fn project_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Run `rigger <args...>` in `cwd`. The dashboard and the machine-global instance registry are
-/// stubbed out so a short-lived invocation leaves no live process or phantom registry entry.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
 fn seed_project(root: &Path, rounds: u64) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    seed_namespace(&backend, &project_identity(root), rounds);
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    seed_namespace(&backend, &run_stream_identity(root), rounds);
 }
 
 /// The `(type, count)` pairs out of the command's report - the parenthesised list in
@@ -687,11 +604,11 @@ fn per_type_report(out: &str) -> Vec<(String, usize)> {
 
 #[test]
 fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_declares() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_project(root, ROUNDS);
-    let before = raw_rows(&event_log(root)).len();
+    let before = raw_rows(&rigger_file(root, "events.db")).len();
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
@@ -711,7 +628,7 @@ fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_de
     // And the account is TRUE: the per-type counts sum to the headline number, and that number is
     // exactly how many rows the file actually lost.
     let summed: usize = report.iter().map(|(_, n)| n).sum();
-    let after = raw_rows(&event_log(root)).len();
+    let after = raw_rows(&rigger_file(root, "events.db")).len();
     assert_eq!(
         before - after,
         summed,
@@ -841,7 +758,7 @@ fn a_compacted_stream_answers_expected_revision_from_its_highest_surviving_revis
 
 #[test]
 fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 3);
 
@@ -1000,7 +917,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &minted_ns)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -1009,7 +926,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
         );
         let latest = moved
             .iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the moved namespace holds this key");
@@ -1093,7 +1010,7 @@ fn registry_entry(help: &str, mode: &str) -> String {
 /// it.
 #[test]
 fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_is_real() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let (out, err, ok) = run_rigger(dir.path(), &["--help"]);
     assert!(ok, "rigger --help must succeed; stderr: {err}\n{out}");
     let help = format!("{err}{out}");
@@ -1119,7 +1036,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
     // EVERY ADVERTISED MODE IS REAL. Each runs in its own freshly seeded project so one mode's
     // prune cannot be what makes the next one look like it worked.
     for mode in &modes {
-        let project = temp_project();
+        let project = temp_rigger_project();
         seed_project(project.path(), 3);
         let (out, err, ok) = run_rigger(project.path(), &["reset", mode]);
         let said = format!("{err}{out}");
@@ -1137,7 +1054,7 @@ fn the_usage_registry_advertises_the_derived_prune_and_every_mode_it_advertises_
 
     // AND NOTHING ELSE IS. An unadvertised mode is refused, and the refusal enumerates exactly the
     // modes the registry advertises, so a mode added to one and not the other cannot go unnoticed.
-    let project = temp_project();
+    let project = temp_rigger_project();
     seed_project(project.path(), 3);
     let (out, err, ok) = run_rigger(project.path(), &["reset", "--everything"]);
     let said = format!("{err}{out}");
@@ -1162,7 +1079,7 @@ const SHIPPED_DOCS: [&str; 2] = [
 
 /// The COMMITTED operator guidance, asserted on the bytes on disk with no render in the loop.
 ///
-/// This is not the render test in `src/docs.rs` restated. That test renders `discipline_body` from
+/// This is not the render test in `crates/rigger-domain/src/docs.rs` restated. That test renders `discipline_body` from
 /// a SENTINEL context (a placeholder base ref, port 65531, invented subcommand names); these two
 /// files are rendered from the REAL one. "The sentinel render carries the paragraph" and "the
 /// committed file equals a fresh real render" together still do not give "the committed file
@@ -1189,22 +1106,22 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// the real one, so a paragraph that varied with the context could not match.
 #[test]
 fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paragraphs: Vec<(String, String)> = Vec::new();
 
     for rel in SHIPPED_DOCS {
-        let path = manifest.join(rel);
-        let shipped = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "the operator document {rel} must ship from {}: {e}",
-                path.display()
-            )
-        });
+        let shipped = repo_text(rel);
 
         for (fact, needle) in [
             ("name the prune", "rigger reset --derived"),
             ("say which store it compacts", "EVENT LOG"),
-            ("say what it KEEPS", "LATEST event per replay key"),
+            (
+                "say what it KEEPS",
+                "only the recordings of its LATEST generation",
+            ),
+            (
+                "say which recording of each replay key it KEEPS",
+                "LATEST event per replay key",
+            ),
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
             ("say what it CANNOT reclaim", "WHAT IT CANNOT RECLAIM"),
@@ -1352,18 +1269,14 @@ const PINNED_ID: &str = "compaction-fixture";
 const DEAD_DECISION: &str = "d-dead-run";
 
 /// A temp project whose identity is PINNED in `.rigger/project.id` - the first rung the binary's
-/// identity resolution reads, and the one [`project_identity`] mirrors. Without it each fixture
+/// identity resolution reads, and the one [`run_stream_identity`] mirrors. Without it each fixture
 /// would take its identity from its own temp directory name, so two identically-seeded projects
 /// would write their events under two different stream names and could not be compared.
 fn pinned_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
         .expect("pin the project identity");
     dir
-}
-
-fn graph_db(root: &Path) -> PathBuf {
-    root.join(".rigger").join("graph.db")
 }
 
 /// The context graph's LIVE content: its nodes, and the edges that have not been retired. This is
@@ -1442,7 +1355,7 @@ fn row_marks(rows: &[Row]) -> Vec<String> {
 /// the log holds the duplicated derived index for `--derived`. That is the precondition for
 /// separating "this prune did nothing to the other store" from "there was nothing to do".
 fn seed_both_stores(root: &Path, rounds: u64) {
-    let id = project_identity(root);
+    let id = run_stream_identity(root);
     let mut events = vec![
         Event::new("RunStarted", br#"{"run":"dead","criteria":["c"]}"#.to_vec())
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
@@ -1476,7 +1389,7 @@ fn seed_both_stores(root: &Path, rounds: u64) {
         ));
     }
 
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &id);
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
@@ -1487,9 +1400,9 @@ fn seed_both_stores(root: &Path, rounds: u64) {
     let written = store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .expect("read the seeded log back");
-    let graph =
-        Projector::open(graph_db(root).to_str().unwrap(), &id).expect("open the context graph");
-    graph.apply_batch(&written).expect("fold the seeded log");
+    let graph = Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
+        .expect("open the context graph");
+    common::fixtures::folds(&graph, &written);
 }
 
 /// `rigger reset` drives TWO prunes over TWO stores, and each one tells the operator it left the
@@ -1519,29 +1432,29 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let composed = pinned_project();
     for project in [&runs_only, &derived_only, &composed] {
         assert_eq!(
-            project_identity(project.path()),
+            run_stream_identity(project.path()),
             PINNED_ID,
             "the fixtures must all resolve to one identity, or their stores are not comparable"
         );
         seed_both_stores(project.path(), ROUNDS);
     }
 
-    let seed_log = raw_rows(&event_log(runs_only.path()));
-    let seed_graph = graph_rows(&graph_db(runs_only.path()));
+    let seed_log = raw_rows(&rigger_file(runs_only.path(), "events.db"));
+    let seed_graph = graph_rows(&rigger_file(runs_only.path(), "graph.db"));
     assert!(
         !seed_log.is_empty() && !seed_graph.0.is_empty() && !seed_graph.1.is_empty(),
         "the seed must populate BOTH stores, or nothing below proves anything"
     );
     assert!(
-        shape(&raw_rows(&event_log(derived_only.path()))) == shape(&seed_log),
+        shape(&raw_rows(&rigger_file(derived_only.path(), "events.db"))) == shape(&seed_log),
         "the three fixtures must start from an identical log; they differ at {}",
         first_difference(
-            &row_marks(&raw_rows(&event_log(derived_only.path()))),
+            &row_marks(&raw_rows(&rigger_file(derived_only.path(), "events.db"))),
             &row_marks(&seed_log)
         )
     );
     assert_eq!(
-        graph_rows(&graph_db(derived_only.path())),
+        graph_rows(&rigger_file(derived_only.path(), "graph.db")),
         seed_graph,
         "the three fixtures must start from an identical graph"
     );
@@ -1554,7 +1467,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     // reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote.
     let (out, err, ok) = run_rigger(runs_only.path(), &["reset", "--runs"]);
     assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
-    let after_runs_log = raw_rows(&event_log(runs_only.path()));
+    let after_runs_log = raw_rows(&rigger_file(runs_only.path(), "events.db"));
     assert!(
         after_runs_log == seed_log,
         "reset --runs reports that it deletes no event, so every row must survive \
@@ -1562,7 +1475,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
          said: {out:?}",
         first_difference(&row_marks(&after_runs_log), &row_marks(&seed_log))
     );
-    let after_runs_graph = graph_rows(&graph_db(runs_only.path()));
+    let after_runs_graph = graph_rows(&rigger_file(runs_only.path(), "graph.db"));
     let dropped: Vec<&String> = seed_graph
         .0
         .iter()
@@ -1580,12 +1493,12 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let (out, err, ok) = run_rigger(derived_only.path(), &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
-        graph_rows(&graph_db(derived_only.path())),
+        graph_rows(&rigger_file(derived_only.path(), "graph.db")),
         seed_graph,
         "the shipped guidance says the live graph is unchanged by --derived, so its live content \
          must be identical; the command said: {out:?}"
     );
-    let after_derived_log = raw_rows(&event_log(derived_only.path()));
+    let after_derived_log = raw_rows(&rigger_file(derived_only.path(), "events.db"));
     assert_eq!(
         seed_log.len() - after_derived_log.len(),
         2 * (ROUNDS as usize - 1),
@@ -1601,7 +1514,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         ok,
         "reset --runs --derived must succeed; stderr: {err}\n{out}"
     );
-    let composed_log = raw_rows(&event_log(composed.path()));
+    let composed_log = raw_rows(&rigger_file(composed.path(), "events.db"));
     assert!(
         shape(&composed_log) == shape(&after_derived_log),
         "the composed reset must leave exactly the log --derived alone leaves; it differs at {}, \
@@ -1609,7 +1522,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         first_difference(&row_marks(&composed_log), &row_marks(&after_derived_log))
     );
     assert_eq!(
-        graph_rows(&graph_db(composed.path())),
+        graph_rows(&rigger_file(composed.path(), "graph.db")),
         after_runs_graph,
         "the composed reset must leave exactly the graph --runs alone leaves; it said: {out:?}"
     );
@@ -1692,8 +1605,8 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
         ));
     }
 
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &project_identity(root));
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the run history");
@@ -1719,7 +1632,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
 #[test]
 fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_compaction() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_run_history_and_duplication(root, ROUNDS);
 
@@ -1742,7 +1655,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
         "the --all view must aggregate both seeded runs; got:\n{before_all}"
     );
 
-    let derived_before = derived_rows(&event_log(root));
+    let derived_before = derived_rows(&rigger_file(root, "events.db"));
     assert_eq!(
         derived_before,
         2 * ROUNDS as usize,
@@ -1754,7 +1667,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
     // would also be satisfied by a prune that ate a run event for every duplicate it spared, which
     // is precisely the damage the equality below exists to catch.
     assert_eq!(
-        derived_rows(&event_log(root)),
+        derived_rows(&rigger_file(root, "events.db")),
         2,
         "the compaction must leave one recording per key, or the report's survival is a claim \
          about a prune that did nothing; it said: {out:?}"
@@ -1790,7 +1703,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
 /// Every recording of `key` the log holds in `stream`, in position order.
 fn rows_of_key(rows: &[Row], stream: &str, key: &str) -> Vec<Row> {
     rows.iter()
-        .filter(|r| r.1 == stream && replay_key(r).as_deref() == Some(key))
+        .filter(|r| r.1 == stream && meta_replay_key(&r.5).as_deref() == Some(key))
         .cloned()
         .collect()
 }
@@ -1932,8 +1845,8 @@ fn append_run(root: &Path, at: &mut u64, events: &[(&str, &str)]) {
                 .with_valid_from(UNIX_EPOCH + Duration::from_secs(*at))
         })
         .collect();
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &staged)
         .expect("seed the run stream");
 }
@@ -1951,8 +1864,8 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
             )
         })
         .collect();
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    Namespaced::new(&backend, &project_identity(root))
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the duplication");
 }
@@ -1980,7 +1893,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
 #[test]
 fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
     const ROUNDS: u64 = 6;
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
 
     // A finished earlier run, then the duplication, then the current run - which is blocked
@@ -2042,13 +1955,13 @@ fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
     );
 
     let compact = |label: &str, expect_removed: usize| {
-        let derived_before = derived_rows(&event_log(root));
+        let derived_before = derived_rows(&rigger_file(root, "events.db"));
         let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
         assert!(
             ok,
             "reset --derived must succeed {label}; stderr: {err}\n{out}"
         );
-        let derived_after = derived_rows(&event_log(root));
+        let derived_after = derived_rows(&rigger_file(root, "events.db"));
         assert_eq!(
             derived_before - derived_after,
             expect_removed,
@@ -2096,236 +2009,7 @@ fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 12. The rows the prune shares with the storage guard
-// ---------------------------------------------------------------------------------------
-
-/// Split a `<prefix>/<file>@<hash>#<i>` content key into `(the prefix every key naming the same
-/// file begins with, the content generation this key belongs to)` - the shape the ingest layer
-/// mints.
-///
-/// It is written HERE, in the test, because the split is INJECTED configuration: the store parses
-/// no key format of its own, so a caller that wants the guard hands it this policy. Splitting from
-/// the RIGHT is load-bearing - a real path may itself contain `@` or `#`.
-fn path_subject_of(key: &str) -> Option<(Range<usize>, Range<usize>)> {
-    let (prefix, rest) = key.split_once('/')?;
-    if prefix.is_empty() || rest.is_empty() {
-        return None;
-    }
-    let (head, index) = key.rsplit_once('#')?;
-    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let (file, hash) = head.rsplit_once('@')?;
-    if file.len() <= prefix.len() + 1 || hash.is_empty() {
-        return None;
-    }
-    let subject_end = file.len() + 1; // through the `@` that ends the subject
-    Some((0..subject_end, subject_end..subject_end + hash.len()))
-}
-
-/// The guard policy this project would configure: its real metadata key, its real derived index
-/// types, and the split for the keys it really mints - so the guard is exercised against the same
-/// vocabulary the prune is handed, which is the whole point of asking whether they agree.
-fn guard_policy() -> ContentIdentity {
-    ContentIdentity::new(
-        rigger::ingest::META_REPLAY_KEY,
-        rigger::ingest::DERIVED_INDEX_TYPES,
-        path_subject_of,
-    )
-}
-
-/// The two events one content generation of `gc/src/guarded.rs` records: the entity at `#0` and
-/// the edge at `#1`, exactly as a keyed ingest batch shapes them.
-fn guarded_generation(hash: &str, secs: u64) -> Vec<Event> {
-    vec![
-        keyed(
-            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            entity(hash),
-            &format!("gc/src/guarded.rs@{hash}#0"),
-            secs,
-        ),
-        keyed(
-            rigger::contextgraph::TYPE_EDGE_INFERRED,
-            edge(hash),
-            &format!("gc/src/guarded.rs@{hash}#1"),
-            secs,
-        ),
-    ]
-}
-
-/// Every `(replay key, position)` the log holds, in position order - the raw material BOTH layers
-/// read: the prune ranks these to choose what to delete, and the guard's latest-generation walk
-/// reads the greatest position per key to decide which generation a subject is at.
-fn keyed_positions(db: &Path) -> Vec<(String, i64)> {
-    raw_rows(db)
-        .iter()
-        .filter_map(|row| replay_key(row).map(|k| (k, row.0)))
-        .collect()
-}
-
-/// The guard's verdicts on a store, as an outside caller sees them: for each generation probed, one
-/// `true` per event the store SUPPRESSED and one `false` per event it wrote.
-///
-/// The probe is a re-ingest of two generations in a fixed order - first the one the subject is
-/// currently at, then one it has moved past - which is precisely the pair the latest-per-subject
-/// rule has to tell apart. It runs on a FRESH handle, because a compaction is something an operator
-/// does between processes: the answer a long-lived writer had cached is not the answer that matters.
-fn guard_verdicts(db: &Path, project: &str, hashes: [&str; 2]) -> Vec<Vec<bool>> {
-    let backend = Store::open(db.to_str().unwrap())
-        .expect("open the compacted log")
-        .with_content_identity(guard_policy());
-    let store = Namespaced::new(&backend, project);
-    hashes
-        .iter()
-        .enumerate()
-        .map(|(i, hash)| {
-            let appended = store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &guarded_generation(hash, 9_000 + i as u64),
-                )
-                .expect("the guarded re-ingest is accepted");
-            appended.placements().iter().map(Option::is_none).collect()
-        })
-        .collect()
-}
-
-/// The compaction and the storage guard read the SAME rows, and the prune must leave every one of
-/// the guard's verdicts exactly where it found it.
-///
-/// The two features meet on one fact: which recording of a covered replay key is the LATEST one in
-/// its stream. The prune keeps that row and deletes the rest; the guard reads the greatest position
-/// per key to decide which generation a subject is currently at, and suppresses only an append of
-/// THAT generation. Keeping any other recording of a key would still leave one row per key - a log
-/// that looks perfectly compacted, whose every assertion about survivors, sizes and folds still
-/// holds - while silently moving the subject's current generation, so the store would afterwards
-/// swallow a re-ingest of the content the tree really holds and admit one it has moved past. That
-/// is the graph-on-a-superseded-version outcome the spec forbids, reached through the compaction
-/// rather than through the dedup.
-///
-/// Neither layer's own suite can see it: the guard's periphery suite never prunes, and this
-/// criterion's suites never configure a guard. So the property is asserted DIFFERENTIALLY, over two
-/// logs seeded identically, one compacted and one not:
-///
-///   - the fixture makes the answer non-obvious on purpose. The subject records generation `h1`,
-///     then `h2`, then `h1` AGAIN - a revert - so its current generation is neither the
-///     first-recorded nor the last-minted one, and a prune that kept the earliest recording of each
-///     key rather than the latest would flip it;
-///   - the un-compacted log's verdicts are asserted ABSOLUTELY first (suppress the current
-///     generation, write the superseded one), so the equality that follows is an equality between
-///     two known-meaningful answers rather than between two coincidences;
-///   - and the compacted log's own appends are checked to carry no degradation marker, because a
-///     guard that stopped judging suppresses nothing and would answer `false` everywhere for a
-///     reason that has nothing to do with the prune.
-#[test]
-fn a_compaction_leaves_the_storage_guards_verdicts_exactly_where_it_found_them() {
-    const PROJECT: &str = "guarded";
-    // h1, then h2, then back to h1: the subject's CURRENT generation is h1, and it is neither the
-    // first thing recorded nor the last generation minted.
-    const HISTORY: [&str; 8] = ["h1", "h1", "h1", "h2", "h2", "h2", "h1", "h1"];
-
-    let dir = tempfile::tempdir().unwrap();
-    let bloated = dir.path().join("bloated.db");
-    let compacted = dir.path().join("compacted.db");
-
-    // Seeded through an UNGUARDED handle, which is the log this command exists for: duplication a
-    // store accreted before anything suppressed it.
-    for db in [&bloated, &compacted] {
-        let backend = Store::open(db.to_str().unwrap()).expect("open a fresh log");
-        let store = Namespaced::new(&backend, PROJECT);
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[
-                    Event::new("RunStarted", br#"{"run":"g","criteria":["c"]}"#.to_vec())
-                        .with_valid_from(UNIX_EPOCH + Duration::from_secs(10)),
-                ],
-            )
-            .expect("seed the non-derived event");
-        for (i, hash) in HISTORY.iter().enumerate() {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &guarded_generation(hash, 1_000 + i as u64),
-                )
-                .expect("seed a generation");
-        }
-    }
-    assert_eq!(
-        keyed_positions(&bloated),
-        keyed_positions(&compacted),
-        "the two logs must be seeded identically, or the differential below compares two fixtures \
-         rather than one compaction"
-    );
-
-    // Compact ONE of them, through the primitive `rigger reset --derived` drives.
-    let bloated_positions = keyed_positions(&bloated);
-    let pruned = {
-        let backend = Store::open(compacted.to_str().unwrap()).expect("open the log to compact");
-        prune_all_types(&backend, &Namespaced::prefix_for(PROJECT))
-    };
-    assert_eq!(
-        pruned.total_removed(),
-        12,
-        "four distinct keys recorded 16 times must lose 12 recordings; got {pruned:?}"
-    );
-
-    // What survived is each key's LATEST recording - the row the guard's walk reads - and every
-    // key still has exactly one. This is the mechanism the verdict equality below rests on, so it
-    // is asserted directly rather than inferred from the fact that the counts came out right.
-    let mut latest: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
-    for (key, at) in &bloated_positions {
-        let slot = latest.entry(key.clone()).or_insert(*at);
-        *slot = (*slot).max(*at);
-    }
-    assert_eq!(
-        keyed_positions(&compacted),
-        {
-            let mut survivors: Vec<(String, i64)> =
-                latest.iter().map(|(k, at)| (k.clone(), *at)).collect();
-            survivors.sort_by_key(|(_, at)| *at);
-            survivors
-        },
-        "the compacted log must hold exactly the LATEST recording of every key, at its original \
-         position - that row IS the guard's answer to which generation the subject is at"
-    );
-
-    // The verdicts themselves. First absolutely, on the log nobody compacted: the current
-    // generation is suppressed, the superseded one is written.
-    let before = guard_verdicts(&bloated, PROJECT, ["h1", "h2"]);
-    assert_eq!(
-        before,
-        vec![vec![true, true], vec![false, false]],
-        "the guard must suppress a re-ingest of the generation the subject is CURRENTLY at (h1, \
-         reverted to) and write one it has moved past (h2), or this test is comparing two \
-         meaningless answers"
-    );
-
-    // Then the same probe on the compacted log: identical, event for event.
-    assert_eq!(
-        guard_verdicts(&compacted, PROJECT, ["h1", "h2"]),
-        before,
-        "a compaction must leave every one of the guard's verdicts where it found them: the prune \
-         deletes the very rows the latest-generation walk reads, so keeping the wrong recording of \
-         a key would silently move the subject's current generation"
-    );
-
-    // And the guard was JUDGING while it answered, not silently switched off by a log that had
-    // just been rewritten and vacuumed under it.
-    assert!(
-        raw_rows(&compacted)
-            .iter()
-            .all(|row| !row.5.contains(META_GUARD_DEGRADED)),
-        "no event on the compacted log may carry a degradation marker - a guard that cannot probe \
-         suppresses nothing, which would make the equality above hold for the wrong reason"
-    );
-}
-
-// ---------------------------------------------------------------------------------------
-// 13. The compare-and-append that rides ABOVE the gaps
+// 12. The compare-and-append that rides ABOVE the gaps
 // ---------------------------------------------------------------------------------------
 
 /// The parked spawn the fixture below records, and the id the courier answers it with.
@@ -2391,8 +2075,8 @@ fn run_rigger_bounded(
 /// between them and the surviving tail - the arrangement that pushes the stream's row count and
 /// its revision cursor furthest apart while leaving a real, answerable spawn behind.
 fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let project = project_identity(root);
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let project = run_stream_identity(root);
     let store = Namespaced::new(&backend, &project);
     let mut events = vec![
         Event::new(
@@ -2453,12 +2137,12 @@ fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
 /// the real one agree and the bug is invisible.
 #[test]
 fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_run_with_a_parked_spawn(root, ROUNDS);
 
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     let head_before = raw_rows(&db)
         .iter()
         .map(|r| r.6)
@@ -2590,19 +2274,14 @@ fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 14. The OTHER reader the shipped sentence names: `rigger replay`, over a compacted log
+// 13. The OTHER reader the shipped sentence names: `rigger replay`, over a compacted log
 // ---------------------------------------------------------------------------------------
 
 /// Run `git <args...>` inside the throwaway repo, and fail the test with git's own message if it
 /// does not succeed - a silently skipped `commit` would leave `--against HEAD` with no rev to
 /// check out, and the test would then be asserting on an error message.
 fn git_in(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .expect("run git in the throwaway repo");
+    let out = run_git(root, args);
     assert!(
         out.status.success(),
         "git {args:?} must succeed in the throwaway repo: {}",
@@ -2618,7 +2297,7 @@ fn git_in(root: &Path, args: &[&str]) {
 /// any seed: a seed written under the identity the directory name implies would land in a stream
 /// the binary then never reads back.
 fn committed_config_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // The repo's own identity, so the commit below never depends on the machine's git config.
     git_in(root, &["config", "user.email", "periphery@example.invalid"]);
@@ -2706,7 +2385,7 @@ fn the_replay_the_shipped_guidance_names_lifts_the_same_baseline_out_of_a_compac
     );
 
     // PRECONDITION: the prune actually deletes from the stream the baseline is read from.
-    let derived_before = derived_rows(&event_log(root));
+    let derived_before = derived_rows(&rigger_file(root, "events.db"));
     assert_eq!(
         derived_before,
         2 * ROUNDS as usize,
@@ -2715,7 +2394,7 @@ fn the_replay_the_shipped_guidance_names_lifts_the_same_baseline_out_of_a_compac
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
-        derived_rows(&event_log(root)),
+        derived_rows(&rigger_file(root, "events.db")),
         2,
         "the compaction must leave one recording per key, or the baseline's survival is a claim \
          about a prune that did nothing; it said: {out:?}"
@@ -2756,7 +2435,7 @@ fn replay_baseline_column(out: &str) -> Vec<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------------------
-// 15. The FOLD the maintenance now speaks for.
+// 14. The FOLD the maintenance now speaks for.
 //
 // The prune no longer only deletes rows: it CARRIES a pruned key's earliest valid-time onto the
 // recording it keeps, for the types named by `ingest::reasserted_derived_types`, which is derived
@@ -2853,7 +2532,7 @@ fn fold_live_with_dates(
 ) -> (Vec<String>, Vec<String>) {
     {
         let p = Projector::open(path.to_str().unwrap(), project).expect("open the context graph");
-        p.apply_batch(events).expect("fold the log");
+        common::fixtures::folds(&p, events);
     }
     let conn = rusqlite::Connection::open(path).expect("open the context graph");
     let mut nodes: Vec<String> = conn
@@ -3042,7 +2721,7 @@ fn the_carry_forward_partition_is_the_folds_own_and_each_type_compacts_to_the_gr
 }
 
 // ---------------------------------------------------------------------------------------
-// 16. The API edges of the carry-forward itself.
+// 15. The API edges of the carry-forward itself.
 //
 // The content-identity policy now DECLARES the valid-time partition, and the store applies that
 // declaration AS DATA: it holds no fold knowledge and asks, per covered type, whether the policy
@@ -3086,7 +2765,7 @@ fn dates_by_key(db: &Path) -> DatesByKey {
     let dates = valid_from_by_position(db);
     let mut out: DatesByKey = BTreeMap::new();
     for row in raw_rows(db) {
-        let key = replay_key(&row).unwrap_or_default();
+        let key = meta_replay_key(&row.5).unwrap_or_default();
         out.entry((row.2.clone(), key))
             .or_default()
             .push(dates[&row.0]);
@@ -3260,7 +2939,7 @@ fn the_carry_forward_touches_only_the_survivors_of_the_types_the_caller_named() 
 }
 
 // ---------------------------------------------------------------------------------------
-// 17. The store the prune migrates is the store the prune addresses.
+// 16. The store the prune migrates is the store the prune addresses.
 //
 // `reset` now runs the spec-09 identity migration before any prune, because a log bloated enough
 // to need compacting is by construction an OLD log whose streams were written under the
@@ -3292,8 +2971,9 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
 
     // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
     // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
-    let legacy = project_identity(root);
-    let backend = Store::open(event_log(root).to_str().unwrap()).expect("open the event log");
+    let legacy = run_stream_identity(root);
+    let backend =
+        Store::open(rigger_file(root, "events.db").to_str().unwrap()).expect("open the event log");
     seed_namespace(&backend, &legacy, rounds);
     drop(backend);
 
@@ -3310,7 +2990,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     );
     assert_ne!(
         legacy,
-        project_identity(root),
+        run_stream_identity(root),
         "the mint must produce an identity distinct from the basename, or this fixture does not \
          reproduce the shape it exists for"
     );
@@ -3342,8 +3022,8 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
          instead of reaching the project's store"
     );
 
-    let before_a = raw_rows(&event_log(from_root.path())).len();
-    let before_b = raw_rows(&event_log(from_worktree.path())).len();
+    let before_a = raw_rows(&rigger_file(from_root.path(), "events.db")).len();
+    let before_b = raw_rows(&rigger_file(from_worktree.path(), "events.db")).len();
     assert_eq!(
         before_a, before_b,
         "the two fixtures must start from logs of the same size"
@@ -3399,7 +3079,7 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
             before_b,
         ),
     ] {
-        let after = raw_rows(&event_log(root));
+        let after = raw_rows(&rigger_file(root, "events.db"));
         assert!(
             after.len() < before,
             "reset --derived from {where_} must actually shed rows: {before} before, {} after",
@@ -3418,11 +3098,11 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
 
     // The two invocations are the SAME operation: one store, one authority, two cwds.
     assert_eq!(
-        shape(&raw_rows(&event_log(from_root.path())))
+        shape(&raw_rows(&rigger_file(from_root.path(), "events.db")))
             .iter()
             .map(|r| (r.0, r.2.clone(), r.5))
             .collect::<Vec<_>>(),
-        shape(&raw_rows(&event_log(from_worktree.path())))
+        shape(&raw_rows(&rigger_file(from_worktree.path(), "events.db")))
             .iter()
             .map(|r| (r.0, r.2.clone(), r.5))
             .collect::<Vec<_>>(),
@@ -3452,7 +3132,7 @@ fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote(
     let legacy_ns = Namespaced::prefix_for(&legacy);
     let minted_ns = Namespaced::prefix_for(&minted);
 
-    let before = raw_rows(&event_log(project.path()));
+    let before = raw_rows(&rigger_file(project.path(), "events.db"));
     assert!(
         !rows_in(&before, &legacy_ns).is_empty() && rows_in(&before, &minted_ns).is_empty(),
         "the premise: this store's whole history is under the LEGACY namespace, which is the only \
@@ -3465,7 +3145,7 @@ fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote(
     // NOTHING WAS DELETED, and nothing was renumbered or re-dated: each seeded row is still there,
     // in order, with only its stream moved into the minted namespace. That is the half of the
     // claim an operator cannot check afterwards, so it is checked here column by column.
-    let after = raw_rows(&event_log(project.path()));
+    let after = raw_rows(&rigger_file(project.path(), "events.db"));
     let carried: Vec<Row> = before
         .iter()
         .map(|r| {
@@ -3544,92 +3224,7 @@ fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote(
 }
 
 // ---------------------------------------------------------------------------------------
-// 18. The key split the policy publishes.
-//
-// `ContentIdentity::split` exists so a caller needing the same key form under a different metadata
-// key builds a VARIANT of the shipped policy instead of writing a second parser of that form. The
-// property that is worth anything is that the variant parses IDENTICALLY - an accessor that
-// returned some other function would still typecheck, still compile every call site, and quietly
-// give the guard and the compaction two different opinions about where a key's generation begins.
-// ---------------------------------------------------------------------------------------
-
-#[test]
-fn the_published_key_split_is_the_policys_own_and_a_variant_policy_parses_identically() {
-    let shipped = rigger::ingest::derived_index_identity();
-    let split = shipped.split();
-    // A variant under a different metadata key and a narrower type list, built the only way the
-    // accessor is meant to be used.
-    let variant = ContentIdentity::new(
-        "some_other_meta_key",
-        vec![rigger::contextgraph::TYPE_DOC_LINK_EXTRACTED],
-        split,
-    );
-
-    // Well-formed keys, including the shapes the key form deliberately allows: a file path that
-    // itself contains the `/`, `@` and `#` the key uses as separators.
-    for key in [
-        "gc/src/a.rs@h1#0",
-        "gd/docs/design.md@abcdef0123456789#12",
-        "gc/src/od/d@ta#1.rs@deadbeef#3",
-    ] {
-        let via_accessor: Option<(Range<usize>, Range<usize>)> = split(key);
-        assert_eq!(
-            via_accessor,
-            shipped.split_of(key),
-            "the published split must be the split the policy itself reads {key:?} with"
-        );
-        assert_eq!(
-            variant.split_of(key),
-            shipped.split_of(key),
-            "a policy built from the published split must parse {key:?} identically"
-        );
-        let (identity, generation) = shipped
-            .split_of(key)
-            .unwrap_or_else(|| panic!("{key:?} is a well-formed content key"));
-        // The ranges name the substrings the key form promises: the subject up to the `@`, and the
-        // content generation between the `@` and the `#<i>` tail.
-        let subject = key
-            .rsplit_once('#')
-            .expect("a well-formed key has a #<i> tail")
-            .0;
-        let (before_at, hash) = tail_free(subject);
-        assert_eq!(
-            &key[identity], before_at,
-            "the identity range must be the batch subject"
-        );
-        assert_eq!(
-            &key[generation], hash,
-            "the generation range must be the content hash"
-        );
-    }
-
-    // And a string that is not that shape parses to nothing, through both spellings alike.
-    for key in [
-        "",
-        "no-slash@h1#0",
-        "gc/src/a.rs@h1",
-        "gc/src/a.rs@h1#x",
-        "/src/a.rs@h1#0",
-    ] {
-        assert!(
-            split(key).is_none()
-                && shipped.split_of(key).is_none()
-                && variant.split_of(key).is_none(),
-            "{key:?} is not a content key and must parse to nothing through every spelling"
-        );
-    }
-}
-
-/// A well-formed key's subject and content hash, split from the RIGHT at the last `@` - the same
-/// direction the key authority splits, because a file path may itself contain one.
-fn tail_free(subject: &str) -> (&str, &str) {
-    subject
-        .rsplit_once('@')
-        .expect("a well-formed key carries an @ before its tail")
-}
-
-// ---------------------------------------------------------------------------------------
-// 19. The SHIPPED policy's OWN declaration - the one every other carry test replaces.
+// 17. The SHIPPED policy's OWN declaration - the one every other carry test replaces.
 //
 // The valid-time partition is data the store applies without understanding it, so the value that
 // arrives at the one production call site is the whole of the property. Section 16 proves the
@@ -3701,7 +3296,6 @@ fn the_shipped_policy_declares_the_fold_s_own_partition_and_the_prune_applies_th
     let undeclared = ContentIdentity::new(
         rigger::ingest::META_REPLAY_KEY,
         rigger::ingest::DERIVED_INDEX_TYPES,
-        shipped.split(),
     );
     for type_ in rigger::ingest::DERIVED_INDEX_TYPES {
         assert_eq!(
@@ -3763,7 +3357,7 @@ fn the_shipped_policy_declares_the_fold_s_own_partition_and_the_prune_applies_th
 }
 
 // ---------------------------------------------------------------------------------------
-// 20. The report on a log with NOTHING TO SHED - a promise the shipped documents now make.
+// 18. The report on a log with NOTHING TO SHED - a promise the shipped documents now make.
 //
 // The committed operator guidance states, in the paragraph section 7 pins word for word, that on a
 // log holding no key twice `rigger reset --derived` deletes ZERO rows from it "and reports so",
@@ -3797,11 +3391,11 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // A CLEAN LOG: one recording per replay key, which is what a log written since the ingest
     // dedup existed holds. The fixture differs from every other one in this file by exactly the
     // round count, so "clean" here means precisely "no key recorded twice".
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 1);
-    let before = raw_rows(&event_log(root));
-    let dates_before = valid_from_by_position(&event_log(root));
+    let before = raw_rows(&rigger_file(root, "events.db"));
+    let dates_before = valid_from_by_position(&rigger_file(root, "events.db"));
     assert!(
         !before.is_empty(),
         "the fixture must hold events, or `pruned 0` would be true of an empty file instead of a \
@@ -3848,12 +3442,12 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // carry that did not guard on a key being recorded more than once would rewrite `valid_from`
     // on rows this prune reported it had left alone - a mutation no row count can see.
     assert_eq!(
-        raw_rows(&event_log(root)),
+        raw_rows(&rigger_file(root, "events.db")),
         before,
         "a prune that shed nothing must leave every row byte-for-byte, VACUUM included"
     );
     assert_eq!(
-        valid_from_by_position(&event_log(root)),
+        valid_from_by_position(&rigger_file(root, "events.db")),
         dates_before,
         "a prune that shed nothing must re-date nothing: the carry only ever rewrites the \
          survivor of a key that WAS recorded more than once"
@@ -3862,10 +3456,8 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // THE SHIPPED DOCUMENT PROMISED EXACTLY THIS, and the promise is only worth what the binary
     // does. Read from the committed bytes an operator opens, so the two cannot drift apart with
     // the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("deletes ZERO rows from it and reports so"),
             "the committed {rel} must tell an operator what a clean log reports, or the run above \
@@ -3875,7 +3467,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
 
     // THE OTHER DIRECTION: on a log that DOES hold duplication the clause is absent, so it reads
     // as a statement about this log rather than as boilerplate the command always prints.
-    let bloated = temp_project();
+    let bloated = temp_rigger_project();
     seed_project(bloated.path(), 4);
     let (out, err, ok) = run_rigger(bloated.path(), &["reset", "--derived"]);
     assert!(
@@ -3898,7 +3490,7 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
 }
 
 // ---------------------------------------------------------------------------------------
-// 21. The COMMAND's rendering of a reclamation it could not measure.
+// 19. The COMMAND's rendering of a reclamation it could not measure.
 //
 // Section 2 pins the store primitive: a reader parked on the write-ahead log makes the truncating
 // checkpoint decline, the freed pages stay in the `-wal` file, and `reclaimed_bytes` is `None`
@@ -3926,7 +3518,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // THE CONTENDED RUN. The reader is parked BEFORE the binary starts and released only after it
     // exits, so the checkpoint is refused for the whole of the command's life. An open read
     // transaction from a second connection is exactly what a second rigger process holds.
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, ROUNDS);
     // ROOM TO RECLAIM. The rewrite runs over a file that is holding reclaimable free pages, and
@@ -3934,9 +3526,9 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // this both runs below would honestly skip the rewrite and neither arm of the contrast would
     // be reached. Planted free pages change nothing about what the reclamation MEANS: the vacuum
     // reclaims the pages the file is not using, however they came to be free.
-    plant_free_pages(&event_log(root), 3_000);
-    let reader =
-        rusqlite::Connection::open(event_log(root)).expect("open a second connection to the log");
+    plant_free_pages(&rigger_file(root, "events.db"), 3_000);
+    let reader = rusqlite::Connection::open(rigger_file(root, "events.db"))
+        .expect("open a second connection to the log");
     reader
         .execute_batch("BEGIN")
         .expect("begin the reader's transaction");
@@ -3953,9 +3545,9 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     drop(reader);
 
     // THE CONTROL. A second project seeded identically, with nobody reading it.
-    let solo_dir = temp_project();
+    let solo_dir = temp_rigger_project();
     seed_project(solo_dir.path(), ROUNDS);
-    plant_free_pages(&event_log(solo_dir.path()), 3_000);
+    plant_free_pages(&rigger_file(solo_dir.path(), "events.db"), 3_000);
     let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
     assert!(
         ok,
@@ -3997,12 +3589,12 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 }
 
 // ---------------------------------------------------------------------------------------
-// 22. WHAT DECIDES WHETHER THE FILE IS REWRITTEN: the space there is to reclaim, not the rows
+// 20. WHAT DECIDES WHETHER THE FILE IS REWRITTEN: the space there is to reclaim, not the rows
 //     this pass deleted.
 //
 // Section 20 pins what the zero-delete prune SAYS. This pins what it COSTS, which is the half a
 // row-and-date comparison cannot see: a full file rewrite leaves every row byte-for-byte too, so
-// section 20 is satisfied by a command that vacuumed the entire log to reclaim nothing.
+// section 18 is satisfied by a command that vacuumed the entire log to reclaim nothing.
 //
 // The rewrite is the most expensive thing the command can do: it holds the write lock for a full
 // scan of the log, stages a COMPLETE second copy of the database in the temporary directory
@@ -4024,29 +3616,6 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 // with it.
 // ---------------------------------------------------------------------------------------
 
-/// A whole-number `PRAGMA` read through a connection of its own, so the measurement never depends
-/// on the state of the connection the store is using.
-fn pragma_i64(db: &Path, pragma: &str) -> i64 {
-    rusqlite::Connection::open(db)
-        .expect("open the event log")
-        .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
-        .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
-}
-
-/// Leave roughly `pages` worth of reclaimable free pages in `db`: a table filled and dropped
-/// releases its pages to the freelist, where they stay until something vacuums the file.
-fn plant_free_pages(db: &Path, rows: u64) {
-    let conn = rusqlite::Connection::open(db).expect("open the event log");
-    conn.execute_batch(&format!(
-        "CREATE TABLE junk(x BLOB);
-         INSERT INTO junk(x)
-           WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
-           SELECT randomblob(600) FROM c;
-         DROP TABLE junk;"
-    ))
-    .expect("plant reclaimable free pages");
-}
-
 /// Every byte of `db` as it stands on disk. A VACUUM rewrites the whole file - at the very least
 /// the header's change counter moves - so an unchanged byte string is the assertion that no
 /// rewrite ran, which neither `page_count` nor `freelist_count` can make about a file that had
@@ -4055,56 +3624,70 @@ fn file_bytes(db: &Path) -> Vec<u8> {
     std::fs::read(db).unwrap_or_else(|e| panic!("read {}: {e}", db.display()))
 }
 
-#[test]
-fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("clean.db");
+/// A store at `<dir>/<name>.db` holding ONE recording per replay key - the clean log the shipped
+/// guidance describes, so a prune sheds nothing - AND settled into a file with nothing in it to
+/// reclaim. The seeding itself leaves pages on the freelist, so that state is established here
+/// rather than assumed: a rewrite skipped over this file is skipped because of the file, never
+/// because of the zero deletes.
+fn settled_clean_store(dir: &Path, name: &str) -> (std::path::PathBuf, Store) {
+    let db = dir.join(format!("{name}.db"));
     let backend = Store::open(db.to_str().unwrap()).unwrap();
-    // ONE recording per replay key: the clean log the shipped guidance describes, differing from
-    // every duplicated fixture in this file by exactly the round count.
-    seed_namespace(&backend, "clean", 1);
-    // AND A FILE WITH NOTHING IN IT TO RECLAIM. The vacuum below is skipped because of THIS, not
-    // because of the zero deletes, so the fixture has to establish it rather than assume it.
-    backend
-        .prune_derived_index(
-            &Namespaced::prefix_for("clean"),
-            &rigger::ingest::derived_index_identity(),
-        )
-        .expect("settle the fixture into a compact file");
-    let free_before = pragma_i64(&db, "freelist_count");
+    seed_namespace(&backend, name, 1);
+    prune_all_types(&backend, &Namespaced::prefix_for(name));
     assert_eq!(
-        free_before, 0,
-        "the fixture must hold no reclaimable free page, or this pins the wrong reason for the \
-         rewrite being skipped"
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the fixture must start from a file holding no reclaimable page, or this pins the wrong \
+         reason for the rewrite being skipped"
     );
-    let bytes_before = file_bytes(&db);
+    (db, backend)
+}
 
-    let pruned = prune_all_types(&backend, &Namespaced::prefix_for("clean"));
+/// Prune the settled `db` behind `backend` under `prefix` and assert the pass shed nothing,
+/// reported NO rewrite beside a MEASURED zero and no error, and left every byte of the file as it
+/// was - the returned report is that skipped pass.
+fn assert_prune_skips_the_rewrite(backend: &Store, db: &Path, prefix: &str) -> PrunedDerived {
+    let bytes_before = file_bytes(db);
+    let skipped = prune_all_types(backend, prefix);
     assert_eq!(
-        pruned.total_removed(),
+        skipped.total_removed(),
         0,
         "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        pruned.removed
+        skipped.removed
+    );
+    assert!(
+        !skipped.compaction_ran,
+        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
+         most expensive thing this command does, and declining it is a fact the operator is owed \
+         rather than one they infer from a zero. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.reclaimed_bytes,
+        skipped.reclaimed_bytes,
         Some(0),
         "a prune over a file with no free space reclaimed nothing, and that is a MEASUREMENT \
          rather than a measurement it could not take: `None` means `unmeasured` and would send an \
-         operator looking for pages that land at some later checkpoint. Got {:?}",
-        pruned.reclaimed_bytes
+         operator looking for pages that land at some later checkpoint. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.compaction_error, None,
-        "a compaction that never ran cannot have failed"
+        skipped.compaction_error, None,
+        "a rewrite that never ran cannot have failed; got {skipped:?}"
     );
     assert_eq!(
-        file_bytes(&db),
+        file_bytes(db),
         bytes_before,
-        "a prune with nothing to reclaim must not rewrite the file: a VACUUM here would hold the \
-         write lock for a full scan and stage a second copy of the log in the temporary directory \
-         to reclaim not one page"
+        "a prune with nothing to reclaim must not rewrite the file: a VACUUM rewrites every byte, \
+         so an unchanged byte string is what says the report of a skipped rewrite describes a \
+         skipped rewrite - and a VACUUM here would hold the write lock for a full scan and stage a \
+         second copy of the log to reclaim not one page"
     );
+    skipped
+}
+
+#[test]
+fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, backend) = settled_clean_store(dir.path(), "clean");
+    assert_prune_skips_the_rewrite(&backend, &db, &Namespaced::prefix_for("clean"));
 }
 
 #[test]
@@ -4151,7 +3734,7 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
 }
 
 // ---------------------------------------------------------------------------------------
-// 23. THE COMMAND on the path the shipped guidance calls the expected one - what it costs.
+// 21. THE COMMAND on the path the shipped guidance calls the expected one - what it costs.
 //
 // Section 22 pins the store primitive from both sides: nothing to reclaim means no rewrite, and
 // something to reclaim means a rewrite even on a pass that shed nothing. This pins the same
@@ -4179,12 +3762,12 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
 
 #[test]
 fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
-    // ONE recording per replay key - the clean log of section 20, differing from the duplicated
+    // ONE recording per replay key - the clean log of section 18, differing from the duplicated
     // fixtures by exactly the round count.
     seed_project(root, 1);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     // AND A FILE ALREADY COMPACT. The rewrite is skipped because there is nothing to reclaim, so
     // the fixture establishes that rather than assuming it: a first pass settles the file, and
     // the pass this test measures is the one after it.
@@ -4236,10 +3819,8 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
     // THE COMMITTED DOCUMENTS PROMISE EXACTLY THIS COST, read from the bytes an operator opens so
     // the promise and the binary cannot drift apart with the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("leaves the file exactly as it found it"),
             "the committed {rel} must promise that a prune with nothing to shed does not rewrite \
@@ -4250,12 +3831,12 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
 #[test]
 fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     // THE STATE A FAILED RECLAMATION LEAVES: the duplication is already gone (so this pass deletes
     // nothing) and the space it freed is still sitting in the file.
     seed_project(root, 1);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     plant_free_pages(&db, 3_000);
 
     let pages_before = pragma_i64(&db, "page_count");
@@ -4296,7 +3877,7 @@ fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 24. WHY A DEDUPLICATED LOG STILL HAD SOMETHING TO SHED - the sentence that keeps a correct
+// 22. WHY A DEDUPLICATED LOG STILL HAD SOMETHING TO SHED - the sentence that keeps a correct
 //     prune from reading as a broken dedup.
 //
 // The shipped guidance now tells an operator that a clean log prunes to zero and that this is
@@ -4330,7 +3911,7 @@ const WHY_A_DEDUPLICATED_LOG_STILL_SHEDS: [(&str, &str); 3] = [
 
 #[test]
 fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
 
@@ -4351,7 +3932,7 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 
     // THE OTHER DIRECTION, so the clause is a statement about THIS log rather than boilerplate:
     // the clean log does not carry it.
-    let clean = temp_project();
+    let clean = temp_rigger_project();
     seed_project(clean.path(), 1);
     let (clean_out, err, ok) = run_rigger(clean.path(), &["reset", "--derived"]);
     assert!(
@@ -4371,10 +3952,8 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
     // command explains the prune in front of the operator; the document explains it before they
     // run anything - and if only one of the two carries the rule, the other teaches the misread
     // this clause exists to prevent.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         for needle in [
             "WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED",
             "RETURNED to a generation the log had already recorded",
@@ -4390,7 +3969,7 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 25. THE NUMBER: what the command says it reclaimed, against what the file actually lost.
+// 23. THE NUMBER: what the command says it reclaimed, against what the file actually lost.
 //
 // Section 21 pins the arm where the reclamation could NOT be measured. The measured arm - the one
 // an operator sees on an ordinary run, and the only one that prints a number - is asserted
@@ -4405,23 +3984,6 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 // - no `-wal` still holding the frames the number already counted as reclaimed.
 // ---------------------------------------------------------------------------------------
 
-/// The byte count out of the report's measured-reclamation clause: `reclaimed <n> byte(s) on
-/// disk`.
-fn reported_reclaimed_bytes(out: &str) -> u64 {
-    let marker = "reclaimed ";
-    let at = out
-        .find(marker)
-        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"))
-        + marker.len();
-    let rest = &out[at..];
-    let end = rest
-        .find(" byte(s) on disk")
-        .unwrap_or_else(|| panic!("the reclamation must be reported in bytes; got {out:?}"));
-    rest[..end]
-        .parse()
-        .unwrap_or_else(|e| panic!("the reclamation must be a number ({e}); got {out:?}"))
-}
-
 /// Bytes of `path` on disk, or 0 when it does not exist - the `-wal` is deleted on a clean close.
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -4429,10 +3991,10 @@ fn file_len(path: &Path) -> u64 {
 
 #[test]
 fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     // ROOM TO RECLAIM. The seeded duplication is a few small rows, which can free no whole page
     // at all - a run that honestly reports zero would leave this test asserting nothing. Planted
     // free pages make the reclamation a definite figure without changing what it means: the
@@ -4459,7 +4021,8 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 
     let pages_after = pragma_i64(&db, "page_count");
     let on_disk_after = file_len(&db) + file_len(&wal);
-    let reclaimed = reported_reclaimed_bytes(&out);
+    let reclaimed = reported_reclaimed_bytes(&out, "reclaimed ")
+        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"));
     assert!(
         pages_after < pages_before,
         "the compaction must actually shrink the log, or the figure below is a claim about \
@@ -4478,7 +4041,7 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     // what says the freed space really left the pair rather than moving between them, which it
     // does only because the truncating checkpoint folded the write-ahead log back into the file.
     // If the frames were still in the `-wal`, the file would not be the size the pages say it is
-    // - the exact case section 21 makes the command report as unmeasured instead.
+    // - the exact case section 19 makes the command report as unmeasured instead.
     assert_eq!(
         file_len(&db),
         pages_after as u64 * page_size as u64,
@@ -4494,7 +4057,7 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 26. THE FACT THE REPORT CANNOT INFER: whether the file was REWRITTEN at all.
+// 24. THE FACT THE REPORT CANNOT INFER: whether the file was REWRITTEN at all.
 //
 // `PrunedDerived` now carries `compaction_ran` beside the counts and the byte figure, and it is
 // the one field of that report a caller cannot work out from the others. Both of the states it
@@ -4526,53 +4089,13 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 #[test]
 fn the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("flag.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    // ONE recording per replay key over a settled file: every pass below sheds nothing, which is
+    // what makes the two reports comparable at all.
+    let (db, backend) = settled_clean_store(dir.path(), "flag");
     let prefix = Namespaced::prefix_for("flag");
-    // ONE recording per replay key: every pass below sheds nothing, which is what makes the two
-    // reports comparable at all.
-    seed_namespace(&backend, "flag", 1);
-    // AND A SETTLED FILE. The seeding itself leaves pages on the freelist, so the state this test
-    // is about - a file with nothing to reclaim - has to be established rather than assumed.
-    prune_all_types(&backend, &prefix);
-    assert_eq!(
-        pragma_i64(&db, "freelist_count"),
-        0,
-        "the fixture must start from a file holding no reclaimable page, or the two passes below \
-         differ by something other than the free space in the file"
-    );
 
     // PASS ONE: nothing deleted, and nothing in the file to reclaim.
-    let bytes_before = file_bytes(&db);
-    let skipped = prune_all_types(&backend, &prefix);
-    assert_eq!(
-        skipped.total_removed(),
-        0,
-        "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        skipped.removed
-    );
-    assert!(
-        !skipped.compaction_ran,
-        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
-         most expensive thing this command does, and declining it is a fact the operator is owed \
-         rather than one they infer from a zero. Got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.reclaimed_bytes,
-        Some(0),
-        "and the zero beside it is a MEASUREMENT - there was nothing to reclaim - never an \
-         unmeasured reclamation; got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.compaction_error, None,
-        "a rewrite that never ran cannot have failed; got {skipped:?}"
-    );
-    assert_eq!(
-        file_bytes(&db),
-        bytes_before,
-        "and the flag must be TRUE OF THE FILE: a VACUUM rewrites every byte, so an unchanged \
-         byte string is what says the report of a skipped rewrite describes a skipped rewrite"
-    );
+    let skipped = assert_prune_skips_the_rewrite(&backend, &db, &prefix);
 
     // PASS TWO: the same log and the same zero deletes, over a file that is now holding free
     // space. This is the shape a reclamation that failed after its deletes committed leaves
@@ -4742,9 +4265,9 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 27. THE BYTE FIGURE AND THE MEASUREMENT IT CLAIMS TO BE.
+// 25. THE BYTE FIGURE AND THE MEASUREMENT IT CLAIMS TO BE.
 //
-// `on_disk_measured` is section 26's sibling, and it answers exactly one question for a consumer
+// `on_disk_measured` is section 24's sibling, and it answers exactly one question for a consumer
 // of this report: was the PAIR OF ON-DISK SIZES the reclamation is a difference of ever sampled
 // at all? It exists because `reclaimed_bytes: None` has two causes that are invisible in the
 // numbers - a truncating checkpoint a concurrent reader declined, and a database with no file
@@ -4758,7 +4281,7 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
 //
 // `Some(n)` is documented as MEASURED - the field's own text says it is the pair of sizes an
 // operator's own `du` would add up, sampled before the deletes and again after the rewrite - and
-// section 22 leans on `Some(0)` meaning precisely "the file was really looked at and had nothing
+// section 20 leans on `Some(0)` meaning precisely "the file was really looked at and had nothing
 // to give back", which is the one thing that separates it from `None`. A `Some` standing beside
 // `on_disk_measured: false` therefore says both things at once: a measurement was taken, and no
 // measurement was taken. There is no reading of that pair, so a caller either believes the number
@@ -4781,7 +4304,7 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
 fn a_prune_reports_a_byte_figure_only_where_it_had_a_file_to_measure_one_over() {
     // THE CONTROL, over a real file: one recording per replay key and a settling pass first, so
     // the pass under test sheds nothing AND finds no free page. That is the skipped arm, where
-    // the zero is a measurement that WAS taken - the reading section 22 depends on.
+    // the zero is a measurement that WAS taken - the reading section 20 depends on.
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("measured.db");
     let on_disk = Store::open(db.to_str().unwrap()).expect("open a file-backed store");

@@ -97,36 +97,74 @@
 //! asserts: the two-episode criterion's earlier unit gone, its later unit alone serving
 //! that criterion, and both split siblings surviving together.
 
+mod common;
+use common::fixtures::{critique_stage, fan_out_stage, plan_stage, workflow_cfg};
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_SPAWN, STREAM, TYPE_UNIT_PROPOSED,
 };
-use rigger::config::{AgentDef, Config, Gate, Stage};
+use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
-use rigger::ledger;
-use rigger::run::start_fresh;
+use rigger::ledger::{self, RunState};
+use rigger::run_store::start_fresh;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
+/// Runs `cfg` over `store` with `driver` (no repo isolation, grounder or graph) against the
+/// acceptance `criteria`.
+fn run_over(
+    cfg: &Config,
+    store: &Store,
+    driver: &dyn AgentDriver,
+    criteria: &[String],
+) -> RunState {
+    let deps = Deps {
+        store,
+        driver,
+        gates: &ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: criteria.to_vec(),
+        log: &|_| {},
+    };
+    run(cfg, &deps).unwrap()
+}
+
+/// The ids of every unit in `rs` serving `criterion`, sorted.
+fn serving<'a>(rs: &'a RunState, criterion: &str) -> Vec<&'a str> {
+    let mut ids: Vec<&str> = rs
+        .units
+        .values()
+        .filter(|u| u.spec_criterion == criterion)
+        .map(|u| u.id.as_str())
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 /// Drives the plan-critique reject-then-replan cycle with a planner that proposes a
-/// DIFFERENT unit id for the SAME criterion on each of its two spawns: the initial wave
-/// spawn is one planning EPISODE, the critique-driven re-plan is a SECOND, LATER episode
-/// over the exact same criterion. The emitted `UnitProposed` JSON carries NO `episode`
-/// field at all - exactly the PLAN_PROTOCOL shape a real planner emits, which never
-/// asks for one - so the episode identity can ONLY reach `harvest_proposed` through the
-/// `emit` callback THIS test receives (the real `RunCtx`-owned closure `run_single_stage`
-/// / `re_plan` builds, unchanged from what a live run wires), never through a
-/// hand-authored data field. This is what makes these tests prove the REAL write path
-/// (round-2 REJECT fix for f-c1-episode-writeside-unwired /
-/// sdet-c1-episode-writeside-unwired-test-blindspot): before that fix, both spawns'
-/// proposals deserialize `episode` as the empty string and the supersede rule can never
-/// fire, exactly the production defect.
-struct TwoEpisodeDriver {
+/// DIFFERENT unit id for the SAME criterion on each of its spawns: the initial wave spawn is
+/// one planning EPISODE, and each critique-driven re-plan is a LATER episode over the exact
+/// same criterion - `rejects` rejections mint `rejects + 1` episodes. The emitted
+/// `UnitProposed` JSON carries NO `episode` field at all - exactly the PLAN_PROTOCOL shape a
+/// real planner emits, which never asks for one - so the episode identity can ONLY reach
+/// `harvest_proposed` through the `emit` callback THIS test receives (the real `RunCtx`-owned
+/// closure `run_single_stage` / `re_plan` builds, unchanged from what a live run wires), never
+/// through a hand-authored data field. This is what makes these tests prove the REAL write
+/// path (round-2 REJECT fix for f-c1-episode-writeside-unwired /
+/// sdet-c1-episode-writeside-unwired-test-blindspot): before that fix, both spawns' proposals
+/// deserialize `episode` as the empty string and the supersede rule can never fire, exactly
+/// the production defect.
+struct ReplanDriver {
     planner: String,
     adjudicator: String,
     worker: String,
     criterion: String,
+    /// How many DAGs the adjudicator rejects before approving the next revision.
+    rejects: usize,
     calls: Mutex<Vec<String>>,
     /// The planner's own deterministic spawn id on each of its spawns, in spawn order:
     /// the first is the initial wave spawn, each later one is a critique-driven re-plan.
@@ -137,13 +175,14 @@ struct TwoEpisodeDriver {
     proposed_ids: Mutex<Vec<String>>,
 }
 
-impl TwoEpisodeDriver {
-    fn new(criterion: &str) -> Self {
-        TwoEpisodeDriver {
+impl ReplanDriver {
+    fn new(criterion: &str, rejects: usize) -> Self {
+        ReplanDriver {
             planner: "planner".into(),
             adjudicator: "judge".into(),
             worker: "worker".into(),
             criterion: criterion.to_string(),
+            rejects,
             calls: Mutex::new(Vec::new()),
             planner_spawns: Mutex::new(Vec::new()),
             proposed_ids: Mutex::new(Vec::new()),
@@ -172,7 +211,7 @@ fn unit_id_for_spawn(spawn_id: &str) -> String {
     )
 }
 
-impl AgentDriver for TwoEpisodeDriver {
+impl AgentDriver for ReplanDriver {
     fn spawn(
         &self,
         a: &AgentDef,
@@ -194,6 +233,7 @@ impl AgentDriver for TwoEpisodeDriver {
                     "id": unit_id,
                     "agent": self.worker,
                     "criterion": self.criterion,
+                    "gates": ["ok"],
                 }),
             )?;
             return Ok(AgentResult {
@@ -202,18 +242,18 @@ impl AgentDriver for TwoEpisodeDriver {
             });
         }
         if a.id == self.adjudicator {
-            // Reject the FIRST DAG (drawing the re-plan that mints the second episode),
-            // then approve the revision - a JUDGMENT, modelled directly, independent of
-            // any blast-radius mechanics (there are none here: `grounder: None`).
-            let already_rejected = self
+            // Reject the first `rejects` DAGs (each drawing a re-plan that mints the next
+            // episode), then approve the revision - a JUDGMENT, modelled directly,
+            // independent of any blast-radius mechanics (there are none here: `grounder:
+            // None`). `self.calls` already includes THIS call.
+            let adjudicator_calls = self
                 .calls
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|c| c.as_str() == self.adjudicator)
-                .count()
-                > 1;
-            let verdict = if already_rejected {
+                .count();
+            let verdict = if adjudicator_calls > self.rejects {
                 "approve"
             } else {
                 "reject"
@@ -232,67 +272,15 @@ impl AgentDriver for TwoEpisodeDriver {
 }
 
 fn two_episode_cfg() -> Config {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "planner".into(),
-        AgentDef {
-            id: "planner".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "judge".into(),
-        AgentDef {
-            id: "judge".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        "ok".into(),
-        Gate {
-            run: "true".into(),
-            kind: "core".into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan-critique".into(),
-        Stage {
-            name: "plan-critique".into(),
-            needs: vec!["plan".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan-critique".into()],
-            gates: vec!["ok".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
-    cfg
+    workflow_cfg(
+        &["planner", "worker", "judge"],
+        &[("ok", "true")],
+        vec![
+            plan_stage(),
+            critique_stage(""),
+            fan_out_stage("implement", &["plan-critique"], &["ok"]),
+        ],
+    )
 }
 
 /// Spec 72 criterion 1 (cross-episode supersede): a REAL plan-critique reject feeds back
@@ -306,17 +294,8 @@ fn a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit() {
     let criterion = "the periphery widget is implemented";
     let cfg = two_episode_cfg();
     let store = Store::open(":memory:").unwrap();
-    let driver = TwoEpisodeDriver::new(criterion);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let driver = ReplanDriver::new(criterion, 1);
+    let rs = run_over(&cfg, &store, &driver, &[criterion.to_string()]);
 
     // The reject fed back to the planner: a SECOND spawn (a later episode) ran, with a
     // DISTINCT deterministic id from the first (the initial wave spawn and a
@@ -370,103 +349,12 @@ fn a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit() {
 
     // Exactly one unit serves the criterion in the final projected state (the
     // plan-critique gate is review-only and carries no `spec_criterion` of its own).
-    let serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
+    let serving = serving(&rs, criterion);
     assert_eq!(
         serving,
         vec![episode_2_unit.as_str()],
         "exactly one unit must serve the criterion after both episodes fold; got {serving:?}"
     );
-}
-
-/// Drives a plan-critique REJECT twice (not once) before approving, so ONE run mints
-/// THREE distinct planning episodes over the same criterion instead of the minimal two
-/// `TwoEpisodeDriver` above exercises. Otherwise identical shape (same-id sanitizing,
-/// same worker/config conventions) - only the reject count differs.
-struct ThreeEpisodeDriver {
-    planner: String,
-    adjudicator: String,
-    worker: String,
-    criterion: String,
-    calls: Mutex<Vec<String>>,
-    /// The planner's deterministic spawn id on each of its spawns, in spawn order: the
-    /// initial wave spawn, then each critique-driven re-plan.
-    planner_spawns: Mutex<Vec<String>>,
-    /// The unit id proposed on each spawn, index-for-index with `planner_spawns`.
-    proposed_ids: Mutex<Vec<String>>,
-}
-
-impl ThreeEpisodeDriver {
-    fn new(criterion: &str) -> Self {
-        ThreeEpisodeDriver {
-            planner: "planner".into(),
-            adjudicator: "judge".into(),
-            worker: "worker".into(),
-            criterion: criterion.to_string(),
-            calls: Mutex::new(Vec::new()),
-            planner_spawns: Mutex::new(Vec::new()),
-            proposed_ids: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl AgentDriver for ThreeEpisodeDriver {
-    fn spawn(
-        &self,
-        a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        self.calls.lock().unwrap().push(a.id.clone());
-        if a.id == self.planner {
-            self.planner_spawns.lock().unwrap().push(opts.id.clone());
-            let unit_id = unit_id_for_spawn(&opts.id);
-            self.proposed_ids.lock().unwrap().push(unit_id.clone());
-            // No `episode` key here either - see `TwoEpisodeDriver::spawn`'s matching
-            // comment: the identity must come from `emit`'s own META_SPAWN stamp.
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": unit_id,
-                    "agent": self.worker,
-                    "criterion": self.criterion,
-                }),
-            )?;
-            return Ok(AgentResult {
-                output: "proposed the DAG".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if a.id == self.adjudicator {
-            // Reject the first TWO DAGs (minting a second AND a third episode), then
-            // approve the third revision. `self.calls` already includes THIS call.
-            let adjudicator_calls = self
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| c.as_str() == self.adjudicator)
-                .count();
-            let verdict = if adjudicator_calls > 2 {
-                "approve"
-            } else {
-                "reject"
-            };
-            return Ok(AgentResult {
-                output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: format!("{} ok", a.id),
-            resolved_model: String::new(),
-        })
-    }
 }
 
 /// Spec 72 criterion 1 (cross-episode supersede), the CHAINED case: the single-reject
@@ -484,17 +372,8 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
     let criterion = "the trinket module is implemented";
     let cfg = two_episode_cfg();
     let store = Store::open(":memory:").unwrap();
-    let driver = ThreeEpisodeDriver::new(criterion);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let driver = ReplanDriver::new(criterion, 2);
+    let rs = run_over(&cfg, &store, &driver, &[criterion.to_string()]);
 
     let spawns = driver.planner_spawns.lock().unwrap().clone();
     assert_eq!(
@@ -546,12 +425,7 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
     );
     assert_eq!(rs.units[&episode_3_unit].spec_criterion, criterion);
 
-    let serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
+    let serving = serving(&rs, criterion);
     assert_eq!(
         serving,
         vec![episode_3_unit.as_str()],
@@ -567,9 +441,8 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
 /// introduced mid-replan, spec 31's guarantee). This is the shape round-2's REJECT fix
 /// (sdet-c1-refine-branch-never-restamps-episode / adv-u72c1-refine-staleness-order-
 /// independent-confirmed) closes: without restamping the refined stage's episode, its own
-/// episode's sibling wrongly reaps it. Neither `TwoEpisodeDriver` nor `ThreeEpisodeDriver`
-/// above ever re-proposes an id under a later episode - both always mint a fresh one on
-/// every spawn - so this driver is the only one in this file that reaches the same-id
+/// episode's sibling wrongly reaps it. `ReplanDriver` above never re-proposes an id under
+/// a later episode - it always mints a fresh one on every spawn - so this driver is the only one in this file that reaches the same-id
 /// fold branch through the real re-plan write path at all.
 struct RefineWithSiblingDriver {
     planner: String,
@@ -658,6 +531,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                         "id": unit_id,
                         "agent": self.worker,
                         "criterion": self.criterion,
+                        "gates": ["ok"],
                     }),
                 )?;
             } else {
@@ -696,6 +570,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                             "id": sibling_id,
                             "agent": self.worker,
                             "criterion": sibling_criterion,
+                            "gates": ["ok"],
                         }),
                     )
                 };
@@ -738,33 +613,18 @@ impl AgentDriver for RefineWithSiblingDriver {
     }
 }
 
-/// Spec 72 criterion 1, round-2 REJECT fix (sdet-c1-refine-branch-never-restamps-episode /
-/// adv-u72c1-refine-staleness-order-independent-confirmed), proven through the real write
-/// path instead of a hand-appended store event: episode 1 proposes `u-orig` for a
-/// criterion; a plan-critique reject triggers `re_plan` (episode 2), which in ONE spawn
-/// both REFINES `u-orig` (same id) and proposes a genuinely-new sibling for the IDENTICAL
-/// criterion. THE SUPERSEDE RULE is unconditional on this point ("never a stage from its
-/// own episode, in any event order"): both must survive to integration. Before the fix,
-/// the same-id fold branch left `u-orig`'s episode stamped at episode 1 forever, so the
-/// sibling's ADD-path supersede scan read it as an EARLIER episode's stale owner and
-/// wrongly removed it - `u-orig` would never appear in the run state at all, and only the
-/// sibling would integrate.
-#[test]
-fn a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write_path() {
-    let criterion = "the sprocket assembly is implemented";
+/// Episode 2 of `driver` (planning for `criterion`) refines episode 1's unit in place and
+/// proposes a new sibling beside it: after the one reject-driven re-plan, BOTH the refine and the
+/// sibling must survive the harvest and integrate - the refine never silently reaped by its own
+/// episode's sibling, in any event order. A sibling that shares `criterion` (a real split) serves
+/// it alongside the refine; an unmatched sibling keeps its own authored text and never serves it.
+fn assert_the_refine_and_its_sibling_both_integrate(
+    driver: RefineWithSiblingDriver,
+    criterion: &str,
+) {
     let cfg = two_episode_cfg();
     let store = Store::open(":memory:").unwrap();
-    let driver = RefineWithSiblingDriver::new(criterion);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let rs = run_over(&cfg, &store, &driver, &[criterion.to_string()]);
 
     let spawns = driver.planner_spawns.lock().unwrap().clone();
     assert_eq!(
@@ -786,8 +646,7 @@ fn a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write
         "the gate must approve the revision and release the fan-out"
     );
 
-    // The REFINED unit must still appear and integrate - it must never be silently
-    // reaped by its own episode's new sibling.
+    // The REFINED unit must still appear and integrate, still serving the real criterion.
     assert!(
         rs.units.contains_key(&orig_id),
         "the refined unit {orig_id:?} must survive its own episode's new sibling, not \
@@ -802,9 +661,8 @@ fn a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write
     );
     assert_eq!(rs.units[&orig_id].spec_criterion, criterion);
 
-    // The genuinely-new sibling must ALSO survive (spec 31's real-split guarantee) -
-    // proving the fix does not merely stop removing the refine by disabling supersession
-    // outright.
+    // The genuinely-new sibling must ALSO survive (spec 31's real-split guarantee) - proving
+    // the fix does not merely stop removing the refine by disabling supersession outright.
     assert!(
         rs.units.contains_key(&sibling_id),
         "the genuinely-new same-episode sibling {sibling_id:?} must also survive; \
@@ -817,229 +675,80 @@ fn a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write
         "the sibling {sibling_id:?} must run and integrate; units: {:?}",
         rs.units.keys().collect::<Vec<_>>()
     );
-    assert_eq!(rs.units[&sibling_id].spec_criterion, criterion);
 
-    // Both of episode 2's proposals serve the criterion in the final projected state -
-    // neither reaped the other.
-    let mut serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
-    serving.sort_unstable();
-    let mut expected = vec![orig_id.as_str(), sibling_id.as_str()];
-    expected.sort_unstable();
+    let mut expected = vec![orig_id.as_str()];
+    if driver.unmatched_sibling_criterion.is_none() {
+        assert_eq!(rs.units[&sibling_id].spec_criterion, criterion);
+        expected.push(sibling_id.as_str());
+        expected.sort_unstable();
+    } else {
+        assert_ne!(
+            rs.units[&sibling_id].spec_criterion, criterion,
+            "an unmatched proposal must never be coerced onto the criterion it did not \
+             resolve to - it keeps its own authored text, not the refine's criterion"
+        );
+    }
+    let serving = serving(&rs, criterion);
     assert_eq!(
         serving, expected,
-        "both the refine and its new sibling must serve the criterion after the fold; \
-         got {serving:?}"
-    );
-}
-
-/// Spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-refine-
-/// still-dropped): the round-2 fix above (`a_same_id_refine_survives_its_own_episodes_
-/// new_sibling_through_the_real_write_path`) only ever drove ONE of the two possible
-/// within-spawn emit orders - the refine before the sibling's ADD. This test drives the
-/// SAME shape through `RefineWithSiblingDriver::new_sibling_first`, which reverses it:
-/// episode 2's spawn emits the genuinely-new sibling's ADD FIRST, then the refine. Before
-/// the round-3 fix, the sibling's ADD-path `prior_owners` scan ran while `u-orig` still
-/// carried its stale episode-1 stamp (the fold branch that restamps it had not run yet),
-/// so it was wrongly reaped as an earlier-episode owner - and the LATER refine event then
-/// found no stage to fold onto and silently dropped, PERMANENTLY losing the unit with no
-/// recovery signal. THE SUPERSEDE RULE is unconditional on event order ("never a stage
-/// from its OWN episode, in any event order"), so this order must deliver the identical
-/// outcome as the round-2 test above: both units survive and integrate.
-#[test]
-fn a_same_id_refine_survives_its_own_episodes_new_sibling_walked_first_through_the_real_write_path()
-{
-    let criterion = "the sprocket assembly is implemented, reversed order";
-    let cfg = two_episode_cfg();
-    let store = Store::open(":memory:").unwrap();
-    let driver = RefineWithSiblingDriver::new_sibling_first(criterion);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
-
-    let spawns = driver.planner_spawns.lock().unwrap().clone();
-    assert_eq!(
-        spawns.len(),
-        2,
-        "one reject must trigger exactly one re-plan; planner spawns: {spawns:?}"
-    );
-
-    let orig_id = driver.orig_id.lock().unwrap().clone().unwrap();
-    let sibling_id = driver.sibling_id.lock().unwrap().clone().unwrap();
-    assert_ne!(
-        orig_id, sibling_id,
-        "the refine and its sibling must be distinct ids"
-    );
-
-    assert_eq!(
-        rs.units["plan-critique"].status,
-        ledger::Status::Integrated,
-        "the gate must approve the revision and release the fan-out"
-    );
-
-    // The REFINED unit must still appear and integrate even though its own episode's
-    // sibling ADD was walked first - it must never be silently, permanently dropped.
-    assert!(
-        rs.units.contains_key(&orig_id),
-        "the refined unit {orig_id:?} must survive its own episode's new sibling even when \
-         the sibling's ADD is walked BEFORE the refine, not vanish from the run state; \
-         units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[&orig_id].status,
-        ledger::Status::Integrated,
-        "the refined unit {orig_id:?} must run and integrate; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(rs.units[&orig_id].spec_criterion, criterion);
-
-    // The genuinely-new sibling must ALSO survive (spec 31's real-split guarantee).
-    assert!(
-        rs.units.contains_key(&sibling_id),
-        "the genuinely-new same-episode sibling {sibling_id:?} must also survive; \
-         units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[&sibling_id].status,
-        ledger::Status::Integrated,
-        "the sibling {sibling_id:?} must run and integrate; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(rs.units[&sibling_id].spec_criterion, criterion);
-
-    // Both of episode 2's proposals serve the criterion in the final projected state,
-    // regardless of the emit order within that one spawn.
-    let mut serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
-    serving.sort_unstable();
-    let mut expected = vec![orig_id.as_str(), sibling_id.as_str()];
-    expected.sort_unstable();
-    assert_eq!(
-        serving, expected,
-        "both the refine and its new sibling must serve the criterion after the fold, \
+        "exactly the refine and any sibling sharing its criterion serve it after the fold, \
          regardless of event order; got {serving:?}"
     );
 }
 
-/// Spec 72 criterion 2 (same-episode siblings survive one harvest together, in any event
-/// order): the done-when text's SECOND named shape - "a refine beside a new empty-id split
-/// sibling" - proven here through the real write path. Every `RefineWithSiblingDriver`
-/// fixture above gives episode 2's sibling the SAME criterion text as the refine (a real
-/// split of one criterion into two units); this test instead gives the sibling criterion
-/// text that matches NONE of the run's acceptance criteria, so it resolves to no criterion
-/// at all - the genuinely-new / empty-criterion-id sub-unit path (spec 18 §3.3). THE
-/// SUPERSEDE RULE's prior-owners scan (`conductor.rs`'s `harvest_proposed`) runs only
-/// inside the resolved-criterion branch, so an unmatched proposal can neither sweep, nor be
-/// swept as, a prior owner - proven here alongside a same-episode refine so both code paths
-/// (the same-id fold branch's episode restamp, and the unmatched-add branch) run together in
-/// one harvest, exactly as a live replan can produce them.
-#[test]
-fn a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_through_the_real_write_path(
-) {
-    let criterion = "the widget module is implemented";
-    let cfg = two_episode_cfg();
-    let store = Store::open(":memory:").unwrap();
-    let driver = RefineWithSiblingDriver::new_unmatched_sibling(
-        criterion,
-        "an entirely separate concern the spec never lists",
+rigger::test_cases! {
+    /// Spec 72 criterion 1, round-2 REJECT fix (sdet-c1-refine-branch-never-restamps-episode /
+    /// adv-u72c1-refine-staleness-order-independent-confirmed), proven through the real write
+    /// path instead of a hand-appended store event: episode 1 proposes `u-orig` for a
+    /// criterion; a plan-critique reject triggers `re_plan` (episode 2), which in ONE spawn
+    /// both REFINES `u-orig` (same id) and proposes a genuinely-new sibling for the IDENTICAL
+    /// criterion. THE SUPERSEDE RULE is unconditional on this point ("never a stage from its
+    /// own episode, in any event order"): both must survive to integration. Before the fix,
+    /// the same-id fold branch left `u-orig`'s episode stamped at episode 1 forever, so the
+    /// sibling's ADD-path supersede scan read it as an EARLIER episode's stale owner and
+    /// wrongly removed it - `u-orig` would never appear in the run state at all, and only the
+    /// sibling would integrate.
+    a_same_id_refine_survives_its_own_episodes_new_sibling_through_the_real_write_path: assert_the_refine_and_its_sibling_both_integrate(
+        RefineWithSiblingDriver::new("the sprocket assembly is implemented"),
+        "the sprocket assembly is implemented",
     );
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: vec![criterion.to_string()],
-    };
-    let rs = run(&cfg, &deps).unwrap();
-
-    let spawns = driver.planner_spawns.lock().unwrap().clone();
-    assert_eq!(
-        spawns.len(),
-        2,
-        "one reject must trigger exactly one re-plan; planner spawns: {spawns:?}"
+    /// Spec 72 criterion 1, round-3 REJECT fix (adv-u72c1r2-restamp-order-dependent-refine-
+    /// still-dropped): the round-2 fix above (`a_same_id_refine_survives_its_own_episodes_
+    /// new_sibling_through_the_real_write_path`) only ever drove ONE of the two possible
+    /// within-spawn emit orders - the refine before the sibling's ADD. This test drives the
+    /// SAME shape through `RefineWithSiblingDriver::new_sibling_first`, which reverses it:
+    /// episode 2's spawn emits the genuinely-new sibling's ADD FIRST, then the refine. Before
+    /// the round-3 fix, the sibling's ADD-path `prior_owners` scan ran while `u-orig` still
+    /// carried its stale episode-1 stamp (the fold branch that restamps it had not run yet),
+    /// so it was wrongly reaped as an earlier-episode owner - and the LATER refine event then
+    /// found no stage to fold onto and silently dropped, PERMANENTLY losing the unit with no
+    /// recovery signal. THE SUPERSEDE RULE is unconditional on event order ("never a stage
+    /// from its OWN episode, in any event order"), so this order must deliver the identical
+    /// outcome as the round-2 test above: both units survive and integrate.
+    a_same_id_refine_survives_its_own_episodes_new_sibling_walked_first_through_the_real_write_path: assert_the_refine_and_its_sibling_both_integrate(
+        RefineWithSiblingDriver::new_sibling_first(
+            "the sprocket assembly is implemented, reversed order",
+        ),
+        "the sprocket assembly is implemented, reversed order",
     );
-
-    let orig_id = driver.orig_id.lock().unwrap().clone().unwrap();
-    let sibling_id = driver.sibling_id.lock().unwrap().clone().unwrap();
-    assert_ne!(
-        orig_id, sibling_id,
-        "the refine and its sibling must be distinct ids"
-    );
-
-    assert_eq!(
-        rs.units["plan-critique"].status,
-        ledger::Status::Integrated,
-        "the gate must approve the revision and release the fan-out"
-    );
-
-    // The REFINED unit must still appear and integrate, still serving the real criterion -
-    // it must never be silently reaped by its own episode's unmatched sibling.
-    assert!(
-        rs.units.contains_key(&orig_id),
-        "the refined unit {orig_id:?} must survive its own episode's genuinely-new \
-         unmatched sibling, not vanish from the run state; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[&orig_id].status,
-        ledger::Status::Integrated,
-        "the refined unit {orig_id:?} must run and integrate; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(rs.units[&orig_id].spec_criterion, criterion);
-
-    // The genuinely-new unmatched sibling must ALSO survive (spec 31's real-split
-    // guarantee, extended by spec 72 criterion 2 to the empty-id shape) - proving the
-    // supersede mechanism does not treat "resolves to no criterion" as "gets swept".
-    assert!(
-        rs.units.contains_key(&sibling_id),
-        "the genuinely-new unmatched sibling {sibling_id:?} must also survive; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_eq!(
-        rs.units[&sibling_id].status,
-        ledger::Status::Integrated,
-        "the unmatched sibling {sibling_id:?} must run and integrate; units: {:?}",
-        rs.units.keys().collect::<Vec<_>>()
-    );
-    assert_ne!(
-        rs.units[&sibling_id].spec_criterion, criterion,
-        "an unmatched proposal must never be coerced onto the criterion it did not resolve \
-         to - it keeps its own authored text, not the refine's criterion"
-    );
-
-    // Only the refine serves the criterion in the final projected state - the unmatched
-    // sibling never becomes, and is never treated as, a criterion owner.
-    let serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
-    assert_eq!(
-        serving,
-        vec![orig_id.as_str()],
-        "the unmatched sibling must never be counted as serving the criterion; got \
-         {serving:?}"
+    /// Spec 72 criterion 2 (same-episode siblings survive one harvest together, in any event
+    /// order): the done-when text's SECOND named shape - "a refine beside a new empty-id split
+    /// sibling" - proven here through the real write path. Every `RefineWithSiblingDriver`
+    /// fixture above gives episode 2's sibling the SAME criterion text as the refine (a real
+    /// split of one criterion into two units); this test instead gives the sibling criterion
+    /// text that matches NONE of the run's acceptance criteria, so it resolves to no criterion
+    /// at all - the genuinely-new / empty-criterion-id sub-unit path (spec 18 §3.3). THE
+    /// SUPERSEDE RULE's prior-owners scan (`conductor.rs`'s `harvest_proposed`) runs only
+    /// inside the resolved-criterion branch, so an unmatched proposal can neither sweep, nor be
+    /// swept as, a prior owner - proven here alongside a same-episode refine so both code paths
+    /// (the same-id fold branch's episode restamp, and the unmatched-add branch) run together in
+    /// one harvest, exactly as a live replan can produce them.
+    a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_through_the_real_write_path: assert_the_refine_and_its_sibling_both_integrate(
+        RefineWithSiblingDriver::new_unmatched_sibling(
+            "the widget module is implemented",
+            "an entirely separate concern the spec never lists",
+        ),
+        "the widget module is implemented",
     );
 }
 
@@ -1048,46 +757,15 @@ fn a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_th
 /// `two_episode_cfg`, criterion 3's resume seam needs only ONE real planning episode, never
 /// a reject/re-plan cycle.
 fn resume_seam_cfg() -> Config {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "planner".into(),
-        AgentDef {
-            id: "planner".into(),
-            ..Default::default()
-        },
-    );
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "plan".into(),
-        Stage {
-            name: "plan".into(),
-            agent: "planner".into(),
-            produces: "dag".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.stages.insert(
-        "implement".into(),
-        Stage {
-            name: "implement".into(),
-            agent: "worker".into(),
-            strategy: "fan-out".into(),
-            needs: vec!["plan".into()],
-            on_pass: "merge".into(),
-            ..Default::default()
-        },
-    );
-    cfg
+    workflow_cfg(
+        &["planner", "worker"],
+        &[],
+        vec![plan_stage(), fan_out_stage("implement", &["plan"], &[])],
+    )
 }
 
 /// A single planning episode's driver: the planner's ONE spawn proposes ONE new unit for
-/// the given criterion, exactly like `TwoEpisodeDriver`'s spawn (no `episode` key in the
+/// the given criterion, exactly like `ReplanDriver`'s spawn (no `episode` key in the
 /// JSON `data` at all - PLAN_PROTOCOL never asks for one; the identity must come from
 /// `emit`'s own `META_SPAWN` stamp, which only a REAL spawn through `run` provides).
 struct SinglePlannerDriver {
@@ -1200,16 +878,7 @@ fn a_wedged_legacy_history_is_recovered_by_a_real_planning_episode_through_run()
     }
 
     let driver = SinglePlannerDriver::new(criterion, "u-identified");
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: criteria.clone(),
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let rs = run_over(&cfg, &store, &driver, &criteria);
 
     assert!(
         !rs.units.contains_key("u-legacy-1") && !rs.units.contains_key("u-legacy-2"),
@@ -1229,12 +898,7 @@ fn a_wedged_legacy_history_is_recovered_by_a_real_planning_episode_through_run()
     // Exactly one unit serves the criterion once the fresh process's real planning
     // episode recovers the wedged legacy history - the recovery a wedged historical run
     // needs, proven at the public boundary a real resume actually uses.
-    let serving: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == criterion)
-        .map(|u| u.id.as_str())
-        .collect();
+    let serving = serving(&rs, criterion);
     assert_eq!(
         serving,
         vec!["u-identified"],
@@ -1331,16 +995,7 @@ fn a_legacy_proposal_logged_after_a_resumed_identified_owner_never_supersedes_it
         .unwrap();
 
     let driver = TrivialDriver;
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: criteria.clone(),
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let rs = run_over(&cfg, &store, &driver, &criteria);
 
     assert!(
         rs.units.contains_key("u-early"),
@@ -1434,16 +1089,7 @@ fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume
     }
 
     let driver = TrivialDriver;
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: criteria.clone(),
-    };
-    let rs = run(&cfg, &deps).unwrap();
+    let rs = run_over(&cfg, &store, &driver, &criteria);
 
     assert!(
         !rs.units.contains_key("u-ep1"),
@@ -1483,24 +1129,13 @@ fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume
     // crit_y - the identical surviving set the internal harvest_proposed-seam test
     // asserts, now proven through the real run() entry over a genuinely pre-populated
     // resume history.
-    let serving_x: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == crit_x)
-        .map(|u| u.id.as_str())
-        .collect();
+    let serving_x = serving(&rs, crit_x);
     assert_eq!(
         serving_x,
         vec!["u-ep2"],
         "exactly one unit must serve crit_x after the resume fold; got {serving_x:?}"
     );
-    let mut serving_y: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == crit_y)
-        .map(|u| u.id.as_str())
-        .collect();
-    serving_y.sort_unstable();
+    let serving_y = serving(&rs, crit_y);
     assert_eq!(
         serving_y,
         vec!["u-split-1", "u-split-2"],

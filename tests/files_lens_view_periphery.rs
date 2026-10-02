@@ -10,7 +10,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens,
 //! clustered_overview, cluster_detail, neighborhood, route, ...}`), so they guard the exact
-//! boundaries the inside-out unit test (`src/dash.rs mod tests`, which reaches the same functions via
+//! boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`, which reaches the same functions via
 //! `super::` and calls the folds in-process) is structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the files-lens BEHAVIOUR but never that the
@@ -36,14 +36,20 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use common::fixtures::edge;
+use common::fixtures::plain;
+use common::served::served as served_over;
+use common::served::served_json as served_json_over;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, neighborhood, route, Cluster, ClusterEdge, Lens,
+    cluster_detail, clustered_overview, neighborhood, Cluster, ClusterEdge, Lens,
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
@@ -62,56 +68,9 @@ fn ce(id: &str) -> Node {
     }
 }
 
-/// A BARE cross-file code-entity PLACEHOLDER under `<referencing-file>::<name>` (spec 52's documented
-/// shape): no `name` attr, so the files-lens honesty gate (spec 63 c3) cannot take [`file_of`] of its
-/// own id directly - that would misattribute it to the REFERENCING file, not its true definition
-/// file - and instead resolves it by unique entity-name suffix over the [`ce`] DEFINITIONS in the same
-/// graph.
-fn bare_ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
-    }
-}
-
-/// A `KIND_FILE` node - the file's OWN node, distinct from the entities it defines. Purity-excluded
-/// from every files-lens cluster (spec 63 c3): it never inflates its own file's count nor renders as
-/// a second peer node beside its entities.
-fn file_node(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_FILE.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A node of an arbitrary non-code-entity kind (a dev-loop decision, a design-doc): purity-excluded
-/// from the files lens entirely - not even its own kind bucket.
-fn plain(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
-
 /// A currently-valid REFERENCES edge between two ids.
 fn refs(from: &str, to: &str) -> Edge {
-    edge(from, to, REL_REFERENCES)
+    edge(from, to, REL_REFERENCES, TIER_EXTRACTED)
 }
 
 /// The lens fixture. TWO files, each with two code entities that call each other internally (adds NO
@@ -134,8 +93,8 @@ fn lens_graph() -> Graph {
             ce(BAR),
             ce(BAZ),
             ce(QUX),
-            file_node(FILE_A),
-            file_node(FILE_B),
+            plain(FILE_A, KIND_FILE),
+            plain(FILE_B, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -229,7 +188,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     // `KIND_CODE_ENTITY`, so `whole_graph_lens_key` returns `None` for all of them.
     let all_non_code_entities = Graph {
         nodes: vec![
-            file_node(FILE_A),
+            plain(FILE_A, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -252,15 +211,15 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     );
 
     // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
-    // anywhere in the graph (no `ce(...)` real definition exists at all) - unresolvable honestly, so
+    // anywhere in the graph (no real code-entity definition exists at all) - unresolvable honestly, so
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare
     // placeholder's ambiguous resolution - that shape is a different, already-covered test:
     // `clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffix`.)
     let only_unresolvable_placeholders = Graph {
         nodes: vec![
-            bare_ce("src/caller.rs::ghost_one"),
-            bare_ce("src/caller.rs::ghost_two"),
+            plain("src/caller.rs::ghost_one", KIND_CODE_ENTITY),
+            plain("src/caller.rs::ghost_two", KIND_CODE_ENTITY),
         ],
         edges: vec![],
     };
@@ -304,7 +263,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
 fn the_served_graph_route_carries_the_accurate_empty_state_when_the_files_fold_admits_nothing() {
     let graph = Graph {
         nodes: vec![
-            file_node(FILE_A),
+            plain(FILE_A, KIND_FILE),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -416,10 +375,10 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_name_suffi
     let graph = Graph {
         nodes: vec![
             ce(CALLER_FOO),
-            bare_ce(HELPER_BARE),
+            plain(HELPER_BARE, KIND_CODE_ENTITY),
             ce(HELPER_DEF),
-            bare_ce(GHOST_BARE),
-            bare_ce(AMBIGUOUS_BARE),
+            plain(GHOST_BARE, KIND_CODE_ENTITY),
+            plain(AMBIGUOUS_BARE, KIND_CODE_ENTITY),
             ce(AMBIGUOUS_DEF_ONE),
             ce(AMBIGUOUS_DEF_TWO),
         ],
@@ -517,10 +476,10 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
 #[test]
 fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own_seam() {
     let graph = Graph {
-        nodes: vec![file_node(FILE_A), ce(FOO), ce(BAR)],
+        nodes: vec![plain(FILE_A, KIND_FILE), ce(FOO), ce(BAR)],
         edges: vec![
-            edge(FILE_A, FOO, REL_CONTAINS),
-            edge(FILE_A, BAR, REL_CONTAINS),
+            edge(FILE_A, FOO, REL_CONTAINS, TIER_EXTRACTED),
+            edge(FILE_A, BAR, REL_CONTAINS, TIER_EXTRACTED),
         ],
     };
     let nb = neighborhood(&graph, FILE_A, 1);
@@ -532,40 +491,9 @@ fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own
     );
 }
 
-/// Drive the public `route` for `GET <target>` over an arbitrary graph and return the raw
-/// `Response`. `route` is the exact body-builder `serve` ships (serve delegates to it), so this
-/// drives the files-lens DEFAULT dispatch the browser hits on every plain `/api/graph` load - the
-/// seam the in-process folds never exercise.
-fn served_over(graph: &Graph, target: &str) -> rigger::dash::Response {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the files-lens route never errors on a live graph)"
-    );
-    resp
-}
-
 /// [`served_over`] over the shared [`lens_graph`] fixture - every existing call site's graph.
 fn served(target: &str) -> rigger::dash::Response {
     served_over(&lens_graph(), target)
-}
-
-fn served_json_over(graph: &Graph, target: &str) -> serde_json::Value {
-    let resp = served_over(graph, target);
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 fn served_json(target: &str) -> serde_json::Value {

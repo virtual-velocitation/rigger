@@ -13,31 +13,13 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the seam is not
 //! feature-gated), so this guards the client seam in both lanes.
 
-use std::process::Command;
+mod common;
 
-use rigger::dash;
+use common::served::node_harness_passes;
 
-/// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+#[path = "common/vm_harness.rs"]
+mod vm_harness;
+use vm_harness::vm_harness;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
 /// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
@@ -93,56 +75,8 @@ const fetch = function(url){
 };
 "#;
 
-/// Assemble a complete node `vm` program from a per-test `fetch` + fixtures prelude and a driver: the
-/// shared DOM shim, then the fetch prelude, then the served page script (read from `argv[2]`), then the
-/// driver - which shares the page's scope, so it calls the page's own functions and reads its module
-/// state directly.
-fn build_harness(fetch_prelude: &str, driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__RAIL_SHIM__`;
-const DRIVER = String.raw`__RAIL_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-memory-rail-harness.js" });
-"##;
-    let shim = format!("{DOM_SHIM}\n{fetch_prelude}");
-    TEMPLATE
-        .replace("__RAIL_SHIM__", &shim)
-        .replace("__RAIL_DRIVER__", driver)
-}
-
-/// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
-/// script from `argv[2]` and drives it under the DOM shim), asserting it exits 0 and prints `ok_token`.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the client seam, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
+/// The node `vm` program name this suite's harness runs under.
+const HARNESS_FILE: &str = "dash-memory-rail-harness.js";
 
 /// Driver: on load the rail is hidden (no subject); clicking a node (`seedGraph`) reveals the rail
 /// and renders the decision/finding/concept content from the response's `memory` field, WITHOUT that
@@ -199,22 +133,11 @@ const RAIL_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
-/// RUNTIME guard (spec 63 c5, SUBJECT VIEW): clicking a node reveals the docked memory rail with the
-/// subject's decisions/findings/concepts, never leaking that content into the neighborhood panel
-/// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
-/// folding its content into `#kgpanel`) reddens this.
-#[test]
-fn clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel() {
-    if !node_available() {
-        eprintln!(
-            "SKIP clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel: \
-             no `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
-             on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    run_node_harness(
-        &build_harness(RESOLVING_FETCH, RAIL_DRIVER),
-        "OK memory-rail-shows-on-seed-and-hides-on-clear",
-    );
+rigger::test_cases! {
+    /// RUNTIME guard (spec 63 c5, SUBJECT VIEW): clicking a node reveals the docked memory rail with the
+    /// subject's decisions/findings/concepts, never leaking that content into the neighborhood panel
+    /// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
+    /// folding its content into `#kgpanel`) reddens this.
+    clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], RAIL_DRIVER, HARNESS_FILE), "OK memory-rail-shows-on-seed-and-hides-on-clear");
 }

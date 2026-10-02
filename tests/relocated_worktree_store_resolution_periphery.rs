@@ -21,9 +21,11 @@
 //! in effect (spec 89 Design, SCRATCH LIVES OUTSIDE THE STORE TREE).
 
 use std::path::Path;
-use std::process::Command;
 
 mod common;
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::git::run_git;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -34,12 +36,7 @@ use rigger::eventstore::{Direction, EventStore};
 fn git_init_committed(root: &Path) {
     let run = |args: &[&str]| {
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .status()
-                .expect("spawn git")
-                .success(),
+            run_git(root, args).status.success(),
             "git {args:?} must succeed"
         );
     };
@@ -60,24 +57,6 @@ fn seed_store(root: &Path) {
     std::fs::File::create(rigger.join("events.db")).expect("create events.db");
 }
 
-/// The project identity a courier binds its namespaced stream to for `root`: the tracked
-/// `.rigger/project.id` when present, else `root`'s own basename - every fixture in this file
-/// has `root` AS its own git toplevel (no nested-worktree identity indirection to mirror),
-/// matching `StoreLocation::identity`'s documented precedence for that shape.
-fn stream_identity(root: &Path) -> String {
-    if let Ok(raw) = std::fs::read_to_string(root.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    root.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
 /// Every `DecisionMade` payload recorded in `root`'s real store, read back through a FRESH
 /// `Store::open` independent of the courier subprocess that wrote it - so a passing assertion
 /// proves the subprocess's write genuinely landed on disk at `root`, not merely that the
@@ -85,7 +64,7 @@ fn stream_identity(root: &Path) -> String {
 fn decision_summaries_in(root: &Path) -> Vec<String> {
     let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap())
         .expect("open the real store for readback");
-    let store = Namespaced::new(&backend, &stream_identity(root));
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .expect("read the real store's stream")
@@ -93,26 +72,6 @@ fn decision_summaries_in(root: &Path) -> Vec<String> {
         .filter(|e| e.type_ == "DecisionMade")
         .map(|e| String::from_utf8_lossy(&e.data).into_owned())
         .collect()
-}
-
-/// Run `rigger <args...>` in `cwd`, mirroring `tests/cli.rs::run_rigger_envs`: opts out of the
-/// auto-started dashboard and isolates the machine-global instance registry (`cmd_emit`'s own
-/// `refresh_registry_entry` call touches it on every invocation), so this file never seeds a
-/// phantom registry entry or leaked dashboard process into the operator's real state.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    let out = common::rigger_courier()
-        .args(args)
-        .current_dir(cwd)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
 }
 
 /// Spec 89, criterion 2: a real `rigger emit`, run from inside a git-linked worktree that
@@ -135,14 +94,19 @@ fn rigger_emit_from_a_relocated_worktree_resolves_the_owning_repos_real_store() 
     let elsewhere = tempfile::tempdir().expect("create the relocated-scratch sibling dir");
     let worktree = elsewhere.path().join("rigger-wt-x");
     assert!(
-        Command::new("git")
-            .args(["worktree", "add", "-q"])
-            .arg(&worktree)
-            .args(["-b", "rigger/u/x"])
-            .current_dir(root)
-            .status()
-            .expect("spawn git worktree add")
-            .success(),
+        run_git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "rigger/u/x",
+            ],
+        )
+        .status
+        .success(),
         "git worktree add must succeed for the fixture"
     );
 
@@ -205,14 +169,19 @@ fn rigger_emit_from_a_relocated_worktree_never_climbs_into_a_foreign_ancestors_s
     let worktree = elsewhere.path().join("nested").join("rigger-wt-y");
     std::fs::create_dir_all(worktree.parent().unwrap()).expect("create the worktree's parent");
     assert!(
-        Command::new("git")
-            .args(["worktree", "add", "-q"])
-            .arg(&worktree)
-            .args(["-b", "rigger/u/y"])
-            .current_dir(root)
-            .status()
-            .expect("spawn git worktree add")
-            .success(),
+        run_git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                "rigger/u/y",
+            ],
+        )
+        .status
+        .success(),
         "git worktree add must succeed for the fixture"
     );
 

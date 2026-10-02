@@ -49,76 +49,43 @@
 //! pin the JSON contract the fold reads, exactly as the sibling graph-fold periphery tests do. No
 //! reference to any external tool or project; hyphens, never em dashes.
 
+mod common;
+
+use common::fixtures::{apply_call, apply_def, apply_ref};
+use common::fixtures::{call_edge_pairs, call_layer, call_node_ids};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     CallGraph, Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
 
-/// Fold a code DEFINITION (`file` defines the function `name` at `line`) from its raw on-log JSON at
-/// `pos`. `fresh` marks the FIRST event of a file's extraction batch (it supersedes the file's prior
-/// structural edges before folding). A successful `apply` is itself evidence the payload folded -
-/// `apply` returns `Err` on a fold failure.
-fn apply_def(p: &Projector, pos: u64, file: &str, name: &str, line: u32, fresh: bool) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-        "fresh": fresh,
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    );
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold a CALLER-ATTRIBUTED reference (spec 37): `file` references `name` from inside the enclosing
-/// definition `caller` - exactly the event the emit pass produces for a call in a function body,
-/// which the fold turns into `<file>::<caller> --CALLS--> <target>`. Built from raw JSON so the test
-/// pins the on-log contract, not the Rust payload type.
-fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "lang": "rust", "caller": caller,
-    });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold a FILE-LEVEL reference (a top-level `use` / import): `file` references `name` with NO
-/// enclosing caller, exactly the event the emit pass produces for a use outside every function body.
-/// The fold turns it into `<file> --REFERENCES--> <file>::<name>` with NO caller-attributed `CALLS`
-/// twin (the caller arm is purely additive), so the referencing file is a "referenced but not called"
-/// site. Built from raw JSON so the test pins the on-log contract, not the Rust payload type.
-fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
-    let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust" });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// The reached node ids of a `CallGraph`, sorted, for a stable membership assertion.
-fn node_ids(cg: &CallGraph) -> Vec<String> {
-    let mut v: Vec<String> = cg.nodes.iter().map(|n| n.node.id.clone()).collect();
-    v.sort();
-    v
-}
-
-/// The `(from, to)` endpoints of a `CallGraph`'s edges, sorted.
-fn edge_pairs(cg: &CallGraph) -> Vec<(String, String)> {
-    let mut v: Vec<(String, String)> = cg
-        .edges
-        .iter()
-        .map(|e| (e.edge.from.clone(), e.edge.to.clone()))
-        .collect();
-    v.sort();
-    v
-}
-
-/// The layer a node id carries in the result, if it is present.
-fn layer_of(cg: &CallGraph, id: &str) -> Option<i64> {
-    cg.nodes.iter().find(|n| n.node.id == id).map(|n| n.layer)
+/// The `direction` walk to `depth` from `src/a.rs::<seed>` over one file, `src/a.rs`, that defines
+/// each of `defs` in fold order (the first opening the extraction batch, each at its fold position
+/// as its line) and in which each `(caller, callee)` of `calls` is a same-file call, folded after
+/// the definitions.
+fn walk_one_file(
+    defs: &[&str],
+    calls: &[(&str, &str)],
+    seed: &str,
+    direction: Direction,
+    depth: i64,
+) -> CallGraph {
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    for (i, name) in defs.iter().enumerate() {
+        pos += 1;
+        apply_def(&p, pos, "src/a.rs", name, pos, i == 0);
+    }
+    for (caller, callee) in calls {
+        pos += 1;
+        apply_call(&p, pos, "src/a.rs", callee, caller);
+    }
+    p.calls(
+        &[format!("src/a.rs::{seed}")],
+        direction,
+        depth,
+        TIER_INFERRED,
+    )
+    .unwrap()
 }
 
 /// Backend-agnostic contract for the `Projection::calls` trait DEFAULT (spec 52). The default body
@@ -128,28 +95,11 @@ fn layer_of(cg: &CallGraph, id: &str) -> Option<i64> {
 /// implementor.
 mod contract {
     use super::*;
-    use rigger::contextgraph::{Error, Graph};
-
-    /// A minimal `Projection` that answers the three required methods trivially and deliberately does
-    /// NOT override `calls` - the stand-in for "a projection with no directed-walk support" the
-    /// trait's own doc comment names. Leaving `calls` to the trait default is the whole point.
-    struct NoDirectedWalk;
-
-    impl Projection for NoDirectedWalk {
-        fn apply(&self, _e: &Event) -> Result<(), Error> {
-            Ok(())
-        }
-        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
-            Ok(Graph::default())
-        }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
-            Ok(None)
-        }
-    }
+    use common::fixtures::MinimalProjection;
 
     #[test]
     fn a_projection_without_directed_walk_support_yields_an_empty_call_graph_in_either_direction() {
-        let p = NoDirectedWalk;
+        let p = MinimalProjection;
         for dir in [Direction::Down, Direction::Up] {
             let cg = p
                 .calls(&["any/file.rs::thing".to_string()], dir, 5, TIER_INFERRED)
@@ -157,8 +107,8 @@ mod contract {
             assert!(
                 cg.nodes.is_empty() && cg.edges.is_empty(),
                 "the trait DEFAULT `calls` returns an empty CallGraph ({dir:?}); got nodes {:?} edges {:?}",
-                super::node_ids(&cg),
-                super::edge_pairs(&cg),
+                super::call_node_ids(&cg),
+                super::call_edge_pairs(&cg),
             );
         }
     }
@@ -217,7 +167,7 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
         assert!(
             !cg.nodes.iter().any(|n| n.node.id == cand),
             "candidate {cand} must NOT be descended into; nodes were {:?}",
-            node_ids(&cg),
+            call_node_ids(&cg),
         );
     }
     assert!(
@@ -229,13 +179,13 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
             .collect::<Vec<_>>(),
     );
     assert_eq!(
-        node_ids(&cg),
+        call_node_ids(&cg),
         vec!["src/c.rs::caller", "src/c.rs::target"],
         "exactly the seed and the marked frontier callee",
     );
     // The one edge lands on the frontier placeholder and is a forward (non-back) CALLS edge.
     assert_eq!(
-        edge_pairs(&cg),
+        call_edge_pairs(&cg),
         vec![(
             "src/c.rs::caller".to_string(),
             "src/c.rs::target".to_string()
@@ -271,14 +221,14 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
         )
         .unwrap();
     assert_eq!(
-        node_ids(&default_floor),
+        call_node_ids(&default_floor),
         vec!["src/c.rs::caller"],
         "the ambiguous call is excluded at the default (inferred) floor - seed only",
     );
     assert!(
         default_floor.edges.is_empty(),
         "no edge is followed below the floor; edges were {:?}",
-        edge_pairs(&default_floor),
+        call_edge_pairs(&default_floor),
     );
 
     // Floor lowered to `ambiguous`: the same walk now follows the edge to its terminal bare leaf.
@@ -291,12 +241,12 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
         )
         .unwrap();
     assert_eq!(
-        node_ids(&ambiguous_floor),
+        call_node_ids(&ambiguous_floor),
         vec!["src/c.rs::caller", "src/c.rs::nowheredef"],
         "lowering the floor to `ambiguous` opts the unresolved tier in - the callee is reached",
     );
     assert_eq!(
-        edge_pairs(&ambiguous_floor),
+        call_edge_pairs(&ambiguous_floor),
         vec![(
             "src/c.rs::caller".to_string(),
             "src/c.rs::nowheredef".to_string()
@@ -304,7 +254,7 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
         "the previously-excluded ambiguous CALLS edge is now followed",
     );
     assert_eq!(
-        layer_of(&ambiguous_floor, "src/c.rs::nowheredef"),
+        call_layer(&ambiguous_floor, "src/c.rs::nowheredef"),
         Some(1),
         "the opted-in callee is a layer-1 terminal leaf (defined nowhere, nothing to descend)",
     );
@@ -315,37 +265,31 @@ fn the_depth_bound_clamps_the_layers_the_walk_returns() {
     // Spec 52's `depth` param at the public API: the walk is bounded to `depth` hops. Build a linear
     // same-file chain f0 -> f1 -> f2 -> f3 and walk with depth 2: layers 0..=2 (f0, f1, f2) are
     // returned and f3 (which would be layer 3) is NOT, because a node at the bound is not expanded.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "f0", 1, true);
-    apply_def(&p, 2, "src/a.rs", "f1", 2, false);
-    apply_def(&p, 3, "src/a.rs", "f2", 3, false);
-    apply_def(&p, 4, "src/a.rs", "f3", 4, false);
-    apply_call(&p, 5, "src/a.rs", "f1", "f0");
-    apply_call(&p, 6, "src/a.rs", "f2", "f1");
-    apply_call(&p, 7, "src/a.rs", "f3", "f2");
-
-    let cg = p
-        .calls(
-            &["src/a.rs::f0".to_string()],
-            Direction::Down,
-            2,
-            TIER_INFERRED,
-        )
-        .unwrap();
+    let cg = walk_one_file(
+        &["f0", "f1", "f2", "f3"],
+        &[("f0", "f1"), ("f1", "f2"), ("f2", "f3")],
+        "f0",
+        Direction::Down,
+        2,
+    );
 
     assert_eq!(
-        node_ids(&cg),
+        call_node_ids(&cg),
         vec!["src/a.rs::f0", "src/a.rs::f1", "src/a.rs::f2"],
         "depth 2 returns exactly layers 0..=2; f3 (layer 3) is clamped out",
     );
-    assert_eq!(layer_of(&cg, "src/a.rs::f2"), Some(2), "f2 is at the bound");
+    assert_eq!(
+        call_layer(&cg, "src/a.rs::f2"),
+        Some(2),
+        "f2 is at the bound"
+    );
     assert!(
         !cg.nodes.iter().any(|n| n.node.id == "src/a.rs::f3"),
         "the node beyond the depth bound is not reached; nodes were {:?}",
-        node_ids(&cg),
+        call_node_ids(&cg),
     );
     assert_eq!(
-        edge_pairs(&cg),
+        call_edge_pairs(&cg),
         vec![
             ("src/a.rs::f0".to_string(), "src/a.rs::f1".to_string()),
             ("src/a.rs::f1".to_string(), "src/a.rs::f2".to_string()),
@@ -380,7 +324,7 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
     assert!(
         down.nodes.iter().any(|n| n.node.id == "src/a.rs::callee"),
         "the DOWN walk resolves the cross-file callee onto its definition; nodes were {:?}",
-        node_ids(&down),
+        call_node_ids(&down),
     );
 
     // UP: over that SAME real call, from the definition the walk resolves the caller back through the
@@ -403,15 +347,15 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
         caller.layer,
         1,
         "the caller is one hop up from the seed definition; nodes were {:?}",
-        node_ids(&up),
+        call_node_ids(&up),
     );
     assert!(
         !up.nodes.iter().any(|n| n.node.id == "src/b.rs::callee"),
         "the bare cross-file placeholder is resolved away, not returned; nodes were {:?}",
-        node_ids(&up),
+        call_node_ids(&up),
     );
     assert_eq!(
-        edge_pairs(&up),
+        call_edge_pairs(&up),
         vec![(
             "src/b.rs::caller".to_string(),
             "src/a.rs::callee".to_string()
@@ -440,7 +384,7 @@ fn a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_a
     assert!(
         missing.nodes.is_empty() && missing.edges.is_empty(),
         "a missing seed yields a fully empty CallGraph; got nodes {:?}",
-        node_ids(&missing),
+        call_node_ids(&missing),
     );
 
     // A real seed that calls nothing: itself at layer 0, no edges.
@@ -453,19 +397,19 @@ fn a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_a
         )
         .unwrap();
     assert_eq!(
-        node_ids(&lonely),
+        call_node_ids(&lonely),
         vec!["src/a.rs::lonely"],
         "a seed with no calls returns just itself",
     );
     assert_eq!(
-        layer_of(&lonely, "src/a.rs::lonely"),
+        call_layer(&lonely, "src/a.rs::lonely"),
         Some(0),
         "the seed is layer 0"
     );
     assert!(
         lonely.edges.is_empty(),
         "a seed with no calls has no edges; edges were {:?}",
-        edge_pairs(&lonely),
+        call_edge_pairs(&lonely),
     );
 }
 
@@ -500,14 +444,14 @@ fn the_walk_is_project_scoped_and_never_surfaces_another_projects_calls_from_a_s
         )
         .unwrap();
     assert_eq!(
-        node_ids(&scoped),
+        call_node_ids(&scoped),
         vec!["src/x.rs::caller"],
         "the project-scoped walk sees its own seed but NONE of another project's callees",
     );
     assert!(
         scoped.edges.is_empty(),
         "another project's CALLS edge never leaks into this walk; edges were {:?}",
-        edge_pairs(&scoped),
+        call_edge_pairs(&scoped),
     );
 
     // Control: in `other`, the SAME seed walks to the callee - proving the isolation above is scope,
@@ -521,12 +465,12 @@ fn the_walk_is_project_scoped_and_never_surfaces_another_projects_calls_from_a_s
         )
         .unwrap();
     assert_eq!(
-        node_ids(&control),
+        call_node_ids(&control),
         vec!["src/x.rs::callee", "src/x.rs::caller"],
         "control: the same seed in `other` reaches its callee",
     );
     assert_eq!(
-        edge_pairs(&control),
+        call_edge_pairs(&control),
         vec![(
             "src/x.rs::caller".to_string(),
             "src/x.rs::callee".to_string()
@@ -599,7 +543,7 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
         up.nodes.iter().any(|n| n.node.id == "src/a.rs::local")
             && up.nodes.iter().any(|n| n.node.id == "src/b.rs::mid"),
         "the traversed DAG carries the callers themselves; nodes were {:?}",
-        node_ids(&up),
+        call_node_ids(&up),
     );
 
     // DOWN over the SAME graph carries an EMPTY sidecar - referenced-but-not-called is UP-only.
@@ -632,7 +576,7 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
     assert!(
         missing.nodes.is_empty() && missing.referenced_not_called.is_empty(),
         "a missing UP seed yields empty nodes and an empty sidecar; got nodes {:?} sidecar {:?}",
-        node_ids(&missing),
+        call_node_ids(&missing),
         missing
             .referenced_not_called
             .iter()
@@ -695,17 +639,17 @@ fn the_up_walk_surfaces_a_multi_candidate_caller_as_a_marked_frontier_and_never_
         assert!(
             !up.nodes.iter().any(|n| n.node.id == hidden),
             "{hidden} lies beyond the un-ascended frontier and must not be reached; nodes were {:?}",
-            node_ids(&up),
+            call_node_ids(&up),
         );
     }
     assert_eq!(
-        node_ids(&up),
+        call_node_ids(&up),
         vec!["src/a.rs::target", "src/f.rs::amb"],
         "the reached set is exactly the seed plus the marked frontier caller",
     );
     // The one caller edge keeps the real CALLS direction, landing on the seed definition.
     assert_eq!(
-        edge_pairs(&up),
+        call_edge_pairs(&up),
         vec![("src/f.rs::amb".to_string(), "src/a.rs::target".to_string())],
         "one caller edge, onto the seed definition, marking the frontier",
     );
@@ -746,14 +690,14 @@ fn the_up_walk_is_project_scoped_across_a_shared_graph_db_including_the_referenc
         )
         .unwrap();
     assert_eq!(
-        node_ids(&scoped),
+        call_node_ids(&scoped),
         vec!["src/a.rs::target"],
         "the project-scoped UP walk sees its own seed but NONE of another project's callers",
     );
     assert!(
         scoped.edges.is_empty(),
         "another project's caller edge never leaks into this walk; edges were {:?}",
-        edge_pairs(&scoped),
+        call_edge_pairs(&scoped),
     );
     assert!(
         scoped.referenced_not_called.is_empty(),
@@ -776,7 +720,7 @@ fn the_up_walk_is_project_scoped_across_a_shared_graph_db_including_the_referenc
         )
         .unwrap();
     assert_eq!(
-        node_ids(&control),
+        call_node_ids(&control),
         vec!["src/a.rs::local", "src/a.rs::target", "src/b.rs::mid"],
         "control: `other`'s seed reaches both its same-file and cross-file callers",
     );
@@ -799,42 +743,40 @@ fn the_up_walk_clamps_the_caller_dag_to_the_depth_bound_and_emits_a_deterministi
     // polls. Build a caller tree - two callers at layer 1, one at layer 2, one at layer 3 - and walk
     // UP with depth 2: layers 0..=2 are returned, the layer-3 caller is clamped out, and the emitted
     // node Vec is in the production (layer, id) order (NOT a re-sorted view), pinning the sort itself.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "t0", 1, true); // the SEED
-                                                 // `mid` is folded BEFORE `alt` so the natural insertion order within layer 1 would be [mid, alt];
-                                                 // only the builder's (layer, id) sort yields the asserted [alt, mid] - the ordering has teeth.
-    apply_def(&p, 2, "src/a.rs", "mid", 2, false);
-    apply_def(&p, 3, "src/a.rs", "alt", 3, false);
-    apply_def(&p, 4, "src/a.rs", "top", 4, false);
-    apply_def(&p, 5, "src/a.rs", "over", 5, false);
-    apply_call(&p, 6, "src/a.rs", "t0", "mid"); // mid -> t0 : layer 1
-    apply_call(&p, 7, "src/a.rs", "t0", "alt"); // alt -> t0 : layer 1
-    apply_call(&p, 8, "src/a.rs", "mid", "top"); // top -> mid : layer 2
-    apply_call(&p, 9, "src/a.rs", "top", "over"); // over -> top : layer 3 (clamped at depth 2)
-
-    let up = p
-        .calls(
-            &["src/a.rs::t0".to_string()],
-            Direction::Up,
-            2,
-            TIER_INFERRED,
-        )
-        .unwrap();
+    let up = walk_one_file(
+        // `t0` is the SEED. `mid` is folded BEFORE `alt` so the natural insertion order within
+        // layer 1 would be [mid, alt]; only the builder's (layer, id) sort yields the asserted
+        // [alt, mid] - the ordering has teeth.
+        &["t0", "mid", "alt", "top", "over"],
+        &[
+            ("mid", "t0"),   // layer 1
+            ("alt", "t0"),   // layer 1
+            ("top", "mid"),  // layer 2
+            ("over", "top"), // layer 3 (clamped at depth 2)
+        ],
+        "t0",
+        Direction::Up,
+        2,
+    );
 
     // The layer-3 caller is clamped out; the bound node (top, layer 2) is present but not expanded.
     assert!(
         !up.nodes.iter().any(|n| n.node.id == "src/a.rs::over"),
         "the caller beyond the depth bound is not reached; nodes were {:?}",
-        node_ids(&up),
+        call_node_ids(&up),
     );
     assert_eq!(
-        layer_of(&up, "src/a.rs::top"),
+        call_layer(&up, "src/a.rs::top"),
         Some(2),
         "the layer-2 caller sits at the bound"
     );
-    assert_eq!(layer_of(&up, "src/a.rs::alt"), Some(1), "a layer-1 caller");
     assert_eq!(
-        layer_of(&up, "src/a.rs::mid"),
+        call_layer(&up, "src/a.rs::alt"),
+        Some(1),
+        "a layer-1 caller"
+    );
+    assert_eq!(
+        call_layer(&up, "src/a.rs::mid"),
         Some(1),
         "the other layer-1 caller"
     );
@@ -853,7 +795,7 @@ fn the_up_walk_clamps_the_caller_dag_to_the_depth_bound_and_emits_a_deterministi
     );
     // The edge OUT of the clamped node (over -> top) is never traversed.
     assert_eq!(
-        edge_pairs(&up),
+        call_edge_pairs(&up),
         vec![
             ("src/a.rs::alt".to_string(), "src/a.rs::t0".to_string()),
             ("src/a.rs::mid".to_string(), "src/a.rs::t0".to_string()),
@@ -889,17 +831,17 @@ fn the_up_walk_marks_a_same_layer_caller_edge_as_a_back_edge() {
 
     // Both callers sit at layer 1; the seed appears once at layer 0 (no duplication under the cycle).
     assert_eq!(
-        layer_of(&up, "src/a.rs::c1"),
+        call_layer(&up, "src/a.rs::c1"),
         Some(1),
         "c1 is a layer-1 caller"
     );
     assert_eq!(
-        layer_of(&up, "src/a.rs::c2"),
+        call_layer(&up, "src/a.rs::c2"),
         Some(1),
         "c2 is a layer-1 caller"
     );
     assert_eq!(
-        node_ids(&up),
+        call_node_ids(&up),
         vec!["src/a.rs::c1", "src/a.rs::c2", "src/a.rs::t0"],
         "the reached set is the seed and its two sibling callers, each once",
     );
@@ -927,10 +869,10 @@ fn the_up_walk_marks_a_same_layer_caller_edge_as_a_back_edge() {
         back_of("src/a.rs::c1", "src/a.rs::c2"),
         Some(true),
         "the same-layer caller edge is marked a back edge; edges were {:?}",
-        edge_pairs(&up),
+        call_edge_pairs(&up),
     );
     assert_eq!(
-        edge_pairs(&up),
+        call_edge_pairs(&up),
         vec![
             ("src/a.rs::c1".to_string(), "src/a.rs::c2".to_string()),
             ("src/a.rs::c1".to_string(), "src/a.rs::t0".to_string()),

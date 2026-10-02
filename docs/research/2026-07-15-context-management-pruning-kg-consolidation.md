@@ -65,10 +65,10 @@ is the substrate both run over.
 
 ## Where this lands in the code
 
-Each spawn's prompt is assembled in `build_prompt_with_failure` (`src/conductor.rs:5994`):
+Each spawn's prompt is assembled in `build_prompt_with_failure` (`crates/rigger-conductor/src/conductor.rs:5548`):
 prior-failure block + grounder refs (`gr.ground(query, 8)`, `:6002`, `GROUNDED_SEED_K=8`
 `:78`) + `graph_context(seed)` (`:6014`/`:6023`), which runs `graph.subgraph(seed, 2)`
-(`:6028`; recursive CTE `src/contextgraph/sqlite.rs:78`) and renders three budgeted sections
+(`:6028`; recursive CTE `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:78`) and renders three budgeted sections
 via `write_capped_section` (`:6690`) wrapped by `write_capped_decisions/lessons/findings`
 (`:6785`/`:6805`/`:6830`). Hand-tuned budgets (`:6623-6652`): decisions 12 verbatim / 24KiB,
 lessons 12 / 12KiB, findings 24 / 48KiB. Measured pre-cap blowups quoted in-source: findings
@@ -144,7 +144,7 @@ extraction (this project has hit weekly usage limits).
    the `BlastRadius` two-view struct + default-impl contortions (`grounder/mod.rs:135-191`) and
    the seed-vs-precise divergence doc/workaround (`conductor.rs:5863-5969`, ~150-200 LOC) with
    `EXTRACTED`/`INFERRED`/`AMBIGUOUS` tiers filtered per consumer; replace the hub-percentile
-   heuristic with community detection. Do this when next touching `src/grounder/symbols/`.
+   heuristic with community detection. Do this when next touching `crates/rigger-grounder/src/grounder/symbols/`.
 
 4. **The unified event-sourced KG substrate** (concepts 2+3 combined; the endgame). Fold the
    `symbols` code graph into the `contextgraph` projection; ingest docs/rationale as

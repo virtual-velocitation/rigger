@@ -9,19 +9,21 @@
 //! proves migrates a legacy-identity store correctly for `--derived`. No existing test drives the
 //! BARE path against a store whose history predates the minted project identity, so a bug that
 //! dropped, reordered, or mis-scoped the bare branch's own call would read as: the menu silently
-//! reports "0 dead-run node(s)" / "0 duplicate event(s)" on a store that is, in fact, full of
+//! reports "0 dead-run node(s)" / "0 redundant derived-index event(s)" on a store that is, in fact, full of
 //! both - a perfectly successful preview of nothing, the exact silent-lie this whole feature
 //! exists to prevent, and a shape a fixture that always seeds AFTER `rigger init` can never
 //! reproduce.
 
 mod common;
 
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, UNIX_EPOCH};
+use common::cli::emit;
+use common::cli::rigger_file;
+use common::cli::run_rigger;
+use common::cli::run_stream_identity;
+use common::cli::seed_derived_duplicates;
+use common::cli::seed_run_events;
+use common::cli::temp_store_project;
+use common::cli::DUP_ROUNDS;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_menu.rs and tests/reset_derived_compaction.rs; each integration
@@ -29,119 +31,11 @@ use std::time::{Duration, UNIX_EPOCH};
 // convention rather than shared).
 // ---------------------------------------------------------------------------------------
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-fn seed_store(root: &Path) {
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::File::create(event_log(root)).unwrap();
-}
-
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-fn emit(root: &Path, typ: &str, json: &str) {
-    let (_o, err, ok) = run_rigger(root, &["emit", typ, json]);
-    assert!(ok, "emit {typ} must succeed; stderr: {err}");
-}
-
-/// Seed lifecycle events directly into the namespaced run stream, standing in for the conductor
-/// minting them (`rigger emit` refuses these conductor-owned boundary types).
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-const DUP_KEY: &str = "gc/src/a.rs@h1#0";
-/// `DUP_ROUNDS - 1` recordings are prunable duplicates by `--derived`'s own rule.
-const DUP_ROUNDS: usize = 3;
-
-fn code_entity() -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
-    }))
-    .unwrap()
-}
-
-fn seed_derived_duplicates(root: &Path) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let mut events = Vec::with_capacity(DUP_ROUNDS);
-    for r in 0..DUP_ROUNDS {
-        events.push(
-            Event::new(
-                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                code_entity(),
-            )
-            .with_meta(rigger::ingest::META_REPLAY_KEY, DUP_KEY)
-            .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
-        );
-    }
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
-}
-
 #[test]
 fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the_minted_project_identity(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
 
     // Seeded BEFORE `rigger init` mints an identity: filed under the LEGACY basename namespace,
     // exactly the shape a bloated store actually has (mirrors
@@ -188,7 +82,10 @@ fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the
          from an unmigrated identity mismatch; got: {out:?}"
     );
     assert!(
-        out.contains(&format!("--derived: {} duplicate event(s)", DUP_ROUNDS - 1)),
+        out.contains(&format!(
+            "--derived: {} redundant derived-index event(s)",
+            DUP_ROUNDS - 1
+        )),
         "the bare menu must report the migrated store's real duplicate count ({}), not zero from \
          an unmigrated identity mismatch; got: {out:?}",
         DUP_ROUNDS - 1
@@ -198,7 +95,7 @@ fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the
     // prefix, none under the legacy one.
     let minted_prefix = format!("proj-{minted}-");
     let legacy_prefix = format!("proj-{legacy}-");
-    let conn = rusqlite::Connection::open(event_log(root)).unwrap();
+    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
     let mut stmt = conn.prepare("SELECT DISTINCT stream FROM events").unwrap();
     let streams: Vec<String> = stmt
         .query_map([], |r| r.get(0))

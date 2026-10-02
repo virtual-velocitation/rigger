@@ -4,10 +4,10 @@
 //! reasoning, so a multi-KB decision collapses to one line but expands whole (the dash charter: no
 //! framework, no inline multi-KB dumps).
 //!
-//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve`), and
+//! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve_on`), and
 //! crosses the REAL loopback HTTP socket the operator's browser actually hits. The implementer's
 //! inside-out unit test in `dash.rs` greps `live_page()` IN-PROCESS: it is structurally blind to
-//! the serve path (the `route` dispatch of `GET /` -> `Response::html(200, live_page())` and the
+//! the serve path (the `route` dispatch of `GET /` -> `Response::rendered(200, HTML_CONTENT_TYPE, live_page())` and the
 //! HTTP framing the socket delivers). This layer proves the SERVED root page - the bytes a client
 //! receives from the public `serve` entrypoint - carries the c4 progressive-disclosure decisions
 //! region end-to-end, not merely that the in-process template string does.
@@ -21,107 +21,26 @@
 //! `dash`, `spawn`, `contextgraph` are compiled on BOTH the default and the `--no-default-features`
 //! lane (none feature-gated), so this guards the served boundary in both lanes.
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::Command;
-use std::time::{Duration, Instant};
+mod common;
 
+use common::fixtures::assert_decisions_region_discloses_progressively;
+use common::served::node_harness_passes;
+use common::served::{fetch_with_retry, graph_provider_of, try_fetch_over};
 use rigger::contextgraph::Graph;
-use rigger::dash::{self, DashInputs};
-
-/// Start the dash server on a FRESH ephemeral loopback port and fetch `GET /` once, returning the
-/// raw HTTP response - or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
-/// load-bearing, not tidiness: the earlier shape (bind port 0, read the port, DROP the listener, let
-/// `serve` re-bind it) left the port free for the whole handoff window, so a sibling test's `bind(0)`
-/// in this same binary could be handed the port this attempt had just released. One `serve` then won
-/// the re-bind and the loser's client CONNECTED SUCCESSFULLY to it, reading a well-formed response
-/// that was the OTHER test's fixture - a CONTENT failure no connect-error retry can see, reddening
-/// only on a loaded machine. Owning the port from `bind` through `serve_on` closes that window by
-/// construction: no other binder can be handed a port this process never released, so a response
-/// returned here is always this attempt's own server's.
-fn try_fetch_served_root_page() -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The root page never reads the provider; a trivial empty-inputs provider satisfies `serve`'s
-    // `Fn() -> Result<DashInputs, String>` bound, and an empty graph provider its `Fn() -> Graph`
-    // bound (spec 45, criterion 1: the lazy `/api/graph` provider, never consulted for the page).
-    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
-    };
-    let graph_provider = |_instance: Option<&str>| Graph::default();
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-
-    // A detached server thread: `serve_on` loops until the process ends; we drive one request. The
-    // port is already bound and listening, so nothing here can lose it to another binder.
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    // The port is already bound and listening, so this connect succeeds on its first pass; the
-    // budget survives only as a guard against a scheduler stall between the bind and the first
-    // accept.
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    // Drive one request. A write/read error here is a genuine socket-level failure, not another
-    // server answering: this attempt holds the port. The server answers `Connection: close`, so a
-    // clean `read_to_string` reads to EOF.
-    if client
-        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        .is_err()
-    {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
 
 /// Drive the hand-rolled dash server over a REAL loopback socket through the public `serve_on`
 /// entrypoint and fetch `GET /` (the root page), returning the full raw HTTP response (status line
 /// + headers + body).
 ///
-/// This RETRIES on a socket-level transient (see [`try_fetch_served_root_page`], which owns its port
+/// This RETRIES on a socket-level transient (see [`try_fetch_over`], which owns its port
 /// from `bind` through `serve_on` so an attempt can never return another server's response). Each
 /// attempt is independent, so the guard is deterministic without weakening what it proves (the
 /// served bytes over the real socket): a cleanly-served response is returned to the caller's
 /// assertions unchanged, so a genuine content regression still fails.
 fn fetch_served_root_page() -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served_root_page() {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served GET / over the real socket after many fresh-port attempts"
-    );
+    fetch_with_retry("GET /", || {
+        try_fetch_over("/", graph_provider_of(Graph::default()), Graph::default())
+    })
 }
 
 /// The SERVED root page carries the c4 progressive-disclosure decisions region over the real HTTP
@@ -148,67 +67,7 @@ fn the_served_root_page_ships_the_decisions_progressive_disclosure_region() {
         .map(|(_, body)| body)
         .expect("a served response body");
 
-    // Bind to the decisions render region: from the `el("decisions")` assignment to its empty-state
-    // sentinel, so a `<details>` ANOTHER panel emits cannot satisfy the guard.
-    let start = page
-        .find("el(\"decisions\")")
-        .expect("the served page must carry the decisions render region");
-    let end = page[start..]
-        .find("no decisions recorded")
-        .map(|i| start + i)
-        .expect("the decisions render must keep its empty-state sentinel");
-    let region = &page[start..end];
-
-    // Native progressive disclosure crosses the wire: each decision a `<details>` with a `<summary>`
-    // preview line - NOT the old flat `<table>` that dumped every (possibly multi-KB) summary inline.
-    assert!(
-        region.contains("<details"),
-        "the served decisions region must render each decision as a native <details>: {region}"
-    );
-    assert!(
-        region.contains("<summary>"),
-        "the served decisions region needs a one-line <summary> preview per decision: {region}"
-    );
-    assert!(
-        !region.contains("<table"),
-        "the served decisions region must no longer be a flat <table> dump: {region}"
-    );
-
-    // The `<summary>` line previews id + a ONE-LINE summary; the expandable body carries the FULL
-    // reasoning. Both the id and the truncated preview feed the summary line, and the full `summary`
-    // text feeds the body, so a long decision collapses to one line but expands whole.
-    assert!(
-        region.contains("esc(d.id)"),
-        "the served summary line must show the decision id: {region}"
-    );
-    assert!(
-        region.contains("preview(d.summary)"),
-        "the served summary line must show a one-line preview of the summary: {region}"
-    );
-    assert!(
-        region.contains("esc(d.summary)"),
-        "the served expandable body must carry the full decision reasoning: {region}"
-    );
-    assert!(
-        region.contains("d.superseded"),
-        "the served region must still distinguish superseded decisions (struck): {region}"
-    );
-
-    // The `preview()` helper the summary line depends on ships too, collapsing the summary to a
-    // SINGLE line (whitespace runs collapsed) and truncating a long one with an ellipsis - so the
-    // always-visible line the served page carries is never a multi-KB dump.
-    let p = page
-        .find("function preview(")
-        .expect("the served page must carry the preview() helper");
-    let helper = &page[p..(p + 320).min(page.len())];
-    assert!(
-        helper.contains("replace(/\\s+/"),
-        "served preview() must collapse whitespace runs to one line: {helper}"
-    );
-    assert!(
-        helper.contains(".slice(") && helper.contains("..."),
-        "served preview() must truncate a long summary with an ellipsis: {helper}"
-    );
+    assert_decisions_region_discloses_progressively(page);
 }
 
 /// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` twice -
@@ -310,75 +169,18 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-render-harness.js" });
 "##;
 
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
-/// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`
-/// mode. The live poll re-runs `render()`, which wholesale-replaces the decisions region's
-/// `innerHTML` (destroying + recreating the `<details>` subtree); the fix tracks expanded ids and
-/// re-applies `open` on every render so the operator's expansion survives.
-///
-/// This drives the SERVED page's real `render()` twice under a DOM shim (via node's `vm`), expands
-/// `d-alpha` between the renders, and asserts it is still open after the second render while an
-/// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
-/// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
-#[test]
-fn an_operator_expanded_decision_survives_the_live_poll_re_render() {
-    if !node_available() {
-        eprintln!(
-            "SKIP an_operator_expanded_decision_survives_the_live_poll_re_render: no `node` runtime \
-             on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest \
-             CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the render harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, RENDER_TWICE_HARNESS).expect("write the render harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served render() twice");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the served render() must keep an operator-expanded decision open across the live poll's \
-         re-render, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK expanded-decision-survives-poll"),
-        "the render harness must confirm the expanded decision survived:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
+    /// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`
+    /// mode. The live poll re-runs `render()`, which wholesale-replaces the decisions region's
+    /// `innerHTML` (destroying + recreating the `<details>` subtree); the fix tracks expanded ids and
+    /// re-applies `open` on every render so the operator's expansion survives.
+    ///
+    /// This drives the SERVED page's real `render()` twice under a DOM shim (via node's `vm`), expands
+    /// `d-alpha` between the renders, and asserts it is still open after the second render while an
+    /// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
+    /// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
+    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(RENDER_TWICE_HARNESS, "OK expanded-decision-survives-poll");
 }
 
 /// A DOM shim + test driver (JavaScript source) that LOADS the served page's own script and RUNS
@@ -445,48 +247,13 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-preview-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c4's core charter (the summary is a PREVIEW, never an inline dump):
-/// the `preview()` helper the `<summary>` line depends on must collapse a multi-line, multi-KB
-/// summary to ONE truncated line. The grep tests above only prove `preview()` CONTAINS the
-/// `.slice(`/`...` idiom - they cannot see that raising the truncation cap (so nothing is ever cut)
-/// or dropping the `/g` flag (so only the first whitespace run collapses) leaves a multi-KB summary
-/// dumped inline on the always-visible line while every grep stays green. This drives the real
-/// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
-#[test]
-fn the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the preview harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, PREVIEW_HARNESS).expect("write the preview harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to run the served preview() helper");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "preview() must collapse a multi-line summary to one truncated line so the <summary> is \
-         never a multi-KB inline dump, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK preview-collapses-and-truncates"),
-        "the preview harness must confirm the one-line truncation:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c4's core charter (the summary is a PREVIEW, never an inline dump):
+    /// the `preview()` helper the `<summary>` line depends on must collapse a multi-line, multi-KB
+    /// summary to ONE truncated line. The grep tests above only prove `preview()` CONTAINS the
+    /// `.slice(`/`...` idiom - they cannot see that raising the truncation cap (so nothing is ever cut)
+    /// or dropping the `/g` flag (so only the first whitespace run collapses) leaves a multi-KB summary
+    /// dumped inline on the always-visible line while every grep stays green. This drives the real
+    /// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
+    the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: node_harness_passes(PREVIEW_HARNESS, "OK preview-collapses-and-truncates");
 }

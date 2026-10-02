@@ -31,113 +31,56 @@
 //! `--no-repair-worktree-config`, an undocumented on-disk mutation with no place in what
 //! the Design calls compile-time derivation.
 
+mod common;
+
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
 
-use std::path::Path;
+use common::fixtures::tool_available;
+use common::git::{git_ok, tagged_gitsemver_repo};
 use std::process::Command;
 
-/// Run `git <args>` in `root`, panicking with stderr on failure - fixture setup must
-/// never silently half-succeed.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// Build a fixture git repository at `root`: `go-gitsemver.yml` matching the one
-/// committed at this repo's own root (`mode: Mainline`, `tag-prefix: v`), an initial
-/// commit tagged `v1.0.0`, then one more commit with `second_commit_message`. Mirrors
-/// this project's own `init_committed_repo` helper (`src/main.rs`) for git-fixture
-/// construction, extended with the tag + second commit criterion 1 needs.
-fn fixture_repo(root: &Path, second_commit_message: &str) {
-    git(root, &["init", "-q"]);
-    git(root, &["config", "user.email", "t@example.com"]);
-    git(root, &["config", "user.name", "t"]);
-    std::fs::write(
-        root.join("go-gitsemver.yml"),
-        "mode: Mainline\ntag-prefix: v\n",
-    )
-    .expect("write fixture go-gitsemver.yml");
-    git(root, &["add", "go-gitsemver.yml"]);
-    git(root, &["commit", "-q", "-m", "chore: initial"]);
-    git(root, &["tag", "v1.0.0"]);
-    std::fs::write(root.join("file.txt"), "second\n").expect("write fixture file");
-    git(root, &["add", "file.txt"]);
-    git(root, &["commit", "-q", "-m", second_commit_message]);
-}
-
-/// Skip (rather than fail) the success-path scenarios when `go-gitsemver` is not on
-/// PATH in this environment: criterion 3 (both feature lanes green) owns provisioning
-/// CI with the binary the spec's Notes section documents as installed; this test proves
-/// the derivation logic is correct GIVEN the tool, which the fallback scenarios below
-/// prove independently of the tool's presence.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-#[test]
-fn a_plain_commit_after_a_tag_increments_the_patch() {
-    if !gitsemver_available() {
+/// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
+/// `prefix` under Mainline mode (`why` is the assertion's reason), never the fallback marker.
+fn assert_derives_after_the_tag(subject: &str, prefix: &str, why: &str) {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), subject);
 
     let version = gitsemver::derive_version("go-gitsemver", dir.path());
 
-    assert!(
-        version.starts_with("1.0.1"),
-        "a plain commit after v1.0.0 must bump the patch under Mainline mode; got: {version}"
-    );
+    assert!(version.starts_with(prefix), "{why}; got: {version}");
     assert!(
         !version.contains("unversioned"),
         "a successful derivation must never carry the fallback marker; got: {version}"
     );
 }
 
-#[test]
-fn a_feat_commit_after_a_tag_increments_the_minor() {
-    if !gitsemver_available() {
-        eprintln!("skipping: go-gitsemver not on PATH");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "feat: add a thing");
-
-    let version = gitsemver::derive_version("go-gitsemver", dir.path());
-
-    assert!(
-        version.starts_with("1.1.0"),
-        "a feat: commit after v1.0.0 must bump the minor under Mainline mode; got: {version}"
+rigger::test_cases! {
+    a_plain_commit_after_a_tag_increments_the_patch: assert_derives_after_the_tag(
+        "docs: update the readme",
+        "1.0.1",
+        "a plain commit after v1.0.0 must bump the patch under Mainline mode",
     );
-    assert!(
-        !version.contains("unversioned"),
-        "a successful derivation must never carry the fallback marker; got: {version}"
+    a_feat_commit_after_a_tag_increments_the_minor: assert_derives_after_the_tag(
+        "feat: add a thing",
+        "1.1.0",
+        "a feat: commit after v1.0.0 must bump the minor under Mainline mode",
     );
 }
 
 #[test]
 fn a_successful_derivation_folds_the_short_sha_into_build_metadata() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let version = gitsemver::derive_version("go-gitsemver", dir.path());
     let short_sha_out = Command::new("go-gitsemver")
@@ -169,7 +112,7 @@ fn tool_not_found_falls_back_to_the_crate_semver_with_an_unversioned_marker() {
     let dir = tempfile::tempdir().unwrap();
     // A fixture repo that WOULD derive successfully if the tool ran - proves the
     // fallback is driven by the tool being unreachable, not by the repo state.
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let version = gitsemver::derive_version("go-gitsemver-does-not-exist-xyz", dir.path());
 
@@ -187,12 +130,12 @@ fn tool_not_found_falls_back_to_the_crate_semver_with_an_unversioned_marker() {
 
 #[test]
 fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
 
     let config_path = dir.path().join(".git").join("config");
     let before = std::fs::read(&config_path).expect("read fixture .git/config before");
@@ -215,12 +158,12 @@ fn a_successful_derivation_never_mutates_the_repositorys_git_config() {
 
 #[test]
 fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    fixture_repo(dir.path(), "docs: update the readme");
+    tagged_gitsemver_repo(dir.path(), "docs: update the readme");
     // Enable the git extension `go-gitsemver` repairs (silently strips from
     // `.git/config`) by default unless `--no-repair-worktree-config` suppresses it.
     // Verified independently before writing this test: go-gitsemver's own git library
@@ -232,7 +175,7 @@ fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
     // ANY-failure fallback contract (never fabricate, never fail the build) is exactly
     // what covers that trade-off - the same contract the tool-absent and
     // outside-a-checkout scenarios already exercise.
-    git(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
+    git_ok(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
 
     let config_path = dir.path().join(".git").join("config");
     let before = std::fs::read(&config_path).expect("read fixture .git/config before");

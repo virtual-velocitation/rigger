@@ -44,31 +44,13 @@
 //! coincidence or importance reddens the contract harness; and a layered render that leaks `data-nid`
 //! or an auto `<title>` reddens the regression harness.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guards SKIP rather than fail when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
 
 /// Wrap a DOM shim + a driver into a hermetic node program: it reads the served page script from
 /// `argv[2]`, then runs the shim, the page, and the driver in one `vm` context (so the driver reaches
@@ -461,54 +443,46 @@ fn assert_ok(driver_program: &str, marker: &str) {
     );
 }
 
-/// INTEGRATION seam: the live `applyKgView` -> `kgApplyLabels` handler toggles `.kg-nolabel` to match
-/// the visible-label set exactly, reveals strictly more on a deeper zoom, and skips an empty data-nid.
-#[test]
-fn the_live_zoom_handler_toggles_labels_to_match_the_visible_set() {
-    if !node_available() {
+/// The overview script plus `driver` runs under the minimal shim and confirms its seam with
+/// `marker`; skipped (named `test` in the skip line) when there is no `node` runtime.
+fn assert_overview_driver_passes(test: &str, driver: &str, marker: &str) {
+    if !tool_available("node", "--version") {
         eprintln!(
-            "SKIP the_live_zoom_handler_toggles_labels_to_match_the_visible_set: no `node` runtime on \
-             PATH (present on dev machines and ubuntu-latest CI); install node to run it."
+            "SKIP {test}: no `node` runtime on PATH (present on dev machines and ubuntu-latest \
+             CI); install node to run it."
         );
         return;
     }
-    assert_ok(
-        &program(SHIM_MIN, &[OVERVIEW_JS, INTEGRATION_DRIVER].concat()),
+    assert_ok(&program(SHIM_MIN, &[OVERVIEW_JS, driver].concat()), marker);
+}
+
+rigger::test_cases! {
+    /// INTEGRATION seam: the live `applyKgView` -> `kgApplyLabels` handler toggles `.kg-nolabel` to match
+    /// the visible-label set exactly, reveals strictly more on a deeper zoom, and skips an empty data-nid.
+    the_live_zoom_handler_toggles_labels_to_match_the_visible_set: assert_overview_driver_passes(
+        "the_live_zoom_handler_toggles_labels_to_match_the_visible_set",
+        INTEGRATION_DRIVER,
         "OK adaptive-labels-integration",
     );
 }
 
-/// CONTRACT edges: degenerate inputs, coincident centres (never revealed), the most-important node's
-/// threshold-0, and the pairwise-disjoint + monotone invariants swept across an ascending scale range.
-#[test]
-fn the_declutter_holds_its_contract_at_the_edges_and_across_scales() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_declutter_holds_its_contract_at_the_edges_and_across_scales: no `node` runtime on \
-             PATH (present on dev machines and ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    assert_ok(
-        &program(SHIM_MIN, &[OVERVIEW_JS, CONTRACT_DRIVER].concat()),
+rigger::test_cases! {
+    /// CONTRACT edges: degenerate inputs, coincident centres (never revealed), the most-important node's
+    /// threshold-0, and the pairwise-disjoint + monotone invariants swept across an ascending scale range.
+    the_declutter_holds_its_contract_at_the_edges_and_across_scales: assert_overview_driver_passes(
+        "the_declutter_holds_its_contract_at_the_edges_and_across_scales",
+        CONTRACT_DRIVER,
         "OK adaptive-labels-contract",
     );
 }
 
-/// REGRESSION boundary: a layered view clears the declutter state and stays byte-identical (no
-/// data-nid, no auto title), and a titled force node still NAMES itself on hover (bare name + note),
-/// never suppressed by the explicit tooltip, with the [shared] display tag a single occurrence.
-#[test]
-fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover() {
-    if !node_available() {
-        eprintln!(
-            "SKIP a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover: no \
-             `node` runtime on PATH (present on dev machines and ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    assert_ok(
-        &program(SHIM_MIN, &[OVERVIEW_JS, REGRESSION_DRIVER].concat()),
+rigger::test_cases! {
+    /// REGRESSION boundary: a layered view clears the declutter state and stays byte-identical (no
+    /// data-nid, no auto title), and a titled force node still NAMES itself on hover (bare name + note),
+    /// never suppressed by the explicit tooltip, with the [shared] display tag a single occurrence.
+    a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover: assert_overview_driver_passes(
+        "a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover",
+        REGRESSION_DRIVER,
         "OK adaptive-labels-regression",
     );
 }
@@ -520,7 +494,7 @@ fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_h
 /// open (a name-containing or titleless fixture passes vacuously against the pre-fix name-dropping hover).
 #[test]
 fn the_real_concepts_drill_names_its_decluttered_shared_member_on_hover() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_real_concepts_drill_names_its_decluttered_shared_member_on_hover: no `node` runtime \
              on PATH (present on dev machines and ubuntu-latest CI); install node to run it."

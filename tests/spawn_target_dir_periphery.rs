@@ -38,37 +38,17 @@
 //!    real subprocess's environment, exactly mirroring `gate::Runner`'s existing
 //!    "target_dir always wins, else inherit" contract at the gate boundary.
 
+mod common;
+
 use std::path::Path;
-use std::process::Command;
-use std::sync::Mutex;
 
-use serde_json::Value;
-
-use rigger::conductor::{AgentDriver, Error as ConductorError, SpawnOpts};
+use common::env_test_lock;
+use common::fixtures::no_emit;
+use common::git::temp_git_project_with_commit;
+use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::cli;
 use rigger::worktree::{scratch_root, unit_cache_sibling, Worktree};
-
-/// A real `git init` + one empty commit, so `Worktree::create` has a HEAD to branch a
-/// real unit worktree off of - the shape every real `rigger step` unit worktree is
-/// created against.
-fn init_repo_with_head() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .args(args)
-            .current_dir(p)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
 
 /// A minimal, dependency-free binary crate written directly into `dir` - real enough for
 /// a real `cargo build` to compile in well under a second, with no network/registry
@@ -83,34 +63,23 @@ fn seed_minimal_crate(dir: &str) {
     std::fs::write(Path::new(dir).join("src").join("main.rs"), "fn main() {}\n").unwrap();
 }
 
-fn no_emit(_t: &str, _v: Value) -> Result<(), ConductorError> {
-    Ok(())
-}
-
-/// Serializes the two tests in this file against the same POSIX getenv/setenv hazard
-/// `ENV_TEST_LOCK` (`tests/build_env_authority_periphery.rs:213-219`) and `TMPDIR_LOCK`
-/// (`tests/build_budget_slots_periphery.rs:247`) already guard elsewhere: `cargo test`
-/// runs every test in this binary as concurrent threads by default, and
-/// `a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
-/// subprocess` calls `std::env::remove_var("CARGO_TARGET_DIR")` while its sibling
-/// `a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree` spawns
-/// a real subprocess via `driver::cli::Driver::spawn`, whose `Command::env` capture reads
-/// the current ambient environment (an implicit getenv-class read of the same global
-/// `environ` table) at spawn time - a real hazard regardless of which keys either side
-/// touches. Held for the duration of each test that touches env or spawns a real
-/// subprocess, so the two can never interleave.
-static SPAWN_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn spawn_env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-    SPAWN_ENV_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
+// `env_test_lock()` serializes the two tests in this file against the same POSIX getenv/setenv hazard
+// `env_test_lock` (`tests/build_env_authority_periphery.rs:213-219`) and `TMPDIR_LOCK`
+// (`tests/build_budget_slots_periphery.rs:247`) already guard elsewhere: `cargo test`
+// runs every test in this binary as concurrent threads by default, and
+// `a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
+// subprocess` calls `std::env::remove_var("CARGO_TARGET_DIR")` while its sibling
+// `a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree` spawns
+// a real subprocess via `driver::cli::Driver::spawn`, whose `Command::env` capture reads
+// the current ambient environment (an implicit getenv-class read of the same global
+// `environ` table) at spawn time - a real hazard regardless of which keys either side
+// touches. Held for the duration of each test that touches env or spawns a real
+// subprocess, so the two can never interleave.
 
 #[test]
 fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree() {
-    let _guard = spawn_env_test_lock();
-    let repo = init_repo_with_head();
+    let _guard = env_test_lock();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     let root = scratch_root(&repo_path, "", None);
     let worktree_dir = format!("{root}/rigger-wt-cargo-build-probe");
@@ -192,7 +161,7 @@ fn a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
     // with that same empty env and asserts the real subprocess sees NO CARGO_TARGET_DIR -
     // neither a stale value forced in by the driver itself nor one leftover from this test
     // process's own ambient environment.
-    let _guard = spawn_env_test_lock();
+    let _guard = env_test_lock();
     std::env::remove_var("CARGO_TARGET_DIR");
 
     let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/env-echo-agent.sh");

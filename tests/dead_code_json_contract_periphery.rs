@@ -39,54 +39,19 @@
 //! section 4 (spec 87 Done-when: "criterion 3, NOT this one's"), so this file drives no binary
 //! and spawns no process - the whole surface to prove is the persisted data contract itself.
 //!
-//! CRITERION 3 ACCOUNTING (u87c3, extending this file rather than starting a parallel one - the
-//! same shared-artifact/shared-contract-test authority round 0-3 of criterion 2 already
-//! established): criterion 3 adds `disposition` and `reason` to the SAME committed
-//! `docs/audit/dead-code.json` (decision `u87c2-json-schema-excludes-disposition`: "c3 extends
-//! this same struct/JSON when it lands"), so `ConsumedDeadCodeCandidate` below grows the same two
-//! fields, as plain `String` (a real downstream consumer need not replicate the producer's own
-//! `Disposition` enum type to read its wire value - the exhaustiveness check belongs to a test
-//! that reads the three literal strings, below). Criterion 3 ALSO fixed a real bug in the
-//! shared instrument while researching dispositions (decision
-//! `u87c3-self-colon-colon-qualifier-false-positive`): `src/dash.rs`'s `DashMarker::parse`,
-//! ambiguous with `gate.rs`/`ledger.rs` (x2)/`failure.rs`'s own `parse`s, was a false-positive
-//! dead candidate - referenced only via `Self::parse(...)` from its own `DashMarker::read`
-//! (a real production call path, `main.rs:5731/7313/7629`), which the qualifier-attribution
-//! logic never resolved. The candidate count drops from 27 to 26 as a result; a regression test
-//! below pins its continued absence.
-//!
-//! CRITERION 3, SDET-LENS ACCOUNTING (decision `sdet-u87c3-surface-accounting`): boundary probes
-//! against base `84739b4` found the two new fields plus the disposition split test above (all
-//! pre-existing, folded into the implementer's own commit) but one gap: spec 87 DISPOSITIONS is
-//! stronger than "non-empty reason" - `keep-pending` "must cite the spec that will call it" and
-//! `keep-public-surface` "must cite the consumer... a consumer that does not exist is not a
-//! reason" - and none of the three pre-existing tests mechanically check citation SPECIFICITY
-//! against the persisted file, only non-emptiness. The property held today (each of the 3 real
-//! `keep-pending` entries already literally cites `spec 27`/`spec 32`/`spec 60`) but was unpinned.
-//! `every_keep_pending_reason_cites_a_real_spec_number` below closes this at the `keep-pending`
-//! side (a plain byte scan for `"spec "` immediately followed by an ASCII digit, the same
-//! no-new-dependency style as every helper in this file). `keep-public-surface` has 0 real
-//! entries today - vacuously satisfied, already pinned by the disposition-split test - so there
-//! is no committed fact yet to assert its citation requirement against; a future entry needs its
-//! own test when one lands. RED/GREEN discipline: backed up `docs/audit/dead-code.json`, stripped
-//! every `"spec 27"` occurrence from the `distiller::rebuild` `keep-pending` reason in the
-//! working copy, confirmed the new test fails naming that exact candidate and quoting the
-//! corrupted reason, restored the original committed bytes (sha256-verified byte-identical), and
-//! confirmed all 18 tests in this file green again.
-//!
 //! ROUND 1 ACCOUNTING (decision `sdet-u87c2-r1-surface-accounting`, superseding
 //! `sdet-u87c2-surface-accounting` above): round 1's fix
 //! (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`) added a genuine NEW
 //! cross-module seam - a call from `tests/simplification_audit.rs` into the real production
-//! public API (`rigger::grounder::symbols::build_index` -> `events::index_events`) to prove the
-//! bespoke out-of-line-test-file resolver agrees with the canonical production one. The
+//! public API (`rigger::grounder::symbols::build_index` ->
+//! `events::out_of_line_test_module_files`) to prove the bespoke out-of-line-test-file resolver agrees with the canonical production one. The
 //! implementer's own 5 new tests already integration-test that PARITY property, on fixtures and
 //! on the real tree. What none of them pin is the COMMITTED ARTIFACT itself: a future edit to the
 //! generator's call site, or a stale regeneration, could reintroduce spec 87's own Goal-named
-//! misclassification (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs` counted as
-//! production) even while the two resolvers still agree with each other in isolation. The four
-//! tests after the byte-for-byte round-trip proof below close that gap and pin round 0's three
-//! concrete fixed regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
+//! misclassification (`src/eventstore/contract.rs`, `crates/rigger-conductor/src/blast_radius_eval.rs` counted as
+//! production) even while the two resolvers still agree with each other in isolation. The tests
+//! after the byte-for-byte round-trip proof below close that gap and pin round 0's concrete fixed
+//! regressions (`adj-u87c2-r0-verdict-reject`) against the real committed file,
 //! not just the implementer's synthetic fixtures or a reviewer's throwaway manual grep.
 //!
 //! ROUND 2 ACCOUNTING (decision `sdet-u87c2-r2-surface-accounting`, superseding
@@ -102,7 +67,7 @@
 //! private-helper changes with no new cross-module seam). The one periphery-visible surface item:
 //! the fix removes 4 named false-positive candidates from the committed artifact -
 //! `Namespaced::new` (`src/eventstore/namespace.rs`), `ReplayDriver::new`
-//! (`src/driver/replay.rs`), `Buckets::new` (`src/dash.rs`), `Server::new` (`src/mcpserver.rs`) -
+//! (`crates/rigger-driver/src/driver/replay.rs`), `Buckets::new` (`crates/rigger-dash/src/dash.rs`), `Server::new` (`crates/rigger-dash/src/mcpserver.rs`) -
 //! a regression class round 1's periphery layer could not yet pin since it postdates round 1. The
 //! ROUND 2 test after the round-1 tests below closes that gap. EXEMPT: the `dyn`/`impl`-keyword
 //! strip itself has no committed-artifact fact to assert against (zero `impl dyn` blocks exist in
@@ -128,13 +93,13 @@
 //! Mechanism A - a struct-literal field VALUE or a UFCS path used as a value on a
 //! `DispatchCategory::Method` fn, exactly the two round-2 upheld classes, now genuinely fixed for
 //! their reported instances AND for further real instances neither round 2 nor the operator's
-//! ruling named: the 10 `src/docs.rs` `skill_registry()` `render_*` fns (struct-literal field
-//! value, e.g. `render_body: render_planning_a_spec_skill,` at `src/docs.rs:1211`) and
+//! ruling named: the 10 `crates/rigger-domain/src/docs.rs` `skill_registry()` `render_*` fns (struct-literal field
+//! value, e.g. `render_body: render_planning_a_spec_skill,` at `crates/rigger-domain/src/docs.rs:1211`) and
 //! `src/config.rs`'s `to_rule` (UFCS value, `.map(FailureRuleDef::to_rule)` at
 //! `src/config.rs:766`) are the 11 the operator's ruling explicitly named. `is_grep_fallback`
 //! (`src/progress.rs`, UFCS value `.filter(crate::progress::AgentProgress::is_grep_fallback)` at
-//! `src/metrics.rs:1066`) and `is_snapshot_drift` (`src/metrics.rs`, UFCS value
-//! `.all(ModelChange::is_snapshot_drift)` at `src/metrics.rs:1333`) are two MORE real,
+//! `crates/rigger-domain/src/metrics.rs:1066`) and `is_snapshot_drift` (`crates/rigger-domain/src/metrics.rs`, UFCS value
+//! `.all(ModelChange::is_snapshot_drift)` at `crates/rigger-domain/src/metrics.rs:1333`) are two MORE real,
 //! previously-unreported instances of the identical Method-category UFCS-value class - genuine
 //! evidence the round-3 fix closes the CLASS, not merely the two reported occurrences.
 //!
@@ -142,8 +107,8 @@
 //! variable or struct field sharing a fn's bare name now keeps that fn looking alive too - a
 //! false negative, never a false positive"): `placements` (`src/eventstore/mod.rs`, kept alive by
 //! its own struct's same-named field, e.g. `self.placements` at `src/eventstore/mod.rs:173`),
-//! `written` (`src/watch.rs`, kept alive by the `written` binding in the `matches!` pattern at
-//! `src/watch.rs:528`), and `rules` (`src/failure.rs`, kept alive by `Taxonomy`'s own `rules`
+//! `written` (`crates/rigger-domain/src/watch.rs`, kept alive by the `written` binding in the `matches!` pattern at
+//! `crates/rigger-domain/src/watch.rs:528`), and `rules` (`src/failure.rs`, kept alive by `Taxonomy`'s own `rules`
 //! field, e.g. `self.rules.iter()` at `src/failure.rs:238`) each verified by hand to have NO
 //! genuine call-shaped production reference of their own - each is provably dead by spec 87's own
 //! definition, kept off this round's dead-code list only by the accepted trade.
@@ -164,15 +129,13 @@
 //! or periphery - `the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_
 //! records_them` below closes it for section 4.3, reading the PERSISTED report and the PERSISTED
 //! `DEAD_CODE_LINES_PATH` directly, joined by array position (never a `(file, name)` lookup -
-//! `src/ingest.rs`'s own `ingest_project` is ambiguous, two distinct candidates sharing one bare
-//! name in one file, so a lookup would silently resolve every citation to whichever entry comes
-//! first). ROUND 4 (`adj-u90c2-r3-verdict-reject` named section 6 item 0, the dead-code deletion
+//! two distinct candidates may share one bare name in one file, so a lookup would silently
+//! resolve every citation to whichever entry comes first). ROUND 4 (`adj-u90c2-r3-verdict-reject` named section 6 item 0, the dead-code deletion
 //! list, alongside sections 1/4.3 as needing the identical sidecar-sourcing fix - the producer
 //! delivered it, `render_dead_code_deletion_list` now takes an explicit `lines:
 //! &[DeadCodeCandidateLines]` param, but no periphery test closed CLAIM 4 for that site):
 //! `the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_
-//! sibling_records_them` below closes it the same way, filtered to `disposition == "delete"` (the
-//! deletion list's own scope) and joined by the SAME array position as section 4.3's test, not
+//! sibling_records_them` below closes it the same way, joined by the SAME array position as section 4.3's test, not
 //! re-sorted. CLAIM 2 (pin-bump byte-identical) and CLAIM 3 (merge-friendly) both require
 //! regenerating over a synthetic fixture tree via `build_dead_code_candidates`/`scan_tree`,
 //! private to `tests/simplification_audit.rs`'s own `mod tests` - this layer never authors or
@@ -184,8 +147,12 @@
 //! a gap: still out of periphery reach by the same white-box-only reasoning, now genuinely closed
 //! rather than merely claimed.
 
+mod common;
+
+use common::repo::assert_committed_json_round_trips;
+use common::repo::committed_json;
+use common::repo::repo_root;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 /// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRefWire` shape field-for-field,
 /// from the outside - see the module doc comment for why this is a deliberate re-declaration,
@@ -200,9 +167,7 @@ struct ConsumedTestOnlyRef {
 }
 
 /// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidateWire` shape
-/// field-for-field, `disposition`/`reason` (criterion 3's own addition) included, as plain
-/// `String` - see the module doc comment's CRITERION 3 ACCOUNTING for why a raw string, not the
-/// producer's enum. Spec 90 criterion 2: `line` moved to the unguarded `.lines.json` sibling,
+/// field-for-field. Spec 90 criterion 2: `line` moved to the unguarded `.lines.json` sibling,
 /// replaced by `content_hash`; `ambiguous_with` citations are `file#hash`, never `file:line`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct ConsumedDeadCodeCandidate {
@@ -217,34 +182,12 @@ struct ConsumedDeadCodeCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
     test_only_references: Vec<ConsumedTestOnlyRef>,
-    disposition: String,
-    reason: String,
 }
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention as
-/// `tests/simplification_audit.rs::repo_root` and `tests/duplication_catalog_contract_periphery.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn read_committed_dead_code_raw() -> String {
-    let path = repo_root().join(DEAD_CODE_PATH);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DEAD_CODE_PATH} is missing or unreadable ({e})"))
-}
-
-fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
-    let raw = read_committed_dead_code_raw();
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!(
-            "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references/ \
-             disposition/reason, test_only_references as file/content_hash): {e}"
-        )
-    })
-}
+/// The documented contract a downstream consumer decodes [`DEAD_CODE_PATH`] as.
+const DEAD_CODE_CONTRACT: &str =
+    "DeadCodeCandidate contract (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references, test_only_references as file/content_hash)";
 
 /// THE ROUND-TRIP PROOF: a downstream consumer who only has spec 87's documented field shape
 /// (not the producer's private Rust type) can actually parse the committed artifact. This is the
@@ -252,12 +195,7 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
 /// never exercise it against the real committed file, only a producer-internal string compare.
 #[test]
 fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        !candidates.is_empty(),
-        "{DEAD_CODE_PATH} deserialized to zero candidates - a downstream consumer (criterion 3's \
-         report generator) reading this file would silently see nothing to disposition"
-    );
+    committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
 }
 
 /// Spec 87 OUTPUT: "one entry per production fn ... name, file:line, visibility, the test-only
@@ -272,7 +210,8 @@ fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
 #[test]
 fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_content_hash_and_a_recognized_visibility(
 ) {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert!(!c.name.is_empty(), "{c:?} has an empty name");
         assert!(
@@ -298,7 +237,8 @@ fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_content_hash_a
 /// line-free).
 #[test]
 fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_hash_shaped() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert_eq!(
             c.ambiguous,
@@ -334,7 +274,8 @@ fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_hash_sha
 /// per-reference shape.
 #[test]
 fn every_deserialized_test_only_reference_has_a_non_empty_file_and_content_hash() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         for r in &c.test_only_references {
             assert!(
@@ -371,15 +312,6 @@ struct ConsumedDeadCodeCandidateLines {
     test_only_references: Vec<ConsumedTestOnlyRefLines>,
 }
 
-fn deserialize_committed_dead_code_lines() -> Vec<ConsumedDeadCodeCandidateLines> {
-    let path = repo_root().join(DEAD_CODE_LINES_PATH);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{DEAD_CODE_LINES_PATH} is missing or unreadable ({e})"));
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("{DEAD_CODE_LINES_PATH} does not deserialize as the documented lines contract: {e}")
-    })
-}
-
 /// Determinism/ordering, checked against the PERSISTED files rather than the generator's
 /// in-memory value (the producer's own `build_dead_code_candidates` sorts its output by
 /// `(file, line)` three times over - `tests/simplification_audit.rs`'s internal fixture tests
@@ -392,8 +324,12 @@ fn deserialize_committed_dead_code_lines() -> Vec<ConsumedDeadCodeCandidateLines
 #[test]
 fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_then_line(
 ) {
-    let candidates = deserialize_committed_dead_code();
-    let lines = deserialize_committed_dead_code_lines();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         candidates.len(),
         lines.len(),
@@ -433,53 +369,48 @@ fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_as
     }
 }
 
-/// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
-/// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
-/// the producer's own trailing-newline convention, per `dead_code_to_json`) reproduces the
-/// committed bytes exactly. This is the strongest form of the round-trip contract - it proves the
-/// JSON shape is lossless and canonical from an outside reader's perspective, not merely that the
-/// producer's own function agrees with itself (the implementer's own drift-guard test compares
-/// the SAME producer type/function on both sides; this test decodes and re-encodes through a
-/// SEPARATELY-declared type, the position any real future consumer will be in). It is also the
-/// mechanical proof that no field beyond the eight declared above is present in the file today:
-/// an extra field would silently drop on decode and then fail this exact comparison.
-#[test]
-fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly(
-) {
-    let committed = read_committed_dead_code_raw();
-    let candidates = deserialize_committed_dead_code();
-    let mut reencoded =
-        serde_json::to_string_pretty(&candidates).expect("ConsumedDeadCodeCandidate re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        committed, reencoded,
-        "{DEAD_CODE_PATH} does not round-trip byte-for-byte through the documented \
-         DeadCodeCandidate shape - a downstream consumer decoding and re-encoding this file \
-         would silently diverge from the committed artifact"
-    );
+rigger::test_cases! {
+    /// THE BACK-COMPAT / STABILITY PROOF: deserializing the committed file into this independently
+    /// declared struct and re-serializing it (same field order, `serde_json::to_string_pretty` plus
+    /// the producer's own trailing-newline convention, per `dead_code_to_json`) reproduces the
+    /// committed bytes exactly. This is the strongest form of the round-trip contract - it proves the
+    /// JSON shape is lossless and canonical from an outside reader's perspective, not merely that the
+    /// producer's own function agrees with itself (the implementer's own drift-guard test compares
+    /// the SAME producer type/function on both sides; this test decodes and re-encodes through a
+    /// SEPARATELY-declared type, the position any real future consumer will be in). It is also the
+    /// mechanical proof that no field beyond the eight declared above is present in the file today:
+    /// an extra field would silently drop on decode and then fail this exact comparison.
+    deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_bytes_exactly:
+        assert_committed_json_round_trips::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
 }
 
 // -----------------------------------------------------------------------------------------
 // ROUND 1: pinning the reference-class fixes against the REAL committed file, from outside.
-// See the module doc comment's "ROUND 1 ACCOUNTING" section for why these four exist as a
+// See the module doc comment's "ROUND 1 ACCOUNTING" section for why these exist as a
 // periphery layer distinct from the implementer's own fixture-driven unit tests.
 // -----------------------------------------------------------------------------------------
 
 /// The real tree's own out-of-line test files, named explicitly rather than re-derived through
 /// the production pipeline's public API: spec 87's own Goal text names exactly these two
-/// (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs`) as the worked misclassification
-/// example, and a fresh grep of the real tree today (`grep -rn 'cfg(test)' -A1 src/ | grep 'mod
-/// [a-z_0-9]*;'`) finds no third: `src/eventstore/mod.rs` declares `#[cfg(test)] pub mod
-/// contract;`, `src/lib.rs` declares `#[cfg(test)] mod blast_radius_eval;`. A hard-coded list
-/// deliberately does NOT re-derive the production resolver's effect here (that would duplicate
+/// (`src/eventstore/contract.rs`, `crates/rigger-conductor/src/blast_radius_eval.rs`) as the worked misclassification
+/// example. Since spec 93 criterion 1, both declarations carry a wider, store-only compound
+/// predicate rather than the original bare `#[cfg(test)]` - `src/eventstore/mod.rs` declares
+/// `#[cfg(all(test, any(feature = "store", not(feature = "core"))))] pub mod contract;`,
+/// `src/lib.rs` declares the same compound gate on `mod blast_radius_eval;` - which the
+/// scanner's `cfg_all_contains_bare_test` (`tests/simplification_audit.rs`) recognizes as still
+/// test-in-full, a strict subset of plain `cfg(test)`; this list of two names is unaffected
+/// either way. A hard-coded list deliberately does NOT re-derive the production resolver's
+/// effect here (that would duplicate
 /// `production_out_of_line_exclusion_set` in `tests/simplification_audit.rs`, which is already
 /// exercised, on fixtures and the real tree, by the implementer's own `resolvers_agree_on_*`
 /// tests) - this test's whole point is independence from that derivation: even if a future edit
 /// broke the resolver-agreement property in a way neither resolver's own self-comparison could
 /// see, a candidate from either of these two named files landing in the committed artifact would
 /// still be caught here.
-const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] =
-    ["src/eventstore/contract.rs", "src/blast_radius_eval.rs"];
+const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] = [
+    "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+    "crates/rigger-conductor/src/blast_radius_eval.rs",
+];
 
 /// Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`): the
 /// exact misclassification spec 87's own Goal names by name must never reappear in the committed
@@ -487,7 +418,8 @@ const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] =
 /// happen to still agree with each other on some future fixture.
 #[test]
 fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
-    let candidates = deserialize_committed_dead_code();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
     for c in &candidates {
         assert!(
             !KNOWN_OUT_OF_LINE_TEST_FILES.contains(&c.file.as_str()),
@@ -501,71 +433,152 @@ fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
     }
 }
 
-/// Round 1 class 1 (mod-span test regions): `index_events` is spec 87's own Goal-cited worked
-/// example (a fn referenced only from a `use` sitting at a `#[cfg(test)] mod tests { .. }` top
-/// level, outside every fn body) - round 0 shipped a committed file where it was silently
-/// absent (`sdet-u87c2-mod-body-level-test-statements-leak-as-production-refs`). Checked by name
-/// and file only (not line): the fix this test guards is about mod-span test-region tracking,
-/// not about `index_events`'s own definition site, so asserting its line would make this test
-/// fail on any unrelated future edit that merely moves the function within its file.
-#[test]
-fn index_events_the_spec_goals_own_worked_example_is_present() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.name == "index_events" && c.file == "src/grounder/symbols/events.rs"),
-        "index_events (src/grounder/symbols/events.rs) is absent from {DEAD_CODE_PATH} - a \
-         regression of the mod-span test-region fix, spec 87's own Goal-cited worked example"
-    );
+/// No `(name, file)` of `live` - a `None` file matching the name in any file - is a candidate in
+/// the committed dead-code file; `why` names the fix a listed entry would regress.
+fn assert_absent_from_dead_code(live: &[(&str, Option<&str>)], why: &str) {
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
+    for (name, file) in live {
+        assert!(
+            !candidates
+                .iter()
+                .any(|c| c.name == *name && file.is_none_or(|f| c.file == f)),
+            "{name} ({file:?}) appears in {DEAD_CODE_PATH} - {why}"
+        );
+    }
 }
 
-/// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
-/// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
-/// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
-/// have scheduled a real, live function for deletion in the wave.
-#[test]
-fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        !candidates.iter().any(|c| c.name == "default_build_config"),
-        "default_build_config appears in {DEAD_CODE_PATH} - a regression of the \
-         attribute-token-tree-reference fix: it is genuinely live via \
-         #[serde(default = \"default_build_config\")] in src/config.rs"
-    );
-}
-
-/// Round 1 class 4 (ambiguity is one class for every fn kind, adversary-found): two production
-/// free fns named `rebuild` (`src/distiller.rs` and `src/playbooks.rs`) shared one bare-name
-/// bucket; only `distiller::rebuild` has zero attributable references and must surface as
-/// `ambiguous: true` naming its live namesake, rather than silently vanishing from the JSON
-/// (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`) - checked by the
-/// `ambiguous_with` citation's FILE component only (not its content_hash, spec 90 criterion 2's
-/// line-free replacement for the citation's old line component), so an unrelated future edit
-/// that merely moves `rebuild` within `src/playbooks.rs` does not spuriously fail this test.
-#[test]
-fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playbooks() {
-    let candidates = deserialize_committed_dead_code();
-    let rebuild = candidates
-        .iter()
-        .find(|c| c.name == "rebuild" && c.file == "src/distiller.rs")
-        .unwrap_or_else(|| {
-            panic!("rebuild (src/distiller.rs) is absent from {DEAD_CODE_PATH} entirely")
-        });
-    assert!(
-        rebuild.ambiguous,
-        "rebuild (src/distiller.rs) is not flagged ambiguous, but a same-named live free fn \
-         exists at src/playbooks.rs - a regression of the free-fn ambiguity fix"
-    );
-    assert!(
-        rebuild.ambiguous_with.iter().any(|c| c
-            .rsplit_once('#')
-            .is_some_and(|(file, _)| file == "src/playbooks.rs")),
-        "rebuild (src/distiller.rs)'s ambiguous_with {:?} does not cite src/playbooks.rs - a \
-         consumer reading this entry cannot find the live namesake that keeps it ambiguous \
-         rather than a confirmed deletion",
-        rebuild.ambiguous_with
-    );
+rigger::test_cases! {
+    /// Round 1 class 2 (attribute token trees are references): `default_build_config` is genuinely
+    /// live via `#[serde(default = "default_build_config")]` in `src/config.rs` - round 0 shipped a
+    /// false positive (`sdet-u87c2-serde-default-attr-string-ref-is-a-false-positive`) that would
+    /// have scheduled a real, live function for deletion in the wave.
+    default_build_config_referenced_only_via_a_serde_default_attribute_is_absent:
+        assert_absent_from_dead_code(
+            &[("default_build_config", None)],
+            "a regression of the attribute-token-tree-reference fix: it is genuinely live via \
+             #[serde(default = \"default_build_config\")] in src/config.rs",
+        );
+    /// Round 2 (`u87c2-round-2-reuse-impl-self-type`, closing round 1's upheld defect
+    /// `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-generics-reintroduces-false-positives`,
+    /// `adj-u87c2-r1-verdict-reject`): four live, widely-used constructors, each declared inside an
+    /// `impl` block that carries ITS OWN leading generic/lifetime parameters
+    /// (`impl<'a> Namespaced<'a>`, `impl<'a> ReplayDriver<'a>`, `impl<'g> Buckets<'g>`,
+    /// `impl<'a> Server<'a>`), were false-flagged as zero-production-reference dead-code candidates
+    /// in round 1's committed artifact: `impl_assoc_qualifier`'s naive
+    /// `header.split(|c| c == '<' || c.is_whitespace()).next()` returned an EMPTY qualifier for a
+    /// header that starts with `<` itself (the `impl` keyword is never stored in `enclosing_impl`),
+    /// so it could never match the real `Type::name(`-shaped call sites that keep these
+    /// constructors genuinely alive - the exact false-positive-feeds-a-possible-deletion direction
+    /// spec 87's design says must never happen. Checked here by name+file only (not line): the fix
+    /// is about qualifier RESOLUTION, not about any of these four functions' own definition sites,
+    /// so an unrelated future edit that merely moves one within its file must not spuriously fail
+    /// this test.
+    generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file:
+        assert_absent_from_dead_code(
+            &[
+                ("new", Some("crates/rigger-store-sqlite/src/eventstore/namespace.rs")), // Namespaced::new
+                ("new", Some("crates/rigger-driver/src/driver/replay.rs")),        // ReplayDriver::new
+                ("new", Some("crates/rigger-dash/src/dash.rs")),                 // Buckets::new
+                ("new", Some("crates/rigger-dash/src/mcpserver.rs")),            // Server::new
+            ],
+            "a regression of the round-2 impl_assoc_qualifier-reuses-impl_self_type fix: this \
+             constructor's enclosing impl block declares its own leading generic/lifetime \
+             parameters, and the pre-fix naive qualifier split returned empty for that header \
+             shape, silently dropping its real qualified call sites and false-flagging it dead",
+        );
+    /// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`), the 11 entries the
+    /// operator's ruling explicitly named after `adj-u87c2-r2-verdict-reject` upheld
+    /// `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` (a struct-literal
+    /// field VALUE has no reference shape at all) and
+    /// `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites` (a UFCS
+    /// value on a `Method`-category fn was discarded by `relevant()`'s shape gate even though
+    /// `ref_shapes()` already saw it). Checked by name+file only (not line): the fix is about
+    /// reference RECOGNITION, not about any of these functions' own definition sites, so an
+    /// unrelated future edit that merely moves one within its file must not spuriously fail this
+    /// test.
+    value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file:
+        assert_absent_from_dead_code(
+            &[
+                // crates/rigger-domain/src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal
+                // field values (crates/rigger-domain/src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
+                ("render_using_rigger_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_planning_a_spec_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_reset_store_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_build_graph_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_reindex_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_resume_a_run_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_handle_an_escalation_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_watch_a_run_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_restore_the_dash_skill", Some("crates/rigger-domain/src/docs.rs")),
+                ("render_diagnose_churn_skill", Some("crates/rigger-domain/src/docs.rs")),
+                // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
+                // Method-category-UFCS-value class.
+                ("to_rule", Some("src/config.rs")),
+            ],
+            "a regression of the round-3 any-token-not-a-shape fix: this fn is genuinely \
+             referenced as a value (a struct-literal field value or a UFCS path), a shape no prior \
+             round's scanner recognized as a reference at all",
+        );
+    /// Round 3, mechanism A's GENERALITY: `is_grep_fallback` and `is_snapshot_drift` are two MORE
+    /// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
+    /// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
+    /// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
+    /// `crates/rigger-domain/src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
+    /// `crates/rigger-domain/src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
+    /// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
+    /// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
+    /// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
+    /// shape`), not just the one instance every prior round's periphery layer could name.
+    the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances:
+        assert_absent_from_dead_code(
+            &[
+                ("is_grep_fallback", Some("crates/rigger-domain/src/progress.rs")),
+                ("is_snapshot_drift", Some("crates/rigger-domain/src/metrics.rs")),
+            ],
+            "this is a real, previously-unreported instance of the same Method-category \
+             UFCS-value class the round-3 fix was supposed to close generally, not merely the one \
+             reported instance (to_rule)",
+        );
+    /// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
+    /// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
+    /// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
+    /// `self.placements` field access, e.g. `crates/rigger-domain/src/eventstore.rs:201`), `written` (kept alive by
+    /// the `written` binding in a `matches!` pattern at `crates/rigger-domain/src/watch.rs:528`), and `rules` (kept alive
+    /// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
+    /// call-shaped production reference of their own - verified by hand, each is provably dead by
+    /// spec 87's own definition, kept off the committed list only by the accepted trade. This test
+    /// exists so the trade stays VISIBLE in the persisted artifact rather than resting only on the
+    /// fix's own prose: a future edit that renamed the colliding field/local without genuinely
+    /// reviving the method would silently reintroduce these as real dead-code candidates, and this
+    /// test would start failing exactly then - a signal, not a bug, but one worth naming rather than
+    /// leaving mute.
+    getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent:
+        assert_absent_from_dead_code(
+            &[
+                ("placements", Some("crates/rigger-domain/src/eventstore.rs")),
+                ("written", Some("crates/rigger-domain/src/watch.rs")),
+                ("rules", Some("src/failure.rs")),
+            ],
+            "the accepted same-named-field/local false-negative trade \
+             (op-u87c2-round-3-a-reference-is-any-token-not-a-shape) no longer holds for this \
+             entry; either the colliding token was removed (in which case this fn may now be \
+             genuinely dead and belongs on the list with a real disposition) or the rule regressed",
+        );
+    /// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
+    /// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
+    /// `DashMarker::parse` (`crates/rigger-dash/src/dash.rs:398`) is referenced only via `Self::parse(...)` from its
+    /// own `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) -
+    /// it must never again appear as a dead-code candidate, which would recommend deleting live
+    /// code.
+    dash_marker_parse_the_self_colon_colon_false_positive_stays_absent:
+        assert_absent_from_dead_code(
+            &[("parse", Some("crates/rigger-dash/src/dash.rs"))],
+            "a regression of the Self:: qualifier-attribution fix \
+             (u87c3-self-colon-colon-qualifier-false-positive); it is called from real production \
+             code via Self::parse inside DashMarker::read and must never be recommended for \
+             deletion",
+        );
 }
 
 // -----------------------------------------------------------------------------------------
@@ -574,279 +587,16 @@ fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playboo
 // closes.
 // -----------------------------------------------------------------------------------------
 
-/// Round 2 (`u87c2-round-2-reuse-impl-self-type`, closing round 1's upheld defect
-/// `sdet-u87c2-r1-impl-assoc-qualifier-drops-leading-impl-generics-reintroduces-false-positives`,
-/// `adj-u87c2-r1-verdict-reject`): four live, widely-used constructors, each declared inside an
-/// `impl` block that carries ITS OWN leading generic/lifetime parameters
-/// (`impl<'a> Namespaced<'a>`, `impl<'a> ReplayDriver<'a>`, `impl<'g> Buckets<'g>`,
-/// `impl<'a> Server<'a>`), were false-flagged as zero-production-reference dead-code candidates
-/// in round 1's committed artifact: `impl_assoc_qualifier`'s naive
-/// `header.split(|c| c == '<' || c.is_whitespace()).next()` returned an EMPTY qualifier for a
-/// header that starts with `<` itself (the `impl` keyword is never stored in `enclosing_impl`),
-/// so it could never match the real `Type::name(`-shaped call sites that keep these constructors
-/// genuinely alive - the exact false-positive-feeds-a-possible-deletion direction spec 87's
-/// design says must never happen. Checked here by name+file only (not line): the fix is about
-/// qualifier RESOLUTION, not about any of these four functions' own definition sites, so an
-/// unrelated future edit that merely moves one within its file must not spuriously fail this
-/// test.
-#[test]
-fn generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file() {
-    let candidates = deserialize_committed_dead_code();
-    for (name, file) in [
-        ("new", "src/eventstore/namespace.rs"), // Namespaced::new
-        ("new", "src/driver/replay.rs"),        // ReplayDriver::new
-        ("new", "src/dash.rs"),                 // Buckets::new
-        ("new", "src/mcpserver.rs"),            // Server::new
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-2 \
-             impl_assoc_qualifier-reuses-impl_self_type fix: this constructor's enclosing impl \
-             block declares its own leading generic/lifetime parameters, and the pre-fix naive \
-             qualifier split returned empty for that header shape, silently dropping its real \
-             qualified call sites and false-flagging it dead"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------------------------
 // ROUND 3: pinning the round-3 "any token, not a shape" fix against the REAL committed file,
 // from outside. See the module doc comment's "ROUND 3 ACCOUNTING" section for the boundary-probe
 // rerun and the two mechanisms these three tests each close.
 // -----------------------------------------------------------------------------------------
 
-/// Round 3 (`op-u87c2-round-3-a-reference-is-any-token-not-a-shape`), the 11 entries the
-/// operator's ruling explicitly named after `adj-u87c2-r2-verdict-reject` upheld
-/// `sdet-u87c2-r2-fnptr-struct-field-value-is-an-invisible-reference-shape` (a struct-literal
-/// field VALUE has no reference shape at all) and
-/// `sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites` (a UFCS
-/// value on a `Method`-category fn was discarded by `relevant()`'s shape gate even though
-/// `ref_shapes()` already saw it). Checked by name+file only (not line): the fix is about
-/// reference RECOGNITION, not about any of these functions' own definition sites, so an
-/// unrelated future edit that merely moves one within its file must not spuriously fail this
-/// test.
-#[test]
-fn value_position_and_ufcs_reference_shapes_previously_invisible_are_absent_from_the_committed_file(
-) {
-    let candidates = deserialize_committed_dead_code();
-    for (name, file) in [
-        // src/docs.rs skill_registry()'s 10 render_body: render_*_skill struct-literal field
-        // values (src/docs.rs:1207-1243) - the fnptr-struct-field-value class.
-        ("render_using_rigger_skill", "src/docs.rs"),
-        ("render_planning_a_spec_skill", "src/docs.rs"),
-        ("render_reset_store_skill", "src/docs.rs"),
-        ("render_build_graph_skill", "src/docs.rs"),
-        ("render_reindex_skill", "src/docs.rs"),
-        ("render_resume_a_run_skill", "src/docs.rs"),
-        ("render_handle_an_escalation_skill", "src/docs.rs"),
-        ("render_watch_a_run_skill", "src/docs.rs"),
-        ("render_restore_the_dash_skill", "src/docs.rs"),
-        ("render_diagnose_churn_skill", "src/docs.rs"),
-        // src/config.rs's .map(FailureRuleDef::to_rule) at src/config.rs:766 - the
-        // Method-category-UFCS-value class.
-        ("to_rule", "src/config.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - a regression of the round-3 \
-             any-token-not-a-shape fix: this fn is genuinely referenced as a value (a \
-             struct-literal field value or a UFCS path), a shape no prior round's scanner \
-             recognized as a reference at all"
-        );
-    }
-}
-
-/// Round 3, mechanism A's GENERALITY: `is_grep_fallback` and `is_snapshot_drift` are two MORE
-/// real, previously-UNREPORTED instances of the exact same `DispatchCategory::Method`
-/// UFCS-value-to-a-combinator class `to_rule` was the one reported instance of
-/// (`sdet-u87c2-r2-method-category-relevant-filter-discards-ufcs-qualified-call-sites`) -
-/// `src/metrics.rs:1066`'s `.filter(crate::progress::AgentProgress::is_grep_fallback)` and
-/// `src/metrics.rs:1333`'s `.all(ModelChange::is_snapshot_drift)`, verified by hand against the
-/// real tree, neither cited in the operator's round-3 ruling or the round-2 upheld findings.
-/// Their absence here is independent proof the round-3 fix closes the CLASS ("no code decides
-/// whether an occurrence looks like a call" - `op-u87c2-round-3-a-reference-is-any-token-not-a-
-/// shape`), not just the one instance every prior round's periphery layer could name.
-#[test]
-fn the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances() {
-    let candidates = deserialize_committed_dead_code();
-    for (name, file) in [
-        ("is_grep_fallback", "src/progress.rs"),
-        ("is_snapshot_drift", "src/metrics.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - this is a real, previously-unreported \
-             instance of the same Method-category UFCS-value class the round-3 fix was supposed \
-             to close generally, not merely the one reported instance (to_rule)"
-        );
-    }
-}
-
-/// Round 3, mechanism B - THE RULE's own explicitly accepted precision trade ("a local variable
-/// or struct field sharing a fn's bare name now keeps that fn looking alive too - a false
-/// negative, never a false positive"): `placements` (kept alive by `Appended`'s own
-/// `self.placements` field access, e.g. `src/eventstore/mod.rs:173`), `written` (kept alive by
-/// the `written` binding in a `matches!` pattern at `src/watch.rs:528`), and `rules` (kept alive
-/// by `Taxonomy`'s own `self.rules` field access, e.g. `src/failure.rs:238`) each have NO
-/// call-shaped production reference of their own - verified by hand, each is provably dead by
-/// spec 87's own definition, kept off the committed list only by the accepted trade. This test
-/// exists so the trade stays VISIBLE in the persisted artifact rather than resting only on the
-/// fix's own prose: a future edit that renamed the colliding field/local without genuinely
-/// reviving the method would silently reintroduce these as real dead-code candidates, and this
-/// test would start failing exactly then - a signal, not a bug, but one worth naming rather than
-/// leaving mute.
-#[test]
-fn getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent() {
-    let candidates = deserialize_committed_dead_code();
-    for (name, file) in [
-        ("placements", "src/eventstore/mod.rs"),
-        ("written", "src/watch.rs"),
-        ("rules", "src/failure.rs"),
-    ] {
-        assert!(
-            !candidates.iter().any(|c| c.name == name && c.file == file),
-            "{name} ({file}) appears in {DEAD_CODE_PATH} - the accepted same-named-field/local \
-             false-negative trade (op-u87c2-round-3-a-reference-is-any-token-not-a-shape) no \
-             longer holds for this entry; either the colliding token was removed (in which case \
-             this fn may now be genuinely dead and belongs on the list with a real disposition) \
-             or the rule regressed"
-        );
-    }
-}
-
 // -----------------------------------------------------------------------------------------
-// CRITERION 3 (`u87c3`, THIS UNIT): dispositions land in the SAME committed artifact. See the
-// module doc comment's "CRITERION 3 ACCOUNTING" section.
+// A scanner false positive found while researching the ledger, pinned against the committed
+// artifact.
 // -----------------------------------------------------------------------------------------
-
-/// Spec 87 DISPOSITIONS: "exactly three" - `delete`, `keep-public-surface`, `keep-pending` -
-/// and "Every entry gets one; an entry without a cited reason is a defect". Checked against the
-/// PERSISTED file (never the producer's in-memory value), exactly the independence this whole
-/// file exists to prove for every other field.
-#[test]
-fn every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(!candidates.is_empty(), "expected committed candidates");
-    for c in &candidates {
-        assert!(
-            ["delete", "keep-public-surface", "keep-pending"].contains(&c.disposition.as_str()),
-            "{} ({}) has an unrecognized disposition {:?} - spec 87 names exactly three",
-            c.name,
-            c.file,
-            c.disposition
-        );
-        assert!(
-            !c.reason.trim().is_empty(),
-            "{} ({}) has an empty disposition reason",
-            c.name,
-            c.file
-        );
-    }
-}
-
-/// Regression pin for the real bug criterion 3 found and fixed while researching dispositions
-/// (decision `u87c3-self-colon-colon-qualifier-false-positive`, see the module doc comment):
-/// `DashMarker::parse` (`src/dash.rs:398`) is referenced only via `Self::parse(...)` from its own
-/// `DashMarker::read`, itself called in real production code (`main.rs:5731/7313/7629`) - it must
-/// never again appear as a dead-code candidate, which would recommend deleting live code.
-#[test]
-fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
-    let candidates = deserialize_committed_dead_code();
-    assert!(
-        !candidates
-            .iter()
-            .any(|c| c.name == "parse" && c.file == "src/dash.rs"),
-        "src/dash.rs's parse (DashMarker::parse) appears in {DEAD_CODE_PATH} - a regression of \
-         the Self:: qualifier-attribution fix (u87c3-self-colon-colon-qualifier-false-positive); \
-         it is called from real production code via Self::parse inside DashMarker::read and must \
-         never be recommended for deletion"
-    );
-}
-
-/// The exact 23/3/0 `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
-/// established, pinned against the persisted file (mirrors
-/// `the_real_tree_disposition_split_matches_this_criterions_research` in
-/// `tests/simplification_audit.rs`, checked there against the in-memory producer value - this is
-/// the same fact, independently re-derived from the committed bytes). Was 22/3/0 (25 total) until
-/// spec 92 criterion 1's FRESH ON EVERY INTEGRATION unit added `record_current_generation`
-/// (src/ingest.rs, a private test-only fixture helper, `delete`) to `src/ingest.rs`'s own
-/// `scoped_reindex_tests` module, raising the total to 26 and `delete` to 23. Was 23/3/0 (26
-/// total) until spec 88 criterion 1 round 4 moved `expect_merged` (src/worktree.rs, `delete`) out
-/// of production entirely (into `src/worktree.rs`'s own `#[cfg(test)] mod tests`, alongside
-/// `IntegrateOutcome` and a test-only `integrate` recomposition of the newly-split
-/// `merge_into_worktree`/`land`), dropping the total to 25 and `delete` to 22 - and now back up
-/// to 26/23 by the unrelated addition above.
-#[test]
-fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_keep_public_surface(
-) {
-    let candidates = deserialize_committed_dead_code();
-    let delete = candidates
-        .iter()
-        .filter(|c| c.disposition == "delete")
-        .count();
-    let keep_public = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-public-surface")
-        .count();
-    let keep_pending = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-pending")
-        .count();
-    assert_eq!(
-        (candidates.len(), delete, keep_public, keep_pending),
-        (26, 23, 0, 3),
-        "the committed disposition split has changed since this criterion's research"
-    );
-}
-
-/// Plain byte scan for a `"spec <digits>"` citation - no new dependency, matching this file's
-/// own no-regex-crate style. Deliberately stricter than a bare substring search for `"spec"`:
-/// the word alone (as in "inspect" or ordinary English prose) does not satisfy spec 87
-/// DISPOSITIONS' citation requirement, only `"spec"` immediately followed by a space and at
-/// least one ASCII digit does.
-fn cites_a_spec_number(reason: &str) -> bool {
-    let mut rest = reason;
-    while let Some(idx) = rest.find("spec ") {
-        rest = &rest[idx + "spec ".len()..];
-        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Spec 87 DISPOSITIONS is stronger than "non-empty reason" (already pinned above by
-/// `every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_non_empty_reason`):
-/// `keep-pending` "must cite the spec that will call it". Checked against the PERSISTED file's
-/// actual `keep-pending` reasons - a reason that merely uses the ENGLISH WORD "spec" without a
-/// number, or omits it entirely, is a defect this test catches that the non-emptiness check
-/// cannot. (`keep-public-surface`'s parallel "must cite the consumer... a consumer that does not
-/// exist is not a reason" clause has no committed candidate to check today - 0 real entries,
-/// already pinned vacuously by the disposition-split test above - so there is nothing yet to
-/// mechanically assert there.)
-#[test]
-fn every_keep_pending_reason_cites_a_real_spec_number() {
-    let candidates = deserialize_committed_dead_code();
-    let keep_pending: Vec<_> = candidates
-        .iter()
-        .filter(|c| c.disposition == "keep-pending")
-        .collect();
-    assert!(
-        !keep_pending.is_empty(),
-        "expected at least one keep-pending candidate in {DEAD_CODE_PATH}"
-    );
-    for c in &keep_pending {
-        assert!(
-            cites_a_spec_number(&c.reason),
-            "{} ({}) has disposition keep-pending but its reason does not cite a \"spec N\" \
-             number - spec 87 DISPOSITIONS requires keep-pending to \"cite the spec that will \
-             call it\": {:?}",
-            c.name,
-            c.file,
-            c.reason
-        );
-    }
-}
 
 // -----------------------------------------------------------------------------------------
 // Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: CLAIM 4 ("the report still cites
@@ -870,7 +620,7 @@ const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 /// citations.
 fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
     let start = report
-        .find("### 4.3 The full list, dispositioned")
+        .find("### 4.3 The ledger")
         .expect("report has a 4.3 heading");
     let rest = &report[start..];
     let end = rest
@@ -897,15 +647,18 @@ fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
 /// ORDER, the PERSISTED `DEAD_CODE_LINES_PATH` - both are rendered from the SAME underlying
 /// candidate sequence with no re-sorting (`render_dead_code_full_list` iterates
 /// `real_dead_code_candidates()` untouched), so a position-wise zip is the correct join, not a
-/// `(file, name)` lookup: `src/ingest.rs`'s own `ingest_project` is ambiguous (two distinct
-/// candidates share one bare name in one file, ROUND 1's own `ambiguous_with` shape), so a lookup
-/// would silently resolve every citation to whichever entry happens to come first.
+/// `(file, name)` lookup: two distinct candidates may share one bare name in one file (ROUND 1's
+/// own `ambiguous_with` shape), so a lookup would silently resolve every citation to whichever
+/// entry happens to come first.
 #[test]
 fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them() {
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
     let citations = section_4_3_citations(&report);
-    let lines = deserialize_committed_dead_code_lines();
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         citations.len(),
         lines.len(),
@@ -915,11 +668,12 @@ fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_r
         citations.len(),
         lines.len()
     );
-    assert!(
-        !citations.is_empty(),
-        "found zero section 4.3 citations in {REPORT_PATH} - the extraction regex or the \
-         section boundary is broken"
-    );
+    if lines.is_empty() {
+        assert!(
+            report.contains("### 4.3 The ledger\n\nThe ledger is empty.\n"),
+            "{DEAD_CODE_LINES_PATH} is empty, so section 4.3 of {REPORT_PATH} must say so"
+        );
+    }
     for (i, ((name, file, line), entry)) in citations.iter().zip(lines.iter()).enumerate() {
         assert_eq!(
             (file.as_str(), name.as_str()),
@@ -977,22 +731,24 @@ fn section_6_deletion_list_citations(report: &str) -> Vec<(String, String, usize
 /// CLAIM 4, section 6 item 0 (round 4's own extent - `adj-u90c2-r3-verdict-reject` named this
 /// site alongside sections 1/4.3): every mechanically-rendered `(name, file, line)` citation in
 /// the COMMITTED report's dead-code deletion list matches, in order, the PERSISTED
-/// `DEAD_CODE_LINES_PATH` filtered to `disposition == "delete"` in
-/// [`deserialize_committed_dead_code`]. `render_dead_code_deletion_list` filters
-/// `real_dead_code_candidates()`/`real_dead_code_lines()` to `Disposition::Delete` with no
-/// re-sort, so the same filter-in-place over the two ALREADY position-joined and (file,
-/// line)-ascending committed files (proven by
+/// `DEAD_CODE_LINES_PATH`. `render_dead_code_deletion_list` iterates
+/// `real_dead_code_candidates()`/`real_dead_code_lines()` with no re-sort, so the two ALREADY
+/// position-joined and (file, line)-ascending committed files (proven by
 /// `the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_
 /// then_line` above) reproduces the identical sequence. A `(file, name)` lookup would be wrong for
-/// the same reason section 4.3's test avoids one: `src/ingest.rs`'s `ingest_project` is ambiguous.
+/// the same reason section 4.3's test avoids one: a bare name can be ambiguous within one file.
 #[test]
 fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them(
 ) {
     let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
         .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
     let citations = section_6_deletion_list_citations(&report);
-    let candidates = deserialize_committed_dead_code();
-    let lines = deserialize_committed_dead_code_lines();
+    let candidates =
+        committed_json::<Vec<ConsumedDeadCodeCandidate>>(DEAD_CODE_PATH, DEAD_CODE_CONTRACT);
+    let lines = committed_json::<Vec<ConsumedDeadCodeCandidateLines>>(
+        DEAD_CODE_LINES_PATH,
+        "lines contract",
+    );
     assert_eq!(
         candidates.len(),
         lines.len(),
@@ -1002,20 +758,20 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
     let expected: Vec<(String, String, usize)> = candidates
         .iter()
         .zip(lines.iter())
-        .filter(|(c, _)| c.disposition == "delete")
         .map(|(_, l)| (l.file.clone(), l.name.clone(), l.line))
         .collect();
-    assert!(
-        !expected.is_empty(),
-        "zero delete-dispositioned entries in {DEAD_CODE_PATH} - the disposition filter or the \
-         committed data is broken"
-    );
+    if expected.is_empty() {
+        assert!(
+            report.contains("- Status: complete - the ledger is empty.\n"),
+            "{DEAD_CODE_PATH} is empty, so section 6 item 0 of {REPORT_PATH} must say so"
+        );
+    }
     assert_eq!(
         citations.len(),
         expected.len(),
         "the report's section 6 deletion list cites {} candidate(s) but {DEAD_CODE_PATH} \
-         records {} delete-dispositioned entries - they must list the same candidates in the \
-         same order (both come from the same underlying position-joined, filtered sequence)",
+         records {} entries - they must list the same candidates in the \
+         same order (both come from the same underlying position-joined sequence)",
         citations.len(),
         expected.len()
     );
@@ -1026,8 +782,8 @@ fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactl
             (file.as_str(), name.as_str()),
             (efile.as_str(), ename.as_str()),
             "deletion-list citation {i} in {REPORT_PATH} is {name} ({file}), but the same-index \
-             delete-dispositioned entry in {DEAD_CODE_LINES_PATH} is {ename} ({efile}) - report \
-             order and the filtered lines-sibling order have diverged",
+             entry in {DEAD_CODE_LINES_PATH} is {ename} ({efile}) - report \
+             order and the lines-sibling order have diverged",
         );
         assert_eq!(
             line, eline,

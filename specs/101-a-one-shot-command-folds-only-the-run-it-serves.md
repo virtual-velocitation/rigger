@@ -3,53 +3,427 @@
 **Goal:** every `rigger` invocation that serves one run reads that run, not the whole
 history of the project. Measured on the 2026-09-15 store (2,075,706 events, 1.24 GB):
 `rigger status` peaks at 2.7 GB resident, `rigger peers` at 5.3 GB (its sidecar replays from
-position 0, `src/main.rs:9163`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
+position 0, `src/cli/observe.rs:531`), and one `rigger step` at 9.8 GB (the kernel's out-of-memory
 report of that day) - while the run those commands served spans 67,456 events
 (positions 3,146,193 to 3,213,649). 97% of the stream is derived graph ingest: 1,801,003
 `EdgeInferred`, 125,861 `CodeEntityExtracted`, 101,354 `DocLinkExtracted`, and of the
 edges ~1.62 million are superseded generations of files that were later re-ingested
 (`gc/<file>@<hash>#<n>` keys: a file edit re-records every edge of the file under a new
-generation). `src/conductor.rs` calls `read_stream(STREAM, 0, Direction::Forward)` at 108
-sites, `src/main.rs` at 36, `src/run.rs` at 22. Five agents each calling rigger a few times a
+generation). On the 2026-09-28 tree `read_stream(STREAM, 0, Direction::Forward)` sits at 104 sites in
+`crates/rigger-conductor/src/conductor.rs`, 28 in `crates/rigger-driver/src/driver/replay.rs`, 16 in
+`crates/rigger-store-sqlite/src/run_store.rs` and 14 in `src/cli/run.rs`, 206 across the workspace. Five agents each calling rigger a few times a
 minute put 15 to 25 GB of baseline pressure on a 62 GB machine before a single cargo build.
 
 ## Design
 
 **THE FOLD HAS A BOUNDARY, decided here so no unit has to.** The current run begins at the
 stream position of its `RunStarted` event (the `runscope` boundary that
-`runscope::current_run` already applies - after reading everything). The boundary is a store
-port query, `last_position(stream, event_type)`, implemented on the embedded sqlite store as
-an indexed lookup and on the server-backed store as a backward read that stops at the first
-match. No caller derives the boundary by scanning forward from 0.
+`runscope::current_run` (`crates/rigger-domain/src/run.rs:156`) already applies - after reading
+everything). The boundary is a new `EventStore` port method (`crates/rigger-domain/src/eventstore.rs:499`),
+`last_position(stream, event_type)`, implemented on the embedded sqlite store
+(`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:779`) as an indexed lookup and on the
+server-backed KurrentDB store (`crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:354`) as a
+backward read that stops at the first match. No caller derives the boundary by scanning forward from 0.
 
 **THREE READ CLASSES.** (i) The run's own events, from the boundary forward, are read and
-folded whole - they are the run. (ii) Carried-over knowledge - `LessonLearned`,
-`DecisionMade`, `ReviewFinding` and the playbook events the fold consults across runs - is
-read BY TYPE over the whole stream through the store's type index (`read_stream_typed`),
-so its cost is bounded by its own count (about 22,000 events today), never by the derived
-types. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`) are NEVER materialized
+folded whole - they are the run. (ii) The typed carry-over has two parts, both read BY TYPE over
+the whole stream through a new `EventStore::read_stream_typed` port method backed by a type
+index; `Filter` carries only a `stream_prefix` today, so no by-type read exists to reuse. (a) The
+knowledge types: `LessonLearned`, `DecisionMade`, `ReviewFinding` and the playbook events the fold
+consults across runs. (b) The criterion-adoption lifecycle types: `RunStarted`, `UnitStarted`,
+`UnitIntegrated`, `UnitFailed` and `UnitStatus` of every run, read `Only` by type and ONLY by a
+step that starts a criterion unit in a repo, because criterion adoption consults every prior
+run's outcome by contract; a step that starts no criterion unit, and every other one-shot
+command, performs no adoption read. Each part is one constant list declared once, side by side,
+in the domain (no second spelling anywhere), read as `Only(list)`, never `Except(derived)` and
+never a whole-stream read; each is bounded by its own count (the knowledge types about 22,000
+events today), never by the derived types, and neither ever materializes a derived event. "The
+typed carry-over" in criterion 2's cost bound means both parts: a repo step that does not ingest
+costs exactly the run's events plus the knowledge types plus the adoption lifecycle types, and
+nothing else. So the counting-double step test covers a stage with a repo and a criterion id and
+asserts the adoption read through the double, and the binary poisoned-log step test runs a REPO
+step against a log whose superseded runs' events outside both parts and every derived event are
+undecodable, so a step that materializes one fails while the adoption read of the superseded
+runs' lifecycle events passes. (iii) The derived ingest types (`ingest::DERIVED_INDEX_TYPES`, `crates/rigger-domain/src/ingest.rs:36`) are NEVER materialized
 by a one-shot command: `graph.db` is their fold, and the only question a command asks of
-them - a file's latest recorded generation (`ingest::project_scoped_latest_generations`,
-`project_scoped_replay_keys`) - is answered by a store query over the `replay_key` meta
-column grouped by file identity. An in-memory scan of every derived event to find the latest
-key per file is NOT an implementation of this design.
+them - a file's latest recorded generation (today `ingest::project_scoped_latest_generations`,
+`crates/rigger-domain/src/ingest.rs:174`, over a whole-stream read) - is answered per identity by
+the group lookup decided below (THE LATEST GENERATION IS A GROUP LOOKUP). An in-memory scan of
+every derived event to find the latest key per file is NOT an implementation of this design.
+
+**THE RUN SLICE EXCLUDES THE DERIVED TYPES, decided here.** Derived events appended during the
+run (a `rigger step` that reindexes a changed file) sit after the boundary, so class (i) and
+class (iii) meet there: the from-boundary read of class (i) excludes `ingest::DERIVED_INDEX_TYPES`
+at the store, never a read-everything-then-drop. The exclusion is carried by the same port method
+as class (ii): `read_stream_typed(stream, from, selection)` takes a `TypeSelection`, `Only(types)`
+for the carried-over knowledge and `Except(types)` for the run slice, both answered by the one type
+index. `Filter`, `read_stream` and `read_all` keep their current meaning. Criterion 2 OWNS this
+exclusion as part of the read position of every one-shot command; criterion 3 OWNS only the
+latest-generation lookup and relies on criterion 2's exclusion, never re-implementing it.
+
+**SHARED INSTRUMENTS HAVE ONE OWNER, decided here.** The counting store double (it records how
+many events each read materializes) is built ONCE by criterion 1's unit as shared test
+infrastructure under `tests/common/` and reused by criteria 2 and 3, which add no second double
+(each adds only the delegation of its own new port method to it). The port method
+`EventStore::last_position` and its two adapters belong to criterion 1;
+`EventStore::read_stream_typed`, `TypeSelection`, the type index on both backends and the
+ingest-gated seed read of a step belong to criterion 2; `EventStore::latest_in_group`,
+`eventstore::META_GROUP`, the group index on both backends, the keyed derived-event helper and
+both ingest sinks' first-sight seeding belong to criterion 3. Every `EventStore` implementation
+(adapter, the `Namespaced` wrapper, test double) gains a new port method in the unit that adds
+it. Criteria 2 and 3 depend on criterion 1's double and criterion 3 depends on criterion 2, so
+the units run in the order 1, 2, 3.
+
+**THE STEP'S SEED IS PER WALKED IDENTITY, read from the code.** `conductor::run` seeds the
+project-scoped half of `replayed_keys` and `replayed_generations` from a whole-stream read
+(`crates/rigger-conductor/src/conductor.rs:1560` feeding `project_scoped_latest_generations`
+at `:1601`). The only reader of that half is `RunCtx::emit_keyed_batch` (`:2953`), which weighs
+one file's batch at a time, and its only callers are the two ingest paths: the whole-tree walk
+`ingest_project_batches` (`:10230`, reached at most once per process through
+`ingest_project_into_graph`'s guard, `:10214`) and the merge-scoped `ingest_files_into_graph`
+(`:10308`). A step therefore needs the latest recorded generation of each identity its walk
+emits (every file of the current tree, plus a merge's files on an integration). It never needs
+an identity the walk no longer emits, and it cannot be handed a precomputed changed set, because
+which files changed is exactly what the answer decides. A step that does not ingest (no graph to
+fold into, no repo, the light lane: the condition `ingest_project_batches` checks at `:10231`)
+weighs no batch and needs no seed.
+
+**CRITERIA 2 AND 3 SPLIT AT THE INGEST, decided here.** Criterion 2 lands first. It moves every
+fold read onto the boundary and the typed carry-over, and it takes the seed's whole-stream read
+only in a step that ingests (the condition above), so a step that does not ingest reads no
+derived event and criterion 2's assertion is passable while the seed still walks the stream.
+Criterion 3 lands second: it replaces that remaining whole-stream read with the group lookup,
+which is what makes a step that ingests cost the same reads as one that does not, and it OWNS
+that step-wide assertion. Neither unit builds the other's half.
+
+**THE LATEST GENERATION IS A GROUP LOOKUP, decided here so no unit has to.**
+- *The stamp.* Every derived event carries, beside its `replay_key`, the metadata entry
+  `eventstore::META_GROUP` (`group`) holding its batch identity `<prefix>/<file>`, cut by
+  `ingest::derived_key_parts` (the one parser of the key). One `ingest` helper builds a keyed
+  derived event with both entries, and both ingest sinks (the run's `emit_keyed_batch` and
+  `rigger graph build`'s sink, `src/cli/graph.rs:537`) build their events through it. Metadata
+  only: no new event type, and the fold ignores it.
+- *The port.* `EventStore::latest_in_group(stream, group)` returns the position, type and
+  metadata of the newest event on `stream` stamped with `group`, never its data, so the counting
+  double counts it as zero events materialized. `ingest::latest_generation(store, stream,
+  identity)` is the one domain reader: type first (a newest match outside `DERIVED_INDEX_TYPES`,
+  or one whose key does not parse, answers no generation, the fail-safe direction that
+  re-emits), then the generation cut from its `replay_key`.
+- *The embedded sqlite store* answers from a partial expression index over the stream and the
+  `group` entry of `meta` for the rows that carry one, created with the schema
+  (`CREATE INDEX IF NOT EXISTS`); the lookup is one index seek to the highest position. The
+  stamp lives in the event row, so it is atomic with the append.
+- *The server-backed KurrentDB store* answers from one group stream per identity
+  (`rigger-group/<stream>/<group>`) holding KurrentDB link events (`$>`, the server's own link
+  type, not a rigger event type). Before an append whose events carry a group, the adapter assigns
+  every event its id, reads the stream's last revision (a backward read of one event), appends to
+  each group's stream a link naming the revision that group's last event in the append will take
+  and carrying that event's id in its meta, then appends the events expecting that revision; when
+  the caller's expectation is `Any`, a conflict re-reads and re-links, and any other expectation's
+  conflict is the caller's as today. The lookup reads the group stream backward and answers from
+  the newest link whose resolved event is exactly the event the link names (the same id); a link
+  whose revision holds another event - another writer's, or an older member of the same group - or
+  nothing, is skipped. Because the link is written before its events, every recorded batch has a
+  link at its exact revision: a crash can leave a dangling link, never an unlinked recording, so
+  the newest link whose named event is present names the latest recording and a revert can never
+  be suppressed against a stale answer. The adapter's `$all` reads and subscriptions skip records
+  whose type begins with `$`, so no link reaches a caller. This is
+  chosen over a backward read of the project stream per identity, which is unbounded: proving a
+  never-recorded identity absent walks to position 0, and a file last ingested long ago walks
+  nearly the whole stream. The KurrentDB half runs only where the contract suite's container is
+  reachable, which the gates do not guarantee: the adjudicator demands that run's evidence.
+- *The seeding.* Both sinks ask the lookup the first time they meet an identity in a process,
+  through one `ingest` helper, and the conductor asks it while holding its `replayed_generations`
+  lock, so the unseen check, the lookup and the generation install are one atomic step and a
+  racing stage waits and then sees the installed slot; appends run outside both locks. When the
+  answer equals the batch's generation, the sink installs that generation with the batch's keys
+  (a key is a pure function of the batch's bytes, so they are the recorded keys) and the batch
+  appends nothing; otherwise it seeds nothing and the batch appends. From then on the in-process
+  `replayed_generations` governs that identity exactly as spec 86 decided, and
+  `ingest_project_into_graph`'s once-per-process guard stays. The upfront whole-stream seed in
+  `conductor::run` and the whole-stream read at `src/cli/graph.rs:535` are removed.
+- *The upgrade.* Events recorded before the stamp carry no group, so on an existing store the
+  first step that ingests finds no generation for any identity and re-emits the live index once
+  (the latest generation of every file the walk emits), stamped; every later lookup answers. That
+  one re-emission is the upgrade cost on both backends, and criterion 4's exact-key dedup reclaims
+  the unstamped copies. No migration rewrites recorded events.
+- *The reference.* `project_scoped_latest_generations` is the one pure reference over a slice:
+  `rigger validate` (a project-health command that already reads the whole stream for its other
+  advisories, out of scope like the cross-run commands) keeps its index-lag sample on it, and the
+  lookup's contract test asserts that the lookup answers what it answers on the same log, on both
+  backends. `project_scoped_replay_keys` is retired the moment its last production caller seeds by
+  group lookup: an uncalled production function fails the dead-code gate, so keeping it is not an
+  option. A test that wants the keys-only view flattens the reference through one test-support
+  helper per test boundary (the domain crate's tests, the conductor crate's `test_support`, the
+  root `tests/common`), never an inline copy per test.
+
+**THE CONSTRAINTS WALK OVER CRITERIA 2 AND 3.**
+- *Empty store:* no group is recorded, so every identity the walk emits appends, exactly a first
+  ingest today.
+- *Repeated step:* an unchanged tree finds every lookup equal to its batch and appends nothing
+  (the existing replay-idempotency tests stay green unchanged).
+- *Revert:* a file reverted to an earlier generation finds the newer generation as its latest and
+  re-emits; the next lookup then answers the reverted generation.
+- *Revert and drop under compaction (criterion 4):* a revert to an earlier generation
+  re-asserts that generation's facts as the newest generation, so retired facts return live under
+  the newer valid-time and the compaction keeps only that newest recording. A generation that
+  drops EVERY fact of a file leaves the file's node live only while a live decision, lesson or
+  finding edge touches it. An existing `graph.db` folded before the rule is cold-rebuilt from the
+  log once by `rigger setup`, and `--derived` refuses to compact it until then. A cross-file
+  reference or test proof whose definition a generation drops is demoted, or returned to pending,
+  as that definition retires, so a later definition of the name converges it identically in both
+  rebuilds. A dropped entity touched only by a community or concept edge retires, with that edge,
+  in both rebuilds. A pre-rule `graph.db` is rebuilt only by `rigger setup`, fold-dependent commands
+  refuse until then and emits append without folding, and no concurrent open can undo the rebuild.
+- *Concurrent step and status:* status reads the boundary and the typed carry-over and takes no
+  step lock; the step's lookups read committed rows only. A repo step that adopts a prior
+  criterion branch reads the adoption lifecycle types by type and nothing else cross-run. A `rigger graph build` running beside a
+  step can record one generation twice, as it can today, and criterion 4's dedup collapses it.
+- *Crash-resume:* on sqlite the stamp commits with its event; on KurrentDB a crash leaves at most a
+  dangling link, which the lookup skips. A step that crashed mid-walk leaves the files it appended
+  recorded, and the next step's lookups answer them.
+- *Cold start:* nothing is carried in memory between processes; every process asks the store.
 
 **COMPACTION SHEDS SUPERSEDED GENERATIONS.** `rigger reset --derived` today keeps the latest
 recording per exact replay key (13 duplicates on this store) and leaves every superseded
 generation in place. It keeps, per `<prefix>/<file>` identity, only the recordings of the
 LATEST generation, carrying the earliest valid-time onto a kept recording exactly as the
 reasserting-types rule already does. Correctness is rebuild-identical: `graph.db` rebuilt
-from the compacted log equals `graph.db` rebuilt from the full log, byte for byte. A file
+from the compacted log equals `graph.db` rebuilt from the full log, byte for byte in the live
+projection defined in the next block. A file
 reverted to an earlier content re-emits its batch (that is already how the walk keys), so
 no shed generation is ever needed again.
 
-**THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` treats a
+**A GENERATION SUPERSEDES THE WHOLE PRIOR GENERATION OF ITS FILE, IN BOTH HALVES.** The graph
+models the target project's CURRENT state. Today a design-doc generation that drops a link leaves
+the prior generation's edge live (`valid_to` null), and a code generation that drops an entity
+retires the entity's edges but leaves its node live, so a whole-log rebuild carries facts the tree
+no longer makes and the compacted-log rebuild does not. A whole-log rebuild that keeps a dropped
+fact live is a defect of the fold, and this spec closes it. When a newer generation of a
+`<prefix>/<file>` identity folds, every fact the prior generation asserted for that file that the
+newer generation does not re-assert is retired (`valid_to` stamped, never deleted), exactly as the
+code half already retires a prior generation's edges: the design half's links
+(`DocLinkExtracted`) and concepts (`DocConceptExtracted`) exactly as the code half's edges. A node
+that no live generation asserts is retired the same way; only a live decision, lesson or finding
+edge (the knowledge edges) still touching it keeps it live. The mechanism is the fold's, at
+the single fold authority for each arm (`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`
+and the domain rules in `crates/rigger-domain/src/contextgraph.rs`), never a second pass or a
+post-fold sweep. This is what makes criterion 4's identity hold whenever a later generation DROPS
+a fact, not only when it adds or moves one.
+- *Convergences undo with their definition.* Every name-resolution convergence the fold keeps is
+  two-way. A reference tier promoted because a definition of its name existed (AMBIGUOUS to
+  INFERRED, or its CALLS twin) is demoted again when the last live definition of that name retires,
+  and a test proof that landed on a definition returns to the pending state when that definition
+  retires, so a later definition of the same name receives it. The projection is a pure function of
+  the log, so folding a log and folding its compacted form reach the same state on EVERY future
+  event, not only at the point compared. The single authority is the fold's own sites in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`: the definition arm's tier promotion and
+  the pending-proof reconcile. No sweep and no second pass.
+- *The identity.* Criterion 4 compares the LIVE PROJECTION (the public wire form of
+  `Projector::whole()`: every node, every live edge, every column, deterministically ordered) PLUS
+  the fold state that decides future folds: the pending proofs, the restored-attribute record of
+  retired nodes, and the assertion ledgers restricted to live generations, of `graph.db` rebuilt
+  from the compacted log versus from the original log. Everything else in the `graph.db` file
+  differs by construction (the applied-position ledger records every folded position, and retired
+  history rows are history the compacted log no longer replays) and is excluded, so file bytes are
+  not the identity. The test compares those tables row for row, then folds at least one further
+  event into both rebuilds and compares again, so a latent divergence cannot pass. Its fixture MUST
+  seed at least one generation that drops a design link and one that drops a code entity, besides
+  the ordinary add-and-move generations, plus a cross-file reference to a dropped name, a test proof
+  consumed by a definition a later generation sheds, and a log mixing unkeyed and keyed recordings
+  of the same fact; it MUST NOT except any node or edge from the equality.
+- *Existing graph.db files.* The fold rule ships with a projection version recorded in `graph.db`. A
+  `graph.db` whose recorded version predates the rule (its generation and assertion ledgers empty or
+  absent) is rebuilt cold from the log once, explicitly, by `rigger setup` - the verb every install
+  already runs in the project; no folding command ever rebuilds implicitly. The rebuild folds the
+  live selection - every non-derived event plus each identity's latest generation, exactly the rows
+  the compaction plan keeps, so the rebuild and `rigger reset --derived` agree by construction - and
+  never a superseded generation, which criterion 4's identity licenses; its cost is bounded by the
+  live projection, not the log's age. The rebuild yields the graph the live one would hold, never
+  a larger one: after folding the live selection into the shadow and before the swap, it applies
+  the same run-closure prune `rigger reset --runs` applies, the keep/drop set spec 21 defines (every
+  decision and finding node that is neither the active run's nor a lesson is dropped, an id the
+  active run reuses is kept, and a log with no run drops nothing), derived from the log's own run
+  attribution exactly as the prune
+  derives it and gathered in the same ordered pass. The prune set is never recorded and never
+  guessed, it is re-derived, so the rebuilt and the live graph agree by construction the way the
+  rebuild and `rigger reset --derived` already do. A rebuild that skips the prune and leaves it to a
+  later `rigger reset --runs` is not an implementation of this, because every command between the
+  two reads the resurrected nodes. It streams the log once, in order, and never materializes the
+  run stream in memory or reads it twice. It folds into a fresh shadow graph file beside the live
+  one in committed batches, recording the last folded position in the shadow, then stamps the
+  projection version and renames the shadow into place in one step: a racing open of either kind
+  sees the old file (rebuild still owed) or the complete rebuilt one, never a half-rebuilt file,
+  and the live file is never held under a long write transaction. An interrupted rebuild leaves the
+  live file untouched, and the next `rigger setup` resumes from the shadow's last committed batch.
+  The rebuild's exclusion is ONE OS advisory lock, taken with the standard library's file lock (no
+  new dependency) on a zero-byte `graph.db.lock` beside `graph.db`, a file no rebuild ever removes.
+  `rigger setup` tries to take it, never waiting, before it opens or creates the shadow, and holds
+  it from before the first shadow read through the fold, the swap and the tail until the tail is
+  folded and the cursor dropped. A second `rigger setup` that cannot take it refuses at once naming
+  the rebuild in progress, with one refusal text whatever phase the holder is in and whether or not
+  the holder has written yet, and leaves nothing at any path where it found nothing. Only the lock's
+  holder ever has a shadow open, so a shadow is removed only when no other connection holds it, and
+  no connection to a removed shadow exists while a newer shadow can take its name. The shadow's own
+  SQLite lock is not the exclusion and no command waits on it: SQLite pairs a database file with its
+  rollback journal by name and treats removing a database file another connection holds open as a
+  corruption cause, so an exclusion taken through the lock of a file the rebuild itself removes lets
+  a waiter replay and delete a newer shadow's journal. The exclusion is therefore a lock no waiter
+  reaches through a removed file, and one lock held across every phase makes the tail's exclusion
+  the same mechanism as the fold's. The OS releases the lock with the process, so an interrupted
+  rebuild leaves no stale lock and the next `rigger setup` takes it and resumes. `graph.db.lock`
+  exists whenever `graph.db` does, created by the first `rigger setup` that needs it and never
+  removed on its own; whatever removes `graph.db` removes it in the same step. Whatever else touches
+  a rebuild's files outside a rebuild takes the same lock first and never waits on it: `rigger
+  reset` removes a stale `<path>.pruned` only when it holds the lock, so a copy a live swap is using
+  is never removed under it, and a reset that cannot take the lock reports the rebuild in progress
+  and leaves the copy.
+  `rigger setup` reports progress as it folds and installs nothing else until the rebuild has
+  completed or been refused. `rigger emit`, and every command whose job is to append to the log,
+  always appends and never opens `graph.db` first; while the rebuild is owed it skips the
+  incremental fold and says so, since the rebuild re-derives every fold from the log. A command
+  whose answer depends on the fold (step, run, graph build, the MCP graph and grounding tools) that
+  opens a `graph.db` at the old version refuses at once naming `rigger setup`; it never waits,
+  never rebuilds and never fails with "database is locked". A read-only open (dash, validate, graph
+  inspection) writes nothing: it answers from the projection as it stands and says the rebuild is
+  owed. Incremental folding never resumes on a ledger-less file. `rigger reset --derived` refuses
+  to compact a store whose `graph.db` is at the old version until the rebuild has happened, and
+  says so. Tests: a cold rebuild through `rigger setup` stamps the version; an emit at the old
+  version appends and skips the fold, leaving `graph.db` unchanged; a fold-dependent command at the
+  old version refuses naming `rigger setup` without writing; a read-only open racing the rebuild
+  leaves the rebuilt file intact and a folding open during it refuses rather than failing locked;
+  a cold rebuild of a log whose closed runs were pruned yields a graph with the same decision and
+  finding nodes as the live one, never the pruned ones; a second `rigger setup` started while the
+  first folds, while it swaps and while it folds the tail is refused at once with the one refusal
+  text, never opens the shadow and leaves nothing behind; a rebuild whose process is gone leaves no
+  lock, and the next `rigger setup` takes it and resumes the shadow from its last committed batch;
+  a `rigger reset --runs` started during a live swap leaves the copy and names the rebuild in
+  progress; `graph.db.lock` exists beside `graph.db` and is removed only with it.
+  The criterion 4 unit's evidence MUST include the rebuild completing through `rigger setup` on a
+  snapshot of a real log with wall time and peak memory recorded, and an interrupt-then-rerun on
+  that snapshot completing without refolding the batches already committed. Without this, every
+  store folded before this spec keeps facts a pre-upgrade generation asserted, and a compacted such
+  store disagrees with every future rebuild.
+- *The rebuild reports its prune, and a log without a run has nothing dead.* A prune the operator
+  cannot see removes knowledge without a trace, and a prune over a log that never started a run
+  deletes knowledge no run superseded. `Projector::rebuild` returns the `PruneStats` the one prune
+  body (`prune_in`) computes on the pruned copy, and `rigger setup` prints them after the rebuilt
+  line in the words `rigger reset --runs` prints (`pruned N dead-run node(s) and reclaimed M
+  superseded edge(s)`), spelled once and rendered by both; a rebuild that prunes silently is not an
+  implementation of this. The shadow is never pruned, because the drop set is not monotone in the
+  log: the rule subtracts the active run's keep set, so an id a closed run recorded moves from drop
+  to keep when the active run records it again, and a prune cannot be undone. So the shadow stays
+  a pure fold of the live selection and resumes from its last committed batch after any
+  interruption. At the swap the rebuild derives the pruned graph onto a private copy: it writes the
+  shadow to a fresh `<path>.pruned` file (`VACUUM INTO`), prunes THAT copy through the one prune
+  body from the whole gathered attribution, stamps the counts on it, backs the copy up into the
+  live file and removes it. Every pass prunes an unpruned base from the whole gathered set, so the
+  reuse window (a closed run's id the active run records again) and a `RunStarted` in the window
+  both yield exactly the cold rebuild and `rigger reset --runs` over the whole log, with the cold
+  counts, and nothing about the prune is recorded in the shadow or resumed. The copy has a named
+  lifecycle: it
+  exists only between the start and the end of one swap; a stale `<path>.pruned` left by an
+  interrupted swap is removed by the next rebuild and by `rigger reset`, and is never resumed or
+  read. The cost is one graph-sized copy per swap. The swap carries the shadow's cursor into the
+  live file, and the rebuild then folds the tail (the positions the log gained past that cursor
+  while it ran) into the live file and drops the cursor. The ledger's owed computation treats a
+  missing position past a swapped-in cursor as that tail debt, never a lost fold, so a rebuild
+  interrupted in its tail finishes exactly the tail on the next `rigger setup`, never the whole
+  live selection again, and reports the counts stamped with the swap. The no-run rule lives in the
+  one run attribution both consumers share (`run::run_attribution` and `RunOf::is_live`,
+  `crates/rigger-domain/src/run.rs`), never in one consumer: with no `RunStarted` there is no
+  closed run and every decision and finding is live, so the prune's drop set
+  (`run::superseded_graph_nodes`) is empty, exactly as `run::superseded_edge_boundary` already
+  treats a no-run store as legacy and reclaims no edge, and `rigger peers` and the peers tool label
+  each of them live, never historical; one rule, one answer. A project that records decisions
+  with `rigger emit` before its first run keeps them through every rebuild and every `rigger reset
+  --runs` until that run starts. Criterion 4's unit owns both. Tests: on a store none of whose
+  closed runs was pruned, the dead-run node count `rigger setup` prints for its rebuild equals the
+  one `rigger reset --runs` prints on a copy of that store; a rebuild interrupted during its swap
+  whose window re-records an id the prune dropped (a closed run's decision governing `a.rs`, then
+  the active run recording the same id governing `c.rs`) is rerun, resumes the shadow without
+  refolding the batches already committed (only the window's positions are read) and yields the
+  same nodes and edges as a cold rebuild and as `rigger reset --runs` over the whole log (that id
+  governs `a.rs` and `c.rs`) with the cold counts; a `RunStarted` appended in the window reports
+  the cold counts; a stale `<path>.pruned` from an interrupted swap is removed, never resumed; a
+  rebuild interrupted in its tail finishes exactly the tail's positions on the next `rigger
+  setup`; a log with no `RunStarted` rebuilt through `rigger setup` reports zero pruned and keeps
+  every decision and finding node and every edge its fold holds, `rigger reset --runs` on that log
+  prunes nothing, and `rigger peers` labels each of those decisions live.
+- *A lost fold is a durable debt.* A `graph.db` owes its rebuild for a second reason: a fold into
+  a current file that fails after the log append succeeded (a write lost past the busy timeout, or
+  any apply error). Both causes share one vocabulary and one refusal text, spelled once in the
+  domain as the `REBUILD_OWED` reason every surface renders and never re-spelled in an adapter. The
+  authoritative record of the debt is the graph file itself: the projection's `applied` ledger
+  (`applied(position)` in `graph.db`) names every log position it has folded, so a position of the
+  live selection missing from the ledger IS the debt, durable in the very file the fold missed. An
+  in-process flag, or a mark file as the sole record, is not an implementation of this: the first
+  dies with every short-lived CLI fold (emit, result, step, `reset --runs`, graph build) and the
+  second is a write that can fail too. `rigger setup` is the payer: on every run it streams the
+  live selection's positions (positions only, never payloads, in one ordered pass) against the
+  ledger and pays the rebuild when any is missing (a position past a swapped-in rebuild cursor is
+  that rebuild's tail debt, paid by folding exactly the tail), whether or not a mark exists;
+  nothing else rebuilds implicitly. The owed mark beside `graph.db` is only an accelerator that
+  lets a folding open refuse up front without reading the log. It is written on the failure path
+  when it can be,
+  belongs to the file it describes (dropped when that file is removed or rebuilt; a fresh file is
+  never born owed), and when it cannot be written the command still reports the fold as not made
+  and the ledger hole alone makes the next `rigger setup` rebuild. Tests: a fold lost against a
+  current file in one process, with the mark's directory unwritable, is seen as owed by a fresh
+  process through `rigger setup`, which rebuilds it and folds the lost position; a mark left behind
+  by a removed `graph.db` does not make its replacement owed.
+- *Unkeyed recordings are permanent asserters.* A derived recording without a replay key (written
+  before replay keys existed) is an asserter in its own right for the nodes AND edges it folds: a
+  keyed generation's retirement never retires a node or edge an unkeyed recording still asserts,
+  edges get the same identity-empty asserter record nodes already have, and compaction never selects
+  unkeyed rows. The two rebuilds therefore agree on a log that mixes unkeyed and keyed recordings of
+  the same fact, which is the shape of every store written before replay keys.
+- *Only knowledge holds a node.* The edges that hold a node whose asserting generation retired
+  are exactly the knowledge edges, folded from `DecisionMade`, `LessonLearned` and `ReviewFinding`;
+  nothing else holds. A graph-derived attachment - the `IN_COMMUNITY` edge from `CommunityAssigned`
+  and the `REALIZES` edge from `ConceptRealized` - is not a derived index type, survives
+  compaction, and never holds a node: when the last live generation asserting the node retires,
+  those edges retire with it (`valid_to` stamped), and the retired node keeps none of the retired
+  generation's attributes, the same retraction the code half applies to any superseded generation
+  (an early return on an unsettled kind is not this rule). An attachment folded onto a node the
+  graph does not hold (the compacted log replays one whose node's generation was shed) is recorded
+  retired at fold time, never creates a node and never stays live; a knowledge edge folded onto an
+  absent node creates the held node as the whole-log fold leaves it, so the two rebuilds agree node
+  for node and edge for edge. The authority is the fold's own arms in
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` (the community arm, the concept arm and
+  the node-retirement rule), no sweep and no second pass. Criterion 4's fixture MUST seed a
+  community assignment and a concept realization on an entity a later generation drops, and a
+  knowledge edge on another dropped entity, and assert both rebuilds agree on every node and edge
+  including the retired-node record; the review verifies criterion 4 by a rebuild-identity check
+  over a subset of a real log (every non-derived event plus the derived events of a bounded set of
+  identities), not by the synthetic fixture alone.
+- *Ownership.* Criterion 4's unit owns the fold change, and its blast radius grows to
+  `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` and
+  `crates/rigger-domain/src/contextgraph.rs`, because the compaction's correctness argument IS
+  this agreement; no other criterion touches the fold.
+
+**THE LIVE-WRITER GUARD READS LIVENESS.** `refuse_derived_reset_if_live` (`src/cli/hygiene.rs:610`) treats a
 non-terminal unit as a live writer; a run whose driver died leaves units non-terminal
 forever and the only way past is `--force-live`, so the run whose bloat most needs the
-compaction is the one that refuses it. A run is live when a step lock is held, when a spawn's
-liveness marker is younger than the spawn wall-clock bound, or when a registry instance
-heartbeat is younger than `registry::DEFAULT_IDLE_MS`. Unit terminality is not a liveness
-signal. `--force-live` keeps its meaning (skip the check entirely).
+compaction is the one that refuses it. A run is live when a step lock is held; when a spawn
+of the current run is live; or when a live DRIVER registration's heartbeat is younger than
+`registry::DEFAULT_IDLE_MS` (`crates/rigger-store-sqlite/src/registry.rs:32`) - every `rigger
+step`, `run` and `serve` registers as the run's driver, while a courier's discovery refresh of
+the same entry carries the driver's stamp forward and is not itself liveness. A spawn is live
+when it was requested, its latest result is absent or a step-synthesized liveness fault, and
+its liveness marker is not stale against its own wall-clock bound: an unbounded spawn's marker
+is never stale, a spawn with no marker is not live, and a real result (ok, or a worker's or
+operator's `--error`) ends the spawn whatever its marker says. That predicate is spelled once,
+in `crates/rigger-driver/src/liveness.rs`, and both the step's halted-spawn checkpoint
+(`spawn_is_halted`) and the guard (`live_spawns`) read it; the step's hung-spawn sweep composes
+the same primitives (the marker read and the staleness test) with its own membership. Every
+spawn, bounded or not, carries a liveness marker under every host (the thin workflow driver
+and the in-process headless host alike), and the scratch root a step stamped that marker under
+is carried in the log on the spawn's request (a meta key beside the run id): every marker
+reader resolves the marker from that recorded root, falling back to its own resolution only
+for a request that predates it, so the guard sees a worker through its marker whatever
+environment it runs under and never through a courier's discovery refresh. Unit terminality is
+not a liveness signal. `--force-live` keeps its meaning (skip the check entirely).
 
 **CROSS-RUN COMMANDS ARE OUT OF SCOPE.** `rigger reset --runs`, `rigger stats`,
 `rigger replay` and `rigger canary` are cross-run by contract and keep their whole-stream
@@ -67,31 +441,36 @@ cost a one-shot command exactly the run's own events plus the carried-over typed
 - Hyphens, never em dashes, in every added line.
 - No new event type; no new dependency.
 - Both feature lanes green (fmt, clippy, test on default and --no-default-features).
-- A backend that cannot answer a typed or boundary query natively answers it by a bounded
-  backward read; it never falls back to a forward scan from 0.
+- A backend answers the boundary lookup, the typed read and the group lookup from its own index,
+  server-side filter or group stream; where it has none it reads backward to a bound it names
+  (the boundary's first match). None falls back to a client-side forward scan from 0, and none
+  materializes every derived event to answer one of them.
 
 ## Done when
 
-- [ ] a test proves THE BOUNDARY IS A QUERY: `Store::last_position(stream, "RunStarted")`
+- [ ] a test proves THE BOUNDARY IS A QUERY: `EventStore::last_position(stream, "RunStarted")`
   returns the current run's boundary on both backends (the sqlite store through an indexed
-  lookup, the server-backed store through a backward read that stops at the first match),
+  lookup, the server-backed KurrentDB store through a backward read that stops at the first match),
   pinned at the store port trait with the double asserting no forward read from 0 ever
   happened. This criterion OWNS the boundary lookup; what reads from it is criterion 2's,
   NOT this one's.
-- [ ] a test proves ONE-SHOT COMMANDS READ FROM THE BOUNDARY: `rigger status`, `rigger step`,
-  `rigger watch`, the dash snapshot and the sidecar behind `rigger peers` and the MCP tools
-  read the run's own events from the boundary and the carried-over knowledge by type, so a
-  fixture stream with 200,000 derived events and two superseded runs before the boundary
-  costs exactly the run's events plus the typed carry-over, asserted through the counting
-  store double. This criterion OWNS the read position of every one-shot command; the
-  boundary lookup is criterion 1's and the derived-generation question is criterion 3's,
-  NOT this one's; cross-run commands are excluded.
-- [ ] a test proves THE LATEST GENERATION IS A QUERY: `project_scoped_latest_generations`
-  and every consumer of `project_scoped_replay_keys` answer from a store query over the
-  `replay_key` meta grouped by file identity, and no one-shot command materializes a
-  `DERIVED_INDEX_TYPES` event, pinned by the counting double reporting zero derived events
-  read across a `rigger step` that reindexes a changed file. This criterion OWNS the derived
-  read path; the compaction of those events is criterion 4's, NOT this one's.
+- [ ] a test proves ONE-SHOT COMMANDS READ FROM THE BOUNDARY: `rigger status`, `rigger watch`,
+  the dash snapshot, the sidecar behind `rigger peers`, the MCP tools and a `rigger step` that
+  does not ingest read the run's own events from the boundary with the derived types excluded
+  and the carried-over knowledge by type, so a fixture stream with 200,000 derived events and two
+  superseded runs before the boundary costs each of them exactly the run's events plus the typed
+  carry-over, asserted through the counting store double. This criterion OWNS the read position
+  of every one-shot command and the run slice's derived-type exclusion; the boundary lookup is
+  criterion 1's and the latest-generation seed of a step that ingests is criterion 3's, NOT this
+  one's; cross-run commands are excluded.
+- [ ] a test proves THE LATEST GENERATION IS A GROUP LOOKUP: a `rigger step` that ingests a tree
+  holding an unchanged, a changed and a reverted file over the same fixture materializes zero
+  `DERIVED_INDEX_TYPES` events, costs exactly the run's events plus the typed carry-over, and
+  appends exactly the changed and reverted files' batches, asserted through the counting store
+  double with the seed answered by `EventStore::latest_in_group` on both backends. This criterion
+  OWNS the latest-generation lookup (port method, both adapters, group stamp, both ingest sinks'
+  seeding) and the cost of a step that ingests; the read position of everything else is criterion
+  2's and the compaction of superseded generations is criterion 4's, NOT this one's.
 - [ ] a test proves COMPACTION SHEDS SUPERSEDED GENERATIONS: `rigger reset --derived` on a
   log holding three generations of one file keeps only the latest generation's recordings
   (plus the exact-key dedup it already does), reports the count shed, and `graph.db` rebuilt
@@ -103,4 +482,5 @@ cost a one-shot command exactly the run's own events plus the carried-over typed
   spawn markers are all older than the wall-clock bound and whose registry heartbeat is
   older than the idle window, and still refuses (naming what is live) when any one of those
   three is fresh. This criterion OWNS the live-writer refusal's definition.
-- [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).
+- [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features). This
+  criterion OWNS only the lanes over the integrated result.

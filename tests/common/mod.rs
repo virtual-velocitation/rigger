@@ -2,14 +2,38 @@
 //! `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance: an item used by one suite is genuinely unused in the next).
 //!
-//! Today it holds exactly one concern: WHERE the product binary is. That concern earns a shared
-//! home because it has sixteen readers and one correct answer, and because the obvious per-suite
-//! spelling is wrong in a way no suite can see on its own (see [`product_binary_from`]).
+//! Its first, still-largest concern is WHERE the product binary is: a shared home because it
+//! has sixteen readers and one correct answer, and because the obvious per-suite spelling is
+//! wrong in a way no suite can see on its own (see [`product_binary_from`]). Each later
+//! addition below earns its place here the same way - a helper two or more suites would
+//! otherwise define independently and identically (spec 85's mandatory duplication sweep).
 
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub mod cli;
+pub mod fixtures;
+pub mod git;
+pub mod lens;
+pub mod mcp;
+pub mod repo;
+pub mod served;
+pub mod workflow_probe;
+
+#[allow(unused_imports)]
+pub use fixtures::wait_until;
+
+/// A finished shell's success and its output, stdout then stderr.
+pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
 
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
@@ -128,10 +152,53 @@ pub fn rigger_bin() -> PathBuf {
 /// chained on the returned `Command` wins, exactly like a later `.env()` override does.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
+    unfenced(&mut cmd);
+    cmd
+}
+
+/// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`
+/// strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the full WHY)
+/// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
+/// itself cannot cover: a suite that drives the product binary through an intermediate
+/// shell (`sh -c "<installed hook command>"`) rather than invoking it directly. That
+/// `Command::new("sh")` still runs the product binary as a descendant process, so it still
+/// inherits an ambient `RIGGER_STORE_FENCE_DIR`/`KURRENTDB_CONN` exactly like a direct
+/// `rigger_courier()` spawn would - `run_stopfailure_command_through_a_real_shell` in
+/// `stop_failure_hook_periphery.rs` hit this precisely: under a fenced gate (`cargo test`
+/// run via `gate::ExecRunner`, which pins the fence on its whole subprocess tree),
+/// `require_store_dir` resolved the fenced scratch dir before ever reaching the real
+/// courier project passed as `current_dir`, so the installed hook command exited 0 while
+/// recording nothing - a false green outside a gate and a false red inside one, neither of
+/// which said anything about the hook command itself.
+/// One shared helper keeps that env hygiene from drifting between the two call shapes,
+/// rather than a second hand-copied `env_remove` chain living beside `rigger_courier`'s.
+///
+/// A call site that only needs a SUBSET (`write_guard_hook_periphery.rs`'s own `sh -c`
+/// round trip, which never opens a store at all) has no reason to call this - applying it
+/// there would be a harmless no-op, but an unused one, so it does not.
+pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     cmd
+}
+
+/// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
+/// whole subprocess tree) when created AND again when dropped, so a test that sets the fence
+/// itself to simulate a fenced gate never leaks it into the next test on the same process.
+pub struct StoreFenceCleared;
+
+impl StoreFenceCleared {
+    pub fn new() -> Self {
+        std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+        StoreFenceCleared
+    }
+}
+
+impl Drop for StoreFenceCleared {
+    fn drop(&mut self) {
+        std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+    }
 }
 
 /// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess the CURRENT TEST
@@ -302,6 +369,13 @@ pub fn stop_pid(pid: u32) -> bool {
     rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
 }
 
+/// Whether `pid` is still running - alive and not a zombie (state `Z` in `/proc/<pid>/stat`, read
+/// through the product's one stat parser). An exited-but-unreaped child is a zombie, which
+/// [`is_alive`]'s signal probe still reports alive.
+pub fn is_running(pid: u32) -> bool {
+    rigger::reap::stat_field_after_comm(pid, 0).is_some_and(|state| !state.starts_with('Z'))
+}
+
 /// Whether `pid` is currently alive, via the internal `rustix` liveness probe (mirrors
 /// [`terminate_pid`]'s signal call so both go through the identical sanctioned API) - the
 /// test-side replacement for a shelled-out existence-probe command.
@@ -313,6 +387,18 @@ pub fn is_alive(pid: u32) -> bool {
         return false;
     };
     rustix::process::test_kill_process(rpid).is_ok()
+}
+
+/// Serializes the tests of one suite that read or write the process environment (or spawn a
+/// subprocess, whose `Command` captures it): `cargo test` runs a binary's tests as concurrent
+/// threads, and a concurrent env read racing a concurrent env write is a genuine POSIX
+/// getenv/setenv hazard regardless of which keys either side touches. Hold the guard for the
+/// whole test. A poisoned lock (a holder panicked) is recovered, never propagated.
+pub fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ENV_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// RAII guard restoring a set of environment variables to their PRIOR value on drop -
@@ -342,5 +428,51 @@ impl Drop for RestoreEnvVars {
                 None => std::env::remove_var(name),
             }
         }
+    }
+}
+
+/// A JSON object's own key set, sorted - the one comparison every wire-shape periphery test
+/// (`console_map_frame_wire_shape_periphery.rs`, `console_map_explore_rail_wire_shape_periphery.rs`,
+/// `console_map_legend_wire_shape_periphery.rs`, ...) needs to pin a serde type's field names
+/// exactly, never more or fewer. Shared here rather than each file defining its own identical
+/// copy (spec 85's own mandatory duplication sweep: a same-named helper independently defined in
+/// 2+ files is a candidate regardless of the Jaccard pass).
+pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("expected a JSON object, got {v:?}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// Every event the production whole-project ingest
+/// ([`rigger::grounder::symbols::events::project_batches`]) emits for the project at `root`, its
+/// per-file batches flattened in their sorted file order.
+#[cfg(feature = "symbols")]
+pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
+    rigger::grounder::symbols::events::project_batches(root)
+        .into_iter()
+        .flat_map(|(_, batch)| batch)
+        .collect()
+}
+
+/// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt` (so
+/// it cannot drift from the labels), every optional field empty.
+pub fn spawn_request(
+    unit: &str,
+    stage: &str,
+    role: &str,
+    attempt: u32,
+    prompt: &str,
+) -> rigger::spawn::SpawnRequest {
+    rigger::spawn::SpawnRequest {
+        id: rigger::spawn::spawn_id(unit, role, attempt),
+        unit: unit.to_string(),
+        stage: stage.to_string(),
+        prompt: prompt.to_string(),
+        ..Default::default()
     }
 }

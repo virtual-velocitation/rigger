@@ -1,12 +1,12 @@
 //! Periphery (cross-module contract) test for the spec-78 base-guard's interaction with
-//! `src/driver/replay.rs::reclaim_unit_mutation_scratch` (spec 77 criterion 3, UNIT-TERMINAL
+//! `crates/rigger-driver/src/driver/replay.rs::reclaim_unit_mutation_scratch` (spec 77 criterion 3, UNIT-TERMINAL
 //! REAP).
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
 //! `src/reap.rs`'s own unit tests exercise `is_reapable_base` and `reap_processes_rooted_under`
 //! entirely through a `FakeRepo` fixture it constructs itself - a git-inited root with an empty
-//! `.rigger/tmp` created for exactly this purpose. `src/driver/replay.rs`'s own unit tests
+//! `.rigger/tmp` created for exactly this purpose. `crates/rigger-driver/src/driver/replay.rs`'s own unit tests
 //! exercise `reclaim_unit_mutation_scratch` with a bare `tempfile::tempdir()` `cache_home` and
 //! never a LIVE PROCESS (only files, via `std::fs::write`) - the reap half of the call is never
 //! actually exercised there either. Neither side's unit tests ever drive the two together with
@@ -41,43 +41,14 @@
 //! against the round-2 diff, confirming the fix closed the boundary bug without weakening
 //! either assertion.
 
-use std::path::Path;
-use std::process::{Child, Command};
+mod common;
+use common::git::git_ok;
 
+use common::fixtures::cleanup;
+use common::fixtures::sigterm_ignorer_in;
+use common::wait_until;
 use rigger::driver::replay::{mutation_scratch_path, reclaim_unit_mutation_scratch};
 use rigger::reap::processes_rooted_under;
-
-/// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
-/// escalation can end it - exercising the full SIGTERM-then-SIGKILL mechanism
-/// `reap_processes_rooted_under` runs, not just a plain `sleep` a bare SIGTERM would already
-/// end. Mirrors the identical fixture in `src/reap.rs` and `src/worktree.rs`.
-fn sigterm_ignorer_in(dir: &Path) -> Child {
-    Command::new("sh")
-        .arg("-c")
-        .arg("trap '' TERM; while :; do sleep 1; done")
-        .current_dir(dir)
-        .spawn()
-        .expect("spawn a SIGTERM-ignoring fixture process")
-}
-
-/// Poll up to 5s for `pred`, matching the scan/escalation latency tolerance every sibling
-/// reap test in this tree already uses (`src/reap.rs`, `src/worktree.rs`).
-fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    false
-}
-
-/// Kill-and-wait a fixture child unconditionally, ignoring errors - test cleanup only, via
-/// the `Child` handle it was spawned with (never a computed pid).
-fn cleanup(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
 
 #[test]
 fn reclaim_unit_mutation_scratch_reaps_a_live_process_rooted_in_its_registered_scratch_dir() {
@@ -138,13 +109,7 @@ fn reclaim_unit_mutation_scratch_still_reaps_when_its_base_legitimately_lies_und
     // isolation of which half of the call chain is refusing the reap.)
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().canonicalize().unwrap();
-    assert!(Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["init", "-q"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["init", "-q"]);
     let cache_home = repo_path
         .join(".rigger")
         .join("tmp")

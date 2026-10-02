@@ -9,12 +9,12 @@ that bounds cross-run growth automatically (measured: 87% of the graph was dead-
 
 ## Design
 
-Model the distiller on `src/playbooks.rs`, which already consolidates `LessonLearned` into a
+Model the distiller on `crates/rigger-domain/src/playbooks.rs`, which already consolidates `LessonLearned` into a
 rebuildable projection. Mirror its shape:
 
 - `distill(events) -> Vec<Digest>` - fold the target events into a `BTreeMap` keyed by file, each
   value a digest (summary + count + contributing run ids), dedup-by-normalized-summary, sorted for
-  determinism (mirror `playbooks::distill`, `src/playbooks.rs`).
+  determinism (mirror `playbooks::distill`, `crates/rigger-domain/src/playbooks.rs`).
 - a `Digest` projection struct with a stable slug id (`fnv1a_64` over the file + summary, mirroring
   `playbooks::Playbook` / `POOL_SUBDIR`), the per-file summary, the trigger file, and the fold
   count.
@@ -24,7 +24,7 @@ rebuildable projection. Mirror its shape:
 Scope by run boundary: only findings/decisions OLDER than the current run (events before the
 latest `RunStarted` boundary) are consolidated; current-run items stay raw. This reuses the same
 `RunStarted`-boundary attribution the `reset --runs` prune (`Projector::prune`,
-`src/contextgraph/sqlite.rs`) and the LIVE/HISTORICAL peer labels (spec 21) already use. It is the
+`crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`) and the LIVE/HISTORICAL peer labels (spec 21) already use. It is the
 AUTOMATIC form of what `reset --runs` does by hand.
 
 The distiller is a projection over the append-only log (section 2.1): it introduces NO new event type

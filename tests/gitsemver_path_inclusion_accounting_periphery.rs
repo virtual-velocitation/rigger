@@ -41,34 +41,17 @@
 //! attribute as a worked example of an upward-escaping `#[path]` value; a naive substring
 //! scan would misidentify that comment as a fifth inclusion site).
 
+#[path = "common/audit_record.rs"]
+mod audit_record;
+mod common;
+
+use audit_record::read_audit_record;
+use common::repo::collect_rs_files;
+use common::repo::repo_root;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const RECORD_PATH: &str = "docs/audit/stage1-compiler-pass.json";
-
-/// The repo root this test binary was compiled from - never the process CWD (same convention
-/// as `tests/simplification_audit.rs::repo_root`, `tests/no_os_kill_audit.rs`, and
-/// `tests/duplication_catalog_contract_periphery.rs`).
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
-/// ordered - the same walk shape as `tests/no_os_kill_audit.rs::collect_rs_files`.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort(); // deterministic finding order regardless of readdir order
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-}
 
 /// A line is a real `#[path]` attribute (not a comment quoting the syntax as prose) exactly
 /// when, trimmed of leading whitespace, it starts with `#[path` - a `///` or `//` comment
@@ -120,10 +103,7 @@ fn real_gitsemver_path_inclusion_sites(root: &Path) -> Vec<String> {
 /// record's full shape (`tests/compiler_pass_stage1_audit.rs` already owns that), only in
 /// this one field's content.
 fn stage1_visibility_reason_text(root: &Path) -> String {
-    let raw = fs::read_to_string(root.join(RECORD_PATH))
-        .unwrap_or_else(|e| panic!("{RECORD_PATH} must exist and be readable: {e}"));
-    let record: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{RECORD_PATH} must be valid JSON: {e}"));
+    let record = read_audit_record(root.join(RECORD_PATH));
     let fixes = record["strict_build"]["visibility_fixes_applied"]
         .as_array()
         .unwrap_or_else(|| {
@@ -172,32 +152,22 @@ fn every_real_hash_path_inclusion_site_of_gitsemver_rs_is_named_in_the_stage1_re
 mod scan_self_tests {
     use super::*;
 
-    #[test]
-    fn a_real_top_level_path_attribute_line_is_recognized() {
-        assert!(is_real_path_attribute_line(
-            "#[path = \"../build/gitsemver.rs\"]"
-        ));
+    rigger::test_cases! {
+        a_real_top_level_path_attribute_line_is_recognized:
+            assert!(is_real_path_attribute_line("#[path = \"../build/gitsemver.rs\"]"));
+        an_indented_path_attribute_line_is_still_recognized:
+            assert!(is_real_path_attribute_line("    #[path = \"../build/gitsemver.rs\"]"));
     }
 
-    #[test]
-    fn an_indented_path_attribute_line_is_still_recognized() {
-        assert!(is_real_path_attribute_line(
-            "    #[path = \"../build/gitsemver.rs\"]"
-        ));
-    }
-
-    #[test]
-    fn a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site() {
-        // The exact shape tests/code_entity_test_exclusion_periphery.rs's own doc comment
-        // writes - the false positive this scan is deliberately built to reject.
-        assert!(!is_real_path_attribute_line(
+    rigger::test_cases! {
+        /// The exact shape tests/code_entity_test_exclusion_periphery.rs's own doc comment
+        /// writes - the false positive this scan is deliberately built to reject.
+        a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site:
+            assert!(!is_real_path_attribute_line(
             "/// upward-escaping #[path = \"../build/gitsemver.rs\"]"
         ));
-    }
-
-    #[test]
-    fn a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site() {
-        assert!(!is_real_path_attribute_line(
+        a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site:
+            assert!(!is_real_path_attribute_line(
             "// #[path]-included into build.rs and the two test files"
         ));
     }

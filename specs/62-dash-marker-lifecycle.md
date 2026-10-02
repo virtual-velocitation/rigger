@@ -12,13 +12,13 @@ are in flight.
 
 ## Design
 
-- **Marker follows bind** (`src/dash.rs` / `src/main.rs` dash startup): the marker is written
+- **Marker follows bind** (`crates/rigger-dash/src/dash.rs` / `src/main.rs` dash startup): the marker is written
   only AFTER the listener has bound. A failed bind leaves the prior marker byte-for-byte
   untouched and writes nothing.
 - **Stale markers self-heal** (`src/main.rs` dash startup): a successful start replaces
   whatever marker it finds (dead PID, wrong port) with its own `port\npid`. The still-serving
   short-circuit (live marker exits 0 without binding) is unchanged.
-- **Couriers count as activity** (`src/main.rs` courier entry points, `src/registry.rs`):
+- **Couriers count as activity** (`src/main.rs` courier entry points, `crates/rigger-store-sqlite/src/registry.rs`):
   `progress`, `emit`, and `result` refresh the project's registry entry with a fresh
   heartbeat - one-shot re-stamp through the existing write path, no heartbeat thread,
   best-effort and warn-only like the driver registration, including its degrade: a homeless

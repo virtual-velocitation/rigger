@@ -38,7 +38,8 @@
 //! twice without the run advancing burns full agent cost per round"). Each round is a
 //! SEPARATE `rigger step` subprocess; between rounds, a courier's outcome is seeded directly
 //! into the on-disk store (mirroring `tests/cli.rs`'s `seed_run_events`), exactly as `rigger
-//! result <id> --error <why>` would leave it for the next step to replay.
+//! result <id> <output>` would leave it for the next step to replay, and the unit's gate goes
+//! red on it.
 //!
 //! NOT OWNED here: the `escalated` signal in isolation and the clean-step omission (extended
 //! onto `tests/cli.rs`'s pre-existing `step_carries_the_escalated_set_when_a_fixpoint_is_
@@ -58,7 +59,7 @@
 //! fix's own extension of `tests/cli.rs`'s
 //! `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver` already
 //! proves that real cross-process BEHAVIOR end to end (stamp once, no restamp, clear on
-//! recovery), and the implementer's own `mod tests` in `src/liveness.rs` already proves each
+//! recovery), and the implementer's own `mod tests` in `crates/rigger-driver/src/liveness.rs` already proves each
 //! function's contract from INSIDE the crate (path shape, round trip, malformed input).
 //! Neither proves the thing `hung_cursor_functions_are_a_working_public_contract_across_the_
 //! crate_boundary` below does: that the three functions are usable, AS DOCUMENTED, from
@@ -67,11 +68,13 @@
 //! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
 //! crate boundary, rather than only inside the module that would silently stop exporting it.
 
+use common::repo::repo_text;
+
 /// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
 /// functions the round-4 fix added - called EXACTLY as an external crate consumer would
 /// (`use rigger::liveness::{...}`), never through any crate-internal privilege the
-/// implementer's own `src/liveness.rs::tests` has. Full permutation coverage of each
+/// implementer's own `crates/rigger-driver/src/liveness.rs::tests` has. Full permutation coverage of each
 /// function's own contract (path shape variants, per-run scoping, malformed-file handling)
 /// already lives there and is not re-derived here; this proves only that the exported
 /// symbols work as documented when called from outside the crate, plus one case genuinely
@@ -134,116 +137,37 @@ fn hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary
 
 mod common;
 
-use std::path::Path;
+use common::cli::plant_stale_marker;
+use common::cli::run_rigger;
+use common::cli::seed_run_events;
+use common::cli::step_line;
+use common::cli::temp_repoless_project;
+use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
+use common::fixtures::js_declaration;
+use common::git::temp_git_project_with_commit;
+
 use std::process::Command;
 
-/// A throwaway project dir that is deliberately NOT a git repo - mirrors `tests/cli.rs`'s
-/// identical `temp_repoless_project` helper. `isolation: none` below means the run never
-/// touches git, so a repo-less offline project is the faithful, minimal fixture.
-fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
-}
-
-/// The project identity the binary resolves for `root` - mirrors `tests/cli.rs`'s identical
-/// `run_stream_identity` helper (a repo-less project has no git top-level, so this always
-/// falls through to `root`'s own basename, never empty).
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Seed run-lifecycle events directly into the namespaced run stream on a REAL on-disk
-/// store - mirrors `tests/cli.rs`'s identical `seed_run_events` helper. Standing in for a
-/// courier's `rigger result <id> --error <why>`, which the driver runs when a worker's
-/// spawn errors.
-fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
-
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    for &(ty, body) in events {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(ty, body.as_bytes().to_vec())],
-            )
-            .unwrap();
-    }
-}
-
-/// Run `rigger <args...>` in `cwd`, returning (stdout, stderr, success) - mirrors
-/// `tests/cli.rs`'s identical `run_rigger_envs` helper (opts out of the auto-started
-/// dashboard and the machine-global instance registry, exactly as every other periphery
-/// suite that spawns the product does).
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
-}
-
-/// A single-unit workflow whose gate always PASSES and whose remediation bound
+/// A single-unit workflow whose gate always FAILS and whose remediation bound
 /// (`max_retries: 5`) is generous enough that the unit is STILL retrying - never escalated -
 /// once its attempt count passes the stalled-frontier threshold of two. Offline and
 /// repo-less: `nop` grounder, `isolation: none`, `on_pass: none` (never attempts a merge, so
 /// nothing here depends on git).
-fn write_attention_progression_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: attentiontest
-defaults:
+const ATTENTION_PROGRESSION_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
 gates:
-  ok: { run: "true", kind: core }
+  red: { run: "false", kind: core }
 stages:
   u:
     agent: worker
-    gates: [ok]
+    gates: [red]
     on_pass: none
 "#,
-    )
-    .unwrap();
-}
+};
 
 /// Spec 69, criterion 5: worker-death-recurred and stalled-frontier, driven across FIVE
 /// separate `rigger step` subprocesses against ONE persisted on-disk store, each round
@@ -252,13 +176,11 @@ stages:
 fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_attention_progression_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_PROGRESSION_WORKFLOW);
 
     // Round 1: the unit is ready, so its implementer parks fresh as attempt #0. Nothing has
     // crossed a threshold yet - not even a failure has happened - so `attention` is omitted.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 1 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 1 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#0""#),
         "round 1 must park attempt #0; got: {line:?}"
@@ -268,16 +190,14 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
         "parking the first attempt crosses no threshold; got: {line:?}"
     );
 
-    // Attempt #0 fails (a worker's driver-error result, exactly what a courier's `rigger
-    // result --error` leaves for the next step to replay). The FIRST failure is not a
+    // Attempt #0 fails (the worker's result, exactly what a courier's `rigger result` leaves
+    // for the next step to replay, goes red at the unit's gate). The FIRST failure is not a
     // recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 2 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 2 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#1""#),
         "round 2 must park the remediation attempt #1; got: {line:?}"
@@ -291,11 +211,9 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // Attempt #1 fails - the SECOND failure on this unit - a recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 3 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 3 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#2""#),
         "round 3 must park the remediation attempt #2; got: {line:?}"
@@ -313,11 +231,9 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // signal joins the recurrence.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 4 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 4 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#3""#),
         "round 4 must park the remediation attempt #3, still unanswered; got: {line:?}"
@@ -336,9 +252,7 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     // this is the one property a same-process, in-memory-store test structurally cannot
     // prove - it needs a REAL persisted log a NEW process re-derives the same "nothing new"
     // verdict from, not Rust state a single process happened to carry forward.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 5 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 5 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#3""#),
         "round 5 must still show attempt #3 as the parked wave, unchanged; got: {line:?}"
@@ -410,21 +324,6 @@ fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_las
     );
 }
 
-/// Plant a SYNTHETIC STALE MARKER at exactly `marker`, touched an hour ago - mirrors
-/// `tests/cli.rs`'s identical `plant_stale_marker` helper (this crate's own established
-/// per-file duplication convention - see this file's other helpers' doc comments above).
-fn plant_stale_marker(marker: &Path) {
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(marker, b"heartbeat").unwrap();
-    let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-    std::fs::File::options()
-        .write(true)
-        .open(marker)
-        .unwrap()
-        .set_modified(stale)
-        .unwrap();
-}
-
 /// Extract the `marker_path` field carried by the wave item whose `id` is exactly `id` -
 /// like `tests/cli.rs`'s `json_string_field`, but scoped to ONE item's own JSON object,
 /// since this file's ordering scenario below carries TWO wave items (`u` and `h`) in the
@@ -455,67 +354,31 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
     mrest[..mend].to_string()
 }
 
-/// A real, minimally-committed git repo - mirrors `tests/cli.rs`'s identical
-/// `temp_git_project_with_commit` helper. Unlike [`temp_repoless_project`] above, this file's
-/// own ordering scenario NEEDS one: `rigger step`'s `scratch_root` (main.rs) resolves to
-/// `None` - disabling the liveness sweep and the wave's `marker_path` stamp entirely -
-/// whenever `repo` is empty, which only a git-less project produces. A marker-driven hung
-/// spawn is therefore structurally impossible to test against a repo-less project.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
-
-/// Two independent stages that never answer normally: `u` keeps failing (the exact
+/// Two independent stages that never pass: `u` keeps failing its gate (the exact
 /// worker-death-recurred/stalled-frontier scenario above), `h` parks and is later driven
 /// hung via a planted stale marker. Both share `max_wall_clock` (so BOTH carry a
 /// `marker_path` in the wave - proving the ordering test below reads the RIGHT item's path)
 /// and `max_retries: 5` (so `u` is never escalated across the whole scenario, matching
-/// `write_attention_progression_workflow` above).
-fn write_attention_ordering_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: attentionordertest
-defaults:
+/// `ATTENTION_PROGRESSION_WORKFLOW` above).
+const ATTENTION_ORDERING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
   max_wall_clock: 60
+gates:
+  red: { run: "false", kind: core }
 stages:
   u:
     agent: worker
+    gates: [red]
     on_pass: none
   h:
     agent: worker
     on_pass: none
 "#,
-    )
-    .unwrap();
-}
+};
 
 /// Spec 69, criterion 5's ordering CONTRACT, proven at the REAL binary boundary (review
 /// u69c5 round 3, cause genuine-defect): `rigger step` (main.rs) computes the hung-liveness
@@ -536,12 +399,10 @@ stages:
 fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_signals() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_attention_ordering_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_ORDERING_WORKFLOW);
 
     // Round 1: both independent units are ready, so both park together in one wave.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 1 step must succeed; stderr: {err}");
-    let line = out.trim().to_string();
+    let line = step_line(root, "round 1 step must succeed");
     assert!(
         line.contains(r#""id":"u/implementer#0""#) && line.contains(r#""id":"h/implementer#0""#),
         "round 1 must park BOTH units' implementer spawns in one wave; got: {line:?}"
@@ -555,7 +416,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // u's first failure - not a recurrence. h is untouched (healthy, no marker planted yet).
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 2 step must succeed; stderr: {err}");
@@ -567,7 +428,7 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // u's second failure - a recurrence, the ONLY signal this round.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
@@ -588,11 +449,9 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
     // must merge its `halted` entry (rank 1) in FRONT of both.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "round 4 step must succeed; stderr: {err}");
-    let line = out.trim();
+    let line = step_line(root, "round 4 step must succeed");
     assert_eq!(
         line.matches(r#"{"kind":"#).count(),
         3,
@@ -646,36 +505,6 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
 // enumeration) turned up: a new call from the Rust-emitted wire (criterion 5, proven end to end
 // above) into this JS consumer (criterion 6).
 
-/// Extract a top-level declaration - `function <name>(...) { ... }` or `const <NAME> = { ... }` -
-/// VERBATIM from `start_marker` through its brace-matched close, inclusive. The same brace-
-/// counting `src/main.rs::mod tests::js_function_body` uses (this file's own copy, per the
-/// established per-file duplication convention documented at the top of this file), but keeps
-/// the marker text itself too, so the result is a directly-executable standalone JS statement
-/// rather than a bare function body.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
-}
-
 /// Run the REAL `relayAttention` - extracted verbatim from the shipped `workflows/rigger.js`,
 /// never hand-copied - against `step_json` (a `{"attention": [...]}` object, or `{}`/`{"attention":
 /// []}` for the two shapes a clean step can send) under a real `node` subprocess. `log` is
@@ -685,7 +514,7 @@ fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
 /// same graceful-absence contract `src/main.rs`'s own `node --check` test already established
 /// for this crate (missing node is an environment fact, never a test failure).
 fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let response_table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
     let relay_fn = js_declaration(&src, "function relayAttention(step) {");
 
@@ -736,14 +565,14 @@ fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
 fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_attention_progression_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_PROGRESSION_WORKFLOW);
 
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 1 step must succeed; stderr: {err}");
 
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#0","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#0","output":"done"}"#)],
     );
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 2 step must succeed; stderr: {err}");
@@ -752,7 +581,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     // one-entry wire and render it for real.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#1","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#1","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 3 step must succeed; stderr: {err}");
@@ -780,7 +609,7 @@ fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     // iteration and ordering a single-entry check cannot distinguish from a hardcoded one-liner.
     seed_run_events(
         root,
-        &[("SpawnResult", r#"{"id":"u/implementer#2","error":"boom"}"#)],
+        &[("SpawnResult", r#"{"id":"u/implementer#2","output":"done"}"#)],
     );
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 4 step must succeed; stderr: {err}");
@@ -936,7 +765,7 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
 fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_skill() {
     use rigger::watch::Signal;
 
-    let src = rigger_js_source();
+    let src = repo_text("workflows/rigger.js");
     let table = js_declaration(&src, "const ATTENTION_RESPONSE = {");
 
     for (js_kind, signal) in [
@@ -956,14 +785,4 @@ fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_ski
              ATTENTION_RESPONSE table: {table}"
         );
     }
-}
-
-/// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors `tests/
-/// cli.rs`'s identical `rigger_js_source` helper (this file's own established per-file
-/// duplication convention, documented at the top of this file).
-fn rigger_js_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("workflows")
-        .join("rigger.js");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }

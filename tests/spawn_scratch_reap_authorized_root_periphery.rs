@@ -32,59 +32,20 @@
 //! mutation-scratch dir (spec 77 criterion 2, the exact root round 1's reject was about).
 
 use std::path::Path;
-use std::process::{Child, Command};
 
 mod common;
 
+use common::cli::run_rigger_envs;
+use common::cli::run_stream_identity;
+use common::cli::seed_store;
+use common::cli::temp_project;
+use common::cli::temp_store_project;
+use common::fixtures::cleanup;
+use common::fixtures::sigterm_ignorer_in;
+use common::wait_until;
+
 use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
 use rigger::reap::processes_rooted_under;
-
-/// A throwaway project dir that is its own git repo, mirroring `tests/cli.rs::temp_project` -
-/// `project_identity()` (which scopes the namespaced streams `rigger result` reads/writes)
-/// resolves deterministically off a real repo.
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
-
-/// Seed an initialized `.rigger/events.db` under `root`, mirroring `tests/cli.rs::seed_store` -
-/// `rigger result` refuses to fabricate a fresh store from the wrong cwd (spec 05).
-fn seed_store(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(&rigger).unwrap();
-    std::fs::File::create(rigger.join("events.db")).unwrap();
-}
-
-/// The project identity the binary resolves for `root`, mirroring
-/// `tests/cli.rs::run_stream_identity` exactly: the tracked `.rigger/project.id` at the git
-/// top-level when present, else the git top-level basename, else `root`'s own basename.
-fn run_stream_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
 
 /// Seed a `RunStarted` event into the namespaced run stream, mirroring
 /// `tests/cli.rs::seed_run_events` - `reclaim_spawn_scratch` reads the run id back out of it
@@ -111,111 +72,91 @@ fn seed_run_started(root: &Path, run_id: &str) {
         .unwrap();
 }
 
-/// Run `rigger <args...>` in `cwd` with extra environment `envs`, mirroring
-/// `tests/cli.rs::run_rigger_envs` - opts out of the auto-started dashboard and isolates the
-/// machine-global instance registry, exactly as every other CLI-driven suite in this tree
-/// does, so this test never leaks a dashboard process or a phantom registry entry.
-fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
-    let mut cmd = common::rigger_courier();
-    cmd.args(args).current_dir(cwd);
-    cmd.env("RIGGER_NO_DASH", "1");
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
-    cmd.env("XDG_STATE_HOME", state.path());
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    let out = cmd.output().expect("failed to spawn the rigger binary");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.success(),
-    )
+/// A throwaway project with a seeded store and a started run `r1`, plus a dedicated, empty cache
+/// home: the reclaim's mutation-scratch half never touches the operator's real ~/.cache, and the
+/// fixture and the child `rigger result` process (handed the SAME `XDG_CACHE_HOME`) resolve the
+/// identical scratch roots.
+struct ReapProject {
+    dir: tempfile::TempDir,
+    cache_home: tempfile::TempDir,
 }
 
-/// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
-/// escalation can end it - mirrors the identical fixture in `src/reap.rs`, `src/worktree.rs`,
-/// and this crate's sibling `*_base_guard_periphery.rs` files.
-fn sigterm_ignorer_in(dir: &Path) -> Child {
-    Command::new("sh")
-        .arg("-c")
-        .arg("trap '' TERM; while :; do sleep 1; done")
-        .current_dir(dir)
-        .spawn()
-        .expect("spawn a SIGTERM-ignoring fixture process")
-}
-
-/// Poll up to 5s for `pred`, matching the scan/escalation latency tolerance every sibling reap
-/// test in this tree already uses.
-fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
+impl ReapProject {
+    fn new() -> Self {
+        let dir = temp_project();
+        seed_store(dir.path());
+        seed_run_started(dir.path(), "r1");
+        ReapProject {
+            dir,
+            cache_home: tempfile::tempdir().unwrap(),
         }
-        std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    false
+
+    /// The agent-scratch root the binary resolves with no workflow.yml and no `RIGGER_TMPDIR`:
+    /// the documented cache-home default (spec 89, criterion 2: it no longer nests under
+    /// `<repo>/.rigger/tmp`), keyed off this project's cache home.
+    fn agent_scratch_root(&self) -> std::path::PathBuf {
+        rigger::worktree::cache_scratch_root_from(
+            self.dir.path().to_str().unwrap(),
+            Some(self.cache_home.path().as_os_str().to_owned()),
+            None,
+        )
+        .expect("a non-empty repo with an explicit cache home always resolves")
+    }
+
+    /// `rigger result <spawn_id> <text>` under this project's cache home.
+    fn result(&self, spawn_id: &str, text: &str) -> (String, String, bool) {
+        run_rigger_envs(
+            self.dir.path(),
+            &["result", spawn_id, text],
+            &[("XDG_CACHE_HOME", self.cache_home.path().to_str().unwrap())],
+        )
+    }
 }
 
-/// Kill-and-wait a fixture child unconditionally, ignoring errors - test cleanup only, via the
-/// `Child` handle it was spawned with (never a computed pid).
-fn cleanup(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+/// A SIGTERM-ignoring child rooted in `leaf` (created first), asserted to really be rooted in the
+/// spawn's registered `which` dir `before` the step under test.
+fn live_child_in(leaf: &Path, which: &str, before: &str) -> std::process::Child {
+    std::fs::create_dir_all(leaf).unwrap();
+    let child = sigterm_ignorer_in(leaf);
+    assert!(
+        wait_until(|| processes_rooted_under(leaf)
+            .iter()
+            .any(|(pid, _)| *pid == child.id())),
+        "precondition: the fixture process must actually be rooted in the spawn's registered \
+         {which} dir {before}"
+    );
+    child
+}
+
+/// Assert `child` died - reaped by the call under test (`why`) - cleaning it up otherwise.
+fn assert_reaped(child: &mut std::process::Child, why: &str) {
+    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
+    if !died {
+        cleanup(child);
+    }
+    assert!(died, "{why}");
 }
 
 #[test]
 fn rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-    seed_run_started(root, "r1");
-
+    let project = ReapProject::new();
     let spawn_id = "u-periphery-cli-live-reap/implementer#0";
-    // A dedicated, empty cache home so the SAME call's mutation-scratch half (which
-    // `reclaim_spawn_registered_scratch` always runs alongside the agent-scratch half) never
-    // touches the operator's real ~/.cache - and so the fixture below and the CHILD process
-    // (given the SAME override further down) resolve the identical agent-scratch root too
-    // (spec 89, criterion 2: the default no longer nests under `<repo>/.rigger/tmp`).
-    let cache_home = tempfile::tempdir().unwrap();
-    // No workflow.yml and no RIGGER_TMPDIR override in this fixture, so
-    // `scratch_root_path_from_env` resolves the documented default: the cache-home root
-    // (`src/worktree.rs::scratch_root_path`/`cache_scratch_root_from`), keyed off THIS SAME
-    // `cache_home` the child process below is also handed via `XDG_CACHE_HOME`.
-    let scratch_root = rigger::worktree::cache_scratch_root_from(
-        root.to_str().unwrap(),
-        Some(cache_home.path().as_os_str().to_owned()),
-        None,
+    let leaf = spawn_scratch_path(
+        project.agent_scratch_root().to_str().unwrap(),
+        "r1",
+        spawn_id,
     )
-    .expect("a non-empty repo with an explicit cache home always resolves");
-    let leaf = spawn_scratch_path(scratch_root.to_str().unwrap(), "r1", spawn_id)
-        .expect("a well-formed spawn id must encode to a real path");
-    std::fs::create_dir_all(&leaf).unwrap();
+    .expect("a well-formed spawn id must encode to a real path");
+    let mut child = live_child_in(&leaf, "agent-scratch", "before `rigger result` runs");
 
-    let mut child = sigterm_ignorer_in(&leaf);
-    assert!(
-        wait_until(|| processes_rooted_under(&leaf)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process must actually be rooted in the spawn's registered \
-         agent-scratch dir before `rigger result` runs"
-    );
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", spawn_id, "done"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = project.result(spawn_id, "done");
     assert!(
         ok,
         "recording the result must succeed; stdout: {out:?} stderr: {err}"
     );
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        cleanup(&mut child);
-    }
-    assert!(
-        died,
+    assert_reaped(
+        &mut child,
         "`rigger result` must reap a live process still rooted in the spawn's own registered \
          agent-scratch dir (spec 34 criterion 1) before removing it, through the real \
          reclaim_spawn_registered_scratch call chain - a SIGTERM-ignoring process here must \
@@ -225,48 +166,25 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir
          unconditionally either way - none of them could see a silent reap no-op here, which \
          is exactly the defect class spec 78 round 1 shipped \
          (adj-u78c2-verdict-reject-reap-authority-conflict) and round 2 \
-         (u78c2r2-authorized-root-caller-supplied) fixed."
+         (u78c2r2-authorized-root-caller-supplied) fixed.",
     );
 }
 
 #[test]
 fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-    seed_run_started(root, "r1");
-
+    let project = ReapProject::new();
     let spawn_id = "u-periphery-cli-live-reap-mutation/implementer#0";
-    let cache_home = tempfile::tempdir().unwrap();
-    let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
+    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
         .expect("a well-formed spawn id must encode to a real path");
-    std::fs::create_dir_all(&leaf).unwrap();
+    let mut child = live_child_in(&leaf, "mutation-scratch", "before `rigger result` runs");
 
-    let mut child = sigterm_ignorer_in(&leaf);
-    assert!(
-        wait_until(|| processes_rooted_under(&leaf)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process must actually be rooted in the spawn's registered \
-         mutation-scratch dir before `rigger result` runs"
-    );
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", spawn_id, "done"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = project.result(spawn_id, "done");
     assert!(
         ok,
         "recording the result must succeed; stdout: {out:?} stderr: {err}"
     );
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        cleanup(&mut child);
-    }
-    assert!(
-        died,
+    assert_reaped(
+        &mut child,
         "`rigger result` must reap a live process still rooted in the spawn's own registered \
          mutation-scratch dir (spec 77 criterion 2 - the EXACT root spec 78 round 1's reject \
          named, adj-u78c2-verdict-reject-reap-authority-conflict) before removing it, through \
@@ -276,7 +194,7 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_
          (already proven directly in mutation_scratch_reap_base_guard_periphery.rs): this one \
          is keyed on ONE reporting spawn's own id via cmd_result, not a unit-terminal \
          enumeration, and every pre-existing regression test for it (tests/cli.rs) only plants \
-         files, never a live process."
+         files, never a live process.",
     );
 }
 
@@ -295,16 +213,15 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_
 #[test]
 fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_with_no_agents_fleet_present(
 ) {
-    let dir = temp_project();
+    let dir = temp_store_project();
     let root = dir.path();
-    seed_store(root);
     seed_run_started(root, "r1");
 
     let relocated = tempfile::tempdir().expect("create relocated workdir");
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         format!(
-            "name: w\ndefaults:\n  workdir: \"{}\"\n",
+            "defaults:\n  workdir: \"{}\"\n",
             relocated.path().to_string_lossy()
         ),
     )
@@ -414,51 +331,23 @@ const REAP_REFUSED_TEXT: &str = "not strictly under";
 #[test]
 fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call(
 ) {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-    seed_run_started(root, "r1");
-
+    let project = ReapProject::new();
     let spawn_id = "u-periphery-cli-gone-mutation-scratch/implementer#0";
-    let cache_home = tempfile::tempdir().unwrap();
-    // The run's own agent-scratch ROOT already exists (as it would by the time any real spawn
-    // reports - earlier steps have already populated it), so neither half of the same
-    // `reclaim_spawn_registered_scratch` call can refuse on an absent AUTHORIZED ROOT of its
-    // own (`is_reapable_base` still requires that half to exist, unchanged by this diff) -
-    // the only thing missing below is the mutation-scratch LEAF itself, spec 89 criterion 3's
-    // own scope. The agent-scratch root is the cache-home-relocated default (spec 89 criterion
-    // 2), never the pre-relocation `<repo>/.rigger/tmp` - mirroring this file's own
-    // `rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir` above.
-    let agent_scratch_root = rigger::worktree::cache_scratch_root_from(
-        root.to_str().unwrap(),
-        Some(cache_home.path().as_os_str().to_owned()),
-        None,
-    )
-    .expect("a non-empty repo with an explicit cache home always resolves");
-    std::fs::create_dir_all(&agent_scratch_root).unwrap();
-    let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
+    // The agent-scratch ROOT exists (the everyday shape), so only the mutation-scratch half of
+    // the reclaim meets a gone base.
+    std::fs::create_dir_all(project.agent_scratch_root()).unwrap();
+    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
         .expect("a well-formed spawn id must encode to a real path");
-    std::fs::create_dir_all(&leaf).unwrap();
-
-    let mut child = sigterm_ignorer_in(&leaf);
-    assert!(
-        wait_until(|| processes_rooted_under(&leaf)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process must actually be rooted in the spawn's registered \
-         mutation-scratch dir before it is removed out from under it"
+    let mut child = live_child_in(
+        &leaf,
+        "mutation-scratch",
+        "before it is removed out from under it",
     );
 
-    // `cargo-mutants`' own cleanup (or any other reason the dir might already be gone) removes
-    // the LEAF itself, but not the registered ROOT (`cache_home/rigger-mutants`) other spawns'
-    // leaves still live under - the child process keeps running, now holding a deleted cwd.
+    // `cargo-mutants`' own cleanup racing the courier that reports the spawn's outcome.
     std::fs::remove_dir_all(&leaf).expect("remove the leaf out from under the live process");
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", spawn_id, "done"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = project.result(spawn_id, "done");
     assert!(
         ok,
         "recording the result must succeed even though its own mutation-scratch dir is \
@@ -470,19 +359,14 @@ fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_
          scratch root but no longer exists is ALREADY RECLAIMED, never a logged refusal - got \
          a refusal on stderr: {err}"
     );
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        cleanup(&mut child);
-    }
-    assert!(
-        died,
+    assert_reaped(
+        &mut child,
         "spec 89 criterion 3 / spec 80's 8-day-hang incident, reproduced through the real \
          per-spawn `cmd_result` reclaim chain: a process still rooted in a registered \
          mutation-scratch dir that was REMOVED out from under it before `rigger result` ran \
          must still be found (via the kernel's \" (deleted)\" cwd suffix) and SIGKILLed, not \
          silently left running forever because the now-gone base was refused as \"not \
-         strictly under\" its root."
+         strictly under\" its root.",
     );
 }
 
@@ -500,29 +384,16 @@ fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_
 /// cannot see the noise this fix silences.
 #[test]
 fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutation_scratch_dir() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_store(root);
-    seed_run_started(root, "r1");
-
+    let project = ReapProject::new();
     // The registered mutation-scratch ROOT already exists (some other spawn's leaf populated
     // it earlier in the run - the everyday shape), but THIS reviewer spawn's own leaf never
-    // was and never will be: reviewers never run `cargo mutants`.
-    let cache_home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(cache_home.path().join("rigger-mutants")).unwrap();
-    // The agent-scratch ROOT also already exists, the cache-home-relocated default (spec 89
-    // criterion 2), never the pre-relocation `<repo>/.rigger/tmp` - see the sibling test above
-    // for the identical rationale.
-    let agent_scratch_root = rigger::worktree::cache_scratch_root_from(
-        root.to_str().unwrap(),
-        Some(cache_home.path().as_os_str().to_owned()),
-        None,
-    )
-    .expect("a non-empty repo with an explicit cache home always resolves");
-    std::fs::create_dir_all(&agent_scratch_root).unwrap();
+    // was and never will be: reviewers never run `cargo mutants`. The agent-scratch ROOT also
+    // already exists.
+    std::fs::create_dir_all(project.cache_home.path().join("rigger-mutants")).unwrap();
+    std::fs::create_dir_all(project.agent_scratch_root()).unwrap();
 
     let spawn_id = "u-periphery-cli-reviewer-never-created-mutation-scratch/adversary#0";
-    let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
+    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
         .expect("a well-formed spawn id must encode to a real path");
     assert!(
         !leaf.exists(),
@@ -530,11 +401,7 @@ fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutatio
          have been created"
     );
 
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["result", spawn_id, "no blocking findings"],
-        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
-    );
+    let (out, err, ok) = project.result(spawn_id, "no blocking findings");
     assert!(
         ok,
         "recording a reviewer's result must succeed; stdout: {out:?} stderr: {err}"

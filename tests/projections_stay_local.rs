@@ -23,29 +23,10 @@
 //! channel, and verbatim pass-through are pinned by their own criteria; here we only prove that
 //! the store choice governs the event LOG and never redirects a local projection.
 
-use std::path::Path;
-use std::process::Command;
-
 // =======================================================================================
 // Structural boundary: projections open as LOCAL sqlite; the event-log resolver and the
 // server adapter never touch a projection path. Always on - no container required.
 // =======================================================================================
-
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped. The projection boundary rule
-/// governs SHIPPING code: test code legitimately opens throwaway sqlite projections directly,
-/// and must not be scanned as a command's construction path.
-fn production_main_rs() -> String {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read src/main.rs");
-    match src.find("#[cfg(test)]\nmod tests {") {
-        // Everything before the unit-test module (which runs to EOF). Falls back to the whole
-        // source when the marker is absent, so a future reshaping never makes this scan pass by
-        // silently scanning nothing.
-        Some(cut) => src[..cut].to_string(),
-        None => src,
-    }
-}
 
 /// The code portion of a production line: the text before any trailing `//` line comment, and
 /// empty for a whole-line comment. Prose that MENTIONS a projection beside `resolve_store` is
@@ -128,94 +109,17 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
-/// The project identity the binary resolves for `root` (the git top-level basename, or the
-/// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,
-/// so a read-back binds the exact stream the courier's write landed in.
-fn store_identity(root: &Path) -> String {
-    let toplevel = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
-    if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
-        let id = raw.trim();
-        if !id.is_empty() {
-            return id.to_string();
-        }
-    }
-    base.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .unwrap_or_else(|| "rigger".to_string())
-}
-
-/// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
-/// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as the
-/// backend-agnostic contract suite and the sibling wiring tests do.
-fn start_kurrentdb(
-    rt: &tokio::runtime::Runtime,
-) -> Option<(
-    testcontainers::ContainerAsync<testcontainers::GenericImage>,
-    String,
-)> {
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{GenericImage, ImageExt};
-
-    let image = GenericImage::new("kurrentplatform/kurrentdb", "latest")
-        .with_wait_for(WaitFor::message_on_stdout("IS LEADER"))
-        .with_mapped_port(21135, 2113.tcp())
-        .with_env_var("KURRENTDB_INSECURE", "true")
-        .with_env_var("KURRENTDB_MEM_DB", "true")
-        .with_env_var("KURRENTDB_RUN_PROJECTIONS", "None")
-        .with_env_var("KURRENTDB_NODE_PORT", "2113");
-    let container = match rt.block_on(image.start()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skipping projection-boundary runtime test (no container runtime?): {e}");
-            return None;
-        }
-    };
-    // The server needs a moment past the readiness log line before it accepts gRPC.
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    Some((
-        container,
-        "kurrentdb://localhost:21135?tls=false".to_string(),
-    ))
-}
-
-/// A throwaway project that is its OWN git repo (so the identity is stable and the ingest walk
-/// roots at the fixture), configured for the server-backed store purely by `KURRENTDB_CONN`.
-fn server_project() -> tempfile::TempDir {
-    let project = tempfile::tempdir().unwrap();
-    let root = project.path();
-    let git = |args: &[&str]| {
-        let _ = Command::new("git").args(args).current_dir(root).status();
-    };
-    git(&["init", "-q"]);
-    git(&["config", "user.email", "t@t"]);
-    git(&["config", "user.name", "t"]);
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    project
-}
+use common::cli::identified_git_project;
+use common::cli::run_stream_identity;
+use common::fixtures::with_kurrentdb;
+use common::repo::production_main_rs;
 
 #[test]
 fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server() {
     use rigger::contextgraph::sqlite::Projector;
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+    with_kurrentdb(|conn| {
+        let project = identified_git_project();
         let root = project.path();
         // A small source file so the default lane has something to parse; the light lane ingests
         // nothing but still CREATES the graph store, so this test asserts the same boundary in
@@ -229,7 +133,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
         let out = common::rigger_courier()
             .args(["graph", "build"])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .output()
             .expect("spawn rigger graph build");
@@ -257,12 +161,7 @@ fn graph_build_against_the_server_keeps_graph_db_local_and_the_log_on_the_server
             "a server-configured `graph build` must NOT create a local .rigger/events.db - the \
              event log is the server's; only the projection is local"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }
 
 #[test]
@@ -271,13 +170,8 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
     use rigger::eventstore::sqlite::Store;
     use rigger::eventstore::{Direction, EventStore};
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let Some((container, conn)) = start_kurrentdb(&rt) else {
-        return; // no container runtime: gracefully skipped
-    };
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let project = server_project();
+    with_kurrentdb(|conn| {
+        let project = identified_git_project();
         let root = project.path();
 
         // A bare `rigger progress` - no `--eventstore` flag - the exact surface a worker uses. It
@@ -295,7 +189,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
                 "folded a fixture into the local projection",
             ])
             .current_dir(root)
-            .env("KURRENTDB_CONN", &conn)
+            .env("KURRENTDB_CONN", conn)
             .env("RIGGER_NO_DASH", "1")
             .env("XDG_STATE_HOME", state.path())
             .output()
@@ -318,7 +212,7 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
         // server), proving the write stayed local.
         let backend = Store::open(progress_db.to_str().unwrap())
             .expect("the local progress.db must be a valid sqlite store");
-        let store = Namespaced::new(&backend, &store_identity(root));
+        let store = Namespaced::new(&backend, &run_stream_identity(root));
         let events = store
             .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
             .expect("read the local progress stream");
@@ -337,10 +231,5 @@ fn progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server
             "a server-configured `rigger progress` must NOT create a local .rigger/events.db - the \
              run log is the server's; only the progress projection is local"
         );
-    }));
-
-    let _ = rt.block_on(container.rm());
-    if let Err(e) = result {
-        std::panic::resume_unwind(e);
-    }
+    });
 }

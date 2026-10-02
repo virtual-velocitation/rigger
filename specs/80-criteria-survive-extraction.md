@@ -1,11 +1,11 @@
 # 80 - Criteria survive extraction: a checkbox's whole text reaches every consumer
 
-**Goal:** `src/spec.rs::extract_criteria` (via `checkbox_text`, src/spec.rs:6-11,76-90) matches
+**Goal:** `crates/rigger-domain/src/spec.rs::extract_criteria` (via `checkbox_text`, crates/rigger-domain/src/spec.rs:6-11,76-90) matches
 ONLY a checkbox's first physical line, so every `Done when` criterion wrapped across lines -
 which the planning discipline mandates, since OWNS/exclusion clauses and verify-wording rarely
 fit one line - is silently truncated to its first ~88 columns in `self.deps.criteria`
-(wired at src/conductor.rs:13272; the only other call site is src/main.rs:3610). Downstream,
-`resolve_served_criterion` (src/conductor.rs:8320-8342) canonicalizes every proposal's
+(wired at crates/rigger-conductor/src/conductor.rs:12712; the only other call site is src/cli/mod.rs:1819). Downstream,
+`resolve_served_criterion` (crates/rigger-conductor/src/conductor.rs:7874-8342) canonicalizes every proposal's
 `st.coverage` to that truncated text BY DESIGN (anti-paraphrase), so the loss is structural: no
 replan can restore it, unit titles / grounding queries / `UnitStarted.spec_criterion` /
 `build_dag_critique_prompt` all serve OWNS-stripped criteria, and plan-critique correctly
@@ -28,7 +28,7 @@ same way - the spec-shape lint already discourages them, but the extractor must 
 drop what an author wrote. Nothing else about extract_criteria changes: same ordering, same
 stable ids, same call sites, no signature change.
 
-BLAST RADIUS, decided: `src/spec.rs` only, plus tests. The conductor's canonicalization
+BLAST RADIUS, decided: `crates/rigger-domain/src/spec.rs` only, plus tests. The conductor's canonicalization
 (`resolve_served_criterion`, the ADD-path overwrite at conductor.rs:8235, the fold branch's
 coverage no-op) is CORRECT once fed full text and must not be touched - decision
 `plan62-replan3-corrected-root-cause-extractor-not-fold-branch` explicitly proved the
@@ -55,6 +55,6 @@ parked on exactly this defect).
 
 ## Done when
 
-- [ ] a test proves FULL-TEXT EXTRACTION: for a spec whose checkbox wraps across three-plus physical lines with an OWNS sentence on the third, `extract_criteria` returns the bullet's entire joined text (single-spaced, indentation stripped), pinned at the `src/spec.rs` seam; and for adjacent checkboxes, blank-line-then-prose, a following heading, and a nested sub-bullet, the boundaries and joining follow the Design's JOINING RULE exactly. This criterion OWNS `src/spec.rs` and its unit tests; end-to-end delivery is criterion 2's, NOT this one's.
+- [ ] a test proves FULL-TEXT EXTRACTION: for a spec whose checkbox wraps across three-plus physical lines with an OWNS sentence on the third, `extract_criteria` returns the bullet's entire joined text (single-spaced, indentation stripped), pinned at the `crates/rigger-domain/src/spec.rs` seam; and for adjacent checkboxes, blank-line-then-prose, a following heading, and a nested sub-bullet, the boundaries and joining follow the Design's JOINING RULE exactly. This criterion OWNS `crates/rigger-domain/src/spec.rs` and its unit tests; end-to-end delivery is criterion 2's, NOT this one's.
 - [ ] a test proves DELIVERY TO CONSUMERS: driving the real extraction path a multi-line criterion's full text (including its third-physical-line OWNS sentence) reaches `self.deps.criteria` and is what `UnitStarted.spec_criterion` carries for that criterion's baseline unit, proven at the periphery against specs/62-dash-marker-lifecycle.md's own c1 text. This criterion OWNS the periphery proof; the extractor itself is criterion 1's, NOT this one's.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).

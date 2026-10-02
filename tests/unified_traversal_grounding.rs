@@ -22,27 +22,27 @@
 //! traversal and delivering them to a spawn. The render fold + those node/edge kinds are always
 //! compiled, so these guard the boundary in BOTH feature lanes.
 
-use std::process::Command;
 use std::sync::Mutex;
 
 mod common;
+use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
-    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
+    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
-use tempfile::TempDir;
+
+use common::fixtures::apply_next_json;
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
@@ -177,15 +177,6 @@ impl Grounder for SeedGrounder {
     }
 }
 
-/// Fold one event, built from its serialized JSON payload, into the graph at `pos` - the public
-/// event API a real run folds through.
-fn fold(g: &Projector, pos: &mut u64, type_: &str, payload: Value) {
-    *pos += 1;
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = *pos;
-    g.apply(&e).unwrap();
-}
-
 /// Drive `conductor::run` over a single stage whose grounding query is `coverage`, grounded by
 /// `grounder`, and return every prompt the driver was asked to spawn. The prompt is composed by the
 /// same `build_prompt_with_failure` path a real run uses, so the code neighborhood in it comes from
@@ -226,6 +217,7 @@ fn run_and_capture_prompts_grounded(
         grounder: Some(grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
@@ -283,10 +275,44 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     let _ = run(&cfg, &deps);
     let prompts = driver.prompts.lock().unwrap().clone();
     prompts
+}
+
+/// A fresh in-memory unified graph, the fixture every prompt-boundary test folds its seed into.
+fn fresh_graph() -> (Projector, u64) {
+    (Projector::open(":memory:", "test").unwrap(), 0)
+}
+
+/// Fold the one code definition the touched file `core.rs` carries in most fixtures: `run_unit`
+/// at `core.rs:42`, a name that appears NOWHERE the grounder returns, so its presence in a prompt
+/// proves it was sourced from the graph traversal.
+fn fold_run_unit_definition(graph: &Projector, pos: &mut u64) {
+    apply_next_json(
+        graph,
+        pos,
+        TYPE_CODE_ENTITY_EXTRACTED,
+        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+    );
+}
+
+/// The first prompt of `prompts`, which must not be empty (`spawned_why`).
+fn first_prompt(prompts: Vec<String>, spawned_why: &str) -> String {
+    assert!(!prompts.is_empty(), "{spawned_why}");
+    prompts.into_iter().next().unwrap()
+}
+
+/// `prompt` carries every `(needle, why)` of `has` and none of `lacks`.
+fn assert_prompt(prompt: &str, has: &[(&str, &str)], lacks: &[(&str, &str)]) {
+    for (needle, why) in has {
+        assert!(prompt.contains(needle), "{why}; prompt was:\n{prompt}");
+    }
+    for (needle, why) in lacks {
+        assert!(!prompt.contains(needle), "{why}; prompt was:\n{prompt}");
+    }
 }
 
 /// The load-bearing periphery contract of criterion 1 (spec 29c): an agent's prompt, composed
@@ -304,70 +330,47 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
 /// seeded traversal now sources the code neighborhood.
 #[test]
 fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_structural_stitch() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let (graph, mut pos) = fresh_graph();
+    // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file.
+    fold_run_unit_definition(&graph, &mut pos);
 
-    // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file. Its name is a
-    // string that appears NOWHERE the grounder returns, so its presence in the prompt proves it was
-    // sourced from the graph traversal, not stitched from the grounder's refs.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
+    let prompt = first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned with a prompt",
     );
-
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned with a prompt"
-    );
-    let prompt = &prompts[0];
-
-    // The code neighborhood the ONE traversal surfaces reaches the prompt, as a "read first"
-    // location line derived from the graph node (its file + line + name), not from the grounder.
-    assert!(
-        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
-        "the prompt must surface the file's code neighborhood (core.rs:42 run_unit) from the \
-         unified traversal; prompt was:\n{prompt}"
-    );
-    // The separate structural-grounder stitch is GONE: the code neighborhood now comes from the ONE
-    // traversal, so the old "Relevant locations" block must not be rendered.
-    assert!(
-        !prompt.contains("Relevant locations to read first"),
-        "the separate structural-grounder 'Relevant locations' stitch must be collapsed away; \
-         prompt was:\n{prompt}"
+    let neighborhood =
+        "the prompt must surface the file's code neighborhood (core.rs:42 run_unit) \
+                        from the unified traversal";
+    assert_prompt(
+        &prompt,
+        // The code neighborhood the ONE traversal surfaces reaches the prompt, as a "read first"
+        // location line derived from the graph node (its file + line + name), not from the grounder.
+        &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
+        // The separate structural-grounder stitch is GONE: the code neighborhood now comes from the
+        // ONE traversal, so the old "Relevant locations" block must not be rendered.
+        &[(
+            "Relevant locations to read first",
+            "the separate structural-grounder 'Relevant locations' stitch must be collapsed away",
+        )],
     );
 }
 
-/// Criterion 1 (this unit OWNS it): the IMPLEMENT prompt is TRIMMED to the deterministic intent
-/// layer. For an implement-stage spawn whose seed carries decisions / lessons / findings in its
-/// depth-2 neighborhood, the assembled prompt KEEPS the design-intent and code-neighborhood
-/// sections and ADDS a one-line pointer naming the pull tools (`rigger_peers` for prior
-/// decisions / findings, `rigger graph --around` for code navigation), and DROPS the capped
-/// decisions / lessons / findings sections - the push-then-truncate bulk spec 36 replaces with
-/// precise on-demand pulls. The intent layer (design intent + code neighborhood) is delivered
-/// by traversal, not by retrieval luck, so the deterministic-delivery guarantee is preserved.
-///
-/// Non-vacuous against the pre-trim tree: before the trim the implement prompt rendered the
-/// decisions / lessons / findings sections and NO pointer, so every "must OMIT" assertion and the
-/// pointer assertions fail on the base; they flip green only because the implement slice now
-/// renders the intent layer plus the pointer and omits the capped bulk. Mutation-isolating: the
-/// same seed drives a FULL spawn (the producer / review path) unchanged, pinned by
-/// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim`.
-#[test]
-fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // CODE NEIGHBORHOOD (stays): a definition the run extracted from the touched file.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-    );
-    // DESIGN INTENT (stays): a handbook rule that GOVERNS the touched file.
+/// A spawn captured by `capture` whose seed carries the code neighborhood, a governing design
+/// intent, and a decision, a lesson and a finding (each tagged `{marker}_<KIND>_MARKER`) about the
+/// SAME seed file - so the one traversal reaches every one of them and their absence is the trim's
+/// doing, not a mis-seeded edge - receives the TRIMMED implement slice (`who`): it KEEPS the code
+/// neighborhood and the design intent, ADDS the three-verb lookup pointer (spec 58: `rigger peers`
+/// for memory, `rigger graph --around` for structure, `rigger graph --show` for text), and DROPS
+/// the capped decisions / lessons / findings sections - proven by section header AND by the unique
+/// per-section marker, so neither the header nor the bulk body can slip through.
+fn assert_receives_the_trimmed_implement_slice(
+    capture: fn(&Projector) -> Vec<String>,
+    marker: &str,
+    who: &str,
+    spawned_why: &str,
+) {
+    let (graph, mut pos) = fresh_graph();
+    fold_run_unit_definition(&graph, &mut pos);
     fold_design_intent(
         &graph,
         &mut pos,
@@ -377,89 +380,113 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
         REL_GOVERNS,
         "core.rs",
     );
-    // The capped dev-loop bulk the trim DROPS from the implement prompt: a decision, a lesson, and a
-    // finding, all about the SAME seed file, so the one traversal reaches every one of them and their
-    // absence is the trim's doing, not a mis-seeded edge.
-    fold(
+    let decision = format!("{marker}_DECISION_MARKER");
+    let lesson = format!("{marker}_LESSON_MARKER");
+    let finding = format!("{marker}_FINDING_MARKER");
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
-        json!({ "id": "d_core", "summary": "TRIMMED_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
+        json!({ "id": "d_core", "summary": format!("{decision} the decision governing core"), "governs": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_LESSON_LEARNED,
-        json!({ "id": "l_core", "summary": "TRIMMED_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
+        json!({ "id": "l_core", "summary": format!("{lesson} the lesson about core"), "about": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_REVIEW_FINDING,
-        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "TRIMMED_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
+        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": format!("{finding} the finding about core"), "about": ["core.rs"] }),
     );
 
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
+    let prompt = first_prompt(capture(&graph), spawned_why);
+    let keep_code = format!("{who} must KEEP the code-neighborhood section");
+    let keep_intent = format!("{who} must KEEP the design-intent section");
+    let peers =
+        format!("{who} must point at `rigger peers` for prior decisions / lessons / findings");
+    let around = format!("{who} must point at `rigger graph --around` for code navigation");
+    let show = format!("{who} must point at `rigger graph --show` for source text");
+    let omit = |what: &str| format!("{who} must OMIT the {what}");
+    assert_prompt(
+        &prompt,
+        &[
+            ("run_unit", &keep_code),
+            ("core.rs:42", &keep_code),
+            ("the loop discipline rule governing core", &keep_intent),
+            ("rigger peers", &peers),
+            ("rigger graph --around", &around),
+            ("rigger graph --show", &show),
+        ],
+        &[
+            (
+                "Decisions that govern these files",
+                &omit("decisions section header"),
+            ),
+            (&decision, &omit("capped decisions bulk")),
+            (
+                "Lessons already learned about these files",
+                &omit("lessons section header"),
+            ),
+            (&lesson, &omit("capped lessons bulk")),
+            (
+                "Findings other reviewers have already raised",
+                &omit("findings section header"),
+            ),
+            (&finding, &omit("capped findings bulk")),
+        ],
     );
-    let prompt = &prompts[0];
+}
 
-    // KEPT: the code neighborhood the one traversal surfaces (delivered by traversal, not retrieval).
-    assert!(
-        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
-        "the trimmed implement prompt must KEEP the code-neighborhood section; prompt was:\n{prompt}"
-    );
-    // KEPT: the design intent bound to the touched file.
-    assert!(
-        prompt.contains("the loop discipline rule governing core"),
-        "the trimmed implement prompt must KEEP the design-intent section; prompt was:\n{prompt}"
-    );
-    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
-    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
-    // `rigger graph --around` (structure), `rigger graph --show` (text).
-    assert!(
-        prompt.contains("rigger peers"),
-        "the trimmed implement prompt must point at `rigger peers` for prior decisions / lessons / \
-         findings; prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger graph --around"),
-        "the trimmed implement prompt must point at `rigger graph --around` for code navigation; \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger graph --show"),
-        "the trimmed implement prompt must point at `rigger graph --show` for source text; \
-         prompt was:\n{prompt}"
-    );
-    // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
-    // the unique per-section marker, so neither the header nor the bulk body can slip through.
-    assert!(
-        !prompt.contains("Decisions that govern these files"),
-        "the trimmed implement prompt must OMIT the decisions section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("TRIMMED_DECISION_MARKER"),
-        "the trimmed implement prompt must OMIT the capped decisions bulk; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("Lessons already learned about these files"),
-        "the trimmed implement prompt must OMIT the lessons section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("TRIMMED_LESSON_MARKER"),
-        "the trimmed implement prompt must OMIT the capped lessons bulk; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("Findings other reviewers have already raised"),
-        "the trimmed implement prompt must OMIT the findings section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("TRIMMED_FINDING_MARKER"),
-        "the trimmed implement prompt must OMIT the capped findings bulk; prompt was:\n{prompt}"
-    );
+rigger::test_cases! {
+    /// Criterion 1 (this unit OWNS it): the IMPLEMENT prompt is TRIMMED to the deterministic intent
+    /// layer. For an implement-stage spawn whose seed carries decisions / lessons / findings in its
+    /// depth-2 neighborhood, the assembled prompt KEEPS the design-intent and code-neighborhood
+    /// sections and ADDS a one-line pointer naming the pull tools (`rigger_peers` for prior
+    /// decisions / findings, `rigger graph --around` for code navigation), and DROPS the capped
+    /// decisions / lessons / findings sections - the push-then-truncate bulk spec 36 replaces with
+    /// precise on-demand pulls. The intent layer (design intent + code neighborhood) is delivered
+    /// by traversal, not by retrieval luck, so the deterministic-delivery guarantee is preserved.
+    ///
+    /// Non-vacuous against the pre-trim tree: before the trim the implement prompt rendered the
+    /// decisions / lessons / findings sections and NO pointer, so every "must OMIT" assertion and the
+    /// pointer assertions fail on the base; they flip green only because the implement slice now
+    /// renders the intent layer plus the pointer and omits the capped bulk. Mutation-isolating: the
+    /// same seed drives a FULL spawn (the producer / review path) unchanged, pinned by
+    /// `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim`.
+    the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer:
+        assert_receives_the_trimmed_implement_slice(
+            run_and_capture_prompts,
+            "TRIMMED",
+            "the trimmed implement prompt",
+            "the stage's agent must have been spawned",
+        );
+    /// Criterion 1 (this unit OWNS the implement-stage trim), the SDET-author call site: the
+    /// build-seam `sdet-author` spawn - a DIFFERENT call site than the implementer, threading its
+    /// grounding slice INDEPENDENTLY - also receives the TRIMMED implement slice. The sdet-author
+    /// authors periphery tests ALONGSIDE the implementer in the SAME worktree, so it gets the same
+    /// trimmed intent layer: code neighborhood + design intent + the one-line pull-tools pointer,
+    /// with the capped decisions/lessons/findings bulk OMITTED.
+    ///
+    /// This closes a boundary the sibling cases leave open. The implement case drives the
+    /// IMPLEMENTER call site and `the_producer_prompt_keeps_the_full_...` the producer call site, but
+    /// NEITHER reaches `spawn_sdet_author`: a regression flipping ONLY the sdet-author call site to
+    /// the full slice leaves both of them green while silently un-trimming this spawn. The
+    /// inside-out lifecycle tests run `graph: None`, so they cannot observe the slice at all; only a
+    /// real worktree-isolated run with a seeded graph does.
+    ///
+    /// Non-vacuous / mutation-isolating: flipping the sdet-author call site
+    /// (`spawn_sdet_author`'s `GroundingSlice::Implement`) to `Full` reddens the OMIT assertions
+    /// here while leaving the implementer and producer tests untouched.
+    the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice:
+        assert_receives_the_trimmed_implement_slice(
+            run_and_capture_sdet_author_prompts,
+            "SDET_TRIM",
+            "the sdet-author's trimmed prompt",
+            "the sdet-author must be spawned at the build seam so its grounding slice can be observed",
+        );
 }
 
 /// Criterion 1 (this unit OWNS the implement-stage trim): the trim is keyed on the IMPLEMENT stage
@@ -475,44 +502,42 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
 /// not-review trim) drops both and reddens this test while leaving the implement-trim test green.
 #[test]
 fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let (graph, mut pos) = fresh_graph();
 
     // A decision and a finding about the seed file the producer grounds to: on the FULL slice both
     // render; on the (wrong) implement slice both would be dropped for a pointer.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": "PRODUCER_DECISION_MARKER the decomposition decision governing core", "governs": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_REVIEW_FINDING,
         json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "PRODUCER_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
     );
 
-    let prompts = run_and_capture_producer_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the producer stage's agent must have been spawned with a prompt"
+    let prompt = first_prompt(
+        run_and_capture_producer_prompts(&graph),
+        "the producer stage's agent must have been spawned with a prompt",
     );
-    let prompt = &prompts[0];
-
     // FULL: the decisions and findings bulk reaches the planner, so it is not blinded to the prior
     // decomposition decisions it must not re-litigate.
-    assert!(
-        prompt.contains("Decisions that govern these files")
-            && prompt.contains("PRODUCER_DECISION_MARKER"),
-        "the producer prompt must keep the FULL decisions section (the trim is implement-only); \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("Findings other reviewers have already raised")
-            && prompt.contains("PRODUCER_FINDING_MARKER"),
-        "the producer prompt must keep the FULL findings section (the trim is implement-only); \
-         prompt was:\n{prompt}"
+    let decisions =
+        "the producer prompt must keep the FULL decisions section (the trim is implement-only)";
+    let findings =
+        "the producer prompt must keep the FULL findings section (the trim is implement-only)";
+    assert_prompt(
+        &prompt,
+        &[
+            ("Decisions that govern these files", decisions),
+            ("PRODUCER_DECISION_MARKER", decisions),
+            ("Findings other reviewers have already raised", findings),
+            ("PRODUCER_FINDING_MARKER", findings),
+        ],
+        &[],
     );
 }
 
@@ -568,29 +593,6 @@ fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
     );
 }
 
-/// `git init` a throwaway repo with one empty commit - the committed HEAD an isolated unit worktree
-/// branches from (mirrors the conductor's own scratch repo). A REAL repo is required for the seam
-/// test: the sdet-author spawn only fires for a unit that HAS a worktree (`spawn_sdet_author` skips an
-/// empty `dir`), so an `isolation: none` / repo-less run can never reach the build seam it observes.
-fn init_seam_repo() -> TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
 /// Drive a real, WORKTREE-ISOLATED `conductor::run` of a single non-producer (implement) stage that
 /// also has an `sdet-author` agent configured, and return every prompt the `sdet-author` spawn
 /// received. The sdet-author runs at the BUILD SEAM - after the implementer emits green, in the
@@ -599,7 +601,7 @@ fn init_seam_repo() -> TempDir {
 /// slice at all. Seeded on `core.rs` via the stub `SeedGrounder`, exactly like the implement/producer
 /// trim tests, so the sdet-author's slice is compared against the SAME neighborhood.
 fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
-    let repo = init_seam_repo();
+    let repo = temp_git_project_with_commit();
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: this is the one worktree-isolated run in this file
     // (every other Deps here uses `repo: String::new()`) - its real unit worktree must never
@@ -655,6 +657,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -664,131 +667,6 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         .filter(|(id, _)| id == ROLE_SDET_AUTHOR)
         .map(|(_, prompt)| prompt)
         .collect()
-}
-
-/// Criterion 1 (this unit OWNS the implement-stage trim), the SDET-author call site: the build-seam
-/// `sdet-author` spawn - a DIFFERENT call site than the implementer, threading its grounding slice
-/// INDEPENDENTLY - also receives the TRIMMED implement slice. The sdet-author authors periphery tests
-/// ALONGSIDE the implementer in the SAME worktree, so it gets the same trimmed intent layer: code
-/// neighborhood + design intent + the one-line pull-tools pointer, with the capped
-/// decisions/lessons/findings bulk OMITTED.
-///
-/// This closes a boundary the sibling tests leave open. `the_implement_prompt_is_trimmed_...` drives
-/// the IMPLEMENTER call site and `the_producer_prompt_keeps_the_full_...` the producer call site, but
-/// NEITHER reaches `spawn_sdet_author`: a regression flipping ONLY the sdet-author call site to the
-/// full slice leaves both of them green while silently un-trimming this spawn. The inside-out
-/// lifecycle tests run `graph: None`, so they cannot observe the slice at all; only a real
-/// worktree-isolated run with a seeded graph does.
-///
-/// Non-vacuous / mutation-isolating: seeded with a decision, a lesson, and a finding about the seed
-/// file (unique markers) that the FULL slice renders and the trimmed slice drops. Flipping the
-/// sdet-author call site (`spawn_sdet_author`'s `GroundingSlice::Implement`) to `Full` reddens the
-/// OMIT assertions here while leaving the implementer and producer tests untouched.
-#[test]
-fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // CODE NEIGHBORHOOD (stays on both slices): a definition the run extracted from the touched file.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-    );
-    // DESIGN INTENT (stays on both slices): a handbook rule that GOVERNS the touched file.
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_HANDBOOK_RULE,
-        "docs/handbook/loops.md",
-        "the loop discipline rule governing core",
-        REL_GOVERNS,
-        "core.rs",
-    );
-    // The capped dev-loop bulk the implement slice DROPS: a decision, a lesson, and a finding, all
-    // about the SAME seed file, so the one traversal reaches every one and their absence is the trim's
-    // doing, not a mis-seeded edge.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_DECISION_MADE,
-        json!({ "id": "d_core", "summary": "SDET_TRIM_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
-    );
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_LESSON_LEARNED,
-        json!({ "id": "l_core", "summary": "SDET_TRIM_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
-    );
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_REVIEW_FINDING,
-        json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "SDET_TRIM_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
-    );
-
-    let prompts = run_and_capture_sdet_author_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the sdet-author must be spawned at the build seam so its grounding slice can be observed"
-    );
-    let prompt = &prompts[0];
-
-    // KEPT: the code neighborhood the one traversal surfaces (the deterministic intent layer).
-    assert!(
-        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
-        "the sdet-author's trimmed prompt must KEEP the code-neighborhood section; prompt was:\n{prompt}"
-    );
-    // KEPT: the design intent bound to the touched file.
-    assert!(
-        prompt.contains("the loop discipline rule governing core"),
-        "the sdet-author's trimmed prompt must KEEP the design-intent section; prompt was:\n{prompt}"
-    );
-    // ADDED: the three-verb lookup pointer (spec 58) naming all three CLI lookup verbs the
-    // reference bulk and the rest of lookup are retrievable through - `rigger peers` (memory),
-    // `rigger graph --around` (structure), `rigger graph --show` (text).
-    assert!(
-        prompt.contains("rigger peers"),
-        "the sdet-author's trimmed prompt must point at `rigger peers` for prior decisions / lessons \
-         / findings; prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger graph --around"),
-        "the sdet-author's trimmed prompt must point at `rigger graph --around` for code navigation; \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("rigger graph --show"),
-        "the sdet-author's trimmed prompt must point at `rigger graph --show` for source text; \
-         prompt was:\n{prompt}"
-    );
-    // DROPPED: the capped decisions / lessons / findings sections - proven by section header AND by
-    // the unique per-section marker, so neither the header nor the bulk body can slip through.
-    assert!(
-        !prompt.contains("Decisions that govern these files"),
-        "the sdet-author's trimmed prompt must OMIT the decisions section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("SDET_TRIM_DECISION_MARKER"),
-        "the sdet-author's trimmed prompt must OMIT the capped decisions bulk; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("Lessons already learned about these files"),
-        "the sdet-author's trimmed prompt must OMIT the lessons section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("SDET_TRIM_LESSON_MARKER"),
-        "the sdet-author's trimmed prompt must OMIT the capped lessons bulk; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("Findings other reviewers have already raised"),
-        "the sdet-author's trimmed prompt must OMIT the findings section header; prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("SDET_TRIM_FINDING_MARKER"),
-        "the sdet-author's trimmed prompt must OMIT the capped findings bulk; prompt was:\n{prompt}"
-    );
 }
 
 /// Drive a real fan-out REVIEW stage (lens then adversary then adjudicator) through the public `run`
@@ -847,6 +725,7 @@ fn run_and_capture_review_prompts(graph: &Projector, finding: Value) -> Vec<(Str
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
+        log: &|_| {},
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.
@@ -1009,119 +888,94 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     }
 }
 
-/// The code-neighborhood section is prompt-budgeted: a broad neighborhood renders the most-recent
-/// definitions verbatim and collapses the remainder into ONE visible elision note, so a large file's
-/// extracted definitions can never blow the prompt. This guards a load-bearing render behavior the
-/// spec's done-when leaves implicit - an implementer could silently drop the cap and every existing
-/// test would stay green - at the same public prompt boundary.
-///
-/// It is non-vacuous: the definitions sort deterministically by (file, line, id), so the earliest
-/// lines render and the latest are elided. Removing the cap would render every definition, flipping
-/// both the "later definition is absent" and the "elision note present" assertions.
-#[test]
-fn the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // Fold more definitions than the verbatim cap keeps (the cap is well under this), all in the one
-    // touched file so the seeded traversal reaches every one of them. Only the FIRST event of the
-    // file's extraction batch carries `fresh` (29a's supersede-on-re-extract retires the file's prior
-    // edges once, at the batch head); the rest accrete, exactly as a real extraction pass emits them.
-    let count = 40u32;
-    for i in 1..=count {
-        fold(
+/// The prompt a run spawns over a graph whose one touched file `core.rs` carries 40 extracted
+/// definitions - more than the code-neighborhood cap keeps verbatim, so its remainder elides. Only
+/// the FIRST event of the file's extraction batch carries `fresh` (29a's supersede-on-re-extract
+/// retires the file's prior edges once, at the batch head); the rest accrete, exactly as a real
+/// extraction pass emits them.
+fn over_cap_code_neighborhood_prompt() -> String {
+    let (graph, mut pos) = fresh_graph();
+    for i in 1..=40u32 {
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_CODE_ENTITY_EXTRACTED,
             json!({ "file": "core.rs", "name": format!("definition_{i:03}"), "kind": "function", "line": i, "lang": "rust", "fresh": i == 1 }),
         );
     }
-
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
-    let prompt = &prompts[0];
-
-    // The earliest definition (smallest line) renders verbatim.
-    assert!(
-        prompt.contains("definition_001"),
-        "the earliest-sorted definition must render verbatim in the code neighborhood; \
-         prompt was:\n{prompt}"
-    );
-    // The latest definition (largest line) is past the cap, so it is elided, not rendered.
-    assert!(
-        !prompt.contains(&format!("definition_{count:03}")),
-        "a definition past the verbatim cap must be elided from the prompt, not rendered; \
-         prompt was:\n{prompt}"
-    );
-    // The remainder collapses into ONE visible elision note (the store keeps the full set).
-    assert!(
-        prompt.contains("more definition(s) elided"),
-        "the over-budget remainder must collapse into a visible elision note; \
-         prompt was:\n{prompt}"
-    );
+    first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned",
+    )
 }
 
-/// The elision note is an INSTRUCTION to the agent - "recover the full set with X" - so the command
-/// it names must actually recover the elided code definitions. The `rigger peers` command prints
-/// only decisions / lessons / findings and can never return a code entity; the honest recovery for
-/// an elided definition is `rigger graph --around <file>`, whose subgraph nodes include code
-/// entities. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes an agent
-/// receives through the `AgentDriver` port during a real `run`. The inside-out unit test reaches the
-/// private render function directly; a wiring regression (the wrong section composed, the note
-/// transformed during prompt assembly, or a refactor reverting the command) could keep that private
-/// test green while shipping a false instruction to a real spawn - which only a test at this boundary
-/// catches.
-///
-/// Non-vacuous: the definition note is uniquely identified by "more definition(s)" (the decisions /
-/// lessons / findings notes say "older <noun>(s)"), so the assertions isolate the code section from
-/// the legitimate `rigger peers` those other notes name. Rendering the recovery command as `rigger
-/// peers` (the pre-fix behavior) flips BOTH assertions: the positive (honest command absent) and the
-/// negative (dishonest command present).
-#[test]
-fn the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // Over-cap the code neighborhood so its remainder elides into the recovery note. All in the one
-    // seeded file (core.rs), so the traversal reaches every definition and the note names that file.
-    let count = 40u32;
-    for i in 1..=count {
-        fold(
-            &graph,
-            &mut pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": format!("definition_{i:03}"), "kind": "function", "line": i, "lang": "rust", "fresh": i == 1 }),
+rigger::test_cases! {
+    /// The code-neighborhood section is prompt-budgeted: a broad neighborhood renders the most-recent
+    /// definitions verbatim and collapses the remainder into ONE visible elision note, so a large file's
+    /// extracted definitions can never blow the prompt. This guards a load-bearing render behavior the
+    /// spec's done-when leaves implicit - an implementer could silently drop the cap and every existing
+    /// test would stay green - at the same public prompt boundary.
+    ///
+    /// It is non-vacuous: the definitions sort deterministically by (file, line, id), so the earliest
+    /// lines render and the latest are elided. Removing the cap would render every definition, flipping
+    /// both the "later definition is absent" and the "elision note present" assertions.
+    the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note: {
+        assert_prompt(
+            &over_cap_code_neighborhood_prompt(),
+            &[
+                // The earliest definition (smallest line) renders verbatim.
+                (
+                    "definition_001",
+                    "the earliest-sorted definition must render verbatim in the code neighborhood",
+                ),
+                // The remainder collapses into ONE visible elision note (the store keeps the full set).
+                (
+                    "more definition(s) elided",
+                    "the over-budget remainder must collapse into a visible elision note",
+                ),
+            ],
+            // The latest definition (largest line) is past the cap, so it is elided, not rendered.
+            &[(
+                "definition_040",
+                "a definition past the verbatim cap must be elided from the prompt, not rendered",
+            )],
         );
-    }
-
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
-    let prompt = &prompts[0];
-
-    // The code-neighborhood elision note names the HONEST recovery command, scoped to the touched
-    // file the single-seed traversal ran over (`rigger graph --around core.rs`).
-    assert!(
-        prompt.contains(
-            "more definition(s) elided to keep this prompt under budget - recover the full set with `rigger graph --around core.rs`"
-        ),
-        "the code-neighborhood elision note must name the honest `rigger graph --around <file>` \
-         recovery (whose subgraph returns code entities); prompt was:\n{prompt}"
-    );
-    // It must NOT name `rigger peers` for a code definition - that command never prints a code
-    // entity, so it could never recover the elided remainder (the boundary defect the fix closed).
-    assert!(
-        !prompt.contains(
-            "more definition(s) elided to keep this prompt under budget - recover the full set with `rigger peers"
-        ),
-        "the code-neighborhood elision note must not name `rigger peers` (which cannot recover a \
-         code definition) as the recovery command; prompt was:\n{prompt}"
-    );
+    };
+    /// The elision note is an INSTRUCTION to the agent - "recover the full set with X" - so the command
+    /// it names must actually recover the elided code definitions. The `rigger peers` command prints
+    /// only decisions / lessons / findings and can never return a code entity; the honest recovery for
+    /// an elided definition is `rigger graph --around <file>`, whose subgraph nodes include code
+    /// entities. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes an agent
+    /// receives through the `AgentDriver` port during a real `run`. The inside-out unit test reaches the
+    /// private render function directly; a wiring regression (the wrong section composed, the note
+    /// transformed during prompt assembly, or a refactor reverting the command) could keep that private
+    /// test green while shipping a false instruction to a real spawn - which only a test at this boundary
+    /// catches.
+    ///
+    /// Non-vacuous: the definition note is uniquely identified by "more definition(s)" (the decisions /
+    /// lessons / findings notes say "older <noun>(s)"), so the assertions isolate the code section from
+    /// the legitimate `rigger peers` those other notes name. Rendering the recovery command as `rigger
+    /// peers` (the pre-fix behavior) flips BOTH assertions: the positive (honest command absent) and the
+    /// negative (dishonest command present).
+    the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery: {
+        assert_prompt(
+            &over_cap_code_neighborhood_prompt(),
+            // The code-neighborhood elision note names the HONEST recovery command, scoped to the
+            // touched file the single-seed traversal ran over (`rigger graph --around core.rs`).
+            &[(
+                "more definition(s) elided to keep this prompt under budget - recover the full set with `rigger graph --around core.rs`",
+                "the code-neighborhood elision note must name the honest `rigger graph --around <file>` \
+                 recovery (whose subgraph returns code entities)",
+            )],
+            // It must NOT name `rigger peers` for a code definition - that command never prints a code
+            // entity, so it could never recover the elided remainder (the defect the fix closed).
+            &[(
+                "more definition(s) elided to keep this prompt under budget - recover the full set with `rigger peers",
+                "the code-neighborhood elision note must not name `rigger peers` (which cannot recover \
+                 a code definition) as the recovery command",
+            )],
+        );
+    };
 }
 
 /// The code-neighborhood section renders ONLY when the traversal actually surfaces code definitions
@@ -1191,13 +1045,13 @@ fn fold_design_intent(
     rel: &str,
     to: &str,
 ) {
-    fold(
+    apply_next_json(
         g,
         pos,
         TYPE_DOC_CONCEPT_EXTRACTED,
         json!({ "kind": kind, "id": id, "title": title, "doc": id }),
     );
-    fold(
+    apply_next_json(
         g,
         pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1229,48 +1083,39 @@ fn fold_design_intent(
 /// the seed scoping would surface decoy A, flipping the negative assertion.
 #[test]
 fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let (graph, mut pos) = fresh_graph();
 
     // DESIGN INTENT that BINDS the touched file `core.rs` (29b): one design-intent node per code-
     // binding relation the section surfaces. Each title is a string the grounder never returns, so
     // its presence in the prompt proves it was sourced from the graph traversal, not the seed.
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_HANDBOOK_RULE,
-        "docs/handbook/loops.md",
-        "the loop discipline rule governing core",
-        REL_GOVERNS,
-        "core.rs",
-    );
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_DESIGN_DOC,
-        "specs/29c.md#unified-traversal",
-        "the RA section specifying the unified traversal",
-        REL_SPECIFIES,
-        "core.rs",
-    );
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_ARCH_DECISION,
-        "docs/adr/0007.md",
-        "the load-bearing decision constraining core",
-        REL_CONSTRAINS,
-        "core.rs",
-    );
-    fold_design_intent(
-        &graph,
-        &mut pos,
-        KIND_RATIONALE,
-        "core.rs#L42",
-        "the local rationale explaining run_unit",
-        REL_EXPLAINS,
-        "core.rs",
-    );
+    for (kind, id, title, rel) in [
+        (
+            KIND_HANDBOOK_RULE,
+            "docs/handbook/loops.md",
+            "the loop discipline rule governing core",
+            REL_GOVERNS,
+        ),
+        (
+            KIND_DESIGN_DOC,
+            "specs/29c.md#unified-traversal",
+            "the RA section specifying the unified traversal",
+            REL_SPECIFIES,
+        ),
+        (
+            KIND_ARCH_DECISION,
+            "docs/adr/0007.md",
+            "the load-bearing decision constraining core",
+            REL_CONSTRAINS,
+        ),
+        (
+            KIND_RATIONALE,
+            "core.rs#L42",
+            "the local rationale explaining run_unit",
+            REL_EXPLAINS,
+        ),
+    ] {
+        fold_design_intent(&graph, &mut pos, kind, id, title, rel, "core.rs");
+    }
 
     // DECOY A (file-scope): a design-doc whose code-binding SPECIFIES edge targets a NON-seed file
     // (`other.rs`), yet is reachable in the subgraph because it also CITES `core.rs` (a `references`
@@ -1284,7 +1129,7 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
         REL_SPECIFIES,
         "other.rs",
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1292,104 +1137,85 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
     );
     // DECOY B (relation-scope): a design-doc that only CITES `core.rs` (a `references` edge) with NO
     // code-binding SPECIFIES / GOVERNS edge. A mere citation is not intent that governs the file.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_CONCEPT_EXTRACTED,
         json!({ "kind": KIND_DESIGN_DOC, "id": "docs/misc.md", "title": "a mere doc citation of core", "doc": "docs/misc.md" }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
         json!({ "from": "docs/misc.md", "to": "core.rs", "rel": REL_DOC_REFERENCES }),
     );
 
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned with a prompt"
+    let prompt = first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned with a prompt",
     );
-    let prompt = &prompts[0];
-
-    // RENDERED by traversal: all four design-intent titles reach the prompt (the grounder returns
-    // empty text, so a title can only have come from the graph half of the one traversal).
-    assert!(
-        prompt.contains("the loop discipline rule governing core"),
-        "the design-intent section must surface the handbook rule that GOVERNS the touched file; \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("the RA section specifying the unified traversal"),
-        "the design-intent section must surface the RA section that SPECIFIES the touched file; \
-         prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("the load-bearing decision constraining core"),
-        "the design-intent section must surface the arch-decision that CONSTRAINS the touched \
-         file; prompt was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains("the local rationale explaining run_unit"),
-        "the design-intent section must surface the rationale that explains the touched file; \
-         prompt was:\n{prompt}"
-    );
-    // Each rendered line names its binding relation and the touched file it governs.
-    assert!(
-        prompt.contains(&format!("{REL_GOVERNS} core.rs")),
-        "the design-intent line must name the GOVERNS relation and the touched file; prompt \
-         was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains(&format!("{REL_SPECIFIES} core.rs")),
-        "the design-intent line must name the SPECIFIES relation and the touched file; prompt \
-         was:\n{prompt}"
-    );
-    // TIGHT-SCOPED: neither decoy surfaces. Decoy A binds a non-seed file; decoy B only cites the
-    // file. Both are reachable in the subgraph, so their absence proves the render scopes to design
-    // intent that BINDS the touched files, not everything the traversal reaches.
-    assert!(
-        !prompt.contains("the RA section specifying OTHER not core"),
-        "a design-intent node whose binding edge targets a NON-seed file must NOT surface \
-         (of-these-files scoping); prompt was:\n{prompt}"
-    );
-    assert!(
-        !prompt.contains("a mere doc citation of core"),
-        "a doc that only CITES the file (a `references` edge, not a code-binding SPECIFIES / \
-         GOVERNS) is not intent that governs it and must NOT surface; prompt was:\n{prompt}"
+    let governs = format!("{REL_GOVERNS} core.rs");
+    let specifies = format!("{REL_SPECIFIES} core.rs");
+    assert_prompt(
+        &prompt,
+        // RENDERED by traversal: all four design-intent titles reach the prompt (the grounder
+        // returns empty text, so a title can only have come from the graph half of the one
+        // traversal), and each rendered line names its binding relation and the touched file.
+        &[
+            (
+                "the loop discipline rule governing core",
+                "the design-intent section must surface the handbook rule that GOVERNS the touched \
+                 file",
+            ),
+            (
+                "the RA section specifying the unified traversal",
+                "the design-intent section must surface the RA section that SPECIFIES the touched \
+                 file",
+            ),
+            (
+                "the load-bearing decision constraining core",
+                "the design-intent section must surface the arch-decision that CONSTRAINS the \
+                 touched file",
+            ),
+            (
+                "the local rationale explaining run_unit",
+                "the design-intent section must surface the rationale that explains the touched \
+                 file",
+            ),
+            (
+                &governs,
+                "the design-intent line must name the GOVERNS relation and the touched file",
+            ),
+            (
+                &specifies,
+                "the design-intent line must name the SPECIFIES relation and the touched file",
+            ),
+        ],
+        // TIGHT-SCOPED: neither decoy surfaces. Decoy A binds a non-seed file; decoy B only cites the
+        // file. Both are reachable in the subgraph, so their absence proves the render scopes to
+        // design intent that BINDS the touched files, not everything the traversal reaches.
+        &[
+            (
+                "the RA section specifying OTHER not core",
+                "a design-intent node whose binding edge targets a NON-seed file must NOT surface \
+                 (of-these-files scoping)",
+            ),
+            (
+                "a mere doc citation of core",
+                "a doc that only CITES the file (a `references` edge, not a code-binding SPECIFIES / \
+                 GOVERNS) is not intent that governs it and must NOT surface",
+            ),
+        ],
     );
 }
 
-/// The design-intent section is prompt-budgeted exactly like the code neighborhood: a file with a
-/// broad governing footprint renders the most-recent design-intent nodes verbatim and collapses the
-/// remainder into ONE visible elision note. That note is an INSTRUCTION to the agent - "recover the
-/// full set with X" - so the command it names must actually recover an elided design-intent node.
-/// `rigger peers` prints only decisions / lessons / findings and can NEVER return a design-intent
-/// node; the honest recovery is `rigger graph --around <file>`, whose subgraph nodes INCLUDE the
-/// design-intent nodes. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes
-/// an agent receives through the `AgentDriver` port during a real `run`.
-///
-/// The inside-out unit test never over-caps this section (it folds a handful of nodes, well under
-/// the verbatim cap), so nothing there exercises the elision note; a wiring regression, a refactor
-/// reverting the recovery command, or a dropped cap could keep that private test green while shipping
-/// a false instruction - or an unbounded prompt - to a real spawn, which only a test at this boundary
-/// catches.
-///
-/// Non-vacuous: on the pre-c3 tree there is no design-intent section, so the note is absent and the
-/// positive assertion fails; reverting the recovery command to `rigger peers` flips BOTH the positive
-/// (honest command absent) and the negative (dishonest command present); dropping the verbatim cap
-/// renders every node, so the "elided" note never appears.
-#[test]
-fn the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_honest_graph_around_recovery(
-) {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // Fold MORE design-intent nodes bound to the one seed file than the verbatim cap keeps (the cap
-    // is well under this count), so the remainder collapses into the recovery note. Each is a
-    // handbook rule that GOVERNS `core.rs`, so the single-seed traversal reaches every one of them.
-    let count = 40u32;
-    for i in 1..=count {
+/// The prompt a run spawns over a graph folding 40 handbook rules that each GOVERN the one seed file
+/// `core.rs` - more than the design-intent cap keeps verbatim, so the remainder elides - in
+/// ascending order, so rule_040's binding edge carries the HIGHEST log position (newest recorded)
+/// and rule_001's the lowest (oldest). The single-seed traversal reaches every one of them.
+fn over_cap_design_intent_prompt() -> String {
+    let (graph, mut pos) = fresh_graph();
+    for i in 1..=40u32 {
         let id = format!("docs/handbook/rule_{i:03}.md");
         fold_design_intent(
             &graph,
@@ -1401,32 +1227,84 @@ fn the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_hon
             "core.rs",
         );
     }
+    first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned",
+    )
+}
 
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
-    let prompt = &prompts[0];
-
-    // The over-budget remainder collapses into ONE visible note that names the HONEST recovery
-    // command, scoped to the touched file the single-seed traversal ran over.
-    assert!(
-        prompt.contains(
-            "more design-intent node(s) elided to keep this prompt under budget - recover the full set with `rigger graph --around core.rs`"
-        ),
-        "the design-intent elision note must name the honest `rigger graph --around <file>` recovery \
-         (whose subgraph returns design-intent nodes); prompt was:\n{prompt}"
-    );
-    // It must NOT name `rigger peers` for a design-intent node - that command never prints one, so it
-    // could never recover the elided remainder.
-    assert!(
-        !prompt.contains(
-            "more design-intent node(s) elided to keep this prompt under budget - recover the full set with `rigger peers"
-        ),
-        "the design-intent elision note must not name `rigger peers` (which cannot recover a \
-         design-intent node) as the recovery command; prompt was:\n{prompt}"
-    );
+rigger::test_cases! {
+    /// The design-intent section is prompt-budgeted exactly like the code neighborhood: a file with a
+    /// broad governing footprint renders the most-recent design-intent nodes verbatim and collapses the
+    /// remainder into ONE visible elision note. That note is an INSTRUCTION to the agent - "recover the
+    /// full set with X" - so the command it names must actually recover an elided design-intent node.
+    /// `rigger peers` prints only decisions / lessons / findings and can NEVER return a design-intent
+    /// node; the honest recovery is `rigger graph --around <file>`, whose subgraph nodes INCLUDE the
+    /// design-intent nodes. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes
+    /// an agent receives through the `AgentDriver` port during a real `run`.
+    ///
+    /// The inside-out unit test never over-caps this section (it folds a handful of nodes, well under
+    /// the verbatim cap), so nothing there exercises the elision note; a wiring regression, a refactor
+    /// reverting the recovery command, or a dropped cap could keep that private test green while shipping
+    /// a false instruction - or an unbounded prompt - to a real spawn, which only a test at this boundary
+    /// catches.
+    ///
+    /// Non-vacuous: on the pre-c3 tree there is no design-intent section, so the note is absent and the
+    /// positive assertion fails; reverting the recovery command to `rigger peers` flips BOTH the positive
+    /// (honest command absent) and the negative (dishonest command present); dropping the verbatim cap
+    /// renders every node, so the "elided" note never appears.
+    the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_honest_graph_around_recovery: {
+        assert_prompt(
+            &over_cap_design_intent_prompt(),
+            // The over-budget remainder collapses into ONE visible note that names the HONEST recovery
+            // command, scoped to the touched file the single-seed traversal ran over.
+            &[(
+                "more design-intent node(s) elided to keep this prompt under budget - recover the full set with `rigger graph --around core.rs`",
+                "the design-intent elision note must name the honest `rigger graph --around <file>` \
+                 recovery (whose subgraph returns design-intent nodes)",
+            )],
+            // It must NOT name `rigger peers` for a design-intent node - that command never prints one,
+            // so it could never recover the elided remainder.
+            &[(
+                "more design-intent node(s) elided to keep this prompt under budget - recover the full set with `rigger peers",
+                "the design-intent elision note must not name `rigger peers` (which cannot recover a \
+                 design-intent node) as the recovery command",
+            )],
+        );
+    };
+    /// The design-intent section renders the most-recently-recorded bindings verbatim and elides the
+    /// oldest past the cap - the newest-renders / oldest-elided pair the sibling c1 code-neighborhood cap
+    /// test set the standard for. `write_design_intent` orders candidates by each node's highest
+    /// binding-edge event-log position (a deterministic total order, NOT authored priority), so over a
+    /// footprint larger than the verbatim cap the latest-recorded binding survives and the earliest is
+    /// collapsed into the elision note.
+    ///
+    /// The existing budget-cap test asserts only that the note appears, never WHICH nodes survive; this
+    /// pins the ordering itself at the public prompt boundary. Mutation-proven: reversing the comparator
+    /// (`rc.cmp(&ra)` -> `ra.cmp(&rc)`) ships the OLDEST binding verbatim and elides the NEWEST, flipping
+    /// both the "newest renders" and "oldest elided" assertions.
+    the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest: {
+        assert_prompt(
+            &over_cap_design_intent_prompt(),
+            &[
+                // The newest-recorded binding renders verbatim.
+                (
+                    "the governing rule 040",
+                    "the newest-recorded design-intent binding must render verbatim",
+                ),
+                // The over-budget remainder collapses into ONE visible elision note.
+                (
+                    "more design-intent node(s) elided",
+                    "the over-budget remainder must collapse into a visible elision note",
+                ),
+            ],
+            // The oldest-recorded binding is past the verbatim cap, so it is elided, not rendered.
+            &[(
+                "the governing rule 001",
+                "the oldest-recorded design-intent binding must be elided past the cap, not rendered",
+            )],
+        );
+    };
 }
 
 /// A governing DECISION must NEVER leak into the design-intent section of the spawn prompt. A
@@ -1448,8 +1326,7 @@ fn the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_hon
 /// design-intent section, flipping the negative assertion.
 #[test]
 fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let (graph, mut pos) = fresh_graph();
 
     // A genuine handbook rule that GOVERNS the file - a design-intent node bound by the shared
     // GOVERNS relation, so the design-intent section renders and the discriminator is KIND, not
@@ -1465,102 +1342,45 @@ fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section(
         "core.rs",
     );
     // A DECISION that GOVERNS the SAME file through the SHARED GOVERNS relation - the leak vector.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
         json!({ "id": "d_leak_decision", "summary": "a governing decision that is not design intent", "governs": ["core.rs"] }),
     );
 
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned with a prompt"
+    let prompt = first_prompt(
+        run_and_capture_prompts(&graph),
+        "the stage's agent must have been spawned with a prompt",
     );
-    let prompt = &prompts[0];
-
-    // The genuine handbook rule (design-intent kind, GOVERNS relation) renders in the section.
-    assert!(
-        prompt.contains("the loop rule that governs core"),
-        "the handbook rule bound by GOVERNS must render in the design-intent section; prompt \
-         was:\n{prompt}"
-    );
-    assert!(
-        prompt.contains(&format!("{REL_GOVERNS} core.rs")),
-        "the design-intent line must name the GOVERNS relation and the touched file; prompt \
-         was:\n{prompt}"
-    );
+    let governs = format!("{REL_GOVERNS} core.rs");
     // NON-VACUITY: the decision GOVERNS the SAME file at the SAME depth-1 as the handbook rule that
-    // DID render above, so it is unquestionably in the seeded subgraph; the kind guard, not
+    // DOES render, so it is unquestionably in the seeded subgraph; the kind guard, not
     // reachability, is what keeps it out of the design-intent section. (The trimmed implement prompt
     // no longer renders a decisions section at all - `the_implement_prompt_is_trimmed_...` owns that -
     // so the guard here is purely that the decision does not LEAK into the design-intent section.)
-    // THE GUARD: the governing decision must NOT render as a design-intent line. Its leaked
-    // design-intent form would be `- GOVERNS core.rs  d_leak_decision: ` (rel, file, then the id with
-    // an empty title, since a decision carries `summary`, not `title`), so this exact substring can
-    // only appear if the decision leaked through the shared GOVERNS relation past the kind guard.
-    assert!(
-        !prompt.contains(&format!("{REL_GOVERNS} core.rs  d_leak_decision")),
-        "a governing DECISION must be excluded from the design-intent section by the kind guard - it \
-         is retrievable via `rigger_peers`, not rendered here; prompt was:\n{prompt}"
-    );
-}
-
-/// The design-intent section renders the most-recently-recorded bindings verbatim and elides the
-/// oldest past the cap - the newest-renders / oldest-elided pair the sibling c1 code-neighborhood cap
-/// test set the standard for. `write_design_intent` orders candidates by each node's highest
-/// binding-edge event-log position (a deterministic total order, NOT authored priority), so over a
-/// footprint larger than the verbatim cap the latest-recorded binding survives and the earliest is
-/// collapsed into the elision note.
-///
-/// The existing budget-cap test asserts only that the note appears, never WHICH nodes survive; this
-/// pins the ordering itself at the public prompt boundary. Mutation-proven: reversing the comparator
-/// (`rc.cmp(&ra)` -> `ra.cmp(&rc)`) ships the OLDEST binding verbatim and elides the NEWEST, flipping
-/// both the "newest renders" and "oldest elided" assertions.
-#[test]
-fn the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
-    // Fold MORE handbook rules bound to the one file than the verbatim cap keeps, in ascending order,
-    // so rule_040's binding edge carries the HIGHEST log position (newest recorded) and rule_001's
-    // the lowest (oldest). Each GOVERNS `core.rs`, so the single-seed traversal reaches every one.
-    let count = 40u32;
-    for i in 1..=count {
-        let id = format!("docs/handbook/rule_{i:03}.md");
-        fold_design_intent(
-            &graph,
-            &mut pos,
-            KIND_HANDBOOK_RULE,
-            &id,
-            &format!("the governing rule {i:03}"),
-            REL_GOVERNS,
-            "core.rs",
-        );
-    }
-
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
-    let prompt = &prompts[0];
-
-    // The newest-recorded binding renders verbatim.
-    assert!(
-        prompt.contains("the governing rule 040"),
-        "the newest-recorded design-intent binding must render verbatim; prompt was:\n{prompt}"
-    );
-    // The oldest-recorded binding is past the verbatim cap, so it is elided, not rendered.
-    assert!(
-        !prompt.contains("the governing rule 001"),
-        "the oldest-recorded design-intent binding must be elided past the cap, not rendered; \
-         prompt was:\n{prompt}"
-    );
-    // The over-budget remainder collapses into ONE visible elision note.
-    assert!(
-        prompt.contains("more design-intent node(s) elided"),
-        "the over-budget remainder must collapse into a visible elision note; prompt was:\n{prompt}"
+    // THE GUARD: its leaked design-intent form would be `- GOVERNS core.rs  d_leak_decision: ` (rel,
+    // file, then the id with an empty title, since a decision carries `summary`, not `title`), so
+    // this exact substring can only appear if the decision leaked through the shared GOVERNS
+    // relation past the kind guard.
+    let leaked = format!("{REL_GOVERNS} core.rs  d_leak_decision");
+    assert_prompt(
+        &prompt,
+        &[
+            (
+                "the loop rule that governs core",
+                "the handbook rule bound by GOVERNS must render in the design-intent section",
+            ),
+            (
+                &governs,
+                "the design-intent line must name the GOVERNS relation and the touched file",
+            ),
+        ],
+        &[(
+            &leaked,
+            "a governing DECISION must be excluded from the design-intent section by the kind guard \
+             - it is retrievable via `rigger_peers`, not rendered here",
+        )],
     );
 }
 
@@ -1582,37 +1402,27 @@ fn the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_
 /// the kind-guard and recency-order mutations the sibling design-intent tests pin.
 #[test]
 fn a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_header() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-
+    let (graph, mut pos) = fresh_graph();
     // A code definition of the touched file - the seeded traversal reaches `core.rs` and renders its
     // code neighborhood - but NO design-intent node (handbook rule / RA section / arch decision /
     // rationale) and NO design-intent edge bound to it, so the design-intent section has zero
     // candidates for a reason independent of the kind guard.
-    fold(
-        &graph,
-        &mut pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-    );
+    fold_run_unit_definition(&graph, &mut pos);
 
-    let prompts = run_and_capture_prompts(&graph);
-    assert!(
-        !prompts.is_empty(),
-        "the stage's agent must have been spawned"
-    );
-    let prompt = &prompts[0];
-
-    // The one traversal ran and reached the file: its code neighborhood is surfaced.
-    assert!(
-        prompt.contains("run_unit") && prompt.contains("core.rs:42"),
-        "the one traversal must still surface the file's code neighborhood; prompt was:\n{prompt}"
-    );
-    // With no governing design intent, the design-intent section is suppressed entirely - no bare
-    // header renders over an empty body.
-    assert!(
-        !prompt.contains("Design intent that governs these files"),
-        "an empty design-intent section must render no bare header; prompt was:\n{prompt}"
+    let neighborhood = "the one traversal must still surface the file's code neighborhood";
+    assert_prompt(
+        &first_prompt(
+            run_and_capture_prompts(&graph),
+            "the stage's agent must have been spawned",
+        ),
+        // The one traversal ran and reached the file: its code neighborhood is surfaced.
+        &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
+        // With no governing design intent, the design-intent section is suppressed entirely - no
+        // bare header renders over an empty body.
+        &[(
+            "Design intent that governs these files",
+            "an empty design-intent section must render no bare header",
+        )],
     );
 }
 
@@ -1688,7 +1498,7 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
         REL_GOVERNS,
         "core.rs",
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1803,7 +1613,7 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
         let mut pos = 0u64;
         // CODE NEIGHBORHOOD (the other half of the kept intent layer): a definition of the touched
         // file, so the traversal reaches a realistic neighborhood.
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -1817,19 +1627,19 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
         // touched file - seeded so the traversal reaches a genuinely bulk-carrying neighborhood and the
         // intent layer surviving is proven where the trim is ACTIVE. This unit does NOT assert their
         // omission (criterion 1 owns the trim); they establish the trimmed context, nothing more.
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_DECISION_MADE,
             json!({ "id": "d_core", "summary": "a decision the trim drops from the implement prompt", "governs": ["core.rs"] }),
         );
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_LESSON_LEARNED,
             json!({ "id": "l_core", "summary": "a lesson the trim drops from the implement prompt", "about": ["core.rs"] }),
         );
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_REVIEW_FINDING,

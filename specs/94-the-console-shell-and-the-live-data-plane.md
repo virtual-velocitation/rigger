@@ -10,7 +10,8 @@ the frame every view of specs 95-98 renders into.
 
 ## Design
 
-THE PAGE, decided: served at `/` by `rigger dash`, the shell is the mock's, region for region:
+THE PAGE, decided: served at `/console` by `rigger dash` (the old page keeps `/` until spec 98
+retires it and moves the console there), the shell is the mock's, region for region:
 a header (brand dot and name, project selector, the run line `run <id> . spec <n> - <title> .
 base <branch>`, theme toggle, palette button), a tab bar (Fleet, Theater, Agents, Courtroom,
 Knowledge, Plan, Briefing) with the health strip on its right, the view beside a 300 px dock,
@@ -22,7 +23,7 @@ sentence naming the spec that fills it.
 
 THE ASSETS, decided: the page's script, the core module and three typefaces - Sora (400, 500,
 600), Source Sans 3 (400, 600, 400 italic) and JetBrains Mono (400, 500) - are embedded in the
-binary as Latin-subset woff2 files under `src/console/fonts/` with the SIL Open Font License
+binary as Latin-subset woff2 files under `crates/rigger-console/src/console/fonts/` with the SIL Open Font License
 text beside each family, and served from `/console/`. The served page references no URL
 outside its own origin.
 
@@ -74,6 +75,13 @@ triggers a snapshot re-fetch. Two tabs - independent cursors, no per-viewer serv
 older run lacking a field - the fold renders the blank, never fails. Core fails to load - one
 sentence naming the module and the build; there is no script fallback.
 
+THE RETAINED WINDOW, decided: the server retains every console event of the run - only the
+derived index is ever pruned - so a real client's cursor is always resumable today, and the
+window's edge is a contract, not a production path: a `since=` cursor below the first console
+position the store holds answers 410 Gone and the page re-fetches the snapshot. That contract
+is proven at the endpoint with a real store and a cursor below that floor; no unit owes a
+proof that pruning can move the floor, and the guard stays as the edge's implementation.
+
 ## Notes (non-criteria)
 
 Browser behavior is outside the gate set. Each page-side criterion is proven at two levels
@@ -96,8 +104,9 @@ DecisionMade the adjudicator reads as evidence.
   bar, health strip, view, dock, scrubber and statusline regions with the mock's class names,
   the CSS custom properties verbatim for both themes, the three typefaces served from
   `/console/fonts/` with their license texts, and no reference to a URL outside its origin.
-  This criterion OWNS the shell markup, the tokens and the embedded assets; the endpoints are
-  criterion 2's and the position model criterion 3's, NOT this one's.
+  This criterion OWNS the shell markup, the tokens, the embedded assets and the theme
+  toggle's persistence in the browser's storage; the endpoints are criterion 2's and the
+  position model criterion 3's, NOT this one's.
 - [ ] a test proves THE SNAPSHOT AND THE STREAM: against a real store, the snapshot carries
   the run's console events, progress lines, liveness ages, definition names and the head
   position, the stream is `text/event-stream` with the four frame kinds, an event appended to
@@ -109,11 +118,12 @@ DecisionMade the adjudicator reads as evidence.
   the snapshot through `fold_reset`, pushes stream frames through `fold_push`, renders
   through `fold_at`, replays at five events per second, and restores view, selection and
   position from the URL hash. This criterion OWNS the cursor, replay, keys and routing; the
-  palette is criterion 4's, NOT this one's.
+  palette is criterion 4's and the theme toggle's persistence criterion 1's, NOT this one's.
 - [ ] a test proves THE PALETTE: `palette_commands` lists the views, every unit's courtroom,
   every agent, jump to live and replay from start for a recorded stream, and the served page
   opens it on `Ctrl-K` and `Cmd-K`, filters as typed, runs on `Enter` and closes on `Escape`.
-  This criterion OWNS the palette only.
+  This criterion OWNS the palette only; the theme toggle's persistence is criterion 1's, NOT
+  this one's.
 - [ ] a test proves THE STATUSLINE COMMAND: `rigger status --line` prints the core's
   statusline for a recorded stream, identical to the console's bottom line for the same
   position, and `rigger setup` registers it as the editor's status line command in the

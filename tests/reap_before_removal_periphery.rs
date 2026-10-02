@@ -23,61 +23,89 @@
 //! periphery.rs` and `spawn_scratch_reap_authorized_root_periphery.rs` already close for their
 //! own call chains.
 
+mod common;
+use common::git::git_ok;
+
 use std::collections::HashSet;
 use std::path::Path;
-use std::process::{Child, Command};
 
+use common::fixtures::{assert_teardown_reaps_what_is_rooted_inside, cleanup, sigterm_ignorer_in};
+use common::git::init_repo;
+use common::wait_until;
 use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
     reclaim_worktree_on_branch, review_fence_sibling, scratch_root, sweep_terminal,
-    unit_cache_sibling, unit_mutants_sibling, Worktree, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_sibling, Worktree, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
-/// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
-/// escalation can end it - exercising the full SIGTERM-then-SIGKILL mechanism
-/// `reap_processes_rooted_under`/`reap_authorized` runs. Mirrors the identical fixture in
-/// `src/reap.rs`, `src/worktree.rs`'s own test module, and the sibling periphery tests.
-fn sigterm_ignorer_in(dir: &Path) -> Child {
-    Command::new("sh")
-        .arg("-c")
-        .arg("trap '' TERM; while :; do sleep 1; done")
-        .current_dir(dir)
-        .spawn()
-        .expect("spawn a SIGTERM-ignoring fixture process")
+/// The teardown a [`reaps_before_removing`] case drives.
+enum Teardown {
+    /// A unit worktree (`rigger-wt-<name>` on `rigger/u/<name>`) torn down by
+    /// [`Worktree::remove`], the dominant graceful teardown.
+    UnitRemove,
+    /// A stale review worktree (`rigger-review-<name>` on `rigger/review/<name>`) - its Rust
+    /// struct dropped, its registration and dir surviving - cleared by [`Worktree::discard`].
+    ReviewDiscard,
 }
 
-/// Poll up to 5s for `pred`, matching the scan/escalation latency tolerance every sibling
-/// reap test in this tree already uses.
-fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    false
+/// A real repo and scratch root holding `teardown`'s worktree `name`, with a live
+/// SIGTERM-ignoring process rooted in `target(<worktree dir>)`: the teardown itself must succeed,
+/// must reap that process (SIGTERM then SIGKILL) BEFORE removing its dir (`why` says why), and
+/// must still reclaim the dir once it has.
+fn reaps_before_removing(teardown: Teardown, name: &str, target: fn(&str) -> String, why: &str) {
+    let repo = tempfile::tempdir().unwrap();
+    let repo_path = repo.path().canonicalize().unwrap();
+    init_repo(&repo_path);
+
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let (dir, branch) = match teardown {
+        Teardown::UnitRemove => (format!("rigger-wt-{name}"), format!("rigger/u/{name}")),
+        Teardown::ReviewDiscard => (
+            format!("rigger-review-{name}"),
+            format!("rigger/review/{name}"),
+        ),
+    };
+    let dir = scratch_path.join(dir);
+
+    let wt = Worktree::create(
+        repo_path.to_str().unwrap(),
+        dir.to_str().unwrap(),
+        &branch,
+        scratch_path.to_str().unwrap(),
+    )
+    .expect("create the worktree");
+
+    let target_path = Path::new(&target(dir.to_str().unwrap())).to_path_buf();
+    std::fs::create_dir_all(&target_path).unwrap();
+
+    assert_teardown_reaps_what_is_rooted_inside(
+        &target_path,
+        None,
+        || match teardown {
+            Teardown::UnitRemove => wt.remove().expect("remove() itself must still succeed"),
+            Teardown::ReviewDiscard => {
+                drop(wt); // the Rust struct is gone but the worktree registration + dir survive.
+                Worktree::discard(
+                    repo_path.to_str().unwrap(),
+                    dir.to_str().unwrap(),
+                    &branch,
+                    scratch_path.to_str().unwrap(),
+                )
+                .expect("discard() itself must still succeed");
+            }
+        },
+        why,
+    );
+    assert!(
+        !target_path.exists(),
+        "{} is still reclaimed once its rooted process is reaped",
+        target_path.display()
+    );
 }
 
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
-
-#[test]
-fn worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it() {
+rigger::test_cases! {
     // `Worktree::remove` is spec 79's named EXEMPLAR ("even the exemplar leaks here"): it
     // already reaps the worktree dir itself (spec 23), then calls `reclaim_cache_sibling`
     // to remove the per-unit `cargo-target-<slug>` cache dir a gate's build populated - a
@@ -85,189 +113,57 @@ fn worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_recl
     // with its `CARGO_TARGET_DIR` pointed at the cache (the everyday case, Gap 19) can still
     // be alive when the unit's worktree is torn down; it must be reaped before the cache dir
     // that holds its cwd is removed.
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let wt_dir = scratch_path.join("rigger-wt-cachereaptest");
-
-    let wt = Worktree::create(
-        repo_path.to_str().unwrap(),
-        wt_dir.to_str().unwrap(),
-        "rigger/u/cachereaptest",
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("create the unit worktree");
-
-    let cache_dir = unit_cache_sibling(wt_dir.to_str().unwrap())
-        .expect("a rigger-wt-* worktree dir has a cache sibling");
-    std::fs::create_dir_all(&cache_dir).unwrap();
-    let cache_path = Path::new(&cache_dir).to_path_buf();
-
-    let mut child = sigterm_ignorer_in(&cache_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&cache_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the cache dir before remove() runs"
-    );
-
-    wt.remove().expect("remove() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
+    worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it: reaps_before_removing(
+        Teardown::UnitRemove,
+        "cachereaptest",
+        |wt| unit_cache_sibling(wt).expect("a rigger-wt-* worktree dir has a cache sibling"),
         "a process rooted in the per-unit build-cache dir that Worktree::remove reclaims as \
          reclaim_cache_sibling must be reaped (SIGTERM then SIGKILL) BEFORE that dir is \
          removed - a bare remove_dir_all here leaks it as an orphan holding a deleted cwd \
-         (spec 79 Goal: 'even the exemplar leaks here')"
+         (spec 79 Goal: 'even the exemplar leaks here')",
     );
-    assert!(
-        !cache_path.exists(),
-        "the cache dir is still reclaimed once its rooted process is reaped"
-    );
-}
-
-/// SDET periphery (spec 91, THE GATE ENVIRONMENT): the identical structural gap as
-/// `worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it`
-/// above, for the NEW THIRD sibling `reclaim_cache_sibling` widened to reclaim - the
-/// `checkin` stage's `mutation` gate's own per-unit `cargo-mutants-<slug>` root.
-///
-/// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `src/worktree.rs`'s own
-/// `worktree_remove_also_reclaims_the_sibling_mutants_root` test (spec 91) proves the dir is
-/// gone after `remove()` - but it never plants a LIVE process inside it first, so it cannot
-/// see the exact defect class this file exists to close (see this file's own module doc):
-/// a process rooted in the sibling can survive a bare `remove_dir_all`, outliving the
-/// removed dir with a now-deleted cwd. This is the realistic shape for THIS sibling
-/// specifically: `cargo mutants` forks one `cargo test` (and its own child test binary) per
-/// mutant into `$MUTANTS`, and spec 91's own Goal cites a real one that survived its
-/// launcher's death for 6.6 hours - if a unit's worktree is torn down (escalation,
-/// supersede, crash resume) while a sweep's process tree is still rooted in this exact
-/// directory, only a real reap-before-remove closes the same class of orphan the sibling
-/// build-cache case already guards.
-#[test]
-fn worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_reclaiming_it() {
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let wt_dir = scratch_path.join("rigger-wt-mutantsreaptest");
-
-    let wt = Worktree::create(
-        repo_path.to_str().unwrap(),
-        wt_dir.to_str().unwrap(),
-        "rigger/u/mutantsreaptest",
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("create the unit worktree");
-
-    let mutants_dir = unit_mutants_sibling(wt_dir.to_str().unwrap())
-        .expect("a rigger-wt-* worktree dir has a mutants-root sibling");
-    std::fs::create_dir_all(&mutants_dir).unwrap();
-    let mutants_path = Path::new(&mutants_dir).to_path_buf();
-
-    let mut child = sigterm_ignorer_in(&mutants_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&mutants_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the mutants root before remove() runs"
-    );
-
-    wt.remove().expect("remove() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
+    /// SDET periphery (spec 91, THE GATE ENVIRONMENT): the identical structural gap as
+    /// `worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it`
+    /// above, for the NEW THIRD sibling `reclaim_cache_sibling` widened to reclaim - the
+    /// `checkin` stage's `mutation` gate's own per-unit `cargo-mutants-<slug>` root.
+    ///
+    /// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `src/worktree.rs`'s own
+    /// `worktree_remove_also_reclaims_the_sibling_mutants_root` test (spec 91) proves the dir is
+    /// gone after `remove()` - but it never plants a LIVE process inside it first, so it cannot
+    /// see the exact defect class this file exists to close (see this file's own module doc):
+    /// a process rooted in the sibling can survive a bare `remove_dir_all`, outliving the
+    /// removed dir with a now-deleted cwd. This is the realistic shape for THIS sibling
+    /// specifically: `cargo mutants` forks one `cargo test` (and its own child test binary) per
+    /// mutant into `$MUTANTS`, and spec 91's own Goal cites a real one that survived its
+    /// launcher's death for 6.6 hours - if a unit's worktree is torn down (escalation,
+    /// supersede, crash resume) while a sweep's process tree is still rooted in this exact
+    /// directory, only a real reap-before-remove closes the same class of orphan the sibling
+    /// build-cache case already guards.
+    worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_reclaiming_it: reaps_before_removing(
+        Teardown::UnitRemove,
+        "mutantsreaptest",
+        |wt| {
+            unit_sibling(wt, UNIT_MUTANTS_PREFIX)
+                .expect("a rigger-wt-* worktree dir has a mutants-root sibling")
+        },
         "a process rooted in the per-unit cargo-mutants-<slug> root that Worktree::remove \
          reclaims as reclaim_cache_sibling must be reaped (SIGTERM then SIGKILL) BEFORE that \
          dir is removed - a bare remove_dir_all here leaks a mutation-sweep child as an \
-         orphan holding a deleted cwd, the same class spec 79 closed for the build cache"
+         orphan holding a deleted cwd, the same class spec 79 closed for the build cache",
     );
-    assert!(
-        !mutants_path.exists(),
-        "the mutants root is still reclaimed once its rooted process is reaped"
-    );
-}
-
-#[test]
-fn discard_reaps_a_process_rooted_in_the_review_worktrees_fence_sibling_before_reclaiming_it() {
     // spec 79 Goal: "`Worktree::discard` leaks a review-fence sibling process; live-confirmed
     // during the spec-78 run". A standalone review stage's fenced gate run leaves a real
     // sqlite store open in `<dir>-store-fence` (spec 70); a courier process rooted there that
     // is still alive when a resumed review step discards the stale scaffolding must be reaped
     // before that fence dir is removed out from under it.
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let branch = "rigger/review/discard-reap-0";
-    let dir = scratch_path.join("rigger-review-discard-reap-0");
-
-    let stale = Worktree::create(
-        repo_path.to_str().unwrap(),
-        dir.to_str().unwrap(),
-        branch,
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("create the throwaway review worktree");
-    drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
-
-    let fence_dir =
-        review_fence_sibling(dir.to_str().unwrap()).expect("a review worktree has a fence sibling");
-    std::fs::create_dir_all(&fence_dir).unwrap();
-    let fence_path = Path::new(&fence_dir).to_path_buf();
-
-    let mut child = sigterm_ignorer_in(&fence_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&fence_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the fence dir before discard() runs"
-    );
-
-    Worktree::discard(
-        repo_path.to_str().unwrap(),
-        dir.to_str().unwrap(),
-        branch,
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("discard() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
+    discard_reaps_a_process_rooted_in_the_review_worktrees_fence_sibling_before_reclaiming_it: reaps_before_removing(
+        Teardown::ReviewDiscard,
+        "discard-reap-0",
+        |dir| review_fence_sibling(dir).expect("a review worktree has a fence sibling"),
         "a process rooted in the review worktree's store-fence sibling that Worktree::discard \
          reclaims must be reaped (SIGTERM then SIGKILL) BEFORE that dir is removed - a bare \
-         remove_dir_all here leaks it as an orphan (spec 79 Goal, live-confirmed spec-78 run)"
+         remove_dir_all here leaks it as an orphan (spec 79 Goal, live-confirmed spec-78 run)",
     );
-    assert!(
-        !fence_path.exists(),
-        "the fence dir is still reclaimed once its rooted process is reaped"
-    );
-}
-
-#[test]
-fn worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibling_before_reclaiming_it(
-) {
     // `reclaim_cache_sibling` removes THREE distinct dirs, each behind its own
     // `reap_dir_before_removal` call: the cache dir's OWN store-fence sibling
     // (`cargo-target-<slug>-store-fence`, populated by a fenced gate courier's real sqlite
@@ -277,59 +173,19 @@ fn worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibl
     // correctly proves nothing about whether the NEXT removal in the same function also
     // reaps first. This test roots a live process in the cache dir's OWN store-fence sibling
     // specifically, the one site neither existing periphery test touches.
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let wt_dir = scratch_path.join("rigger-wt-cachefencereaptest");
-
-    let wt = Worktree::create(
-        repo_path.to_str().unwrap(),
-        wt_dir.to_str().unwrap(),
-        "rigger/u/cachefencereaptest",
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("create the unit worktree");
-
-    let cache_dir = unit_cache_sibling(wt_dir.to_str().unwrap())
-        .expect("a rigger-wt-* worktree dir has a cache sibling");
-    let fence_dir = format!("{cache_dir}{STORE_FENCE_SUFFIX}");
-    std::fs::create_dir_all(&fence_dir).unwrap();
-    let fence_path = Path::new(&fence_dir).to_path_buf();
-
-    let mut child = sigterm_ignorer_in(&fence_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&fence_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the cache dir's store-fence sibling \
-         before remove() runs"
-    );
-
-    wt.remove().expect("remove() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
+    worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibling_before_reclaiming_it: reaps_before_removing(
+        Teardown::UnitRemove,
+        "cachefencereaptest",
+        |wt| {
+            let cache_dir = unit_cache_sibling(wt)
+                .expect("a rigger-wt-* worktree dir has a cache sibling");
+            format!("{cache_dir}{STORE_FENCE_SUFFIX}")
+        },
         "a process rooted in the cache dir's OWN store-fence sibling that reclaim_cache_sibling \
          removes must be reaped (SIGTERM then SIGKILL) BEFORE that dir is removed - this is a \
          separate removal call from the cache dir itself, so reaping the cache dir correctly \
-         proves nothing about this sibling"
+         proves nothing about this sibling",
     );
-    assert!(
-        !fence_path.exists(),
-        "the cache dir's store-fence sibling is still reclaimed once its rooted process is reaped"
-    );
-}
-
-#[test]
-fn discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_it() {
     // `clear_worktree_dir` (spec 79 criterion 1) now reaps `dir` ITSELF before either its
     // `git worktree remove --force` attempt or its bare fallback removal - the shared
     // authority behind `Worktree::create`'s self-heal, `Worktree::discard`, and
@@ -339,56 +195,13 @@ fn discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_
     // actually runs on the real `Worktree::discard` public API path - a process left running
     // with its cwd directly inside a stale review worktree (not a sibling) must be reaped
     // before discard tears the worktree dir down.
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-
-    let scratch = tempfile::tempdir().unwrap();
-    let scratch_path = scratch.path().canonicalize().unwrap();
-    let branch = "rigger/review/discard-dir-reap-0";
-    let dir = scratch_path.join("rigger-review-discard-dir-reap-0");
-
-    let stale = Worktree::create(
-        repo_path.to_str().unwrap(),
-        dir.to_str().unwrap(),
-        branch,
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("create the throwaway review worktree");
-    drop(stale); // the Rust struct is gone but the worktree registration + dir survive.
-    let dir_path = dir.clone();
-
-    let mut child = sigterm_ignorer_in(&dir_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&dir_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted directly in the review worktree dir \
-         before discard() runs"
-    );
-
-    Worktree::discard(
-        repo_path.to_str().unwrap(),
-        dir.to_str().unwrap(),
-        branch,
-        scratch_path.to_str().unwrap(),
-    )
-    .expect("discard() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
+    discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_it: reaps_before_removing(
+        Teardown::ReviewDiscard,
+        "discard-dir-reap-0",
+        str::to_string,
         "a process rooted directly in the review worktree dir that Worktree::discard clears \
          via clear_worktree_dir must be reaped (SIGTERM then SIGKILL) BEFORE that dir is \
-         removed - a bare git-worktree-remove/remove_dir_all here leaks it as an orphan"
-    );
-    assert!(
-        !dir_path.exists(),
-        "the review worktree dir is still cleared once its rooted process is reaped"
+         removed - a bare git-worktree-remove/remove_dir_all here leaks it as an orphan",
     );
 }
 
@@ -404,13 +217,7 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().canonicalize().unwrap();
     init_repo(&repo_path);
-    assert!(Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["checkout", "-b", "rigger-run"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["checkout", "-b", "rigger-run"]);
 
     let repo_str = repo_path.to_str().unwrap().to_string();
     let root = scratch_root(&repo_str, "", None);
@@ -420,35 +227,22 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
         .expect("create a worktree whose tip is already an ancestor of rigger-run");
     let done_path = Path::new(&done_dir).to_path_buf();
 
-    let mut child = sigterm_ignorer_in(&done_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&done_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the terminal worktree before \
-         sweep_terminal() runs"
-    );
-
-    let removed = sweep_terminal(
-        &repo_str,
-        &root,
-        "rigger-run",
-        &HashSet::new(),
-        &HashSet::new(),
-        &[],
-    )
-    .expect("sweep_terminal must still succeed");
-    assert_eq!(removed, 1, "the merged terminal worktree is swept");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
-        "sweep_terminal must reap a process rooted inside a terminal worktree (SIGTERM then \
-         SIGKILL) BEFORE removing its dir, driven through the real public API"
+    assert_teardown_reaps_what_is_rooted_inside(
+        &done_path,
+        None,
+        || {
+            let removed = sweep_terminal(
+                &repo_str,
+                &root,
+                "rigger-run",
+                &HashSet::new(),
+                &HashSet::new(),
+                &[],
+            )
+            .expect("sweep_terminal must still succeed");
+            assert_eq!(removed, 1, "the merged terminal worktree is swept");
+        },
+        "sweep_terminal, driven through the real public API",
     );
     assert!(
         !done_path.exists(),
@@ -523,8 +317,7 @@ fn discard_never_reaps_a_dir_when_the_supplied_authorized_root_does_not_actually
     // have fired if the containment check were a no-op, then assert the process is UNTOUCHED.
     std::thread::sleep(std::time::Duration::from_millis(500));
     let still_alive = matches!(child.try_wait(), Ok(None));
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup(&mut child);
     assert!(
         still_alive,
         "a process rooted in `dir` must be LEFT ALONE when the caller-supplied authorized_root \
@@ -609,8 +402,7 @@ fn create_reaps_a_process_rooted_in_a_leftover_dir_at_the_deterministic_path_bef
 
     let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
     if !died {
-        let _ = child.kill();
-        let _ = child.wait();
+        cleanup(&mut child);
     }
     assert!(
         died,
@@ -708,8 +500,7 @@ fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized
     // have fired if the containment check were a no-op, then assert the process is UNTOUCHED.
     std::thread::sleep(std::time::Duration::from_millis(500));
     let still_alive = matches!(child.try_wait(), Ok(None));
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup(&mut child);
     assert!(
         still_alive,
         "a process rooted in the lingering worktree must be LEFT ALONE when the caller- \

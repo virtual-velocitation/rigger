@@ -2,8 +2,8 @@
 
 **Status:** design, approved for planning. Quantitative claims are grounded in a measurement of the
 live `.rigger/graph.db` taken 2026-07-21 and a reading of the grounding path
-(`build_prompt_with_failure` / `graph_context` / `write_design_intent`, `src/conductor.rs`) and the
-MCP tool surface (`src/mcpserver.rs`); figures marked *(est.)* are not measured.
+(`build_prompt_with_failure` / `graph_context` / `write_design_intent`, `crates/rigger-conductor/src/conductor.rs`) and the
+MCP tool surface (`crates/rigger-dash/src/mcpserver.rs`); figures marked *(est.)* are not measured.
 **Scope:** an addendum to `docs/architecture.md`. It changes **how an agent consumes the knowledge
 graph during a run** — from a capped blob PUSHED into every prompt to a HYBRID: push only the small
 deterministic layer the agent must be *guaranteed* to see, and let the agent PULL everything else on
@@ -22,7 +22,7 @@ rendered as a code neighborhood + the design-intent layer + capped decisions/les
 PUSHED into the prompt string under a ~84 KiB cap. Four facts about that push:
 
 - **It over-reaches, then discards most of what it reaches.** On the hottest file
-  (`src/conductor.rs`) the depth-2 context pool is **529 nodes / 553.5 KiB** against the ~84 KiB cap
+  (`crates/rigger-conductor/src/conductor.rs`) the depth-2 context pool is **529 nodes / 553.5 KiB** against the ~84 KiB cap
   — **~85% is truncated every spawn**, by a recency ranking, not by relevance to the agent's actual
   sub-problem. The pattern holds across hot files (`main.rs` 323 KiB, `contextgraph/sqlite.rs`
   332 KiB — all far over the cap).
@@ -125,6 +125,7 @@ from the implement-stage prompt**.
    BEFORE (push, capped)                        AFTER (hybrid)
    ┌───────────────────────────────┐            ┌───────────────────────────────┐
    │ prior-failure block           │            │ prior-failure block           │
+   │                               │            │ UNIT + verbatim criterion     │
    │ code neighborhood (depth-2)   │            │ code neighborhood (compact)   │
    │ DESIGN INTENT     ~2.8 KiB  ◄──┼ guaranteed │ DESIGN INTENT     ~2.8 KiB  ◄──┼ guaranteed
    │ decisions   ┐                 │            │ » query the graph for prior   │
@@ -138,10 +139,15 @@ from the implement-stage prompt**.
 - **Reclaims ~80 KiB of prompt per spawn and eliminates the 85% arbitrary truncation.** The
   reference bulk is no longer rendered-then-thrown-away; it is retrieved on demand, in full, scoped
   to the sub-problem.
+- **Every non-planner spawn is told its task first.** Right after the prior-failure block (which
+  leads a retry so the fix list is read first), the prompt names the unit and quotes its acceptance
+  criterion verbatim - the exact text the review tiers judge the unit against, which they receive
+  in the same block. The grounding below it is context for that task, never a substitute for it.
+  The planner's refine protocol already lists every criterion, so it gets no per-unit block.
 - **The guaranteed layer is unchanged.** `write_design_intent` already renders exactly the bound
   governing intent, deterministically ordered; it stays. This is the measured, immediate-ROI step.
 
-_Code:_ `graph_context` (`src/conductor.rs`) — keep `write_design_intent` + a compact neighborhood
+_Code:_ `graph_context` (`crates/rigger-conductor/src/conductor.rs`) - keep `write_design_intent` + a compact neighborhood
 render, drop the capped decisions/lessons/findings sections from the implement prompt, append the
 tool pointer. The `write_capped_*` writers remain for the review-stage guarantee (§Workstream C).
 
@@ -164,7 +170,7 @@ grows from file-scoped peers to a real query set, every tool a thin caller of th
   `subgraph`/`explain`/path already exist for the dash. This workstream exposes them over MCP, it
   does not reinvent retrieval.
 
-_Code:_ `src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/main.rs` (CLI parity
+_Code:_ `crates/rigger-dash/src/mcpserver.rs` (new `tools/list` entries + `call_tool` arms), `src/cli/` (CLI parity
 subcommands), all delegating to the existing `contextgraph` traversal + `ground` pass.
 
 ## 5. Workstream C — Teach the agent, and keep review deterministic
@@ -181,7 +187,7 @@ their finding guarantee.
   review protocol or keep a **findings-only** push at review time — so review is never blind. This is
   the one place the push is retained deliberately, scoped to findings, not the whole bulk.
 
-_Code:_ `EMIT_PROTOCOL` / `plan_protocol` / the review protocols (`src/conductor.rs`), the
+_Code:_ `EMIT_PROTOCOL` / `plan_protocol` / the review protocols (`crates/rigger-conductor/src/conductor.rs`), the
 review-stage branch of `graph_context`.
 
 ## 6. Workstream D — Concepts as query affordances (contingent)

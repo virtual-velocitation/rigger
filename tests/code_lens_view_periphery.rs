@@ -18,7 +18,7 @@
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
 //! clustered_overview, cluster_detail, route, ...}` + the two lens consts), so they guard the exact
-//! boundaries the inside-out unit test (`src/dash.rs mod tests`, which reaches the same functions via
+//! boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`, which reaches the same functions via
 //! `super::` and calls the folds in-process) is structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the code-lens BEHAVIOUR but never that `Lens`, its
@@ -40,66 +40,28 @@
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
-use std::collections::{BTreeSet, HashMap};
+mod common;
 
+use std::collections::BTreeSet;
+
+use common::fixtures::edge;
+use common::fixtures::node_with_optional_attrs;
+use common::fixtures::plain;
+use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
+use common::served::served;
+use common::served::served_json;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
+    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, route, Cluster, ClusterEdge, Lens, CODE_LENS_UNDERIVED,
+    cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CODE_LENS_UNDERIVED,
     DEFAULT_COMMUNITY_RESOLUTION, WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
 // The two default-grain community ids (`community/<resolution>/<n>`) the fixture derives.
 const C0: &str = "community/1/0";
 const C1: &str = "community/1/1";
-
-/// A code-entity node whose id names a file under a module directory (so the FILES lens folds it by
-/// that directory) - the coupling members the CODE lens instead folds by their community.
-fn ce(id: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A derived `KIND_COMMUNITY` super-node carrying its deterministic display `label` attr (the fold's
-/// highest-degree-member pick, spec 53 c3). Under the code lens it is a BUCKET, not a member, so it
-/// is excluded from every count and never carries its own membership.
-fn community(id: &str, label: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_COMMUNITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("label".to_string(), label.to_string());
-    n
-}
-
-/// A membership-LESS node of an arbitrary kind (a dev-loop decision, a design doc): under the code
-/// lens it must keep its KIND bucket, so the view stays whole-graph.
-fn plain(id: &str, kind: &str) -> Node {
-    Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    }
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel` at `tier`.
-fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    }
-}
 
 /// The lens fixture. TWO coupling communities, each a pair of code entities in DIFFERENT directories
 /// that call each other - so the code lens grouping demonstrably crosses directory lines, the whole
@@ -120,12 +82,12 @@ const QUX: &str = "src/delta/d.rs::qux";
 fn lens_graph() -> Graph {
     Graph {
         nodes: vec![
-            ce(FOO),
-            ce(BAR),
-            ce(BAZ),
-            ce(QUX),
-            community(C0, "foo"),
-            community(C1, "baz"),
+            plain(FOO, KIND_CODE_ENTITY),
+            plain(BAR, KIND_CODE_ENTITY),
+            plain(BAZ, KIND_CODE_ENTITY),
+            plain(QUX, KIND_CODE_ENTITY),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            node_with_optional_attrs(C1, KIND_COMMUNITY, &[("label", Some("baz"))]),
             plain("d1", KIND_DECISION),
             plain("docs/x.md", KIND_DESIGN_DOC),
         ],
@@ -195,66 +157,48 @@ fn lens_from_query_is_a_public_total_selector_that_falls_back_to_files() {
     );
 }
 
-/// THE CODE-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph, &Lens::Code)`
-/// buckets every membership-carrying CODE-ENTITY node by its coupling COMMUNITY - a subsystem grouped
-/// ACROSS directory lines - sizing each community super-node by MEMBER count, colouring it by its
-/// dominant member kind, and labelling it with the community node's deterministic `label`; only edges
-/// that CROSS two communities weight the symmetric super-edge (intra-community coupling and the
-/// membership spokes to the excluded super-node add none). Spec 63 criterion 1 (CODE-LENS PURITY,
-/// the subjects-only rule): the two membership-less non-code-entity nodes (a decision, a design-doc)
-/// carry NO cluster at all here - not even their own kind bucket - so the payload never surfaces a
-/// storage schema name as a cluster key or label. Every value is bound to the fixture so a renamed
-/// field or a mis-fold reddens here, not just in-process.
-#[test]
-fn code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind() {
-    let overview = clustered_overview(&lens_graph(), &code_default());
-
-    assert_eq!(
-        overview.total, 8,
-        "total carries every graph node, the excluded community super-nodes included"
-    );
-    assert_eq!(
-        overview.empty_state, None,
-        "a DERIVED grain is not the empty state"
-    );
-    assert_eq!(
-        overview.clusters,
-        vec![
-            // Each community: sized by MEMBER count (2, the excluded super-node never inflates it),
-            // coloured by dominant member kind, labelled by the community node's deterministic label.
-            Cluster {
-                key: C0.to_string(),
-                count: 2,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("foo".to_string()),
-            },
-            Cluster {
-                key: C1.to_string(),
-                count: 2,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("baz".to_string()),
-            },
-            // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the code
-            // lens admits ONLY code-entity subjects, so they carry no bucket of any kind here.
-        ],
-        "code lens folds code entities by community (sized, dominant-kind, labelled) and excludes every non-code-entity / membership-less node entirely: {overview:?}"
-    );
-    assert!(
-        overview
-            .clusters
-            .iter()
-            .all(|c| c.key != KIND_DECISION && c.key != KIND_DESIGN_DOC),
-        "no storage-schema-name (decision / design-doc) ever appears as a cluster key: {overview:?}"
-    );
-    assert_eq!(
-        overview.edges,
-        vec![ClusterEdge {
-            from: C0.to_string(),
-            to: C1.to_string(),
-            weight: 2,
-        }],
-        "only cross-community coupling weights the super-edge; intra-community edges and membership spokes to the excluded super-node add none"
-    );
+rigger::test_cases! {
+    /// THE CODE-LENS OVERVIEW over the public crate boundary: `clustered_overview(graph, &Lens::Code)`
+    /// buckets every membership-carrying CODE-ENTITY node by its coupling COMMUNITY - a subsystem grouped
+    /// ACROSS directory lines - sizing each community super-node by MEMBER count, colouring it by its
+    /// dominant member kind, and labelling it with the community node's deterministic `label`; only edges
+    /// that CROSS two communities weight the symmetric super-edge (intra-community coupling and the
+    /// membership spokes to the excluded super-node add none). Spec 63 criterion 1 (CODE-LENS PURITY,
+    /// the subjects-only rule): the two membership-less non-code-entity nodes (a decision, a design-doc)
+    /// carry NO cluster at all here - not even their own kind bucket - so the payload never surfaces a
+    /// storage schema name as a cluster key or label. Every value is bound to the fixture so a renamed
+    /// field or a mis-fold reddens here, not just in-process.
+    code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind:
+        assert_overview_folds(
+            &lens_graph(),
+            &code_default(),
+            8,
+            vec![
+                // Each community: sized by MEMBER count (2, the excluded super-node never inflates
+                // it), coloured by dominant member kind, labelled by the community node's
+                // deterministic label.
+                Cluster {
+                    key: C0.to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("foo".to_string()),
+                },
+                Cluster {
+                    key: C1.to_string(),
+                    count: 2,
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    label: Some("baz".to_string()),
+                },
+                // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
+                // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
+            ],
+            vec![ClusterEdge {
+                from: C0.to_string(),
+                to: C1.to_string(),
+                weight: 2,
+            }],
+            &[KIND_DECISION, KIND_DESIGN_DOC],
+        );
 }
 
 /// THE CODE-LENS DRILL over the public boundary: `cluster_detail(graph, community_key, &Lens::Code)`
@@ -310,7 +254,12 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
         .attrs
         .insert("name".to_string(), FILE_MEMBER.to_string());
     let graph = Graph {
-        nodes: vec![ce(FOO), ce(BAR), community(C0, "foo"), file_node],
+        nodes: vec![
+            plain(FOO, KIND_CODE_ENTITY),
+            plain(BAR, KIND_CODE_ENTITY),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            file_node,
+        ],
         edges: vec![
             edge(FOO, C0, REL_IN_COMMUNITY, TIER_INFERRED),
             edge(BAR, C0, REL_IN_COMMUNITY, TIER_INFERRED),
@@ -365,7 +314,12 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
 fn code_lens_excludes_a_membership_less_code_entity_entirely() {
     const LONER: &str = "src/loner/z.rs::orphan";
     let graph = Graph {
-        nodes: vec![ce(FOO), ce(BAR), community(C0, "foo"), ce(LONER)],
+        nodes: vec![
+            plain(FOO, KIND_CODE_ENTITY),
+            plain(BAR, KIND_CODE_ENTITY),
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            plain(LONER, KIND_CODE_ENTITY),
+        ],
         edges: vec![
             edge(FOO, C0, REL_IN_COMMUNITY, TIER_INFERRED),
             edge(BAR, C0, REL_IN_COMMUNITY, TIER_INFERRED),
@@ -409,31 +363,19 @@ fn code_lens_excludes_a_membership_less_code_entity_entirely() {
     );
 }
 
-/// THE UNDERIVED-GRAIN empty state over the public boundary: a code lens at a resolution grain with
-/// NO derived assignments returns the documented `CODE_LENS_UNDERIVED` prompt - never an error and
-/// never a bare kind-bucket view - while `total` still reports the whole graph size.
-#[test]
-fn code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error() {
-    let underived = clustered_overview(
-        &lens_graph(),
-        &Lens::Code {
-            resolution: "2".to_string(),
-        },
-    );
-
-    assert!(
-        underived.clusters.is_empty() && underived.edges.is_empty(),
-        "an underived grain folds no communities: {underived:?}"
-    );
-    assert_eq!(
-        underived.total, 8,
-        "the empty state still reports the whole graph size"
-    );
-    assert_eq!(
-        underived.empty_state.as_deref(),
-        Some(CODE_LENS_UNDERIVED),
-        "an underived grain carries the documented empty-state message, never an error"
-    );
+rigger::test_cases! {
+    /// THE UNDERIVED-GRAIN empty state over the public boundary: a code lens at a resolution grain with
+    /// NO derived assignments returns the documented `CODE_LENS_UNDERIVED` prompt - never an error and
+    /// never a bare kind-bucket view - while `total` still reports the whole graph size.
+    code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error:
+        assert_underived_grain_is_the_empty_state(
+            &lens_graph(),
+            &Lens::Code {
+                resolution: "2".to_string(),
+            },
+            8,
+            CODE_LENS_UNDERIVED,
+        );
 }
 
 /// Spec 63 CRITERION 1, round 4: the SAME empty state above must ALSO carry when the grain is NOT
@@ -457,7 +399,10 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
         .attrs
         .insert("name".to_string(), FILE_MEMBER.to_string());
     let graph = Graph {
-        nodes: vec![community(C0, "foo"), file_node],
+        nodes: vec![
+            node_with_optional_attrs(C0, KIND_COMMUNITY, &[("label", Some("foo"))]),
+            file_node,
+        ],
         edges: vec![
             // The ONLY live community membership in the whole graph belongs to a file, not a code
             // entity - `Buckets::underived` (kind-blind) reads `false` even though the code lens's own
@@ -487,8 +432,7 @@ fn code_lens_overview_carries_the_empty_state_when_only_a_non_code_entity_carrie
 /// `ClusterOverview.empty_state` are `skip_serializing_if = Option::is_none`, so:
 ///   * the FILES overview JSON carries NO `label` key on any cluster, ever (byte-identical to before
 ///     spec 53 on THAT axis); but it DOES carry `empty_state` here, because this fixture's every
-///     `ce(...)` code entity carries no `name` attr (this file's `ce` models the CODE lens's own
-///     coupling members, which the files-lens honesty gate reads as bare cross-file placeholders -
+///     code entity carries no `name` attr (they model the CODE lens's own coupling members, which the files-lens honesty gate reads as bare cross-file placeholders -
 ///     spec 63 c3) and no real definition exists anywhere in the graph to resolve any of them to, so
 ///     the files fold admits NOTHING here and [`WHOLE_GRAPH_FILES_UNRESOLVED`] fires rather than a
 ///     bare `None` that would misreport this non-empty graph as blank;
@@ -551,39 +495,6 @@ fn the_serialized_overview_skips_label_and_carries_the_accurate_empty_state_off_
     );
 }
 
-/// Drive the public `route` for `GET <target>` over the lens fixture and return the raw `Response`.
-/// `route` is the exact body-builder `serve` ships (serve delegates to it), so this drives the lens
-/// selector through the SAME `query_param` + `percent_decode` + `Lens::from_query` wiring the browser
-/// hits - the seam the in-process folds never exercise.
-fn served(target: &str) -> rigger::dash::Response {
-    let graph = lens_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the lens route never errors on a live graph)"
-    );
-    resp
-}
-
-/// Parse a served body as JSON.
-fn served_json(target: &str) -> serde_json::Value {
-    let resp = served(target);
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
-}
-
 /// THE SERVED `/api/graph` ROUTE threads the `lens=` / `resolution=` selector END-TO-END into BOTH
 /// the overview and the drill - the integration seam the in-process folds never cover:
 ///   * `?lens=code` folds the overview by community, carrying the community `label`;
@@ -596,7 +507,7 @@ fn served_json(target: &str) -> serde_json::Value {
 #[test]
 fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
     // --- CODE overview via the route: community-bucketed, labelled ---
-    let code_ov = served_json("/api/graph?lens=code&resolution=1");
+    let code_ov = served_json(&lens_graph(), "/api/graph?lens=code&resolution=1");
     let keys: Vec<&str> = code_ov["clusters"]
         .as_array()
         .expect("clusters array")
@@ -617,13 +528,13 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
 
     // An EMPTY resolution defaults to grain 1: the body is identical to the explicit-grain request.
     assert_eq!(
-        served("/api/graph?lens=code&resolution=").body,
-        served("/api/graph?lens=code&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=code&resolution=").body,
+        served(&lens_graph(), "/api/graph?lens=code&resolution=1").body,
         "an empty resolution= defaults to the same derived grain as resolution=1"
     );
 
     // --- CODE drill via the route: the lens reaches the cluster= branch, drilling a community ---
-    let drill = served_json("/api/graph?lens=code&cluster=community/1/0");
+    let drill = served_json(&lens_graph(), "/api/graph?lens=code&cluster=community/1/0");
     assert_eq!(
         drill["seed"].as_str(),
         Some(C0),
@@ -642,7 +553,7 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
     );
 
     // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
-    let underived = served_json("/api/graph?lens=code&resolution=2");
+    let underived = served_json(&lens_graph(), "/api/graph?lens=code&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),
         Some(CODE_LENS_UNDERIVED),
@@ -650,21 +561,21 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
     );
 
     // --- BACK-COMPAT: absent / files / hostile lens are all the byte-identical spec-42 default ---
-    let default = served("/api/graph").body;
+    let default = served(&lens_graph(), "/api/graph").body;
     assert_eq!(
-        served("/api/graph?lens=files").body,
+        served(&lens_graph(), "/api/graph?lens=files").body,
         default,
         "an explicit lens=files is byte-identical to the lens-absent default"
     );
     assert_eq!(
-        served("/api/graph?lens=bogus").body,
+        served(&lens_graph(), "/api/graph?lens=bogus").body,
         default,
         "a hostile lens=bogus falls back byte-identical to the default (never a 500)"
     );
     // The files default is genuinely NOT the code view (proves the comparison above is meaningful).
     assert_ne!(
         default,
-        served("/api/graph?lens=code&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=code&resolution=1").body,
         "the code lens actually changes the served body (the back-compat equality is not vacuous)"
     );
 }

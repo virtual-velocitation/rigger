@@ -27,67 +27,15 @@
 //! NOT feature-gated: it parses text files and touches no grounder symbol, so it runs
 //! identically in both feature lanes and is a real member of each lane's test battery.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-/// The committed crate manifest, resolved from the manifest dir so the test does not
-/// depend on the process CWD (integration tests may run from anywhere).
-fn manifest_text() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read Cargo.toml at {}: {e}", path.display()))
-}
+use common::repo::repo_text;
+use common::repo::table_declares_key;
+use common::repo::table_lines;
 
-/// The body lines of the first top-level `[header]` table: every line after the
-/// `[header]` line up to (not including) the next line that opens a new `[...]`
-/// table. Empty when the table is absent.
-fn table_lines(manifest: &str, header: &str) -> Vec<String> {
-    let want = format!("[{header}]");
-    let mut in_table = false;
-    let mut out = Vec::new();
-    for raw in manifest.lines() {
-        let line = raw.trim();
-        if line.starts_with('[') && line.ends_with(']') {
-            in_table = line == want;
-            continue;
-        }
-        if in_table {
-            out.push(raw.to_string());
-        }
-    }
-    out
-}
-
-/// Does the `[header]` table declare a key named `key` at its top level (`key = ...`,
-/// `key.<sub> = ...`, or a bare `key`)? Continuation lines of a multi-line array value
-/// (e.g. `    "dep:foo",`) never match, so this keys on the DECLARATION line.
-fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
-    table_lines(manifest, header).iter().any(|line| {
-        let t = line.trim();
-        t == key
-            || t.starts_with(&format!("{key} "))
-            || t.starts_with(&format!("{key}="))
-            || t.starts_with(&format!("{key}."))
-    })
-}
-
-/// Recurse `dir`, invoking `visit(path, file_text)` for every `.rs` file beneath it.
-/// A std-only walk (no extra dev-dependency) sufficient for scanning the crate's `src/`.
-fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => panic!("cannot read dir {}: {e}", dir.display()),
-    };
-    for entry in entries {
-        let path = entry.expect("dir entry must be readable").path();
-        if path.is_dir() {
-            for_each_rs_file(&path, visit);
-        } else if path.extension().is_some_and(|x| x == "rs") {
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-            visit(&path, &text);
-        }
-    }
-}
+#[path = "common/retired_feature.rs"]
+mod retired_feature;
+use retired_feature::assert_no_src_line_gates_on;
 
 /// DEP DIET (spec 57, criterion 2, part one): the `turbovec` cargo feature is retired.
 /// With no `[features]` entry named `turbovec`, cargo rejects `-F turbovec` as an unknown
@@ -97,7 +45,7 @@ fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
 /// the whole feature is retired, root and branch.
 #[test]
 fn turbovec_cargo_feature_is_retired() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     assert!(
         !table_declares_key(&m, "features", "turbovec"),
         "the `turbovec` cargo feature must be gone from [features] so `cargo build -F turbovec` \
@@ -122,7 +70,7 @@ fn turbovec_cargo_feature_is_retired() {
 /// into either lane, so this manifest assertion IS the both-lanes dependency-tree proof.
 #[test]
 fn embedding_and_onnx_dependencies_are_absent_from_both_lanes() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     for dep in ["turbovec", "fastembed", "ort", "ort-sys", "libc"] {
         assert!(
             !table_declares_key(&m, "dependencies", dep),
@@ -140,7 +88,7 @@ fn embedding_and_onnx_dependencies_are_absent_from_both_lanes() {
 /// the deliberate light opt-out.
 #[test]
 fn symbols_remains_in_the_default_feature_set() {
-    let m = manifest_text();
+    let m = repo_text("Cargo.toml");
     let default_line = table_lines(&m, "features")
         .into_iter()
         .find(|l| l.trim_start().starts_with("default"))
@@ -166,21 +114,10 @@ fn symbols_remains_in_the_default_feature_set() {
 /// on it. Space-insensitive so it catches `feature="turbovec"` too.
 #[test]
 fn no_source_still_gates_on_the_retired_turbovec_feature() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut offenders = Vec::new();
-    for_each_rs_file(&src, &mut |path, text| {
-        for (idx, line) in text.lines().enumerate() {
-            let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            if squeezed.contains("feature=\"turbovec\"") {
-                offenders.push(format!("{}:{}", path.display(), idx + 1));
-            }
-        }
-    });
-    assert!(
-        offenders.is_empty(),
+    assert_no_src_line_gates_on(
+        &["feature=\"turbovec\""],
         "the `turbovec` cargo feature is retired (spec 57), so no source may still gate on it - \
          a `cfg(feature = \"turbovec\")` predicate on a now-undefined feature resolves \
-         deterministically and silently compiles the guarded code in or out of every build. \
-         Offending lines: {offenders:?}"
+         deterministically and silently compiles the guarded code in or out of every build.",
     );
 }
