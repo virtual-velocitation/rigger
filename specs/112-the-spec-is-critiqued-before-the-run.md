@@ -37,12 +37,17 @@ replaced by Read, Glob, `mcp__rigger__rigger_graph`, `mcp__rigger__rigger_ground
 `mcp__rigger__rigger_peers` - no Bash, Agent, Grep, or emit, progress or scratch tool - so the
 critic can neither build nor record. The host defines its `lookup` and `verify` helpers on every
 spawn, so the critic may still reach one through the fan-out tool; a helper's build or record is
-denied like the critic's own, by the host's no-prompt permission rule (accepted). The critic's bound
-MCP server, `rigger mcp --spawn <id>`, selects its store through configuration alone, like
-`rigger emit`, so under a server selected by flags alone its `rigger_peers` reads the store that
-configuration selects, or its lookup tools are absent when that store cannot be resolved (accepted).
+denied like the critic's own, by the host's no-prompt permission rule (accepted). The verb hands the
+critic its resolved store selection: under a server selection, whichever rung of `store_selection`
+made it, the flags included, it puts `KURRENTDB_CONN=<conn>` into the critic's `SpawnOpts.env`,
+which the host applies over the ambient environment, so the critic's bound MCP server
+(`rigger mcp --spawn <id>`, whose `require_store_dir` ranks that variable above `.rigger/store.conn`
+and the workflow's `store:` key) and its `rigger_peers` resolve the store the verb records the
+critique to. Under a sqlite selection nothing is handed and that server resolves through
+configuration alone: the local store the verb opened, unless `--eventstore sqlite` overrode a server
+the configuration selects, which the critic then reads (accepted).
 The spawn runs through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the
-operator's ambient environment and login, and no credential variable is read or set. The verb
+operator's ambient environment and login, and no login credential variable is read or set. The verb
 composes the host itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the
 project's `.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it,
 its critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store`
@@ -93,7 +98,8 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
   (`refuse_unless_one_root` takes the invoking command for its message, as
   `resolve_main_worktree_or_refuse` does). It takes the `--eventstore` and `--conn` flags
   `rigger run` takes and resolves its backend through `store_selection` with them, as the run entry
-  it precedes does (a flagless call resolves as `rigger step` does). On a sqlite selection it runs
+  it precedes does (a flagless call resolves as `rigger step` does), and THE CRITIC hands that
+  selection to the critic. On a sqlite selection it runs
   `migrate_local_identity` before opening its backend, as `run_cli` and `run_workflow` do, and it
   opens the project's store as `cmd_step` does, creating `.rigger/` and the store when absent.
   Criterion 1's unit words `refuse_unless_one_root`'s two messages for any invoking command and
@@ -407,10 +413,12 @@ and 5 at any point, 6 last):
   the next call spawns the next attempt; a critique whose copies were not appended is completed on
   the next call, which also removes the scratch directories the crash left; the refusal never
   depended on them. Cold start: every answer is read from the store; a project with no store gets
-  one. Existing data: no critique exists and no critique data is migrated; a pre-spec-09 store has
-  its identity migrated before the verb's first append; a graph.db that owes its rebuild refuses
-  every call, answered or not; a project with no git repository resolves the spec path against its
-  project root and runs with an empty scratch root.
+  one; a server selected by flags alone and configured nowhere reaches the critic through the handed
+  `KURRENTDB_CONN`, so its `rigger_peers` reads that server. Existing data: no critique exists and
+  no critique data is migrated; a pre-spec-09 store has its identity migrated before the verb's
+  first append; a graph.db that owes its rebuild refuses every call, answered or not; a project
+  with no git repository resolves the spec path against its project root and runs with an empty
+  scratch root.
 - *Criterion 2.* Empty: no critique refuses as not critiqued, as does a new run on a spec outside
   the repository, whatever its bytes; a stream with no `RunStarted` mints, so its first command
   needs a critique; a run with no spec is never refused; a new run under a workflow with no critic
