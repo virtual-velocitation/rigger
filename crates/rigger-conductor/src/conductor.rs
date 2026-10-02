@@ -4673,7 +4673,7 @@ impl RunCtx<'_> {
         let (approved, reason, required) = if approved {
             (true, reason, Vec::new())
         } else {
-            self.split_reject(&st.name, attempt, round.as_ref(), reason)?
+            self.split_reject(&st.name, attempt, ordinal, round.as_ref(), reason)?
         };
         if approved {
             if defer_reviewed {
@@ -4753,11 +4753,13 @@ impl RunCtx<'_> {
     /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
     /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
     /// next round holds the unit to. A first round's reject keeps every item, and so does a
-    /// reject blaming infrastructure.
+    /// reject blaming infrastructure. `ordinal` is the stage run's infra retry ordinal, so an
+    /// infra rerun's review records its own lessons.
     fn split_reject(
         &self,
         unit: &str,
         attempt: u32,
+        ordinal: u32,
         round: Option<&ReviewRound>,
         reason: String,
     ) -> Result<(bool, String, Vec<RequiredItem>), Error> {
@@ -4772,13 +4774,14 @@ impl RunCtx<'_> {
             .into_iter()
             .partition(|item| round.blocks(item));
         for (n, item) in dropped.iter().enumerate() {
-            // Replay-keyed on unit + attempt + item: a re-run review over the recorded verdict
-            // records each lesson once.
+            // Replay-keyed on unit + attempt + infra retry ordinal + item: a re-run review over
+            // the recorded verdict records each lesson once, and an infra rerun's fresh review
+            // records its own.
             self.emit_keyed(
-                &format!("{unit}/operator-lesson#{attempt}.{n}"),
+                &format!("{unit}/operator-lesson#{attempt}~{ordinal}.{n}"),
                 contextgraph::TYPE_LESSON_LEARNED,
                 json!({
-                    "id": format!("lesson-{unit}-{attempt}-operator-{n}"),
+                    "id": format!("lesson-{unit}-{attempt}-{ordinal}-operator-{n}"),
                     "summary": format!(
                         "For the operator: review of unit {unit:?} at attempt {attempt} found, \
                          outside the delta it reviewed, an item that is no correctness defect, \
