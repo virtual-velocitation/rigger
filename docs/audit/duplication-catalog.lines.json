@@ -814,13 +814,13 @@
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
-        "start_line": 287,
-        "end_line": 287
+        "start_line": 283,
+        "end_line": 283
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
-        "start_line": 370,
-        "end_line": 370
+        "start_line": 366,
+        "end_line": 366
       },
       {
         "file": "tests/common/fixtures/git.rs",
@@ -5424,8 +5424,8 @@
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
-        "start_line": 23,
-        "end_line": 30
+        "start_line": 19,
+        "end_line": 26
       }
     ]
   },

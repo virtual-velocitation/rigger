@@ -1844,8 +1844,8 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/common/cli.rs:18-18` `Command::new`
 - `tests/common/cli.rs:54-54` `Command::new`
 - `tests/common/cli.rs:181-181` `Command::new`
-- `tests/common/fixtures/conductor.rs:287-287` `Command::new`
-- `tests/common/fixtures/conductor.rs:370-370` `Command::new`
+- `tests/common/fixtures/conductor.rs:283-283` `Command::new`
+- `tests/common/fixtures/conductor.rs:366-366` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
 - `tests/common/fixtures/git.rs:45-45` `Command::new`
 - `tests/common/fixtures/host.rs:10-10` `Command::new`
@@ -3925,7 +3925,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-driver/src/driver/replay.rs:371-378` `opts_for`
 - `tests/claude_code_stream_periphery.rs:142-148` `opts`
-- `tests/common/fixtures/conductor.rs:23-30` `implementer_opts`
+- `tests/common/fixtures/conductor.rs:19-26` `implementer_opts`
 
 #### `dup-b43ee3b4b5bb` (exact, 2 sites)
 
