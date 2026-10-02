@@ -1,5 +1,8 @@
 use super::*;
 
+use rigger::eventstore::TypeSelection;
+use rigger::review;
+
 /// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
 /// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
 /// breadcrumb write in this module - a failed write only risks a later false suppression of an
@@ -451,7 +454,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
     let cfg = load_run_config(".")?;
-    let (criteria, _) = load_criteria(args.spec.as_deref())?;
+    let (criteria, text) = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
     // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
@@ -553,6 +556,18 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
     // pinned boundary and the drift check below.
     let definition = definition_hash(".")?;
+
+    // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
+    // a refused step mints no run and prints no JSON line.
+    RunStartCritique {
+        command: "rigger step",
+        backend: backend.as_ref(),
+        identity: &project_identity(),
+        workflow: &cfg.workflow,
+        root: &review::spec_root(&cwd, &repo),
+        text: &text,
+    }
+    .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)?;
 
     // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
     // current run), so the conductor's own `ensure_started` adopts this just-minted
@@ -1371,7 +1386,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let (criteria, _) = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
@@ -1432,6 +1447,14 @@ fn run_cli(parsed: &RunArgs) -> Res {
         &criteria,
         false,
         &base_tip,
+        &RunStartCritique {
+            command: "rigger run",
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        },
     )?;
     // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
     // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
@@ -1495,6 +1518,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
 }
 
 /// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
+/// First, before anything is appended, a command that would begin a new run on a spec whose
+/// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
+/// caller hands `critique`, naming its own command).
 /// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
 /// a clean slice even if the latest run already matches (which `ensure_started` would adopt),
 /// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
@@ -1522,7 +1548,9 @@ fn fresh_run_if_requested(
     criteria: &[String],
     fresh_notice_to_stderr: bool,
     base_tip: &str,
+    critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
     let definition = definition_hash(".")?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
     // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
@@ -1560,6 +1588,119 @@ fn fresh_run_if_requested(
         parsed.spec.as_deref().unwrap_or(""),
     )?;
     Ok(())
+}
+
+/// What the spec-critique refusal ([`RunStartCritique::refuse_unless_clean`]) reads beside the
+/// run a command is about to begin or adopt (spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS
+/// CLEAN): every input but the spec, its criteria and `--fresh`, which the run entry holds.
+struct RunStartCritique<'a> {
+    /// The invoking command: the prefix of the refusal and of the no-critic line.
+    command: &'a str,
+    /// The selected backend, which the project store and the critique's own store
+    /// ([`critique_store`]) are both namespaced over.
+    backend: &'a dyn EventStore,
+    /// The project identity both stores are namespaced by.
+    identity: &'a str,
+    /// The loaded workflow, whose critic ([`rigger::wave::critic`]) decides whether the refusal
+    /// applies.
+    workflow: &'a config::Workflow,
+    /// The root the spec path and every `governs` entry are made relative to
+    /// ([`review::spec_root`]).
+    root: &'a Path,
+    /// The exact spec text `load_criteria` read for this command: the critique is keyed on its
+    /// hash.
+    text: &'a str,
+}
+
+impl RunStartCritique<'_> {
+    /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
+    /// clean - the one decision every CLI run start makes before it appends anything. A command
+    /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
+    /// stream's `RunStarted` events, `criteria` and `fresh`), proceeds. Under a workflow naming no
+    /// critic a new run proceeds after one line on stderr saying so. Otherwise the new run is
+    /// refused - with the text [`new_run_refusal`] renders - when the spec is outside the
+    /// repository, when its text has no critique, or while the critique holds an open BLOCKING
+    /// finding ([`review::open_findings`]). It writes nothing.
+    fn refuse_unless_clean(&self, spec: Option<&str>, criteria: &[String], fresh: bool) -> Res {
+        let Some(spec) = spec else {
+            return Ok(());
+        };
+        let project = Namespaced::new(self.backend, self.identity);
+        let started = project.read_stream_typed(
+            conductor::STREAM,
+            0,
+            TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
+        )?;
+        if runscope::adopted_run(&started, criteria, fresh).is_some() {
+            return Ok(());
+        }
+        let path = review::normalize_spec_path(self.root, spec);
+        let named = path.as_deref().unwrap_or(spec);
+        if rigger::wave::critic(self.workflow).is_none() {
+            eprintln!(
+                "{}: no spec critique for {named}: {}",
+                self.command,
+                rigger::wave::NO_CRITIC_CLAUSE
+            );
+            return Ok(());
+        }
+        let open = match &path {
+            Some(path) => self.open_ids(&project, path)?,
+            None => None,
+        };
+        match open {
+            Some(ids) if ids.is_empty() => Ok(()),
+            open => Err(new_run_refusal(self.command, named, open.as_deref()).into()),
+        }
+    }
+
+    /// The open BLOCKING findings of the critique of this text, `spec` being its repo-relative
+    /// path: read through the critique's own store, the resolutions from the project run stream's
+    /// `DecisionMade` events. `None` when the text has no critique.
+    fn open_ids(
+        &self,
+        project: &dyn EventStore,
+        spec: &str,
+    ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+        let critiques = critique_store(self.backend, self.identity);
+        let Some(critique) = review::read_critique(&critiques, &review::critique_hash(self.text))?
+        else {
+            return Ok(None);
+        };
+        let decisions = project.read_stream_typed(
+            conductor::STREAM,
+            0,
+            TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
+        )?;
+        Ok(Some(review::open_findings(
+            &critique, &decisions, spec, self.root,
+        )))
+    }
+}
+
+/// The refusal of a new run on `spec` by `command` (spec 112, Notes): why - `open` lists the
+/// critique's open BLOCKING finding ids, `None` when the text has no critique - then the two
+/// commands that clear it, their labels padded to one column.
+fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String {
+    let (why, route, resolves) = match open {
+        None => (
+            "not critiqued".to_string(),
+            "or, once critiqued, record a resolution:",
+            "[<ids>]".to_string(),
+        ),
+        Some(ids) => (
+            format!("open BLOCKING findings: {}", ids.join(", ")),
+            "or record a resolution:",
+            serde_json::json!(ids).to_string(),
+        ),
+    };
+    let governs = serde_json::json!([spec]);
+    format!(
+        "{command}: refusing to begin a new run on {spec}: {why}\n  {:<33} rigger critique \
+         {spec}\n  {route:<33} rigger emit DecisionMade '{{\"id\":\"...\",\"governs\":{governs},\
+         \"resolves\":{resolves},\"summary\":\"...\"}}'",
+        "amend the spec and critique it:"
+    )
 }
 
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
@@ -1609,7 +1750,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let (criteria, _) = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
     // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
@@ -1663,6 +1804,14 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
         &criteria,
         true,
         &base_tip,
+        &RunStartCritique {
+            command,
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        },
     )?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;

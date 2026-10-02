@@ -15,21 +15,9 @@ use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{Error, Event, EventStore, ExpectedRevision};
 use crate::run::read::read_run;
 use crate::run::{
-    current_run, effective_definition, RunStart, RunStarted, META_DEFINITION,
+    adopted_run, current_run, effective_definition, RunStart, RunStarted, META_DEFINITION,
     META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_STARTED,
 };
-
-/// The latest [`RunStarted`] in `events`, decoded, or `None` when no run has started.
-/// Mirrors [`crate::run`]'s own private helper of the same name (each module folds the
-/// slice it is handed; duplicating this five-line fold is cheaper and clearer than
-/// exporting a `pub(crate)` seam across the split for one internal use each side).
-fn latest(events: &[Event]) -> Option<RunStarted> {
-    events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice(&e.data).ok())
-}
 
 /// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
 /// operator explicitly accepted the on-disk definition drift, so the run re-pins from `old`
@@ -135,29 +123,28 @@ pub fn ensure_started_pinned(
     spec_path: &str,
 ) -> Result<RunStart, Error> {
     let events = read_run(store, STREAM)?;
-    if let Some(run) = latest(&events) {
-        if run.criteria.as_slice() == criteria {
-            let pinned = effective_definition(current_run(&events));
-            // Free when pinning is disabled (`definition` empty), the run is unpinned
-            // (`pinned` empty - a legacy start), or the pin agrees with what is on disk.
-            if definition.is_empty() || pinned.is_empty() || pinned == definition {
-                return Ok(RunStart::Ready(run.run));
-            }
-            // Definition drift on a LIVE run.
-            if rebase {
-                record_rebase(store, &run.run, &pinned, definition)?;
-                return Ok(RunStart::Rebased {
-                    run: run.run,
-                    pinned,
-                    current: definition.to_string(),
-                });
-            }
-            return Ok(RunStart::Drifted {
+    // THE MINT DECISION (spec 112): adopt the latest run when its criteria match, else mint.
+    if let Some(run) = adopted_run(&events, criteria, false) {
+        let pinned = effective_definition(current_run(&events));
+        // Free when pinning is disabled (`definition` empty), the run is unpinned
+        // (`pinned` empty - a legacy start), or the pin agrees with what is on disk.
+        if definition.is_empty() || pinned.is_empty() || pinned == definition {
+            return Ok(RunStart::Ready(run.run));
+        }
+        // Definition drift on a LIVE run.
+        if rebase {
+            record_rebase(store, &run.run, &pinned, definition)?;
+            return Ok(RunStart::Rebased {
                 run: run.run,
                 pinned,
                 current: definition.to_string(),
             });
         }
+        return Ok(RunStart::Drifted {
+            run: run.run,
+            pinned,
+            current: definition.to_string(),
+        });
     }
     // A new campaign / empty store: a fresh run is always free - it pins the current definition
     // and persists the resolved run-branch base, its tip, and the spec path.
@@ -567,7 +554,7 @@ mod tests {
             assert_stamped_once_at_mint(
                 ("", "", "specs/82-unique-pr-heads.md"),
                 ("", "", "specs/99-other.md"),
-                |events| latest(events).map(|started| started.spec),
+                |events| adopted_run(events, &["crit".to_string()], false).map(|run| run.spec),
                 "specs/82-unique-pr-heads.md",
                 "start_fresh persists the launching spec path in the RunStarted body",
                 "adopt keeps the spec path the original mint stamped; it never re-stamps",
@@ -593,7 +580,11 @@ mod tests {
             Some(run.as_str()),
             "the RunStarted carries its own run id in metadata"
         );
-        assert_eq!(latest(&events).unwrap().criteria, ["crit"]);
+        assert_eq!(
+            adopted_run(&events, &["crit".to_string()], false).map(|started| started.run),
+            Some(run),
+            "the minted run is the one a same-criteria step adopts"
+        );
     }
 
     #[test]
@@ -733,7 +724,7 @@ mod tests {
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let started = latest(&events).unwrap();
+        let started = adopted_run(&events, &["crit".to_string()], false).unwrap();
         assert_eq!(
             started.definition, "hash-A",
             "the RunStarted pins the current definition hash"

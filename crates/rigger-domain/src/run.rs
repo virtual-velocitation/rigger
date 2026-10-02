@@ -149,6 +149,19 @@ fn latest(events: &[Event]) -> Option<RunStarted> {
         .and_then(Event::decode::<RunStarted>)
 }
 
+/// THE MINT DECISION (spec 112): the run a command adopts, or `None` when it begins a new run.
+/// A command begins a new run when `--fresh` was passed (`fresh`), when `events` (the run
+/// stream, or its `RunStarted` events alone) holds no run, or when the latest run's criteria
+/// differ from `criteria`; otherwise it adopts that latest run - a resume, with or without
+/// `--rebase-definition`. The one decision: the store's adopt-or-mint
+/// (`run_store::ensure_started_pinned`) and the CLI's spec-critique refusal both ask it.
+pub fn adopted_run(events: &[Event], criteria: &[String], fresh: bool) -> Option<RunStarted> {
+    if fresh {
+        return None;
+    }
+    latest(events).filter(|run| run.criteria == criteria)
+}
+
 /// The current run's slice of `events`: the contiguous suffix from the LAST
 /// [`TYPE_RUN_STARTED`] onward. When no run has started (a legacy store, or one this
 /// feature has never scoped), the WHOLE slice is returned - so a store predating run
