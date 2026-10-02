@@ -28,6 +28,7 @@ use common::cli::{
 };
 use common::fixtures::{
     critique_reject, keyed_index, keyed_payload, stop_records, the_stop_records,
+    DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -50,17 +51,6 @@ const HALT: &str = "amend the spec and relaunch: plan-critique found a spec defe
 fn spec_ambiguity_first() -> String {
     critique_reject("spec-ambiguity", &["adv-1"])
 }
-
-/// The cause contract of the DAG critique prompt's verdict paragraph, clause by clause: the
-/// `spec-ambiguity` cause the stop reads, asked for only on a defect in a criterion's own text;
-/// `decomposition-conflict`, asked for on every defect a re-plan can fix; and the latter again
-/// when the adjudicator is unsure, so an unsure reject never stops the run.
-const CAUSE_CONTRACT: [&str; 3] = [
-    "\"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own text and \
-     no decomposition can remove it",
-    "\"cause\":\"decomposition-conflict\" for every defect a re-plan can fix",
-    "When unsure, \"cause\":\"decomposition-conflict\".",
-];
 
 /// A plan stage producing the DAG and the plan-critique gate over it. `max_retries: 3` leaves
 /// the gate a re-plan after its second reject, so a stop - not the remediation bound - is what
@@ -252,12 +242,12 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
         the_stop_records(),
         "the lesson, the SpecDefect and the escalation, in that order, each under its key"
     );
-    let lesson = keyed_payload(&events, "plan-critique/spec-defect-lesson#1");
+    let lesson = keyed_payload(&events, STOP_LESSON_KEY);
     assert_eq!(
         (
             &lesson["about"],
-            keyed_payload(&events, "plan-critique/spec-defect#1"),
-            keyed_payload(&events, "plan-critique/spec-defect-escalated#1"),
+            keyed_payload(&events, STOP_SPEC_DEFECT_KEY),
+            keyed_payload(&events, STOP_ESCALATED_KEY),
         ),
         (
             &json!([SPEC]),
@@ -321,10 +311,7 @@ fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
     let (dir, _) = answered_second_spec_ambiguity_reject();
     step(dir.path(), "the stopping step");
     let log = read_run_events(dir.path());
-    for crashed_before in [
-        "plan-critique/spec-defect-lesson#1",
-        "plan-critique/spec-defect-escalated#1",
-    ] {
+    for crashed_before in [STOP_LESSON_KEY, STOP_ESCALATED_KEY] {
         let at = keyed_index(&log, crashed_before);
         let resumed = critique_project();
         with_run_store(resumed.path(), |store| {
@@ -400,25 +387,22 @@ fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
 
 /// Given a run whose plan-critique adjudicator is parked at its first round and again at the
 /// re-plan round its first reject drove, when each fetches its prompt as a courier does (`rigger
-/// prompt`), then each prompt states the cause contract once - `spec-ambiguity` only for a
-/// defect in a criterion's own text, `decomposition-conflict` for every defect a re-plan can fix
-/// and when unsure - and an adjudicator answering both rounds with the cause the contract names
-/// for a defect in a criterion's own text stops the run.
+/// prompt`), then each prompt carries the DAG critique verdict paragraph exactly once: every
+/// round's adjudicator - the re-plan round's, whose reject is the one that stops, included - is
+/// asked for `spec-ambiguity`, spelled as the stop reads it, only on a defect in a criterion's
+/// own text, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure.
+/// The stop that round's `spec-ambiguity` reject then drives is pinned by
+/// [`a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step`].
 #[test]
 fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
-    let (dir, served) = answered_second_spec_ambiguity_reject();
+    let (_dir, served) = answered_second_spec_ambiguity_reject();
     assert_eq!(
         served
             .each_ref()
-            .map(|prompt| CAUSE_CONTRACT.map(|clause| prompt.matches(clause).count())),
-        [[1, 1, 1], [1, 1, 1]],
-        "the first round's and the re-plan round's prompts each state every clause once:\n{}",
+            .map(|prompt| prompt.matches(DAG_CRITIQUE_VERDICT_PARAGRAPH).count()),
+        [1, 1],
+        "the first round's and the re-plan round's prompts each carry the verdict paragraph \
+         once:\n{}",
         served.join("\n---\n")
-    );
-    assert_eq!(
-        step(dir.path(), "the stopping step")["halted"].as_str(),
-        Some(HALT),
-        "the cause the contract names for a defect in a criterion's own text is the one the stop \
-         reads"
     );
 }

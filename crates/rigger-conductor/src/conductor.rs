@@ -14122,7 +14122,8 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log, stop_records,
-        the_stop_records,
+        the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+        STOP_SPEC_DEFECT_KEY,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -43668,7 +43669,7 @@ mod tests {
             the_stop_records(),
             "the lesson, the SpecDefect and the escalation, in that order, each under its key"
         );
-        let lesson = keyed_payload(&run_log(&st), "plan-critique/spec-defect-lesson#1");
+        let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
         assert_eq!(
             (&lesson["summary"], &lesson["about"]),
             (&json!(STOP_LESSON), &json!([STOP_SPEC])),
@@ -43676,8 +43677,8 @@ mod tests {
         );
         assert_eq!(
             (
-                keyed_payload(&run_log(&st), "plan-critique/spec-defect#1"),
-                keyed_payload(&run_log(&st), "plan-critique/spec-defect-escalated#1"),
+                keyed_payload(&run_log(&st), STOP_SPEC_DEFECT_KEY),
+                keyed_payload(&run_log(&st), STOP_ESCALATED_KEY),
             ),
             (json!({"reason": STOP_HALT}), json!({"id": "plan-critique"})),
             "the SpecDefect carries the halt text; the escalation is the gate's own"
@@ -43757,7 +43758,7 @@ mod tests {
         let rs = critique_step(&st, &driver);
         let halt =
             "amend the spec and relaunch: plan-critique found a spec defect in the spec (none upheld)";
-        let lesson = keyed_payload(&run_log(&st), "plan-critique/spec-defect-lesson#1");
+        let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
         assert_eq!(
             (rs.budget_halt.as_deref(), &lesson["about"]),
             (Some(halt), &json!([])),
@@ -43818,10 +43819,7 @@ mod tests {
         let (st, _, _) = stopped_run();
         let log = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // A crash right after the stopping reject's UnitFailed, and one after the SpecDefect.
-        for crashed_before in [
-            "plan-critique/spec-defect-lesson#1",
-            "plan-critique/spec-defect-escalated#1",
-        ] {
+        for crashed_before in [STOP_LESSON_KEY, STOP_ESCALATED_KEY] {
             let at = keyed_index(&log, crashed_before);
             let resumed = Store::open(":memory:").unwrap();
             for e in &log[..at] {
@@ -44028,7 +44026,7 @@ mod tests {
                 "the stop already completed",
                 with(
                     Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
-                        .with_meta(META_REPLAY_KEY, "plan-critique/spec-defect-escalated#1"),
+                        .with_meta(META_REPLAY_KEY, STOP_ESCALATED_KEY),
                 ),
                 2,
             ),
@@ -44100,22 +44098,8 @@ mod tests {
     fn the_dag_critique_verdict_paragraph_carries_the_spec_defect_cause_contract() {
         let driver = one_unit_critique();
         let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
-        let verdict = "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
-             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition back to \
-             the planner. Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) \
-             defect, a unit over the size cap, or a defect in a criterion's own text that no \
-             decomposition can remove - never for mechanical blast-radius overlap alone. A \
-             reject's cause follows this gate's contract, which governs it over any generic \
-             cause wording in your persona: \"cause\":\"spec-ambiguity\" only when the upheld \
-             defect is in a criterion's own text and no decomposition can remove it (two \
-             criteria that contradict under every landing order, a criterion no plan can \
-             satisfy, a demanded mitigation no criterion owns); \
-             \"cause\":\"decomposition-conflict\" for every defect a re-plan can fix (twin \
-             units, a missing exclusion between units, a unit over the size cap, a unit owning \
-             no criterion, a split the planner chose). When unsure, \
-             \"cause\":\"decomposition-conflict\".\n";
         assert!(
-            prompt.contains(verdict),
+            prompt.contains(DAG_CRITIQUE_VERDICT_PARAGRAPH),
             "the verdict paragraph carries the cause contract:\n{prompt}"
         );
     }
