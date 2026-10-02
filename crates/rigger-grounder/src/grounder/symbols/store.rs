@@ -256,6 +256,32 @@ mod tests {
         assert!(load(dir.path().to_str().unwrap()).is_none());
     }
 
+    /// Gap 104: an index persisted under an older extraction generation (a tags query or
+    /// extractor change since) loads as absent, so the grounder rebuilds it and the graph ingest
+    /// re-extracts every file rather than serving the old extraction forever.
+    #[test]
+    fn an_index_persisted_under_another_extraction_generation_loads_as_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        save(&sample(), root).unwrap();
+        assert!(load(root).is_some(), "a current-generation index loads");
+        let path = index_path(root);
+        let mut persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        persisted["grammar"] = serde_json::Value::String("ts-tags-v0".into());
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(
+            load(root).is_none(),
+            "an index from another extraction generation must load as absent"
+        );
+        persisted.as_object_mut().unwrap().remove("grammar");
+        std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+        assert!(
+            load(root).is_none(),
+            "an index predating the generation stamp must load as absent"
+        );
+    }
+
     #[test]
     fn content_hash_is_line_ending_normalized() {
         assert_eq!(content_hash("a\r\nb\r\n"), content_hash("a\nb\n"));
