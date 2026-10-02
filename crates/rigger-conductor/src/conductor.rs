@@ -43776,7 +43776,7 @@ mod tests {
             }))
             .unwrap(),
         )
-        .with_meta(META_REPLAY_KEY, &format!("plan-critique/failed#{k}"))
+        .with_meta(META_REPLAY_KEY, format!("plan-critique/failed#{k}"))
     }
 
     /// The re-plan spawn at `attempt`.
@@ -43820,7 +43820,7 @@ mod tests {
         ];
         let emitted = vec![
             run[0].clone(),
-            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, &re_plan_id(1)),
+            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, re_plan_id(1)),
             run[2].clone(),
         ];
         let mut other_stop_done = run.clone();
@@ -43861,7 +43861,7 @@ mod tests {
         };
         let other_gate = |e: &Event| {
             let key = e.meta[META_REPLAY_KEY].replace("plan-critique/", "other-gate/");
-            e.clone().with_meta(META_REPLAY_KEY, &key)
+            e.clone().with_meta(META_REPLAY_KEY, key)
         };
         let cases: Vec<(&str, Vec<Event>, u32)> = vec![
             ("no reject yet", run.clone(), 0),
