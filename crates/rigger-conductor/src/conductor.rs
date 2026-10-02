@@ -353,14 +353,19 @@ enum GateKey {
     PostMergeVerdict,
 }
 
-/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`.
-fn gate_key(kind: GateKey, unit: &str, attempt: u32, gate: &str) -> String {
+/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`, under the
+/// infra rerun ordinal `retry` (F3): `{unit}/{infix}:{gate}#{attempt}`, suffixed `~retry{n}`
+/// exactly as a spawn id is ([`spawn::with_retry`]) once an infrastructure failure has rerun the
+/// stage at the same attempt - so the rerun gates afresh instead of replaying the infra red the
+/// earlier ordinal recorded. Ordinal 0 adds nothing: every key an infra-free attempt mints is
+/// unchanged.
+fn gate_key(kind: GateKey, unit: &str, attempt: u32, retry: u32, gate: &str) -> String {
     let infix = match kind {
         GateKey::Verdict => "gate",
         GateKey::Skip => "gate-skip",
         GateKey::PostMergeVerdict => "postmerge-gate",
     };
-    format!("{unit}/{infix}:{gate}#{attempt}")
+    spawn::with_retry(format!("{unit}/{infix}:{gate}#{attempt}"), retry)
 }
 
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
@@ -433,16 +438,17 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
     key.split_once("/gate:").map(|(unit, _)| unit)
 }
 
-/// The ATTEMPT ordinal a gate-run key ran under, recovered from the `{unit}/gate:{gate}#{attempt}`
-/// grammar [`gate_key`] mints. Distinct attempts are distinct gate runs (a
-/// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
-/// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
-/// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
-/// the attempt. A key with no `/gate:` infix (a skip / post-merge / artifact key) yields `None`.
+/// The ATTEMPT ordinal a gate-run key ran under, recovered from the
+/// `{unit}/gate:{gate}#{attempt}~retry{n}` grammar [`gate_key`] mints. Distinct attempts are
+/// distinct gate runs (a re-implementation re-gates), so the gate-outcome read
+/// ([`recorded_gate_outcome`]) and the attempt high-water ([`RunCtx::gate_verdict_high_water`])
+/// read it to tell attempts apart. The run segment AFTER `/gate:` (never the whole key) is read
+/// by [`spawn::attempt_of`], the one owner of the `#{attempt}~retry{n}` tail, so neither a `#` in
+/// the unit portion nor an infra rerun's retry ordinal is mis-read as the attempt. A key with no
+/// `/gate:` infix (a skip / post-merge / artifact key) or no `#` yields `None`.
 fn gate_key_attempt(key: &str) -> Option<u32> {
-    let (_, suffix) = key.split_once("/gate:")?;
-    let (_, attempt) = suffix.rsplit_once('#')?;
-    attempt.parse::<u32>().ok()
+    let (_, run) = key.split_once("/gate:")?;
+    run.contains('#').then(|| spawn::attempt_of(run))
 }
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
@@ -500,15 +506,20 @@ struct GateVerdictData {
 /// `false` at the latest attempt => `Some(false)`) mirrors the `GateOutcome` AND `run_gates`
 /// itself computes. Restricting to the LATEST attempt (distinct attempts are distinct gate runs,
 /// keyed by `#{attempt}` via `gate_key_attempt`) keeps a unit that re-gated GREEN after an
-/// earlier red reading `passed`: the prior attempt's red does not carry over. Within one gate key
-/// the latest verdict by log position wins (the same last-write-wins the replay cache reads).
+/// earlier red reading `passed`: the prior attempt's red does not carry over. Within an attempt
+/// the LATEST infra rerun ordinal (`~retry{n}`, F3) is the gate run in force the same way: the
+/// red an infrastructure fault left at ordinal 0 does not outlive the green its rerun recorded.
+/// Within one gate key the latest verdict by log position wins (the same last-write-wins the
+/// replay cache reads).
 pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
-    // Fold this unit's gate-run verdicts into a per-attempt, per-gate-key map in ONE pass over
-    // events. Keying the inner map by the full gate-run key keeps distinct gates distinct while
-    // letting a re-emit of the SAME key overwrite (last-write-wins by log position); the outer
-    // `BTreeMap` keeps attempts ordered so the latest attempt is `next_back`.
-    let mut by_attempt: std::collections::BTreeMap<u32, std::collections::BTreeMap<&str, bool>> =
-        std::collections::BTreeMap::new();
+    // Fold this unit's gate-run verdicts into a per-(attempt, rerun ordinal), per-gate-key map in
+    // ONE pass over events. Keying the inner map by the full gate-run key keeps distinct gates
+    // distinct while letting a re-emit of the SAME key overwrite (last-write-wins by log
+    // position); the outer `BTreeMap` keeps the gate runs ordered so the latest is `next_back`.
+    let mut by_attempt: std::collections::BTreeMap<
+        (u32, u32),
+        std::collections::BTreeMap<&str, bool>,
+    > = std::collections::BTreeMap::new();
     for e in events {
         if e.type_ != contextgraph::TYPE_GATE_VERDICT {
             continue;
@@ -524,12 +535,12 @@ pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
         };
         if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
             by_attempt
-                .entry(attempt)
+                .entry((attempt, spawn::retry_of(key)))
                 .or_default()
                 .insert(key.as_str(), v.pass);
         }
     }
-    // The latest attempt's outcome is the AND across its gates: any failing gate => `Some(false)`.
+    // The latest gate run's outcome is the AND across its gates: any failing gate => `Some(false)`.
     let (_, latest) = by_attempt.iter().next_back()?;
     Some(latest.values().all(|&pass| pass))
 }
@@ -3092,15 +3103,16 @@ impl RunCtx<'_> {
     /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
     /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
     /// (which matches only the `/gate:` gate-RUN infix, so a `/gate-skip:` provenance key or a
-    /// `deferred/gate:` key never contributes) and the trailing `#{attempt}` via `rsplit_once`;
-    /// returns the max over the unit's keys, or `None` when it has recorded no gate verdict yet.
+    /// `deferred/gate:` key never contributes) and the attempt via [`gate_key_attempt`] (which
+    /// sees through an infra rerun's `~retry{n}` suffix); returns the max over the unit's keys, or
+    /// `None` when it has recorded no gate verdict yet.
     fn gate_verdict_high_water(&self, unit: &str) -> Option<u32> {
         self.gate_verdicts
             .lock()
             .unwrap()
             .keys()
             .filter(|k| unit_of_gate_key(k) == Some(unit))
-            .filter_map(|k| k.rsplit_once('#').and_then(|(_, a)| a.parse::<u32>().ok()))
+            .filter_map(|k| gate_key_attempt(k))
             .max()
     }
 
@@ -3305,7 +3317,7 @@ impl RunCtx<'_> {
         inputs: &[String],
         blast_radius: &[String],
     ) -> Result<(), Error> {
-        let key = gate_key(GateKey::Skip, unit, attempt, gid);
+        let key = gate_key(GateKey::Skip, unit, attempt, 0, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
@@ -7730,9 +7742,9 @@ impl RunCtx<'_> {
             // other selection uses the canonical gate-run key.
             let key = match selection {
                 GateSelection::PostMerge => {
-                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, gid)
+                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, 0, gid)
                 }
-                _ => gate_key(GateKey::Verdict, &st.name, attempt, gid),
+                _ => gate_key(GateKey::Verdict, &st.name, attempt, 0, gid),
             };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
@@ -13415,7 +13427,7 @@ mod tests {
             )
             .with_meta(
                 META_REPLAY_KEY,
-                gate_key(GateKey::Verdict, unit, attempt, gate),
+                gate_key(GateKey::Verdict, unit, attempt, 0, gate),
             )
         }
 
@@ -13481,7 +13493,7 @@ mod tests {
             }))
             .unwrap(),
         )
-        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, "test"));
+        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, 0, "test"));
         let artifact = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({ "gate": "build", "pass": true, "artifact": "src/a.rs" }))
@@ -13501,6 +13513,12 @@ mod tests {
         // Every reader of the key must see through it: the unit before `/gate:`, the attempt
         // before `~retry`.
         let retried = "u1/gate:test#2~retry1";
+        assert_eq!(gate_key(GateKey::Verdict, "u1", 2, 1, "test"), retried);
+        assert_eq!(
+            gate_key(GateKey::Verdict, "u1", 2, 0, "test"),
+            "u1/gate:test#2",
+            "ordinal 0 leaves every infra-free key unchanged"
+        );
         assert_eq!(unit_of_gate_key(retried), Some("u1"));
         assert_eq!(
             gate_key_attempt(retried),
@@ -20698,7 +20716,7 @@ mod tests {
         const UNIT: &str = "gc";
         const GATE: &str = "g@h1";
         let started_key = format!("{UNIT}/started");
-        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, GATE);
+        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, 0, GATE);
 
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -26036,7 +26054,10 @@ mod tests {
                 }))
                 .unwrap(),
             )
-            .with_meta(META_REPLAY_KEY, gate_key(GateKey::Verdict, "s", lane, "ok"))
+            .with_meta(
+                META_REPLAY_KEY,
+                gate_key(GateKey::Verdict, "s", lane, 0, "ok"),
+            )
         }));
         prior.push(Event::new(
             ledger::TYPE_UNIT_ESCALATED,
@@ -31740,7 +31761,7 @@ mod tests {
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, "ok");
+        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, 0, "ok");
         assert!(
             events
                 .iter()

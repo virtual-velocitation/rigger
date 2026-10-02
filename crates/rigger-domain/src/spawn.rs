@@ -146,7 +146,21 @@ pub fn spawn_id(unit: &str, role: &str, attempt: u32) -> String {
 /// assert_eq!(spawn_retry_id("u", ROLE_ADJUDICATOR, 1, 2), "u/adjudicator#1~retry2");
 /// ```
 pub fn spawn_retry_id(unit: &str, role: &str, attempt: u32, retry: u32) -> String {
-    let base = spawn_id(unit, role, attempt);
+    with_retry(spawn_id(unit, role, attempt), retry)
+}
+
+/// Suffix `base` with the deterministic `~retry{n}` RETRY ORDINAL: `retry == 0` returns `base`
+/// unchanged, so an original keeps its exact id, and each `retry > 0` appends `~retry{retry}` -
+/// `~` is neither the `/` nor the `#` an id's structure reserves. The ONE minting authority for
+/// the suffix [`retry_of`] reads back, shared by a respawn's [`spawn_retry_id`] and the gate key
+/// an infra rerun records its verdict under, so the two can never spell it apart.
+///
+/// ```
+/// # use rigger_domain::spawn::with_retry;
+/// assert_eq!(with_retry("u/gate:test#2".into(), 0), "u/gate:test#2");
+/// assert_eq!(with_retry("u/gate:test#2".into(), 1), "u/gate:test#2~retry1");
+/// ```
+pub fn with_retry(base: String, retry: u32) -> String {
     if retry == 0 {
         base
     } else {
@@ -210,7 +224,8 @@ pub fn unit_of(id: &str) -> Option<&str> {
 /// respawn suffix trimmed first), or `0` when the id carries no `#{attempt}`. The inverse of
 /// the `#{attempt}` ordinal [`spawn_id`] mints - kept here beside [`spawn_role`] so the id
 /// grammar has ONE owner: a reader never re-parses `#`/`~retry` in a view adapter, which would
-/// silently diverge if the separators ever moved with the struct.
+/// silently diverge if the separators ever moved with the struct. A gate key's
+/// `{gate}#{attempt}~retry{n}` run segment ends in the same tail, so its attempt reads here too.
 ///
 /// ```
 /// # use rigger_domain::spawn::attempt_of;
