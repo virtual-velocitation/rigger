@@ -1472,6 +1472,18 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 
+/// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
+/// each marks an infrastructure or configuration fault that halts the step loudly, with the
+/// marker stripped from the operator's message, while charging the unit no attempt (no
+/// `UnitFailed`, no `UnitEscalated`) and recording no per-unit lesson that would misattribute
+/// the fault to the unit. A new halt joins this list; it never grows an arm of its own.
+const HALT_MARKERS: [&str; 4] = [
+    DEGENERATE_MARKER,
+    MISMATCH_MARKER,
+    PLAN_LANDING_MARKER,
+    LAND_REFUSED_MARKER,
+];
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -3675,60 +3687,21 @@ impl RunCtx<'_> {
                     // adv-confirm-review-tier-no-budgetexhausted,
                     // adv-budget-guard-cannot-assemble-reviewed-unit).
                     Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
-                    // A degenerate-reviewer HALT (Gap 18) is an INFRASTRUCTURE fault, not a
-                    // unit failure: the operator's reviewer agent/driver returned only
-                    // empty results. Route it through its OWN arm (like the park/budget
-                    // sentinels) - propagate the loud halt as the wave's error, but emit NO
-                    // per-unit lesson: a lesson here would misattribute the operator's
-                    // broken reviewer to the unit under review (finding adv-u2gap18-halt-
-                    // lesson-misattribution). It charges no attempt (no UnitFailed/
-                    // UnitEscalated - the halt writes nothing against the unit). Strip the
-                    // recognition marker so the operator's halt message stays clean.
-                    Err(e) if carries_marker(&e, DEGENERATE_MARKER) => {
+                    // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
+                    // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
+                    // landing refused by the run checkout's local changes) - is an
+                    // infrastructure or configuration fault, not the unit's failure. ONE arm for
+                    // all of them: propagate the loud halt as the wave's error with the
+                    // recognition marker stripped (so the operator's message stays clean), emit
+                    // NO per-unit lesson here (it would misattribute the fault to the unit under
+                    // work; `land_refused` records its own path-naming lesson before minting its
+                    // marker), and charge no attempt - no UnitFailed/UnitEscalated is written on
+                    // any halt's path.
+                    Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
                         if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(DEGENERATE_MARKER, "")));
-                        }
-                    }
-                    // A runtime verdict-channel mismatch (spec 18, unit 3) is an OPERATOR
-                    // persona-config fault, not the unit's fault: the gating reviewer
-                    // emitted its approve-shaped verdict as an event but put nothing on the
-                    // result channel the gate reads. Route it through its OWN arm like the
-                    // degenerate-reviewer halt - propagate the loud hard error (marker
-                    // stripped) but emit NO per-unit lesson (a lesson would misattribute the
-                    // operator's broken persona to the unit under review) and charge no
-                    // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
-                        }
-                    }
-                    // A plan-stage commit-landing infra fault (spec 88 c4,
-                    // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker)
-                    // is a CONDUCTOR-SIDE git-plumbing fault around landing a
-                    // producer's own commits onto the run branch, not the unit's
-                    // fault: route it through its OWN arm exactly like the
-                    // degenerate-reviewer and verdict-channel-mismatch halts -
-                    // propagate the loud hard error (marker stripped) but emit NO
-                    // per-unit lesson (a lesson would misattribute the conductor's own
-                    // git-plumbing fault to the producer unit) and charge no attempt
-                    // (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, PLAN_LANDING_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
-                        }
-                    }
-                    // A land-refused-for-local-changes infra fault (spec 103 criterion 8):
-                    // `Worktree::land` found local content in the run checkout blocking the
-                    // fast-forward, a CONDUCTOR-SIDE fault around the run checkout's own
-                    // state, never the unit's fault - its branch is untouched. Route it
-                    // through its OWN arm exactly like the other conductor-side infra faults
-                    // above: propagate the loud hard error (marker stripped) but emit NO
-                    // per-unit lesson here - [`Self::land_refused`] already recorded the
-                    // real, path-naming one before minting this marker - and charge no
-                    // attempt (no UnitFailed/UnitEscalated is written on this path).
-                    Err(e) if carries_marker(&e, LAND_REFUSED_MARKER) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(e.0.replace(LAND_REFUSED_MARKER, "")));
+                            first_err = Some(Error(
+                                HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
+                            ));
                         }
                     }
                     Err(e) => {
@@ -6453,9 +6426,8 @@ impl RunCtx<'_> {
     ///     from `any_parked`, spec 64 c1) - a park anywhere in the chunk answers yes, no
     ///     matter what else also happened in that chunk;
     ///   - "did anything here need to halt the run loudly" (the propagated `Result`,
-    ///     which `run_wave` routes through its dedicated arms -
-    ///     carries_marker(.., DEGENERATE_MARKER)/carries_marker(.., MISMATCH_MARKER)/catch-all,
-    ///     conductor.rs:2874-2917 - per spec 19c) - a GENUINE terminal error anywhere in
+    ///     which `run_wave` routes through its halt arm over [`HALT_MARKERS`] or its
+    ///     catch-all, per spec 19c) - a GENUINE terminal error anywhere in
     ///     the chunk must reach that dispatch, not be masked by a co-chunked park.
     ///
     /// Collapsing both into the ONE `Result` this function returns (round 2's swap-to-
