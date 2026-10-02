@@ -695,8 +695,9 @@ fn a_miss_and_a_catch_re_run_by_name_are_listed_once_each_in_name_order() {
 /// integration tests `foo` and `bar` and its shared `tests/common` module, an integration test
 /// `render` in each of `alpha` and `beta`, and `alpha`'s own shared `tests/common` module - then
 /// one commit each changing `alpha`'s render test, the root's shared module, `alpha`'s shared
-/// module and `beta`'s source. Returns the landing and each change, in that order.
-fn workspace_test_history(repo: &Path) -> [String; 5] {
+/// module, `beta`'s source, the root package's source and `beta`'s README. Returns the landing and
+/// each change, in that order.
+fn workspace_test_history(repo: &Path) -> [String; 7] {
     workspace_repo(repo);
     let test = "#[test]\nfn t() {}\n";
     let helper = "pub fn h() {}\n";
@@ -740,6 +741,16 @@ fn workspace_test_history(repo: &Path) -> [String; 5] {
             )],
             "beta's source changes",
         ),
+        commit_files(
+            repo,
+            &[("src/lib.rs", "pub fn root() -> u8 {\n    2\n}\n")],
+            "the root package's source changes",
+        ),
+        commit_files(
+            repo,
+            &[("crates/beta/README.md", "beta\n")],
+            "beta's README changes",
+        ),
     ]
 }
 
@@ -760,7 +771,8 @@ src/lib.rs:2:5: replace root -> u8 with 2\tfixture-root
 fn a_catch_is_re_run_when_the_test_binary_that_caught_it_changes_wherever_it_lives() {
     let repo = tempfile::tempdir().unwrap();
     let dir = repo.path();
-    let [landed, render, root_common, alpha_common, beta_src] = workspace_test_history(dir);
+    let [landed, render, root_common, alpha_common, beta_src, root_src, beta_readme] =
+        workspace_test_history(dir);
     // A previous spec's record, with no recorded base, holds one catch by each test binary. Each
     // case's run starts one commit before its HEAD, so its spec diff is that one change, and the
     // catches re-run by name are exactly those of the binaries the change reaches.
@@ -770,37 +782,49 @@ fn a_catch_is_re_run_when_the_test_binary_that_caught_it_changes_wherever_it_liv
              binary of the same name",
             &landed,
             &render,
-            "-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 ",
+            Some("-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 "),
         ),
         (
             "the root's shared test module changes: every root integration binary's catches and \
              no crate's",
             &render,
             &root_common,
-            "-F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 0 \
-             -F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 1 ",
+            Some(
+                "-F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 0 \
+                 -F src/lib\\.rs(:[0-9]+:[0-9]+)?: replace root -> u8 with 1 ",
+            ),
         ),
         (
             "a crate's shared test module changes: every integration binary of that crate",
             &root_common,
             &alpha_common,
-            "-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 ",
+            Some("-F crates/alpha/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 0 "),
         ),
         (
             "a crate's source changes: that crate's lib unit-test binary",
             &alpha_common,
             &beta_src,
-            "-F crates/beta/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 1 ",
+            Some("-F crates/beta/src/lib\\.rs(:[0-9]+:[0-9]+)?: replace f -> u8 with 1 "),
+        ),
+        (
+            "the root package's source changes: no binary, since its lib and its bin share src/ \
+             and no path says which of them a change compiles into",
+            &beta_src,
+            &root_src,
+            None,
+        ),
+        (
+            "a crate's file outside its src/ and tests/ changes: no binary",
+            &root_src,
+            &beta_readme,
+            None,
         ),
     ] {
         git_ok(dir, &["checkout", "-q", head]);
         let (run, _scratch) =
             run_gate_over_anchor(dir, base, base, None, CAUGHT_ACROSS_THE_WORKSPACE);
-        assert_swept(
-            &run,
-            Some(&format!("mutants --list --workspace {listed}")),
-            case,
-        );
+        let listing = listed.map(|l| format!("mutants --list --workspace {l}"));
+        assert_swept(&run, listing.as_deref(), case);
     }
 }
 
