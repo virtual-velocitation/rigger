@@ -7,13 +7,6 @@
 use crate::grounder::symbols::model::Lang;
 use std::sync::OnceLock;
 
-/// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
-/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::index_stamp`) so a
-/// recorded radius names the tag-query generation that produced it. Bump it when a shipped
-/// grammar or an authored tags query changes, so a radius computed under an older grammar set
-/// is distinguishable on replay from one the current set would produce.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v2";
-
 /// The Rust `tags` query. The upstream `tree-sitter-rust` `tags.scm` records a call only when the
 /// callee is a bare identifier or a method (`f()`, `x.f()`), so every path-qualified or turbofish
 /// call - `Store::open()`, `crate::sqlite::open_connection()`, `make::<T>()` - left no reference

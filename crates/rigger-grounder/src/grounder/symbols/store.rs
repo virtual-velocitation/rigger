@@ -189,10 +189,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Load the persisted index, or `None` when it is absent or unreadable (a cold start - the
 /// caller builds + persists it). A corrupt/partial file also yields `None`, so a stale artifact
-/// never crashes grounding; it is transparently rebuilt.
+/// never crashes grounding; it is transparently rebuilt. So does an index built under another
+/// extraction generation ([`SymbolIndex::is_current`]): its symbols are what an older extractor
+/// saw, and serving them would hide every fact the current one records.
 pub fn load(dir: &str) -> Option<SymbolIndex> {
     let bytes = std::fs::read(index_path(dir)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_slice::<SymbolIndex>(&bytes)
+        .ok()
+        .filter(SymbolIndex::is_current)
 }
 
 #[cfg(test)]

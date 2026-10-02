@@ -521,7 +521,7 @@ impl Grounder for Symbols {
         format!(
             "{}/{}",
             store::content_hash(&serialized),
-            crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION
+            crate::grounder::symbols::model::GRAMMAR_TAGS_VERSION
         )
     }
 
@@ -726,7 +726,7 @@ mod tests {
         );
         assert!(
             stamp.contains('/')
-                && stamp.ends_with(crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION),
+                && stamp.ends_with(crate::grounder::symbols::model::GRAMMAR_TAGS_VERSION),
             "the stamp is <index-content-hash>/<grammar-tags-version>; got {stamp:?}"
         );
         // A DIFFERENT index (different symbols) yields a different content-hash half, so a radius
