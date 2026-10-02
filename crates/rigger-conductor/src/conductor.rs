@@ -695,6 +695,15 @@ enum PlanCommitOutcome {
 /// remediation instead of spinning.
 const CONFLICT_RESOLVE_BOUND: u32 = 3;
 
+/// The implementer retry id a unit's stage run under infra retry `ordinal` spawns as (F3): 0 on
+/// the stage's first run, and on every rerun a multiple of `CONFLICT_RESOLVE_BOUND + 1` - past
+/// the `~retry1..=CONFLICT_RESOLVE_BOUND` ids the same attempt's integration spawns its
+/// conflict-resolution rounds under ([`RunCtx::spawn_conflict_resolution_implementer`]) - so a
+/// rerun's recorded result is never replayed as a conflict resolution's.
+fn implementer_retry(ordinal: u32) -> u32 {
+    ordinal * (CONFLICT_RESOLVE_BOUND + 1)
+}
+
 /// The remediation prompt for a merge-conflict re-park (spec 88, criterion 1): lists ONLY
 /// the conflicting SOURCE paths a real edit must resolve - never a full re-implementation
 /// prompt, and never a registered regenerable path also in conflict (the conductor
@@ -1593,9 +1602,9 @@ fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct InfraRetries {
     /// The retry ordinal the stage's next run carries: one per infra rerun already recorded
-    /// at this attempt. It suffixes the implementer's spawn id ([`spawn_retry_id`]), the gate
-    /// keys ([`gate_key`]) and the reviewers' retry window ([`review_retry_window`]), so a
-    /// rerun is fresh work that never replays the run the outage spoiled.
+    /// at this attempt. It picks the implementer's retry id ([`implementer_retry`]), the gate
+    /// keys' suffix ([`gate_key`]) and the reviewers' retry window ([`review_retry_window`]),
+    /// so a rerun is fresh work that never replays the run the outage spoiled.
     ordinal: u32,
     /// The infra reruns recorded since this attempt's latest infra halt: the count the
     /// taxonomy's infra limit bounds. A halt resets it, so a relaunch after the outage gets a
@@ -5050,7 +5059,12 @@ impl RunCtx<'_> {
         // The infra reruns this attempt already recorded (F3): the stage resumes under the
         // next retry ordinal, so an earlier process's spoiled run is never replayed.
         let mut infra = InfraRetries::recorded(&events, &st.name, attempts);
-        let named_halt_spawn = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempts, infra.ordinal);
+        let named_halt_spawn = spawn_retry_id(
+            &st.name,
+            ROLE_IMPLEMENTER,
+            attempts,
+            implementer_retry(infra.ordinal),
+        );
         let halted_commit = match wt {
             // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
             // this recovery commit is reserved for a GENUINE halt - the named spawn was
@@ -5284,10 +5298,14 @@ impl RunCtx<'_> {
                 // (Ok(false), not escalated); the run loop records BudgetExhausted. The
                 // reservation is keyed by the spawn's deterministic id so a REPLAY of an
                 // already-recorded implementer (a resumed step) is admitted free.
-                // An infra rerun (F3) spawns under the next retry ordinal, so a crashed or
+                // An infra rerun (F3) spawns under its retry ordinal's id, so a crashed or
                 // halted run's recorded result is never replayed as this run's.
-                let implementer_id =
-                    spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempts, infra.ordinal);
+                let implementer_id = spawn_retry_id(
+                    &st.name,
+                    ROLE_IMPLEMENTER,
+                    attempts,
+                    implementer_retry(infra.ordinal),
+                );
                 if !self.reserve_spawn(&implementer_id) {
                     return Ok(false);
                 }
