@@ -72,10 +72,36 @@ const PERSONAS: [(&str, &str); 3] = [
     ("arbiter", ARBITER),
 ];
 
-/// `rigger <args...> --base HEAD` in `root`: (stdout, stderr, success).
-fn on_head(root: &Path, args: &[&str]) -> (String, String, bool) {
+/// `rigger <args...> --base HEAD` in `root` with extra environment `envs`: (stdout, stderr,
+/// success).
+fn on_head(root: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
     let args: Vec<&str> = args.iter().copied().chain(["--base", "HEAD"]).collect();
-    run_rigger(root, &args)
+    run_rigger_envs(root, &args, envs)
+}
+
+/// The run entries besides `rigger step`, each on [`SPEC_REL`] and named by its own command.
+const RUN_ENTRIES: [(&[&str], &str); 3] = [
+    (&["run", SPEC_REL], "rigger run"),
+    (&["serve", SPEC_REL], "rigger serve"),
+    (
+        &["run", "--driver", "workflow", SPEC_REL],
+        "rigger run --driver workflow",
+    ),
+];
+
+/// A stand-in `claude` and the `PATH` that puts it first, so a run entry that gets past its run
+/// start never reaches a real agent; the directory holding it must outlive every call.
+fn stand_in_claude() -> (tempfile::TempDir, String) {
+    let work = tempfile::tempdir().unwrap();
+    let path = stub_path(work.path(), "claude", Some("fake-agent.sh"));
+    (work, path)
+}
+
+/// The run entry `args` plus `extra` flags, then `--base HEAD`, in `root` with `path` as its
+/// `PATH`: (stdout, stderr, success).
+fn run_entry(root: &Path, path: &str, args: &[&str], extra: &[&str]) -> (String, String, bool) {
+    let args: Vec<&str> = args.iter().chain(extra).copied().collect();
+    on_head(root, &args, &[("PATH", path)])
 }
 
 /// `rigger step --spec <spec> --base HEAD` in `root`, plus `extra` flags.
@@ -85,7 +111,7 @@ fn step(root: &Path, spec: &str, extra: &[&str]) -> (String, String, bool) {
         .chain(extra)
         .copied()
         .collect();
-    on_head(root, &args)
+    on_head(root, &args, &[])
 }
 
 /// The text the refusal of a new run on `spec` by `command` ends stderr with: `open` the open
@@ -211,7 +237,7 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
     write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
 
     // A run with no spec is never refused, under a workflow naming a critic.
-    let (_out, err, ok) = on_head(root, &["step"]);
+    let (_out, err, ok) = on_head(root, &["step"], &[]);
     assert!(ok, "a spec-less step proceeds; stderr:\n{err}");
     assert!(
         !err.contains("refusing") && !err.contains("no spec critique"),
@@ -306,28 +332,12 @@ fn every_cli_run_start_refuses_a_new_run_on_an_uncritiqued_spec_under_its_own_na
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
-    // A stand-in `claude` first on PATH, so a run the refusal missed never reaches a real agent.
-    let work = tempfile::tempdir().unwrap();
-    let path = stub_path(work.path(), "claude", Some("fake-agent.sh"));
-    let entries = [
-        (&["run", SPEC_REL][..], "rigger run"),
-        (&["serve", SPEC_REL][..], "rigger serve"),
-        (
-            &["run", "--driver", "workflow", SPEC_REL][..],
-            "rigger run --driver workflow",
-        ),
-    ];
+    let (_work, path) = stand_in_claude();
     let refuse_each = |extra: &[&str], runs_before: usize| {
-        for (args, command) in entries {
-            let args: Vec<&str> = args
-                .iter()
-                .chain(extra)
-                .copied()
-                .chain(["--base", "HEAD"])
-                .collect();
+        for (args, command) in RUN_ENTRIES {
             assert_refused(
                 root,
-                run_rigger_envs(root, &args, &[("PATH", path.as_str())]),
+                run_entry(root, &path, args, extra),
                 (command, SPEC_REL, None),
                 runs_before,
             );
@@ -694,4 +704,103 @@ fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_byt
     );
 
     assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 1);
+}
+
+/// `workflow` with a grounder the binary rejects: a run entry that gets past its run start - its
+/// run minted or adopted - then stops selecting the grounder, before it drives an agent or serves
+/// stdin.
+fn stopping_at_the_grounder(workflow: &str) -> String {
+    workflow.replace("grounder: nop", "grounder: no-such-grounder")
+}
+
+/// The run entry `(args, command)` plus `extra` in `root`, with `path` as its `PATH`, got past its
+/// run start and stopped at the rejected grounder ([`stopping_at_the_grounder`]): it refused
+/// nothing, printed the no-critic line naming itself `no_critic` times and no other, and left the
+/// run stream holding `runs` runs, the latest on the spec.
+fn assert_past_the_run_start(
+    root: &Path,
+    path: &str,
+    (args, command): (&[&str], &str),
+    extra: &[&str],
+    (no_critic, runs): (usize, usize),
+) {
+    let (out, err, ok) = run_entry(root, path, args, extra);
+    assert!(
+        !ok && err.ends_with(
+            "rigger: unknown grounder \"no-such-grounder\"; valid names are symbols (default), \
+             grep, nop\n"
+        ),
+        "{command} {extra:?} gets past its run start and stops at the grounder; stdout:\n{out}\n\
+         stderr:\n{err}"
+    );
+    let line = format!("{command}: no spec critique for {SPEC_REL}: {NO_CRITIC_CLAUSE}\n");
+    assert_eq!(
+        (
+            err.contains("refusing"),
+            err.matches(&line).count(),
+            err.matches("no spec critique").count()
+        ),
+        (false, no_critic, no_critic),
+        "{command} {extra:?} refuses nothing and prints its no-critic line {no_critic} time(s); \
+         stderr:\n{err}"
+    );
+    let started = run_payloads(root, "RunStarted");
+    assert_eq!(
+        (started.len(), &started[started.len() - 1]["spec"]),
+        (runs, &json!(SPEC_REL)),
+        "{command} {extra:?} leaves {runs} run(s), the latest on the spec"
+    );
+}
+
+/// Given a workflow naming no critic, when each run entry begins a new run on a spec that has no
+/// critique, then it proceeds - minting the run - after one line on stderr naming its own command;
+/// and when it adopts that run, it proceeds naming no critique.
+#[test]
+fn every_run_entry_under_a_criticless_workflow_names_each_new_run_it_begins_and_no_adopted_one() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let workflow = stopping_at_the_grounder(CRITICLESS_WORKFLOW);
+    write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
+    let (_work, path) = stand_in_claude();
+    for (minted, entry) in (1..).zip(RUN_ENTRIES) {
+        assert_past_the_run_start(root, &path, entry, &["--fresh"], (1, minted));
+        assert_past_the_run_start(root, &path, entry, &[], (0, minted));
+    }
+}
+
+/// Given a workflow naming a critic, when each run entry adopts the spec's existing run, then it
+/// proceeds though the spec's text has no critique; when it begins a new run with `--fresh`, then
+/// it reads the critique of the text it loaded: refused by the id of each open BLOCKING finding,
+/// and proceeding to mint once a resolution closes them.
+#[test]
+fn every_run_entry_adopts_the_specs_run_uncritiqued_and_begins_a_new_one_only_on_a_clean_critique()
+{
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let workflow = stopping_at_the_grounder(SKEPTIC_WORKFLOW);
+    write_spec_project(root, &PERSONAS, &workflow, SPEC_REL, SPEC);
+    let (_work, path) = stand_in_claude();
+    let criteria = rigger::spec::extract_criteria(SPEC);
+    let started = json!({"run": "r-spec", "criteria": criteria, "spec": SPEC_REL}).to_string();
+    seed_run_events(root, &[("RunStarted", started.as_str())]);
+    for entry in RUN_ENTRIES {
+        assert_past_the_run_start(root, &path, entry, &[], (0, 1));
+    }
+
+    record_critique(root, SPEC_REL, REJECT);
+    let ids = reject_ids(SPEC);
+    let open = [ids[0].as_str(), ids[1].as_str()];
+    for (args, command) in RUN_ENTRIES {
+        assert_refused(
+            root,
+            run_entry(root, &path, args, &["--fresh"]),
+            (command, SPEC_REL, Some(&open)),
+            1,
+        );
+    }
+
+    resolve(root, "r-all", SPEC_REL, &ids);
+    for (minted, entry) in (2..).zip(RUN_ENTRIES) {
+        assert_past_the_run_start(root, &path, entry, &["--fresh"], (0, minted));
+    }
 }
