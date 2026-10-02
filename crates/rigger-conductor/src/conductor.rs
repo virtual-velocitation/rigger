@@ -20035,6 +20035,74 @@ mod tests {
         );
     }
 
+    /// Item I (A LANDING RECORDS EVERY PATH IT LANDED): GIVEN a reviewed unit whose landing
+    /// conflicts on a registered regenerable path whose command also writes a second file, WHEN
+    /// the unit lands through that regeneration commit, THEN the second file reaches `FileTouched`
+    /// and the graph's scoped ingest like every other path the landed range changed.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_regeneration_committed_at_landing_reaches_file_touched_and_the_graph() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let st = Store::open(":memory:").unwrap();
+        seed_prior_window_s(
+            &repo_path,
+            &st,
+            vec![
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "verified")),
+                unit_event(ledger::TYPE_UNIT_STATUS, "s", ("status", "reviewed")),
+            ],
+        );
+        // The run branch independently adds its own `feature.rs`: an add/add conflict on the
+        // regenerable path.
+        std::fs::write(repo.path().join("feature.rs"), "fn other() {}\n").unwrap();
+        run_git(&repo_path, &["add", "feature.rs"]);
+        run_git(
+            &repo_path,
+            &["commit", "-q", "-m", "a batch-mate's feature.rs"],
+        );
+        let mut cfg = reviewed_merge_cfg(false);
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["feature.rs".into()],
+            run: "printf 'fn feature() {}\\n' > feature.rs && \
+                  printf 'pub fn regenerated() {}\\n' > gen.rs"
+                .into(),
+        }];
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            graph: Some(&graph),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        assert!(
+            repo.path().join("gen.rs").exists(),
+            "premise: the regeneration commit landed its second file"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let touched: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_FILE_TOUCHED)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap()["path"].clone())
+            .collect();
+        assert_eq!(
+            touched,
+            [json!("feature.rs"), json!("gen.rs")],
+            "every path the landed range changed is touched, the regenerated one included"
+        );
+        assert!(
+            events.iter().any(|e| e
+                .meta
+                .get(META_REPLAY_KEY)
+                .is_some_and(|k| k.starts_with("gc/gen.rs@"))),
+            "the graph's scoped ingest lowers the regenerated file"
+        );
+    }
+
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
     /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
     /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
