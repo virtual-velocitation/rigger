@@ -23,8 +23,10 @@ use regex::Regex;
 pub enum FailureClass {
     /// An infrastructure fault (a broken tool, a transient outage, a dead worker) -
     /// NOT the unit's code. Spec-07 semantics: it never charges the unit a remediation
-    /// attempt, and a persistent infra fault at a gate must not demote the ratchet (an
-    /// outage should never destroy a gate's earned autonomy).
+    /// attempt - a unit's implement lifecycle (implement, gates, review, integrate) that
+    /// fails on infrastructure reruns at the same attempt, up to [`Taxonomy::infra_limit`]
+    /// times, and then halts the step - and a persistent infra fault at a gate must not
+    /// demote the ratchet (an outage should never destroy a gate's earned autonomy).
     Infra,
     /// A genuine product defect: the unit's own code / gates / review failed. It charges
     /// a remediation attempt and, at a gate, demotes the autonomy ratchet - the exact
@@ -237,13 +239,25 @@ impl Taxonomy {
     pub fn classify(&self, sig: &Signal) -> Option<&FailureRule> {
         self.rules.iter().find(|r| r.matcher.matches(sig))
     }
+
+    /// How many times a unit's stage reruns after failing on infrastructure before the step
+    /// halts: the `limit` of the FIRST `infra` rule in match order - the same configured value
+    /// that bounds an infra-class gate's in-place reruns - or 0 when no rule is `infra`, so the
+    /// first infra failure halts. An infra failure is never charged, so this bound is what keeps
+    /// a persistent outage from looping.
+    pub fn infra_limit(&self) -> u32 {
+        self.rules
+            .iter()
+            .find(|r| r.class == FailureClass::Infra)
+            .map_or(0, |r| r.limit)
+    }
 }
 
 impl Default for Taxonomy {
     /// The shipped defaults preserving spec-07 semantics. Recognised transient
     /// infrastructure faults - out of disk, a refused/reset connection, DNS failure,
-    /// a raw `ECONNRESET`/`ETIMEDOUT` - classify `infra` (reran, never charged a product
-    /// defect); everything else falls through to the `product` catch-all, exactly the
+    /// a raw `ECONNRESET`/`ETIMEDOUT` - classify `infra` (reran, never charged); everything
+    /// else falls through to the `product` catch-all, exactly the
     /// hand-coded infra-vs-product split the conductor shipped before this taxonomy.
     /// The patterns are deliberately narrow and unambiguous so a real product gate
     /// failure is never mistaken for infra.

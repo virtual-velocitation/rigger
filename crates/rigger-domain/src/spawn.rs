@@ -289,6 +289,65 @@ pub struct Adjudication {
     pub verdict: Option<String>,
 }
 
+/// The adjudicator's reject `cause` blaming a gate, tool or harness failure rather than the
+/// author's code - the one spelling of the adjudicator persona's `infra-fault` cause that
+/// [`Adjudication::is_infra_fault`] reads.
+pub const CAUSE_INFRA_FAULT: &str = "infra-fault";
+
+impl Adjudication {
+    /// Parse an adjudicator's raw `output` for its grown verdict line (spec 11): the LAST
+    /// JSON object line carrying a `verdict`, `upheld`, or `discarded` field yields the upheld
+    /// and discarded finding ids and the rejection cause. `None` when the output carries no
+    /// verdict line (an old-contract adjudicator, or unparseable output). The single
+    /// verdict-line parse every reader shares - [`SpawnResult::adjudication`] for a recorded
+    /// result, the conductor for the verdict a review round just returned.
+    pub fn parse(output: &str) -> Option<Adjudication> {
+        for line in output.lines().rev() {
+            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+                continue;
+            };
+            if v.get("verdict").is_none()
+                && v.get("upheld").is_none()
+                && v.get("discarded").is_none()
+            {
+                continue;
+            }
+            // One string-array reader for both id lists, so `upheld` and `discarded` can
+            // never drift on how a verdict array is decoded.
+            let str_array = |key: &str| -> Vec<String> {
+                v.get(key)
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let cause = v
+                .get("cause")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty());
+            let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
+            return Some(Adjudication {
+                upheld: str_array("upheld"),
+                discarded: str_array("discarded"),
+                cause,
+                verdict,
+            });
+        }
+        None
+    }
+
+    /// Whether the verdict blames infrastructure ([`CAUSE_INFRA_FAULT`]): the review could
+    /// not judge the author's code, so the conductor reruns the stage uncharged instead of
+    /// handing the author a remediation attempt.
+    pub fn is_infra_fault(&self) -> bool {
+        self.cause.as_deref() == Some(CAUSE_INFRA_FAULT)
+    }
+}
+
 /// A single spawn request: one agent to run, plus the deterministic id that names it
 /// and the display labels the thin driver groups its progress under.
 ///
@@ -538,52 +597,15 @@ impl SpawnResult {
     }
 
     /// Parse this ADJUDICATOR result's grown verdict line (spec 11) into its
-    /// [`Adjudication`]: the LAST JSON object line of the output carrying a `verdict`,
-    /// `upheld`, or `discarded` field yields the upheld and discarded finding ids and the
-    /// rejection cause. Returns `None` when this is not an adjudicator result, or the output
-    /// carries no verdict line (an old-contract adjudicator, or unparseable output) - the
-    /// caller then disposes / attributes nothing. The single disposition-parse authority
-    /// both the review-quality metric and the context-graph finding-expiry read.
+    /// [`Adjudication`] through [`Adjudication::parse`]. Returns `None` when this is not an
+    /// adjudicator result, or the output carries no verdict line - the caller then disposes /
+    /// attributes nothing. The single disposition-parse authority both the review-quality
+    /// metric and the context-graph finding-expiry read.
     pub fn adjudication(&self) -> Option<Adjudication> {
         if !self.is_adjudicator() {
             return None;
         }
-        for line in self.output.lines().rev() {
-            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
-                continue;
-            };
-            if v.get("verdict").is_none()
-                && v.get("upheld").is_none()
-                && v.get("discarded").is_none()
-            {
-                continue;
-            }
-            // One string-array reader for both id lists, so `upheld` and `discarded` can
-            // never drift on how a verdict array is decoded.
-            let str_array = |key: &str| -> Vec<String> {
-                v.get(key)
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|x| x.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            let cause = v
-                .get("cause")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .filter(|s| !s.is_empty());
-            let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
-            return Some(Adjudication {
-                upheld: str_array("upheld"),
-                discarded: str_array("discarded"),
-                cause,
-                verdict,
-            });
-        }
-        None
+        Adjudication::parse(&self.output)
     }
 }
 
