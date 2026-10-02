@@ -43622,9 +43622,14 @@ mod tests {
             critique_reject("spec-ambiguity", &["adv-5"]),
         ]);
         let rs = critique_step(&st, &resumed);
+        let mut critique = resumed.spawn_ids();
+        // The released fan-out implements its two units in one wave, in no fixed order.
+        let mut fan_out = critique.split_off(critique.len().min(5));
+        fan_out.sort();
         assert_eq!(
             (
-                resumed.spawn_ids(),
+                critique,
+                fan_out,
                 rs.units["plan-critique"].status,
                 rs.budget_halt,
                 stop_records(&run_log(&st)),
@@ -43636,6 +43641,8 @@ mod tests {
                     spawn_id("plan", ROLE_REPLAN, 3),
                     spawn_id("plan-critique", ROLE_ADVERSARY, 3),
                     spawn_id("plan-critique", ROLE_ADJUDICATOR, 3),
+                ],
+                vec![
                     spawn_id("u-a", ROLE_IMPLEMENTER, 0),
                     spawn_id("u-b", ROLE_IMPLEMENTER, 0),
                 ],
