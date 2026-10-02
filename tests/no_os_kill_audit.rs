@@ -8,7 +8,7 @@
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
 //!
-//! The nine forbidden shapes mirror `.rigger/workflow.yml`'s `no-os-kill` gate exactly - see
+//! The nine forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
 //! precise regex. In prose: a `Command::new` shell-out to any of four OS process-termination
 //! utility names; the bare shell form of two of those names, invoked with a leading-hyphen
@@ -32,7 +32,7 @@
 //! RUNTIME from short, individually harmless fragments via [`join`] - never written as one
 //! contiguous token in this file's source text, and never even named literally in a comment
 //! or a diagnostic string (a hyphen breaks the sequence where a name must appear in prose
-//! below, e.g. "p-kill"). This mirrors `.rigger/workflow.yml`'s `style` gate, which generates
+//! below, e.g. "p-kill"). This mirrors `.rigger/gates/content.sh`'s `style` check, which generates
 //! its own em-dash byte pattern via `printf` octal at runtime for the identical reason: so
 //! the gate's own command carries no literal instance of what it forbids.
 
@@ -86,7 +86,7 @@ fn module_kill_open(module: &str) -> String {
 }
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
-/// kill/killall-plus-signal shape both key off (see `.rigger/workflow.yml` for the literal
+/// kill/killall-plus-signal shape both key off (see `.rigger/gates/content.sh` for the literal
 /// enumeration), largest-first so `killall` is tried before its own prefix `kill` at the
 /// same start position.
 fn shell_kill_words() -> Vec<String> {
@@ -101,7 +101,7 @@ fn shell_kill_words() -> Vec<String> {
 // fragments is matched identically to one built any other way.
 // ---------------------------------------------------------------------------------------
 
-/// The gate's Command::new shell-out shape (see `.rigger/workflow.yml` for the literal
+/// The gate's Command::new shell-out shape (see `.rigger/gates/content.sh` for the literal
 /// pattern) - a shell-out to one of the four OS process-termination utility names.
 fn shape_command_new_signal(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
@@ -129,7 +129,7 @@ fn shape_command_new_signal(line: &str) -> bool {
     false
 }
 
-/// The gate's bare-shell-form shape (see `.rigger/workflow.yml`): `kill` or `killall`
+/// The gate's bare-shell-form shape (see `.rigger/gates/content.sh`): `kill` or `killall`
 /// immediately followed by a space, a hyphen, and a signal token (a number or a name).
 fn shape_shell_kill_dash(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
@@ -156,7 +156,7 @@ fn shape_shell_kill_dash(line: &str) -> bool {
     false
 }
 
-/// The gate's standalone-token shape for the p-kill utility (see `.rigger/workflow.yml`):
+/// The gate's standalone-token shape for the p-kill utility (see `.rigger/gates/content.sh`):
 /// the bare word, delimited on both sides so it is never matched inside a longer identifier.
 fn shape_pkill(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
@@ -176,7 +176,7 @@ fn shape_pkill(line: &str) -> bool {
     false
 }
 
-/// The four bare-substring shapes (see `.rigger/workflow.yml` for each literal pattern),
+/// The four bare-substring shapes (see `.rigger/gates/content.sh` for each literal pattern),
 /// banned anywhere on a line with no delimiter required, each with its finding label: the libc
 /// process-group signal call name; a direct call through `libc`; a direct call through a
 /// `signal` module; and the sanctioned rustix signal call itself - forbidden everywhere OTHER
@@ -227,7 +227,7 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 /// The two files spec 78 sanctions to call the signal API directly (`crates/rigger-process/src/reap.rs`'s
 /// `send_signal`, `tests/common/mod.rs`'s `terminate_pid`/`is_alive`) - this audit's own
 /// record of the boundary, checked against each scanned file's REPO-RELATIVE, forward-slash
-/// path, independent of `.rigger/workflow.yml`'s copy.
+/// path, independent of `.rigger/gates/content.sh`'s copy.
 const SANCTIONED_FILES: [&str; 2] = ["crates/rigger-process/src/reap.rs", "tests/common/mod.rs"];
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned

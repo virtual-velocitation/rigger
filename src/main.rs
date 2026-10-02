@@ -254,8 +254,10 @@ rigger watch [--interval <s>] the driver-independent watchdog: polls the store,\
 [--once]                  process table, and status for the five rigger-watch-a-run\n                              \
 signals (escalated blockers, heartbeat staleness, dash\n                              \
 liveness, reject-recurrence trend, frontier progress) plus\n                              \
-store integrity, printing one line per anomaly naming\n                              \
-signal, subject, and response skill. --once prints standing\n                              \
+store integrity and a red CI check on the run branch's tip\n                              \
+(read with gh; a CI gh cannot read is noted on stderr),\n                              \
+printing one line per anomaly naming signal, subject,\n                              \
+and response. --once prints standing\n                              \
 anomalies and exits (cron/CI); default streams (poll every\n                              \
 180s, dedup'd) and never talks to the driver - it works\n                              \
 with the driver dead\n  \

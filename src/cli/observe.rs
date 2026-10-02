@@ -450,7 +450,9 @@ fn release_ready_lines(run_events: &[Event], run_branch: &str, base: &str) -> Ve
 /// driver-independent watchdog. Gathers the store, process-table, and status truth
 /// [`watch::detect`] needs and prints one line per anomaly - naming signal, subject,
 /// and response - so an orchestrator armed on this command sees exactly what a
-/// manual `rigger-watch-a-run` look would, without polling anything by hand.
+/// manual `rigger-watch-a-run` look would, without polling anything by hand. Each poll also
+/// reads the run tip's CI ([`run_tip_ci`]); when `gh` cannot read it, why is printed on
+/// stderr once per distinct reason ([`unread_ci_note`]), never as an anomaly.
 ///
 /// `--once` prints the CURRENT standing anomalies and exits (the cron/CI shape): a poll
 /// failure here (no store, a genuinely unreadable one, a bad flag upstream) propagates and
@@ -478,17 +480,24 @@ pub(crate) fn cmd_watch(args: &[String]) -> Res {
     } = parse_watch_args(args)?;
 
     let mut dedup = watch::Dedup::new();
+    let mut ci_unread: Option<String> = None;
     loop {
-        let anomalies =
-            match require_store_dir().and_then(|(loc, selection)| watch_poll(&loc, &selection)) {
-                Ok(anomalies) => anomalies,
-                Err(e) if once => return Err(e),
-                Err(e) => {
-                    eprintln!("rigger: watch: poll failed, will retry: {e}");
-                    std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
-                    continue;
-                }
-            };
+        let poll = require_store_dir().and_then(|(loc, selection)| {
+            let ci = run_tip_ci(&loc.repo_root());
+            if let Some(note) = unread_ci_note(&ci, &mut ci_unread) {
+                eprintln!("{note}");
+            }
+            watch_poll(&loc, &selection, ci)
+        });
+        let anomalies = match poll {
+            Ok(anomalies) => anomalies,
+            Err(e) if once => return Err(e),
+            Err(e) => {
+                eprintln!("rigger: watch: poll failed, will retry: {e}");
+                std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
+                continue;
+            }
+        };
         let to_print = if once {
             anomalies
         } else {
@@ -502,6 +511,21 @@ pub(crate) fn cmd_watch(args: &[String]) -> Res {
         }
         std::thread::sleep(std::time::Duration::from_secs(interval_secs.max(1)));
     }
+}
+
+/// The stderr note for a run tip CI that could not be read, once per distinct reason: an
+/// unread CI is reported beside the anomalies, never as one. `last` carries the reason noted
+/// last, cleared once CI reads again, so a repeat of it notes nothing.
+fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<String> {
+    let watch::CiProbe::Unknown(reason) = ci else {
+        *last = None;
+        return None;
+    };
+    if last.as_deref() == Some(reason.as_str()) {
+        return None;
+    }
+    *last = Some(reason.clone());
+    Some(format!("rigger: watch: CI not read: {reason}"))
 }
 
 /// `rigger peers [<file> ...]` - print the peer decisions, lessons, and review findings
@@ -584,6 +608,31 @@ fn json_str_array(v: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::test_support::CwdGuard;
+
+    /// `rigger watch` notes an unread CI on stderr once per distinct reason, never on every
+    /// poll: the same reason again notes nothing, a new reason notes, and a CI that reads again
+    /// clears the note, so a later unread CI is noted afresh.
+    #[test]
+    fn an_unread_ci_is_noted_once_per_reason() {
+        let unread = |reason: &str| watch::CiProbe::Unknown(reason.to_string());
+        let noted = |reason: &str| Some(format!("rigger: watch: CI not read: {reason}"));
+        let mut last = None;
+        let mut note = |ci: watch::CiProbe| unread_ci_note(&ci, &mut last);
+        assert_eq!(
+            note(unread("gh is not installed")),
+            noted("gh is not installed")
+        );
+        assert_eq!(note(unread("gh is not installed")), None);
+        assert_eq!(
+            note(unread("gh api failed: HTTP 401")),
+            noted("gh api failed: HTTP 401")
+        );
+        assert_eq!(note(watch::CiProbe::Green), None);
+        assert_eq!(
+            note(unread("gh api failed: HTTP 401")),
+            noted("gh api failed: HTTP 401")
+        );
+    }
 
     /// Spec 69, criterion 4: `dash_status_line` renders each [`dash::DashStatus`] outcome to
     /// the EXACT text `rigger status` prints - `Absent` prints nothing (today's silent

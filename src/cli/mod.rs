@@ -2925,14 +2925,88 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 /// [`refuse_derived_reset_if_live`]'s same shape): the composition root
 /// (`cmd_watch`) resolves them via [`require_store_dir`], so this function - and the
 /// test that seeds a [`StoreLocation`] pointing at a tempdir - never depends on the
-/// process's actual cwd.
+/// process's actual cwd. `ci` is the run tip's CI reading ([`run_tip_ci`]), injected the same
+/// way so a test never reaches the network.
 fn watch_poll(
     loc: &StoreLocation,
     selection: &StoreSelection,
+    ci: watch::CiProbe,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
     let run_backend = resolve_store(selection, &loc.file("events.db"))?;
     let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
-    watch_poll_over(loc, &run_store)
+    watch_poll_over(loc, &run_store, ci)
+}
+
+/// What CI says about the run branch's tip in `repo`: GitHub's check runs for that commit, read
+/// with `gh api` (which resolves `{owner}/{repo}` from the checkout's remote), so the reading
+/// holds wherever the tip was pushed. No run branch reads as [`watch::CiProbe::NoRunTip`]; `gh`
+/// missing, not logged in or failing reads as [`watch::CiProbe::Unknown`] with its reason.
+fn run_tip_ci(repo: &str) -> watch::CiProbe {
+    let Ok(sha) = rigger::worktree::branch_tip(repo, RUN_BRANCH) else {
+        return watch::CiProbe::NoRunTip;
+    };
+    let read = subprocess::command_in("gh", repo)
+        .arg("api")
+        .arg(format!(
+            "repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"
+        ))
+        .stdin(Stdio::null())
+        .output();
+    match read {
+        Err(e) => watch::CiProbe::Unknown(format!("gh could not run: {e}")),
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let reason = stderr
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("no output");
+            watch::CiProbe::Unknown(format!("gh api failed: {}", reason.trim()))
+        }
+        Ok(out) => ci_probe_from_check_runs(&sha, &String::from_utf8_lossy(&out.stdout)),
+    }
+}
+
+/// The CI reading of GitHub's check-runs `body` for commit `sha`: red, naming every check that
+/// concluded `failure`, `timed_out` or `startup_failure`; otherwise green when every check
+/// concluded `success`, `neutral` or `skipped`; otherwise pending (a check still queued or
+/// running, cancelled or awaiting approval, or none started yet). A body that does not parse
+/// is unknown.
+fn ci_probe_from_check_runs(sha: &str, body: &str) -> watch::CiProbe {
+    #[derive(serde::Deserialize)]
+    struct CheckRuns {
+        check_runs: Vec<CheckRun>,
+    }
+    #[derive(serde::Deserialize)]
+    struct CheckRun {
+        name: String,
+        conclusion: Option<String>,
+    }
+    let runs = match serde_json::from_str::<CheckRuns>(body) {
+        Ok(parsed) => parsed.check_runs,
+        Err(e) => return watch::CiProbe::Unknown(format!("unreadable check runs for {sha}: {e}")),
+    };
+    let concluded =
+        |run: &CheckRun, set: &[&str]| run.conclusion.as_deref().is_some_and(|c| set.contains(&c));
+    let checks: Vec<String> = runs
+        .iter()
+        .filter(|run| concluded(run, &["failure", "timed_out", "startup_failure"]))
+        .map(|run| run.name.clone())
+        .collect();
+    if !checks.is_empty() {
+        return watch::CiProbe::Red {
+            sha: sha.to_string(),
+            checks,
+        };
+    }
+    if !runs.is_empty()
+        && runs
+            .iter()
+            .all(|run| concluded(run, &["success", "neutral", "skipped"]))
+    {
+        watch::CiProbe::Green
+    } else {
+        watch::CiProbe::Pending
+    }
 }
 
 /// [`watch_poll`] over an already-opened run store: every store input [`watch::detect`] needs
@@ -2941,6 +3015,7 @@ fn watch_poll(
 fn watch_poll_over(
     loc: &StoreLocation,
     run_store: &dyn EventStore,
+    ci: watch::CiProbe,
 ) -> Result<Vec<watch::Anomaly>, Box<dyn std::error::Error>> {
     let now = std::time::SystemTime::now();
 
@@ -3123,6 +3198,7 @@ fn watch_poll_over(
         run_started_at,
         dash_breadcrumb_written_at,
         dash_attempted_this_run,
+        ci,
     };
     Ok(watch::detect(&inputs))
 }
@@ -11596,6 +11672,79 @@ mod tests {
         );
     }
 
+    /// `rigger watch`'s reading of GitHub's check runs for the run tip, by conclusion: a failed,
+    /// timed-out or unstartable check is red, naming each one, even while others still run; a
+    /// check still running, cancelled or awaiting approval leaves it pending, as does a tip no
+    /// check has run on yet; only checks that all passed (success, neutral or skipped) are
+    /// green; a body that does not parse is unknown.
+    #[test]
+    fn check_runs_parse_into_a_ci_probe_by_conclusion() {
+        let probe = |runs: &[String]| {
+            ci_probe_from_check_runs(
+                "0123abcd",
+                &format!(
+                    r#"{{"total_count":{},"check_runs":[{}]}}"#,
+                    runs.len(),
+                    runs.join(",")
+                ),
+            )
+        };
+        let run = |name: &str, status: &str, conclusion: &str| {
+            format!(r#"{{"name":"{name}","status":"{status}","conclusion":{conclusion}}}"#)
+        };
+        let red = |checks: &[&str]| watch::CiProbe::Red {
+            sha: "0123abcd".to_string(),
+            checks: checks.iter().map(|c| c.to_string()).collect(),
+        };
+        assert_eq!(
+            probe(&[
+                run("build-test", "completed", r#""failure""#),
+                run("kurrentdb", "completed", r#""timed_out""#),
+                run("install-nolock", "in_progress", "null"),
+            ]),
+            red(&["build-test", "kurrentdb"])
+        );
+        assert_eq!(
+            probe(&[run("build-test", "completed", r#""startup_failure""#)]),
+            red(&["build-test"])
+        );
+        for pending in [
+            vec![run("build-test", "queued", "null")],
+            vec![run("build-test", "completed", r#""cancelled""#)],
+            vec![run("build-test", "completed", r#""action_required""#)],
+            vec![],
+        ] {
+            assert_eq!(probe(&pending), watch::CiProbe::Pending, "{pending:?}");
+        }
+        assert_eq!(
+            probe(&[
+                run("build-test", "completed", r#""success""#),
+                run("kurrentdb", "completed", r#""neutral""#),
+                run("install-nolock", "completed", r#""skipped""#),
+            ]),
+            watch::CiProbe::Green
+        );
+        assert!(matches!(
+            ci_probe_from_check_runs("0123abcd", "not json"),
+            watch::CiProbe::Unknown(_)
+        ));
+    }
+
+    /// The run tip's CI reading starts from the run branch: a checkout with no run branch has
+    /// no tip to read CI for, and a tip whose CI `gh` cannot read (here the checkout has no
+    /// GitHub remote at all) reads as unknown with a reason - never as pending or green.
+    #[test]
+    fn the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it() {
+        let dir = crate::test_support::temp_git_project_with_commit();
+        let repo = dir.path().to_str().unwrap();
+        assert_eq!(run_tip_ci(repo), watch::CiProbe::NoRunTip);
+        crate::test_support::git_ok(dir.path(), &["branch", RUN_BRANCH]);
+        assert!(
+            matches!(run_tip_ci(repo), watch::CiProbe::Unknown(reason) if !reason.is_empty()),
+            "a CI gh cannot read is unknown, with its reason"
+        );
+    }
+
     /// `rigger watch`: one poll over the same log reads the run once from its boundary with the
     /// carried-over knowledge by type - no whole-log read for store integrity or anything else -
     /// and a healthy run reports nothing.
@@ -11607,7 +11756,7 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let fixture = seed_one_shot_fixture(&inner, conductor::STREAM, &[]);
         let store = ReadCountingStore::new(&inner);
-        let anomalies = watch_poll_over(&loc, &store).unwrap();
+        let anomalies = watch_poll_over(&loc, &store, watch::CiProbe::NoRunTip).unwrap();
         assert_eq!(store.reads(), fixture.read(conductor::STREAM));
         assert_eq!(store.materialized(), fixture.cost());
         let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
@@ -11736,7 +11885,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        let anomalies =
+            watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
         assert!(
             anomalies.is_empty(),
             "a clean store must report no anomalies: {anomalies:?}"
@@ -11898,7 +12048,8 @@ mod tests {
             .unwrap();
         }
 
-        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        let anomalies =
+            watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
         let signals: Vec<watch::Signal> = anomalies.iter().map(|a| a.signal).collect();
         assert_eq!(
             signals,
@@ -11980,7 +12131,8 @@ mod tests {
         .write(&marker_path)
         .unwrap();
 
-        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        let anomalies =
+            watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
         assert_eq!(anomalies.len(), 1, "got: {anomalies:?}");
         let a = &anomalies[0];
         assert_eq!(a.signal, watch::Signal::DashNotServing);
@@ -12023,7 +12175,8 @@ mod tests {
         .write(&marker_path)
         .unwrap();
 
-        let anomalies = watch_poll(&loc, &StoreSelection::Sqlite).unwrap();
+        let anomalies =
+            watch_poll(&loc, &StoreSelection::Sqlite, watch::CiProbe::NoRunTip).unwrap();
         assert!(
             anomalies.is_empty(),
             "a marker naming a real serving dash must report no anomaly: {anomalies:?}"

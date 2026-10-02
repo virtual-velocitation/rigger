@@ -590,9 +590,9 @@
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },
   {
-    "id": "dup-cab8f470b99c",
+    "id": "dup-9a07b087e8f1",
     "disposition": "not-a-duplicate",
-    "reason": "`as_str`/`response` map four different enums (failure cause, gate outcome, ledger status, watch response) to their own strings."
+    "reason": "`as_str` maps three different enums (failure cause, gate outcome, ledger status) to their own strings."
   },
   {
     "id": "dup-e3c162b7bd56",

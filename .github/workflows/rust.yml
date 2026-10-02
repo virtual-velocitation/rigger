@@ -40,6 +40,14 @@ jobs:
   # serialized cross-binary via serial_test's file lock (the `turbovec_model` key), so
   # even though CI has no CUDA session to corrupt, no two model constructions overlap.
   build-test:
+    # Every lane below names the whole workspace: `--all` on fmt, `--workspace` on clippy, build
+    # and test. A bare `cargo clippy`, `cargo build` or `cargo test` at the repository root
+    # reaches the root package alone, so no member crate's own tests would run and none of its
+    # clippy targets would be linted here - the blind spot of a multi-crate workspace whose root
+    # is itself a package. The per-unit gates in .rigger/workflow.yml name the workspace for the
+    # same reason, so CI runs the battery a unit runs. The no-default and core lanes run through
+    # .rigger/gates/lanes.sh, the script the check-in stage's `lanes` gate runs too, which names
+    # the workspace (and, on the core lane, every member with a `core` feature) itself.
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
@@ -93,50 +101,42 @@ jobs:
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       # The build-environment tests assert against the REAL PATH: config validation
-      # requires `cargo-mutants` resolvable while the repo's own workflow.yml has
-      # build.mutation on, and the build-environment-authority test requires the
-      # `sccache` wrapper it configures to exist. Install both as prebuilt binaries.
+      # requires `cargo-mutants` resolvable while the repo's own workflow.yml declares the
+      # `mutation` gate (declared even while no stage lists it), and the
+      # build-environment-authority test requires the `sccache` wrapper it configures to
+      # exist. Install both as prebuilt binaries.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,sccache
       - name: fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: clippy (turbovec, default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: build
-        run: cargo build --verbose
+        run: cargo build --workspace --verbose
       - name: test
-        run: cargo test --verbose
-      # The deliberate light opt-out: `--no-default-features` drops turbovec so the
-      # grep-only build (no ONNX/OpenBLAS) stays green. It gets the SAME gate battery
-      # as the turbovec lane - clippy `--all-targets -D warnings` then build + test -
-      # so a warning that only surfaces under the grep-only cfg (dead code behind the
-      # turbovec feature, an unused import in the fallback path) fails CI instead of
-      # silently rotting. The loud "built without the turbovec feature" path is asserted
-      # by select_grounder's no-feature test here.
-      - name: clippy (grep-only, --no-default-features)
-        run: cargo clippy --no-default-features --all-targets -- -D warnings
-      - name: build + test (grep-only, --no-default-features)
-        run: |
-          cargo build --no-default-features --verbose
-          cargo test --no-default-features --verbose
+        run: cargo test --workspace --no-fail-fast --verbose
+      # The deliberate light opt-out: `--no-default-features` drops turbovec so the grep-only
+      # build (no ONNX/OpenBLAS) stays green. The lanes script gives it the default lane's
+      # battery - clippy over every workspace target with warnings denied, then every workspace
+      # test - so a warning that only surfaces under the grep-only cfg (dead code behind the
+      # turbovec feature, an unused import in the fallback path) fails CI instead of silently
+      # rotting. The loud "built without the turbovec feature" path is asserted by
+      # select_grounder's no-feature test here.
+      - name: no-default lane (grep-only, --no-default-features)
+        run: sh .rigger/gates/lanes.sh no-default
       # Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
-      # --features core`) gets the same battery too - clippy then build + test - so a lint or
-      # a regression that only surfaces under the `core` cfg universe fails CI instead of
-      # rotting until the next hand-run `RIGGER_CORE_LANE_VERIFY=1`. Scoped to `--lib`
-      # throughout: THE FEATURE SPLIT (spec 93 Design) names "the binary" as one of the
-      # things `store` gates, so `main.rs` does not compile under `core` alone - `--lib` is
-      # the correct scope here, not a narrowed one (mirrors
-      # tests/core_lane_purity_audit.rs's own expensive check). The wasm32-unknown-unknown
-      # cross-compile of the pure subset stays the deliberately opt-in expensive check that
-      # test already gates behind `RIGGER_CORE_LANE_VERIFY=1`; this lane proves the native
-      # side of the same lane on every run instead.
-      - name: clippy (core lane, --no-default-features --features core)
-        run: cargo clippy --lib --no-default-features --features core -- -D warnings
-      - name: build + test (core lane, --no-default-features --features core)
-        run: |
-          cargo build --lib --no-default-features --features core --verbose
-          cargo test --lib --no-default-features --features core --verbose
+      # --features core`) gets the battery too, for every workspace member that declares a `core`
+      # feature - derived by the lanes script from `cargo metadata`, never listed - so a lint or a
+      # regression that only surfaces under the `core` cfg universe fails CI instead of rotting.
+      # A member that ships a binary (the root package) is linted on its library alone: THE
+      # FEATURE SPLIT (spec 93 Design) gates the binary, and the tests that drive it, behind
+      # `store`. A test step whose every test binary runs zero tests fails the lane. The
+      # wasm32-unknown-unknown cross-compile of the pure subset stays the deliberately opt-in
+      # expensive check tests/core_lane_purity_audit.rs gates behind `RIGGER_CORE_LANE_VERIFY=1`;
+      # this lane proves the native side of the same lane on every run instead.
+      - name: core lane (--no-default-features --features core)
+        run: sh .rigger/gates/lanes.sh core
 
   # Regression guard for dependency skew on a FRESH resolve. `cargo install` without
   # `--locked` ignores the committed Cargo.lock and re-resolves every dependency to the
@@ -183,9 +183,9 @@ jobs:
 
   # The KurrentDB EventStore adapter is compiled into every build now (spec 47: its
   # build-time feature flag is retired), so this job carries no `--features kurrentdb`.
-  # The adapter and its tests live in crates/rigger-store-sqlite, which the build-test
-  # lanes' root-package `cargo test` never runs, so this job lints and tests that crate
-  # alone: the adapter's unit tests and its contract test, which spins up a real
+  # The adapter and its tests live in crates/rigger-store-sqlite. The build-test lanes'
+  # `cargo test --workspace` runs them too; this job lints and tests that crate alone, on
+  # its lightest features: the adapter's unit tests and its contract test, which spins up a real
   # KurrentDB via testcontainers (the runner's Docker, found at its default socket) and
   # runs the same suite the SQLite store passes (proxy fidelity).
   kurrentdb:
@@ -200,10 +200,8 @@ jobs:
       # turbovec/ONNX stack or its wasm32 cross-compile.
       - name: clippy
         run: cargo clippy -p rigger-store-sqlite --no-default-features --lib --tests -- -D warnings
-      # The contract needs more address space than the test runner's default 4 GiB cap
-      # (.cargo/pidns-runner.sh) allows, so the cap is raised to 16 GiB for this step,
-      # spelled in bytes because prlimit reads "16G" as 16 bytes.
+      # The contract runs under the test runner's default address-space cap
+      # (.cargo/pidns-runner.sh), like every other test: the store's runtime runs one worker,
+      # so the adapter's threads fit under it.
       - name: contract test (KurrentDB via testcontainers)
-        env:
-          RIGGER_TEST_AS_BYTES: "17179869184"
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb

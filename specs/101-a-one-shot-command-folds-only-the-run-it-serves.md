@@ -482,4 +482,5 @@ cost a one-shot command exactly the run's own events plus the carried-over typed
   spawn markers are all older than the wall-clock bound and whose registry heartbeat is
   older than the idle window, and still refuses (naming what is live) when any one of those
   three is fresh. This criterion OWNS the live-writer refusal's definition.
-- [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features).
+- [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features). This
+  criterion OWNS only the lanes over the integrated result.

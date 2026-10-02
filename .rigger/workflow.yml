@@ -153,32 +153,28 @@ gates:                      # the project's verification library, referenced by 
   test:
     run: "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || exit 1; fi; cargo test --workspace"
     kind: core
-  # The style gate (Gap 4a): a mechanically-checkable style constraint becomes a
-  # gate rather than relying on ambient reviewer attention. It FAILS when the
-  # unit's OWN diff against the run base introduces an em dash (U+2014) in any
-  # added text - code, comments, docs, prompts - and PASSES on a clean diff. It
-  # runs in the unit worktree (cwd), so a three-dot diff from the run branch
-  # (`rigger-run`, with an origin/main / HEAD fallback) reports only THIS branch's
-  # changes, never the whole tree. The em dash byte pattern is generated at runtime
-  # via `printf` octal (portable to POSIX sh / dash and bash), so this gate command
-  # carries no literal em dash and therefore passes on its own diff.
-  style:
-    run: 'em=$(printf "\342\200\224"); base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); if git diff "$base"...HEAD | grep "^+" | grep -v "^+++ " | grep -qF "$em"; then echo "style gate FAILED: an em dash (U+2014) was introduced; use a hyphen"; exit 1; fi'
+  # The lanes gate: the no-default and core feature lanes, through the one script CI runs
+  # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
+  # above never built. The script derives the core lane's members from the workspace and fails a
+  # test step that ran no test. Listed at check-in only: the post-merge re-gate then covers the
+  # merged tree too, and no implement round pays for two more lane builds. It sources the
+  # container runtime snippet first, as `test` does, so container-backed tests run, not skip.
+  lanes:
+    run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default && sh .rigger/gates/lanes.sh core"
     kind: core
-  # The no-os-kill gate (spec 78): rigger issues NO OS-level kills. Process lifecycle is
-  # handle-bound (`Child::kill()`/`wait()` on a child this process spawned) or, in exactly
-  # two sanctioned places, an internal guarded signal call: the worktree reaper
-  # (crates/rigger-process/src/reap.rs) and the shared test lifecycle helper (tests/common/mod.rs). Everywhere
-  # else in src/, crates/ and tests/, an added line that shells out to kill/pkill/killall, formats a
-  # negative (process-group) pid, uses the `--` argv separator, or calls a signal API
-  # directly FAILS the unit. Inside the two sanctioned files a shell-out is still a failure.
-  # Scoped to code (src, crates, tests): prose in docs/, specs/ and .rigger/ may name the rule.
-  # WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1)
-  # and destroyed the operator's whole desktop session seven-plus times; the review
-  # panel approved each site because nothing mechanical forbade it. Now something does.
-  no-os-kill:
-    run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src crates tests ":(exclude)crates/rigger-process/src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (crates/rigger-process/src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- crates/rigger-process/src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
-    kind: core
+  # The content gates: checks over the lines a diff adds - `style` (Gap 4a: no em dash, U+2014,
+  # in any added text) and `no-os-kill` (spec 78: no OS-level kill, process-group target or
+  # direct signal call in code outside the two sanctioned lifecycle helpers). The checks, and the
+  # why of each, live in `.rigger/gates/content.sh`. A unit's gates check the unit's own diff,
+  # three-dot from the run branch, so a unit is never failed by a change it did not make; the
+  # check-in stage's `-spec` gates check the whole spec diff, from `$RIGGER_RUN_BASE` (the run
+  # branch's tip when the run started, which the conductor exports to every gate), so operator
+  # commits that landed on the run branch directly are checked too, never only the check-in
+  # branch's own commits. `tests/cli.rs` drives both forms on a fixture repository.
+  style:           { run: "sh .rigger/gates/content.sh style",                         kind: core }
+  no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core }
+  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core }
+  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core }
   # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
   # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
@@ -204,8 +200,9 @@ gates:                      # the project's verification library, referenced by 
     kind: core
   # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
   # branch's first commit that touches `src/` or `crates/<name>/src/` must be preceded by, or
-  # itself carry, a test change (a `tests` file, an added `#[test]`/`#[cfg(test)]` item, or a
-  # hunk inside the file's trailing test module). The logic lives in
+  # itself carry, a test change (a `tests` file, an added `#[test]` item, or a hunk reaching the
+  # file's test module - from the first column-0 `#[cfg(test)]` that opens a `mod` body to the
+  # end of the file). The logic lives in
   # `.rigger/gates/red-before-green.sh`; `tests/principle_gates_wiring.rs` drives it on
   # fixture repositories. The reviewer lens checks the same order.
   red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
@@ -285,6 +282,6 @@ stages:
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
     # The `mutation` gate is declared above but unwired from this stage until #32 lands.
-    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary]
+    gates: [fmt, clippy, build, audit, test, lanes, style-spec, no-os-kill-spec, boundary]
     on_pass: merge
     coverage: "the whole spec diff passes every gate on the merged tree"

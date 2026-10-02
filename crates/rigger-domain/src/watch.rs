@@ -2,11 +2,11 @@
 //! FIVE SIGNALS `rigger-watch-a-run` names for a manual look - escalated blockers,
 //! heartbeat staleness vs live agent processes, dash liveness, reject-recurrence
 //! trend, and frontier progress - into one line per anomaly, naming signal, subject,
-//! and response, PLUS a sixth safety check (store integrity) the automated command
-//! runs beyond the skill's five-point human skim. "Covers every signal the watch
-//! skill names" (spec 69, Done-when) is a superset relation, not equality - store
-//! integrity is the automation's own addition, not a look-signal a human is asked to
-//! check by hand.
+//! and response, PLUS two checks the automated command runs beyond the skill's
+//! five-point human skim: store integrity, and a red CI check on the run branch's tip.
+//! "Covers every signal the watch skill names" (spec 69, Done-when) is a superset
+//! relation, not equality - both are the automation's own additions, not look-signals a
+//! human is asked to check by hand.
 //!
 //! Everything here is PURE over already-gathered inputs ([`detect`] takes a
 //! [`WatchInputs`] built from data the caller already read) so it is unit-testable
@@ -143,10 +143,10 @@ pub const DEAD_DRIVER_HEARTBEAT_BOUND: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_INTERVAL_SECS: u64 = 180;
 
 /// The closed set of anomaly signals the watchdog reports. The first five are named
-/// BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]); the sixth,
-/// [`Signal::StoreIntegrity`], is the automation's own addition beyond the skill's
-/// five-signal human skim (module doc). Declared in the spec's own listed order so a
-/// derived [`Ord`] sorts anomalies in that order.
+/// BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]); the last two,
+/// [`Signal::StoreIntegrity`] and [`Signal::CiRed`], are the automation's own additions
+/// beyond the skill's five-signal human skim (module doc). Declared in the spec's own
+/// listed order so a derived [`Ord`] sorts anomalies in that order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Signal {
     Escalated,
@@ -155,6 +155,7 @@ pub enum Signal {
     RejectRecurrence,
     FrontierStall,
     StoreIntegrity,
+    CiRed,
 }
 
 /// The five signal names, in Design order, verbatim against `rigger-watch-a-run`'s
@@ -180,6 +181,7 @@ impl Signal {
             Signal::RejectRecurrence => SKILL_SIGNAL_NAMES[3],
             Signal::FrontierStall => SKILL_SIGNAL_NAMES[4],
             Signal::StoreIntegrity => "store integrity",
+            Signal::CiRed => "ci checks",
         }
     }
 
@@ -189,7 +191,7 @@ impl Signal {
     /// stall names the spec's own directive text instead (never a fifth invented
     /// skill - `rigger-watch-a-run`'s own pin test forbids that); store integrity
     /// names the documented repair reference (spec 71), since it has no skill of its
-    /// own.
+    /// own; a red CI check names its directive, read the failed logs and fix at root.
     pub fn response(&self) -> &'static str {
         match self {
             Signal::Escalated => "rigger-handle-an-escalation",
@@ -198,6 +200,10 @@ impl Signal {
             Signal::RejectRecurrence => "rigger-diagnose-churn",
             Signal::FrontierStall => "stop the driver and diagnose before another round spends",
             Signal::StoreIntegrity => ORDER_SIGNATURE_REPAIR_DOC_REF,
+            Signal::CiRed => {
+                "read the failed logs with gh run view --log-failed and fix at root before the \
+                 next landing"
+            }
         }
     }
 }
@@ -275,6 +281,25 @@ pub enum DashProbe {
     },
 }
 
+/// What CI says about the run branch's tip commit - GitHub's check runs for that sha, read and
+/// classified by the caller - so [`detect`] never runs `gh` or touches the network. Keyed by
+/// the commit, the reading holds wherever the tip was pushed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CiProbe {
+    /// The checkout has no run branch, so there is no tip to read CI for - nothing has run.
+    NoRunTip,
+    /// `gh` could not read the checks (not installed, not logged in, or the call failed); the
+    /// reason is printed beside the anomalies, never raised as one.
+    Unknown(String),
+    /// No check failed, and not every check has passed yet: one is still queued or running,
+    /// was cancelled or awaits approval, or none has started on the tip.
+    Pending,
+    /// Every check on the tip concluded success, neutral or skipped.
+    Green,
+    /// The named checks concluded failure, timed out or could not start on the tip `sha`.
+    Red { sha: String, checks: Vec<String> },
+}
+
 /// Everything [`detect`] needs, already gathered by the caller (store, process
 /// table, and status - never the driver). Every signal reads ONE event slice: this
 /// project's CURRENT RUN (mirroring `rigger status`'s own scope), so a poll costs the
@@ -350,6 +375,8 @@ pub struct WatchInputs<'a> {
     /// back to the pre-existing `dash_breadcrumb_written_at`/`run_started_at` comparison
     /// unchanged, so no established suppression regresses.
     pub dash_attempted_this_run: bool,
+    /// The run tip's CI reading, already classified by the caller.
+    pub ci: CiProbe,
 }
 
 #[derive(Deserialize)]
@@ -547,6 +574,21 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
         }
     }
 
+    // Signal 7 (beyond the skill's five): a red CI check on the run tip. Raised whether or not
+    // the run is done: a red tip is what the next landing builds on.
+    if let CiProbe::Red { sha, checks } = &inputs.ci {
+        out.push(Anomaly {
+            signal: Signal::CiRed,
+            subject: sha.clone(),
+            magnitude: checks.len() as u32,
+            detail: format!(
+                "{} check(s) failed on the run tip: {}",
+                checks.len(),
+                checks.join(", ")
+            ),
+        });
+    }
+
     // Signal 6 (beyond the skill's five): store integrity, over the run.
     for (stream, rows) in out_of_order_streams(inputs.run_events) {
         out.push(Anomaly {
@@ -651,6 +693,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         }
     }
 
@@ -837,6 +880,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -859,6 +903,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -927,6 +972,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -958,6 +1004,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1017,6 +1064,7 @@ mod tests {
             run_started_at: Some(now - Duration::from_secs(run_started_ago)),
             dash_breadcrumb_written_at: Some(now - Duration::from_secs(breadcrumb_ago)),
             dash_attempted_this_run: attempted,
+            ci: CiProbe::NoRunTip,
             now,
             ..empty_inputs(&[], &no_heartbeats)
         };
@@ -1129,6 +1177,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(detect(&inputs).is_empty());
     }
@@ -1163,6 +1212,7 @@ mod tests {
             run_started_at: Some(now - Duration::from_secs(30)),
             dash_breadcrumb_written_at: Some(now - Duration::from_secs(60)),
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(
             detect(&inputs).is_empty(),
@@ -1209,6 +1259,7 @@ mod tests {
                 run_started_at,
                 dash_breadcrumb_written_at,
                 dash_attempted_this_run: false,
+                ci: CiProbe::NoRunTip,
             };
             assert_eq!(detect(&inputs).len(), 1, "{case}");
         }
@@ -1303,6 +1354,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         let anomalies = detect(&inputs);
         assert_eq!(anomalies.len(), 1);
@@ -1334,8 +1386,58 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         assert!(detect(&inputs).is_empty());
+    }
+
+    // --- Signal 7 (beyond the skill's five): a red CI check on the run tip ---
+
+    /// A check that failed on the run branch's tip raises `CiRed`, naming the tip, every failed
+    /// check and the response, whether or not the run is done - a red tip is what the next
+    /// landing builds on. A pending or green CI, a checkout with no run tip, and a CI `gh` could
+    /// not read (not installed, not logged in) raise nothing: an unread CI is reported beside
+    /// the anomalies, never as one.
+    #[test]
+    fn a_red_check_on_the_run_tip_raises_ci_red_and_unknown_raises_nothing() {
+        let done = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        let no_heartbeats = BTreeMap::new();
+        for events in [&[][..], &done[..]] {
+            let detect_with = |ci: CiProbe| {
+                detect(&WatchInputs {
+                    ci,
+                    ..empty_inputs(events, &no_heartbeats)
+                })
+            };
+            let red = detect_with(CiProbe::Red {
+                sha: "0123abcd".to_string(),
+                checks: vec!["build-test".to_string(), "kurrentdb".to_string()],
+            });
+            assert_eq!(red.len(), 1, "{red:?}");
+            assert_eq!(
+                (red[0].signal, red[0].subject.as_str(), red[0].magnitude),
+                (Signal::CiRed, "0123abcd", 2)
+            );
+            let line = red[0].line();
+            assert!(
+                line.contains("build-test, kurrentdb") && line.contains("gh run view --log-failed"),
+                "the line names every failed check and the response: {line}"
+            );
+            for quiet in [
+                CiProbe::Unknown("gh is not installed".to_string()),
+                CiProbe::NoRunTip,
+                CiProbe::Pending,
+                CiProbe::Green,
+            ] {
+                assert!(
+                    detect_with(quiet.clone()).is_empty(),
+                    "{quiet:?} raises no anomaly"
+                );
+            }
+        }
     }
 
     // --- The seeded multi-anomaly scenario (spec 69 Done-when's own combination) ---
@@ -1396,6 +1498,7 @@ mod tests {
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
+            ci: CiProbe::NoRunTip,
         };
         let anomalies = detect(&inputs);
         let signals: Vec<Signal> = anomalies.iter().map(|a| a.signal).collect();

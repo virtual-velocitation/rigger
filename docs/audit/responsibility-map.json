@@ -7245,7 +7245,23 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e6c0eed35ad6f92e"
+    "content_hash": "9b5b3fb17d442f81"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "run_tip_ci",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "e7f687aebc5e5bfd"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "ci_probe_from_check_runs",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "b6a4d9e8069c472e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7253,7 +7269,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "4c474a6187546553"
+    "content_hash": "76c7c1a4e2e93c92"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9073,11 +9089,27 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "check_runs_parse_into_a_ci_probe_by_conclusion",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "09465663bd33317a"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "42b15a3f4e432717"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "a_watch_poll_reads_the_run_from_its_boundary_and_nothing_else",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "187a2cea10f82c60"
+    "content_hash": "7ad8729067f5422a"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9101,7 +9133,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ed05d6d3d3f86d6f"
+    "content_hash": "cb642ab4cf902b67"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9125,7 +9157,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "583f9864b2e0c7a8"
+    "content_hash": "86142bd3f8a8d214"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9141,7 +9173,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "590ce726ad0c9734"
+    "content_hash": "d612bbdf92771560"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9149,7 +9181,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "864024c236240b28"
+    "content_hash": "d4175e803a4f4b54"
   },
   {
     "file": "src/cli/mod.rs",
