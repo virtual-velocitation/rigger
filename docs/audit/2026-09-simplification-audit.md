@@ -4087,13 +4087,13 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:754-763` `lang_str`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1502-1507` `direction_sql`
 
-#### `dup-9b727c38b8a1` (semantic, 3 sites)
+#### `dup-6f126ddb8d2c` (semantic, 3 sites)
 
 Proposed home: `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract as the ONE function that touches source parsing (already its own module doc's claim, architecture 5.5.3) - this file's own scan_file/tokenize are ad hoc scanners for the identical job and should route through an injected-grammar extractor rather than re-deriving structure by hand`
 
 mandatory sweep: bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-grounder/src/grounder/symbols/extract.rs:34-191` `extract`
+- `crates/rigger-grounder/src/grounder/symbols/extract.rs:34-201` `extract`
 - `tests/simplification_audit.rs:213-215` `scan_file`
 - `tests/simplification_audit.rs:2470-2576` `tokenize`
 
@@ -4121,8 +4121,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1081-1092` `a_reference_ranks_below_a_definition_of_the_same_name`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1331-1345` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1188-1199` `a_reference_ranks_below_a_definition_of_the_same_name`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1438-1452` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
 
 #### `dup-56485f8d4262` (near, 3 sites)
 
@@ -4130,9 +4130,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1248-1294` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1297-1323` `reindex_replaces_only_a_changed_files_symbols`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1622-1649` `reindex_over_a_deleted_file_stops_grounding_it`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1355-1401` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1404-1430` `reindex_replaces_only_a_changed_files_symbols`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1729-1756` `reindex_over_a_deleted_file_stops_grounding_it`
 
 #### `dup-415d2df07b98` (near, 2 sites)
 
@@ -4140,7 +4140,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/store.rs:253-257` `load_is_none_on_a_cold_start`
+- `crates/rigger-grounder/src/grounder/symbols/store.rs:257-261` `load_is_none_on_a_cold_start`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:553-557` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
 
 #### `dup-03666ae1d685` (semantic, 2 sites)
@@ -5064,7 +5064,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7884 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 7901 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:14410-14432` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:18609-18662` `grounding_still_surfaces_a_prior_run_decision_that_peers_labels_historical` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -6035,12 +6035,12 @@
     ]
   },
   {
-    "id": "dup-9b727c38b8a1",
+    "id": "dup-6f126ddb8d2c",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
         "start_line": 34,
-        "end_line": 191
+        "end_line": 201
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -6089,13 +6089,13 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1081,
-        "end_line": 1092
+        "start_line": 1188,
+        "end_line": 1199
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1331,
-        "end_line": 1345
+        "start_line": 1438,
+        "end_line": 1452
       }
     ]
   },
@@ -6104,18 +6104,18 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1248,
-        "end_line": 1294
+        "start_line": 1355,
+        "end_line": 1401
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1297,
-        "end_line": 1323
+        "start_line": 1404,
+        "end_line": 1430
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/grounder.rs",
-        "start_line": 1622,
-        "end_line": 1649
+        "start_line": 1729,
+        "end_line": 1756
       }
     ]
   },
@@ -6124,8 +6124,8 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/store.rs",
-        "start_line": 253,
-        "end_line": 257
+        "start_line": 257,
+        "end_line": 261
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
