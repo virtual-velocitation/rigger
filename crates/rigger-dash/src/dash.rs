@@ -2926,13 +2926,7 @@ pub fn console_snapshot_json(
     base: &str,
 ) -> Result<String, serde_json::Error> {
     let run_id = run::current_run_id(events).unwrap_or_default();
-    let spec = events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == run::TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice::<run::RunStarted>(&e.data).ok())
-        .map(|r| r.spec)
-        .unwrap_or_default();
+    let spec = run::current_run_spec_path(events);
     let effective_base = run::current_run_base(events).unwrap_or_else(|| base.to_string());
 
     let mut console_events: Vec<&Event> = events.iter().filter(|e| is_console_event(e)).collect();
