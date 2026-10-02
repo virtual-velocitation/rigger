@@ -28503,6 +28503,38 @@ mod tests {
         );
     }
 
+    /// A later round's reject blaming infrastructure judged no code (F3), so naming no item
+    /// does not make it degenerate: the stage reruns at the same attempt uncharged, under the
+    /// next retry ordinal's reviewers, and the adjudicator is never respawned for it.
+    #[test]
+    fn a_later_round_infra_fault_reject_naming_no_item_reruns_uncharged() {
+        let rerun = *review_retry_window(1).start();
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (
+                adjudicator_at(1, 0),
+                r#"{"verdict":"reject","cause":"infra-fault"}"#,
+            ),
+            (adjudicator_at(1, rerun), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            !driver.spawn_ids().contains(&adjudicator_at(1, 1)),
+            "the infra-fault reject is not respawned; spawns: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            1,
+            "only round 0's reject charges an attempt"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["implement/infra-retry#1~0"],
+            "round 1's infra-fault reject reruns its stage once"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
