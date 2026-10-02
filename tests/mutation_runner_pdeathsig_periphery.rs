@@ -158,21 +158,35 @@ fn shell_quote(s: impl AsRef<str>) -> String {
     format!("'{}'", s.as_ref().replace('\'', r"'\''"))
 }
 
-/// Run the shipped runner around `cat /proc/self/limits` with the runner's environment `envs` (on
-/// a clean slate for the two variables this suite drives), returning what it did and printed.
-fn run_the_runner_reading_limits(envs: &[(&str, &str)]) -> Output {
+/// Run the shipped runner around a command printing the wrapped process's `/proc/self/limits` and
+/// its `MALLOC_ARENA_MAX`, with the runner's environment `envs` (on a clean slate for the
+/// variables this suite drives, so every bound printed is the runner's own), returning what it
+/// did and printed.
+fn run_the_runner_reading_its_memory_bounds(envs: &[(&str, &str)]) -> Output {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut cmd = Command::new(pidns_runner_path());
     cmd.arg("/bin/sh")
         .arg("-c")
-        .arg("cat /proc/self/limits")
+        .arg("cat /proc/self/limits; echo \"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\"")
         .env("RIGGER_TEST_TMPDIR", tmp.path())
         .env_remove("RIGGER_TEST_AS_BYTES")
-        .env_remove("RIGGER_PIDNS");
+        .env_remove("RIGGER_PIDNS")
+        .env_remove("MALLOC_ARENA_MAX");
     for (k, v) in envs {
         cmd.env(k, v);
     }
     cmd.output().expect("run the shipped runner")
+}
+
+/// What the wrapped process printed, for a runner invocation that ran it; one that did not run it
+/// fails the test with the runner's stderr.
+fn wrapped_output(out: &Output) -> String {
+    assert!(
+        out.status.success(),
+        "the runner must run its wrapped command; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// Gap 92: the per-test cap is sized for a mutation sweep's CONCURRENCY, not for one runaway.
@@ -193,15 +207,9 @@ fn run_the_runner_reading_limits(envs: &[(&str, &str)]) -> Output {
 #[test]
 fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_runs() {
     const FOUR_GIB: &str = "4294967296";
-    // The cap (in bytes) the wrapped process read from its own `/proc/self/limits`, for a runner
-    // invocation that ran it; one that did not run it fails the test with the runner's stderr.
+    // The cap (in bytes) the wrapped process read from its own `/proc/self/limits`.
     let applied_cap = |out: &Output| -> String {
-        assert!(
-            out.status.success(),
-            "the runner must run its wrapped command; stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let limits = String::from_utf8_lossy(&out.stdout);
+        let limits = wrapped_output(out);
         limits
             .lines()
             .find(|l| l.starts_with("Max address space"))
@@ -210,12 +218,15 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_run
             .to_string()
     };
     assert_eq!(
-        applied_cap(&run_the_runner_reading_limits(&[("RIGGER_PIDNS", "off")])),
+        applied_cap(&run_the_runner_reading_its_memory_bounds(&[(
+            "RIGGER_PIDNS",
+            "off"
+        )])),
         FOUR_GIB,
         "the plain path (a CI host) caps each test process at 4 GiB"
     );
     assert_eq!(
-        applied_cap(&run_the_runner_reading_limits(&[
+        applied_cap(&run_the_runner_reading_its_memory_bounds(&[
             ("RIGGER_PIDNS", "off"),
             ("RIGGER_TEST_AS_BYTES", "2147483648"),
         ])),
@@ -223,7 +234,7 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_run
         "an explicit cap still overrides the default (lower here: this test process already \
          runs under the 4 GiB hard limit, which no child can raise)"
     );
-    let namespaced = run_the_runner_reading_limits(&[]);
+    let namespaced = run_the_runner_reading_its_memory_bounds(&[]);
     if namespaced.status.success() {
         assert_eq!(
             applied_cap(&namespaced),
@@ -244,6 +255,41 @@ fn the_runner_caps_each_test_process_address_space_at_4_gib_on_every_path_it_run
             namespaced.stdout.is_empty(),
             "a refusing runner must run nothing unsandboxed; stdout: {}",
             String::from_utf8_lossy(&namespaced.stdout)
+        );
+    }
+}
+
+/// The address-space cap above measures a test's real demand only while the allocator's own
+/// reservations stay bounded: glibc malloc opens another arena, reserving 64 MiB of address space,
+/// whenever a thread finds the arenas it tried locked, up to eight per core, so a suite running
+/// its tests on many threads under load reserves gigabytes it never touches and trips the cap.
+/// The runner bounds the arena count for the wrapped process on every path it runs, beside the
+/// cap; a host that cannot create the namespace refuses to run anything, as the cap test pins.
+#[test]
+fn the_runner_bounds_each_test_process_malloc_arenas_on_every_path_it_runs() {
+    // The arena bound the wrapped process saw in its own environment.
+    let arena_bound = |out: &Output| -> String {
+        let printed = wrapped_output(out);
+        printed
+            .lines()
+            .find_map(|l| l.strip_prefix("MALLOC_ARENA_MAX="))
+            .unwrap_or_else(|| panic!("no MALLOC_ARENA_MAX line in {printed}"))
+            .to_string()
+    };
+    assert_eq!(
+        arena_bound(&run_the_runner_reading_its_memory_bounds(&[(
+            "RIGGER_PIDNS",
+            "off"
+        )])),
+        "2",
+        "the plain path (a CI host) bounds each test process at two malloc arenas"
+    );
+    let namespaced = run_the_runner_reading_its_memory_bounds(&[]);
+    if namespaced.status.success() {
+        assert_eq!(
+            arena_bound(&namespaced),
+            "2",
+            "the namespace path bounds each test process the same way"
         );
     }
 }
