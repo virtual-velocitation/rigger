@@ -37,14 +37,17 @@ replaced by Read, Glob, `mcp__rigger__rigger_graph`, `mcp__rigger__rigger_ground
 `mcp__rigger__rigger_peers` - no Bash, Agent, Grep, or emit, progress or scratch tool - so the
 critic can neither build nor record. The host defines its `lookup` and `verify` helpers on every
 spawn, so the critic may still reach one through the fan-out tool; a helper's build or record is
-denied like the critic's own, by the host's no-prompt permission rule (accepted). The spawn runs
-through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the operator's
-ambient environment and login, and no credential variable is read or set. The verb composes the host
-itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the project's
-`.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it, its
-critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store` the
-critique store below; `scratch_root` the project scratch root as `run_workflow` composes it, empty
-in a project with no git repository, where no transcript or liveness marker is written and the
+denied like the critic's own, by the host's no-prompt permission rule (accepted). The critic's bound
+MCP server, `rigger mcp --spawn <id>`, selects its store through configuration alone, like
+`rigger emit`, so under a server selected by flags alone its `rigger_peers` reads the store that
+configuration selects, or its lookup tools are absent when that store cannot be resolved (accepted).
+The spawn runs through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the
+operator's ambient environment and login, and no credential variable is read or set. The verb
+composes the host itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the
+project's `.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it,
+its critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store`
+the critique store below; `scratch_root` the project scratch root as `run_workflow` composes it,
+empty in a project with no git repository, where no transcript or liveness marker is written and the
 directory removal (*The spawn events*) is a no-op; `stop_grace` 30 s; the persona's own
 `max_wall_clock`). `SpawnOpts` carries `dir` the repository root the spec path is made relative to
 (*The spec path*), `isolation: false` (the project checkout, like the planner), `unit`
@@ -83,15 +86,18 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
 - *The hash.* `<hash>` is `playbooks::fnv1a_64` (`crates/rigger-domain/src/playbooks.rs`) over
   the spec file's raw bytes, as 16 lowercase hex digits. Any byte change is new text; a
   whitespace-only edit costs a re-critique, accepted.
-- *The store.* The verb runs `resolve_main_worktree_or_refuse`, the critic lookup and
-  `refuse_unless_one_root` in that order, all before any store or graph is opened or migrated, so it
-  refuses a linked worktree and a root mismatch as `cmd_step` does (`refuse_unless_one_root` takes
-  the invoking command for its message, as `resolve_main_worktree_or_refuse` does). It takes the
-  `--eventstore` and `--conn` flags `rigger run` takes and resolves its backend through
-  `store_selection` with them, as the run entry it precedes does (a flagless call resolves as
-  `rigger step` does). On a sqlite selection it runs `migrate_local_identity` before opening its
-  backend, as `run_cli` and `run_workflow` do, and it opens the project's store as `cmd_step` does,
-  creating `.rigger/` and the store when absent.
+- *The store.* The verb's refusals run in one order - `resolve_main_worktree_or_refuse`, the critic
+  lookup, `refuse_unless_one_root`, the spec path, the loop-ready check `load_criteria` makes, then
+  selecting, migrating and opening the store and opening the graph - and only the first one reached
+  is printed; it refuses a linked worktree and a root mismatch as `cmd_step` does
+  (`refuse_unless_one_root` takes the invoking command for its message, as
+  `resolve_main_worktree_or_refuse` does). It takes the `--eventstore` and `--conn` flags
+  `rigger run` takes and resolves its backend through `store_selection` with them, as the run entry
+  it precedes does (a flagless call resolves as `rigger step` does). On a sqlite selection it runs
+  `migrate_local_identity` before opening its backend, as `run_cli` and `run_workflow` do, and it
+  opens the project's store as `cmd_step` does, creating `.rigger/` and the store when absent.
+  Criterion 1's unit words `refuse_unless_one_root`'s two messages for any invoking command and
+  updates the one-call-site note in `tests/step_root_resolution_periphery.rs` in the same commit.
 - *The spawn events.* The host records the `SpawnResult` on `run::STREAM` of the store it is handed
   (`spawn_store::record_result_if_absent`, which keeps the first result recorded for a spawn id),
   and the verb parks its `SpawnRequested` the same way (`spawn_store::park_in_run`). The verb hands
@@ -126,16 +132,20 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
   finding by id (`ensure_node`) and the finding totals count an id once. The copies go through
   `ingest::folding_into` over the project store and the project graph `open_graph` opened (the
   wiring `cmd_step` uses for its own appends), each payload first passing `check_fold_payload`. The
-  verb opens that graph before it reads the critique, on every call the critic lookup admits, so a
-  graph.db that owes its rebuild refuses each such call, answered or not, naming `rigger setup`.
-  Finding ids are `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of the finding line. `by` is
-  `spec-critic`; `about` is `[<spec path>]`. The copies are run-attributed like every finding:
-  pruned with the run current at their append and counted under `spec-critic` in that run's finding
-  totals; accepted. The `ReviewFinding` events are the graph's view; the refusal never reads them.
+  verb opens that graph before it reads the critique, on every call no earlier refusal in
+  *The store*'s order stops, so a graph.db that owes its rebuild refuses each such call, answered or
+  not, naming `rigger setup`. Finding ids are `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of
+  the finding line. `by` is `spec-critic`; `about` is `[<spec path>]`. A copy is keyed by id alone:
+  a renamed or duplicated spec with unchanged bytes gets no copy of an id already copied, so its
+  findings stay about the paths the earlier copies name (accepted). The copies are run-attributed
+  like every finding: pruned with the run current at their append and counted under `spec-critic` in
+  that run's finding totals; accepted. The `ReviewFinding` events are the graph's view; the refusal
+  never reads them.
 - *The spec path* is repo-relative with any leading `./` removed; an absolute path inside the
-  repository is made repo-relative; a path outside it is refused. In a project with no git
-  repository the repository root is the project root (the directory holding `.rigger/`), the root
-  the run entries' repo-less path already uses; `dir` is that root.
+  repository is made repo-relative; a path outside it is refused (*The store* orders the verb's
+  refusals). In a project with no git repository the repository root is the project root (the
+  directory holding `.rigger/`), the root the run entries' repo-less path already uses; `dir` is
+  that root.
 
 **ANSWERED FROM THE STORE, decided here.** When the hash already has a critique, `rigger critique`
 spawns nothing: it appends any missing `ReviewFinding` copy, prints the recorded findings and
@@ -160,7 +170,9 @@ spec: the next call spawns and prints none of the earlier findings.
   comparison. A `resolves` entry naming an id that is not in the critique is ignored. Supersession
   is not read: a recorded resolution stands until the text changes. A renamed spec needs its
   resolutions recorded again under the new path. No critique for the hash is refused as "not
-  critiqued".
+  critiqued". A spec outside the repository cannot be critiqued, so under a workflow with a critic a
+  new run on it is refused as not critiqued, whatever its bytes, until the spec moves into the
+  repository (accepted).
 - *No critic.* Under a workflow with no critic (THE CRITIC's lookup) the refusal does not apply: a
   command that would begin a new run on a spec prints the one no-critic line in Notes on stderr
   and proceeds.
@@ -377,9 +389,10 @@ and 5 at any point, 6 last):
 
 **CONSTRAINTS WALK.**
 - *Criterion 1.* Empty: a spec with no Done-when criteria is refused by the verb with the loop-ready
-  message and nothing is recorded; a workflow with no critic refuses every call, answered or not,
-  and nothing is recorded; a critic that returns no finding line and an approving verdict line is a
-  clean critique; a verdict that does not approve with no parsed BLOCKING finding is not a critique.
+  message (*The store* orders the verb's refusals) and nothing is recorded; a workflow with no
+  critic refuses every call, answered or not, and nothing is recorded; a critic that returns no
+  finding line and an approving verdict line is a clean critique; a verdict that does not approve
+  with no parsed BLOCKING finding is not a critique.
   Repeated: under a workflow with a critic, which every corner from here on assumes, answered from
   the store, zero spawns; the copies are skipped by id. Reverted: text back at an earlier hash is
   answered by that hash's critique. DROPPED: a later hash's critique inherits no finding or
@@ -398,9 +411,10 @@ and 5 at any point, 6 last):
   its identity migrated before the verb's first append; a graph.db that owes its rebuild refuses
   every call, answered or not; a project with no git repository resolves the spec path against its
   project root and runs with an empty scratch root.
-- *Criterion 2.* Empty: no critique refuses as not critiqued; a stream with no `RunStarted` mints,
-  so its first command needs a critique; a run with no spec is never refused; a new run under a
-  workflow with no critic is never refused and prints its one line. Repeated: each refused command
+- *Criterion 2.* Empty: no critique refuses as not critiqued, as does a new run on a spec outside
+  the repository, whatever its bytes; a stream with no `RunStarted` mints, so its first command
+  needs a critique; a run with no spec is never refused; a new run under a workflow with no critic
+  is never refused and prints its one line. Repeated: each refused command
   refuses again until cleared, reusing the anchor, migration and registration the first one left;
   under a workflow with no critic each command that begins a new run prints the line again.
   Reverted: an earlier hash's critique and its resolutions apply again; under a workflow that
