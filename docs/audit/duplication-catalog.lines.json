@@ -84,8 +84,8 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 61,
-        "end_line": 67
+        "start_line": 62,
+        "end_line": 68
       }
     ]
   },
@@ -3694,18 +3694,18 @@
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 353,
-        "end_line": 353
+        "start_line": 354,
+        "end_line": 354
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 594,
-        "end_line": 594
+        "start_line": 595,
+        "end_line": 595
       },
       {
         "file": "tests/spec_critique_periphery.rs",
-        "start_line": 1278,
-        "end_line": 1278
+        "start_line": 1279,
+        "end_line": 1279
       },
       {
         "file": "tests/statusline_command_periphery.rs",
