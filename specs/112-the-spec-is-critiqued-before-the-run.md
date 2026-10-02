@@ -26,9 +26,11 @@ Criterion 6 needs all five. The spec is launched on a tree carrying spec 101's t
 `rigger critique <spec>` resolves the persona the workflow names as the `adversary` of the
 plan-critique gate, the stage `wave::critique_gate_name` returns (this repository:
 `.rigger/agents/adversary.md`), falling back to `defaults.review.adversary`; that persona is the
-critic, and this lookup is one pure function. A workflow naming neither has no critic:
-`rigger critique` under it refuses, naming both keys, and records nothing, and a new run under it
-is not refused (A NEW RUN IS REFUSED); there is no built-in critic. The critic's system prompt is
+critic, and this lookup is one pure function. A workflow naming neither has no critic, a new run
+under it is not refused (A NEW RUN IS REFUSED), and there is no built-in critic. The critic lookup
+runs on every call, before any store or graph is opened or migrated (*The store* orders it): under a
+workflow with no critic the verb refuses, naming both keys, and records nothing, answered or not;
+ANSWERED FROM THE STORE applies only under a workflow with a critic. The critic's system prompt is
 `build_system_prompt(persona, instructions)` (the persona body, the configured instruction layers
 and the communication discipline every spawn gets), and the verb runs the persona with its tools
 replaced by Read, Glob, `mcp__rigger__rigger_graph`, `mcp__rigger__rigger_ground` and
@@ -37,13 +39,15 @@ critic can neither build nor record. The host defines its `lookup` and `verify` 
 spawn, so the critic may still reach one through the fan-out tool; a helper's build or record is
 denied like the critic's own, by the host's no-prompt permission rule (accepted). The spawn runs
 through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the operator's
-ambient environment and login, and no credential variable is read or set. The verb composes the
-host itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the project's
+ambient environment and login, and no credential variable is read or set. The verb composes the host
+itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the project's
 `.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it, its
 critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store` the
-critique store below; `scratch_root` the project scratch root; `stop_grace` 30 s; the persona's
-own `max_wall_clock`). `SpawnOpts` carries `dir` the repository root the spec path is made
-relative to (*The spec path*), `isolation: false` (the project checkout, like the planner), `unit`
+critique store below; `scratch_root` the project scratch root as `run_workflow` composes it, empty
+in a project with no git repository, where no transcript or liveness marker is written and the
+directory removal (*The spawn events*) is a no-op; `stop_grace` 30 s; the persona's own
+`max_wall_clock`). `SpawnOpts` carries `dir` the repository root the spec path is made relative to
+(*The spec path*), `isolation: false` (the project checkout, like the planner), `unit`
 `critique-<hash>`, `stage` `critique`, `run_id` `critique-<hash>`, `title` the spec path, and
 `attempt` (below). The loop's own driver choice in `run_cli` (`src/cli/run.rs`) is not changed by
 this spec. Criterion 1's unit adds `critique` to `SUBCOMMANDS` (`src/main.rs`) and regenerates the
@@ -79,25 +83,31 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
 - *The hash.* `<hash>` is `playbooks::fnv1a_64` (`crates/rigger-domain/src/playbooks.rs`) over
   the spec file's raw bytes, as 16 lowercase hex digits. Any byte change is new text; a
   whitespace-only edit costs a re-critique, accepted.
-- *The store.* The verb takes the `--eventstore` and `--conn` flags `rigger run` takes and
-  resolves its backend through `store_selection` with them, as the run entry it precedes does (a
-  flagless call resolves as `rigger step` does). On a sqlite selection it runs
-  `migrate_local_identity` before opening its backend, as `run_cli` and `run_workflow` do, and it
-  opens the project's store as `cmd_step` does, creating `.rigger/` and the store when absent.
-- *The spawn events.* The host records the `SpawnResult` on `run::STREAM` of the store it is
-  handed (`spawn_store::record_result_if_absent`, which keeps the first result recorded for a
-  spawn id), and the verb parks its `SpawnRequested` the same way (`spawn_store::park_in_run`).
-  The verb hands both a store namespaced to `<identity>-critique`
-  (`Namespaced::new(backend, &format!("{identity}-critique"))`), so the request and the result
-  land on the critique's own stream and never on the run stream a `rigger step` folds into its
-  wave. Project-wide prefix reads include that stream as `critique-run`; harmless, it holds only
-  spawn events, and the graph's live selection reads the run stream alone. The spawn id is
-  `spawn_id("critique-<hash>", ROLE_ADVERSARY, attempt)`, `attempt` the number of
-  `SpawnRequested` events already recorded for the hash; the critique runs the persona's model
-  rung for `attempt` (`AgentDef::model_for_attempt`). Once its spawn returns, and on every call
-  answered from the store, the verb removes the `agent-live` and `agent-stream` directories of
-  every critique run (`critique-<hash>`, any hash), so what a crash left goes with the next call;
-  the log holds the output.
+- *The store.* The verb runs `resolve_main_worktree_or_refuse`, the critic lookup and
+  `refuse_unless_one_root` in that order, all before any store or graph is opened or migrated, so it
+  refuses a linked worktree and a root mismatch as `cmd_step` does (`refuse_unless_one_root` takes
+  the invoking command for its message, as `resolve_main_worktree_or_refuse` does). It takes the
+  `--eventstore` and `--conn` flags `rigger run` takes and resolves its backend through
+  `store_selection` with them, as the run entry it precedes does (a flagless call resolves as
+  `rigger step` does). On a sqlite selection it runs `migrate_local_identity` before opening its
+  backend, as `run_cli` and `run_workflow` do, and it opens the project's store as `cmd_step` does,
+  creating `.rigger/` and the store when absent.
+- *The spawn events.* The host records the `SpawnResult` on `run::STREAM` of the store it is handed
+  (`spawn_store::record_result_if_absent`, which keeps the first result recorded for a spawn id),
+  and the verb parks its `SpawnRequested` the same way (`spawn_store::park_in_run`). The verb hands
+  both a store namespaced to `<identity>-critique`
+  (`Namespaced::new(backend, &format!("{identity}-critique"))`), so the request and the result land
+  on the critique's own stream and never on the run stream a `rigger step` folds into its wave.
+  Project-wide prefix reads include that stream as `critique-run`; harmless, it holds only spawn
+  events, and the graph's live selection reads the run stream alone. On one shared server backend, a
+  project whose identity is another's plus `-critique` has that project's critique stream as its run
+  stream; accepted, since a minted `project.id` is hex with no `-` and never ends in `-critique`.
+  The spawn id is `spawn_id("critique-<hash>", ROLE_ADVERSARY, attempt)`, `attempt` the number of
+  `SpawnRequested` events already recorded for the hash; the critique runs the persona's model rung
+  for `attempt` (`AgentDef::model_for_attempt`). Once its spawn returns, and on every call answered
+  from the store, the verb removes the `agent-live` and `agent-stream` directories of every critique
+  run (`critique-<hash>`, any hash), so what a crash left goes with the next call; the log holds the
+  output.
 - *The authority.* A result for the hash is a critique when its `error` is empty, its output
   carries a verdict line (`review::has_verdict_line`, the last JSON line carrying `verdict`, prose
   may follow it), and a verdict that does not approve (`review::verdict_approves`) comes with at
@@ -109,20 +119,19 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
   fields past the fourth are joined back with `|` into the fix; any other line is prose. The
   refusal reads BLOCKING findings, never the verdict word, so an `approve` beside a BLOCKING line
   still counts as blocking.
-- *The graph copy.* For each finding the verb appends one `ReviewFinding` to the project run
-  stream (the stream every finding lives on, so `rigger peers <spec>` shows it), skipping an id
-  that stream already holds (a typed `ReviewFinding` read of the whole stream), so a repeat
-  appends nothing; two concurrent calls may each append a copy of one id, accepted, since the
-  graph fold upserts a finding by id (`ensure_node`) and the finding totals count an id once. The
-  copies go through `ingest::folding_into` over the project store and the project graph
-  `open_graph` opened (the wiring `cmd_step` uses for its own appends), each payload first passing
-  `check_fold_payload`. The verb opens that graph before it reads the critique, on every call, so
-  a graph.db that owes its rebuild refuses every call, answered or not, naming `rigger setup`.
+- *The graph copy.* For each finding the verb appends one `ReviewFinding` to the project run stream
+  (the stream every finding lives on, so `rigger peers <spec>` shows it), skipping an id that stream
+  already holds (a typed `ReviewFinding` read of the whole stream), so a repeat appends nothing; two
+  concurrent calls may each append a copy of one id, accepted, since the graph fold upserts a
+  finding by id (`ensure_node`) and the finding totals count an id once. The copies go through
+  `ingest::folding_into` over the project store and the project graph `open_graph` opened (the
+  wiring `cmd_step` uses for its own appends), each payload first passing `check_fold_payload`. The
+  verb opens that graph before it reads the critique, on every call the critic lookup admits, so a
+  graph.db that owes its rebuild refuses each such call, answered or not, naming `rigger setup`.
   Finding ids are `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of the finding line. `by` is
   `spec-critic`; `about` is `[<spec path>]`. The copies are run-attributed like every finding:
-  pruned with the run current at their append and counted under `spec-critic` in that run's
-  finding totals; accepted. The `ReviewFinding` events are the graph's view; the refusal never
-  reads them.
+  pruned with the run current at their append and counted under `spec-critic` in that run's finding
+  totals; accepted. The `ReviewFinding` events are the graph's view; the refusal never reads them.
 - *The spec path* is repo-relative with any leading `./` removed; an absolute path inside the
   repository is made repo-relative; a path outside it is refused. In a project with no git
   repository the repository root is the project root (the directory holding `.rigger/`), the root
@@ -171,7 +180,10 @@ spec: the next call spawns and prints none of the earlier findings.
 - *The refusal* exits non-zero and prints the text in Notes on stderr, its prefix the invoking
   command; it writes nothing to stdout, so a refused `rigger step` prints no JSON line. There is
   no override flag; the only ways past are a clean critique of the current text or a recorded
-  resolution.
+  resolution. A resolution is read from the backend the run entry selected, and `rigger emit`
+  selects through configuration alone (`KURRENTDB_CONN`, `.rigger/store.conn`, the workflow's
+  `store:` key), so under a server selected by flags alone the printed resolution route needs that
+  selection configured; accepted.
 - *The fixtures.* Every existing test that begins a new run through a CLI entry under a workflow
   with a critic records a clean critique for its fixture spec first, through one shared test
   helper under `tests/common/`; a fixture whose workflow has no critic needs no adversary and no
@@ -185,29 +197,35 @@ spec: the next call spawns and prints none of the earlier findings.
 **THE VALIDATE TELLS, decided here.** Three advisories join `spec::spec_lint_advisories`
 (`crates/rigger-domain/src/spec.rs`), so `rigger validate <spec>` and the in-run `load_criteria`
 print them through `spec_lint_warning_lines` (`src/cli/mod.rs`). Each is a `LintAdvisory` with
-`criterion: Some(n)`, one per criterion per tell unless the tell says otherwise; advisory only,
-the exit status never changes. Words match case-insensitively and whole-word through the file's
+`criterion: Some(n)`, one per criterion per tell unless the tell says otherwise; advisory only, the
+exit status never changes. Words match case-insensitively and whole-word through the file's
 `find_word`. A sentence is the text between `. ` boundaries of a criterion's full block
 (`criterion_blocks`); the measure, identity and comparison-surface words match on the sentence
 masked by the file's one span masker, `strip_inline_code` (*The one masker*), and the twin tell
-reads its spans, the backtick pairs that mask blanks, from the sentence before the mask. A
-section runs from its heading to the next heading of the same or shallower level, as
-`notes_section_lines` reads one.
+reads its spans, the backtick pairs that mask blanks, from the sentence before the mask. A section
+runs from its heading to the next heading of the same or shallower level, as `notes_section_lines`
+reads one, so a heading-shaped line inside a fence counts as a heading (accepted).
 - *The one masker.* Criterion 3's unit corrects `strip_inline_code` in place and adds no second
   masker: it blanks backtick spans pair by pair (consecutive backtick marks; an unpaired last
   backtick blanks to the end of the text masked, the sentence for these tells) and keeps its
-  double-quote rule unchanged (one span from the first quote mark through the last when their
-  count is even, to the end of the text masked when it is odd). A code span is a paired Markdown
-  construct, so a measure word between two code spans is prose the twin tell must see; a stray
-  quote is common prose, so quoted text keeps failing closed. The correction reaches F4
-  (`disposition_advisories`, the masker's one other caller, which masks a paragraph), whose prose
-  between two backtick spans is now linted. In the same commit criterion 3's unit rewrites the
-  masker's doc comment and the backtick assertion of
-  `strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule` to pin the pair rule
-  (two backtick spans with prose between them), changes no quote assertion or quote test, and
-  records a `DecisionMade` governing `crates/rigger-domain/src/spec.rs` that narrows
-  `d66-mask-one-span-per-kind`, the id that doc comment cites, to the quote kind, with that
-  reason.
+  double-quote rule unchanged (one span from the first quote mark through the last when their count
+  is even, to the end of the text masked when it is odd). A code span is a paired Markdown
+  construct, so a measure word between two code spans is prose the twin tell must see; a stray quote
+  is common prose, so quoted text keeps failing closed. A stray backtick pairs with the opener of a
+  real span after it, so that span's text is linted; accepted, since a stray backtick is a Markdown
+  defect the rendered spec shows. The correction reaches F4 (`disposition_advisories`, the masker's
+  one other caller, which masks a paragraph), whose prose between two backtick spans is now linted.
+  In the same commit criterion 3's unit rewrites to the pair rule the masker's doc comment, the doc
+  comment on `disposition_advisories`, the doc comments of the `tests/spec_lint.rs` cases whose
+  names carry `backtick` and the F4 narrative of `spec_lint_self_clean_over_the_committed_corpus`;
+  adds to `strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule` one assertion
+  pinning the pair rule (two backtick spans with prose between them) and keeps every existing
+  assertion of that test, each of which holds under the pair rule; changes no other existing test
+  assertion but the snapshot's F4 fire set; and records a `DecisionMade` that narrows
+  `d66-mask-one-span-per-kind`, the id the masker's doc comment cites, to the quote kind, with that
+  reason: it restates the quote rule, carries no `supersedes`, and governs
+  `specs/66-ship-the-planning-discipline.md`, `crates/rigger-domain/src/spec.rs` and
+  `tests/spec_lint.rs`.
 - *Twin measured surface* (class `F10 landing-order circularity`): criteria i < j each hold a
   sentence carrying the same backtick span and a measure word from `exactly`, `zero`, `at most`,
   `no more than`, `reads no`, `costs`, `materializes`, `appends`. One advisory per pair and span,
@@ -232,15 +250,14 @@ section runs from its heading to the next heading of the same or shallower level
 (`crates/rigger-domain/src/docs.rs`), its body a `const` beside `PLANNING_A_SPEC_BODY` with a
 renderer that ignores `ctx`, exactly like planning-a-spec. The body is the fenced block that closes
 the Notes block, byte for byte (the fence lines excluded); the rendered file is that body plus the
-operator-binary section `SkillEntry::render` appends to every entry. Adding the entry wires
-install, render and drift: `install_skills` (`src/cli/mod.rs`, called from `cmd_setup` in
-`src/cli/setup.rs`) installs it to `.claude/skills/spec-preflight/SKILL.md` and rewrites it only
-when absent or drifted, `rigger docs` renders it to `skills/spec-preflight/SKILL.md`, and the
-docs-drift gate checks it. Three per-entry pins do not extend themselves, and criterion 4's unit
-extends each: the registry-size pin
-(`registry_names_all_five_per_operation_skills_exactly_once_each` in `docs.rs`, to eleven entries),
-the accuracy pin (`assert_skills_reference_only_real_subcommands` gains the case `spec-preflight`
-with `critique`, `validate` and `emit`), and the field-guide class list of
+operator-binary section `SkillEntry::render` appends to every entry. Adding the entry wires install,
+render and drift: `install_skills` (`src/cli/mod.rs`, called from `cmd_setup` in `src/cli/setup.rs`)
+installs it to `.claude/skills/spec-preflight/SKILL.md` and rewrites it only when absent or drifted,
+`rigger docs` renders it to `skills/spec-preflight/SKILL.md`, and the docs-drift gate checks it.
+Three per-entry pins do not extend themselves, and criterion 4's unit extends each: the
+registry-size pin (`registry_names_all_five_per_operation_skills_exactly_once_each` in `docs.rs`, to
+eleven entries), the accuracy pin (`assert_skills_reference_only_real_subcommands` gains the case
+`spec-preflight` with `critique`, `validate` and `emit`), and the field-guide class list of
 `docs_renders_the_planning_field_guide_second_handbook_page` (`tests/cli.rs`, through F11). The
 failure catalog already holds F9 (unbounded claim surface), so the two new classes are F10
 (landing-order circularity) and F11 (undecided removal): planning-a-spec's churn table in
@@ -249,9 +266,9 @@ stays complete; `PLANNING_FIELD_GUIDE_BODY` gains one `### F10` and one `### F11
 tell and countermeasure, each opening by naming itself an F3 shape and the simulation that finds it
 (landing order; the DROPPED corner); and DROPPED and existing data join F3's countermeasure and
 planning-a-spec's step 3, so the shipped docs carry one corner list of eight; planning-a-spec's
-step 7 gains one sentence naming spec-preflight and `rigger critique <spec>` before launch. The
-rendered `docs/handbook/planning-field-guide.md` and `skills/planning-a-spec/SKILL.md` are
-regenerated in the same unit.
+step 7 gains one sentence naming spec-preflight and, under a workflow with a critic,
+`rigger critique <spec>` before launch. The rendered `docs/handbook/planning-field-guide.md` and
+`skills/planning-a-spec/SKILL.md` are regenerated in the same unit.
 
 **A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE, decided here.** `plan_critique_loop` numbers its
 rounds by attempt: round `k` critiques at attempt `k`; its reject records `UnitFailed` under replay
@@ -313,8 +330,9 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   (accepted). Later steps find the gate terminal and behave as after any plan-critique escalation
   today (the gate in `escalated`, or the coverage error when the held DAG leaves a criterion
   uncovered); the lesson and `SpecDefect` carry the amend route.
-- *Relaunch* is the operator's: amend the spec, then `rigger critique <spec>`, then a new run
-  (criteria edited mint one; a Design-only amendment needs `--fresh`), which criterion 2 gates.
+- *Relaunch* is the operator's: amend the spec, then, under a workflow with a critic,
+  `rigger critique <spec>`, then a new run (criteria edited mint one; a Design-only amendment
+  needs `--fresh`), which criterion 2 gates.
 
 **CRITERIA 1 AND 5 SPLIT AT THE CRITIQUE PROMPT.** Criterion 1 owns moving the Rule 7 and Rule 8
 bullets and the NOTE into `PLAN_CRITIQUE_RULES` with `build_dag_critique_prompt` reading it;
@@ -342,7 +360,7 @@ and 5 at any point, 6 last):
 
 | First | Without | Shared surface | Does the first one's own text hold? |
 |---|---|---|---|
-| 1 | 2 | critique record, critic lookup | yes - it records and answers; nothing refuses yet |
+| 1 | 2 | critique record, critic lookup | yes - under a workflow with a critic it records and answers, under one with none the verb refuses; no run start refuses yet |
 | 2 | 1 | critique record, critic lookup, stub writer | not reachable - 2 needs 1 |
 | 1 | 4 | `SUBCOMMANDS` | yes - 1 adds `critique` and regenerates the command-surface pages; no skill is involved |
 | 4 | 1 | `rigger critique` named in the skill | not reachable - 4 needs 1 |
@@ -359,26 +377,27 @@ and 5 at any point, 6 last):
 
 **CONSTRAINTS WALK.**
 - *Criterion 1.* Empty: a spec with no Done-when criteria is refused by the verb with the loop-ready
-  message and nothing is recorded; a workflow with no critic refuses the verb and nothing is
-  recorded; a critic that returns no finding line and an approving verdict line is a clean
-  critique; a verdict that does not approve with no parsed BLOCKING finding is not a critique.
-  Repeated: answered from the store, zero spawns; the copies are skipped by id. Reverted:
-  text back at an earlier hash is answered by that hash's critique. DROPPED: a later hash's critique
-  inherits no finding or resolution of an earlier hash (the fixture deletes a line and sees none of
-  the earlier findings); a pipe inside a field or a table-formatted line loses no finding to the
-  parse. Concurrent: two calls may mint one spawn id; the first recorded result is the critique and
-  each call prints what it reads back; calls that mint different attempts both record and the latest
-  critique answers; one call's directory removal may cut a concurrent critique's transcript, never
-  its recorded result (accepted); two calls answering one critique may both append a copy of one
-  id (accepted); a critique during a live run adds only its run-attributed copies to the run
-  stream and nothing to the wave, and the critic records nothing. Crash-resume: a request with no
-  result is ignored and the next call spawns the next attempt; a critique whose copies were not
-  appended is completed on the next call, which also removes the scratch directories the crash
-  left; the refusal never depended on them. Cold start: every answer is read from the store; a
-  project with no store gets one. Existing data: no critique exists and no critique data is
-  migrated; a pre-spec-09 store has its identity migrated before the verb's first append; a
-  graph.db that owes its rebuild refuses every call, answered or not; a project with no git
-  repository resolves the spec path against its project root.
+  message and nothing is recorded; a workflow with no critic refuses every call, answered or not,
+  and nothing is recorded; a critic that returns no finding line and an approving verdict line is a
+  clean critique; a verdict that does not approve with no parsed BLOCKING finding is not a critique.
+  Repeated: under a workflow with a critic, which every corner from here on assumes, answered from
+  the store, zero spawns; the copies are skipped by id. Reverted: text back at an earlier hash is
+  answered by that hash's critique. DROPPED: a later hash's critique inherits no finding or
+  resolution of an earlier hash (the fixture deletes a line and sees none of the earlier findings);
+  a pipe inside a field or a table-formatted line loses no finding to the parse. Concurrent: two
+  calls may mint one spawn id; the first recorded result is the critique and each call prints what
+  it reads back; calls that mint different attempts both record and the latest critique answers; one
+  call's directory removal may cut a concurrent critique's transcript, never its recorded result
+  (accepted); two calls answering one critique may both append a copy of one id (accepted); a
+  critique during a live run adds only its run-attributed copies to the run stream and nothing to
+  the wave, and the critic records nothing. Crash-resume: a request with no result is ignored and
+  the next call spawns the next attempt; a critique whose copies were not appended is completed on
+  the next call, which also removes the scratch directories the crash left; the refusal never
+  depended on them. Cold start: every answer is read from the store; a project with no store gets
+  one. Existing data: no critique exists and no critique data is migrated; a pre-spec-09 store has
+  its identity migrated before the verb's first append; a graph.db that owes its rebuild refuses
+  every call, answered or not; a project with no git repository resolves the spec path against its
+  project root and runs with an empty scratch root.
 - *Criterion 2.* Empty: no critique refuses as not critiqued; a stream with no `RunStarted` mints,
   so its first command needs a critique; a run with no spec is never refused; a new run under a
   workflow with no critic is never refused and prints its one line. Repeated: each refused command
@@ -404,10 +423,11 @@ and 5 at any point, 6 last):
   mark to the sentence end. Repeated: a span shared by three criteria yields one advisory per
   pair; an F11 tell fires once per criterion however many of its sentences offend. Reverted,
   DROPPED, concurrent, crash-resume: out of scope - a pure function of one text. Cold start: pure.
-  Existing data: committed specs may warn (advisory only); the corpus snapshot pins F10 and F11 at
-  their observed totals and re-pins F4's fire set, which the backtick pairing moves; every quote
-  test and quote assertion stands unchanged (*The one masker*); any amendment of this spec that
-  moves a total re-pins it.
+  Existing data: committed specs may warn (advisory only), a real span after a stray backtick
+  included; the corpus snapshot pins F10 and F11 at their observed totals and re-pins F4's fire
+  set, which the backtick pairing moves; every other existing test assertion stands unchanged and
+  one pair-rule assertion is added (*The one masker*); any amendment of this spec that moves a
+  total re-pins it.
 - *Criterion 4.* Empty: a project with no skills directory gets one. Repeated: a rerun
   writes nothing. Reverted: an edited installed copy is refreshed like any drifted registry skill.
   DROPPED: an installed copy with a line deleted is refreshed (drift compares the rendered bytes
@@ -571,9 +591,11 @@ Worked example (an identity claim over a compacted log):
 
 ## Step 3: the adversary pass
 
-Run `rigger critique <spec>`. It runs the loop's plan-critique adversary against the spec text,
-records its findings and verdict keyed on the text's content hash, and prints them; unchanged text
-is answered from the record, and any edit is critiqued afresh. Each finding is one line:
+Run `rigger critique <spec>`. It runs the workflow's critic (the plan-critique gate's adversary,
+else `defaults.review.adversary`) against the spec text, records its findings and verdict keyed on
+the text's content hash, and prints them; unchanged text is answered from the record, and any edit
+is critiqued afresh. Under a workflow naming neither, `rigger critique` refuses and runs are not
+gated, so skip Steps 3 and 4.2. Each finding is one line:
 
     <id> | BLOCKING or NON-BLOCKING | <criterion or Design block> | <exact reading that breaks> | <smallest Design change that closes it>
 
