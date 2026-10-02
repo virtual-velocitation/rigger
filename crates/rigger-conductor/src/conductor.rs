@@ -31757,6 +31757,110 @@ mod tests {
     }
 
     #[test]
+    fn a_resumed_reviewed_units_infra_red_reruns_the_exhaustive_suite_without_charging() {
+        // F3 on the `ResumePhase::Reviewed` path: a prior window recorded an approved
+        // `reviewed` but the merge was interrupted, and the resumed exhaustive re-assert goes
+        // red on infrastructure across every in-place rerun. That red is an outage, not the
+        // approved code: no UnitFailed is written, the suite reruns under its next retry
+        // ordinal (`s/gate:g#0~retry1`), and its green lands the unit at the same attempt.
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An infra rule rerunning twice in place, with zero backoff so the test never sleeps.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("No space left on device".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        // Red for the resumed re-assert and both of its in-place reruns, green from then on.
+        let outage = FlakyGate {
+            fail_first: 3,
+            runs: AtomicU32::new(0),
+            evidence: "error: No space left on device (os error 28)".into(),
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            gates: &outage,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the rerun's green lands the approved unit"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "an infra red charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra red on the resumed merge must write no UnitFailed"
+        );
+        assert!(
+            !driver.spawned("worker"),
+            "the approved work is re-gated, never re-implemented"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["s/infra-retry#0~0"],
+            "the infra-red ordinal is recorded once"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY).map(String::as_str)
+                        == Some("s/gate:g#0~retry1")
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["pass"] == true)),
+            "the rerun records its own green under the retried gate key"
+        );
+    }
+
+    #[test]
     fn a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause() {
         // spec 69, criterion 3 (the cause wire): the RESUMED counterpart of
         // `integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit`
