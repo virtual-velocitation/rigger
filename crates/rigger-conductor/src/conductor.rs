@@ -28571,6 +28571,46 @@ mod tests {
         );
     }
 
+    /// An infra rerun at the same attempt is a fresh review (F3): the operator lessons its
+    /// reject records are its own, never swallowed as replays of the earlier ordinal's.
+    #[test]
+    fn an_infra_rerun_records_its_own_operator_lessons() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let round = ReviewRound {
+            base: "base".into(),
+            delta: vec!["fix1.rs".into()],
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        for (ordinal, finding) in [(0, "reword the doc comment"), (1, "rename the helper")] {
+            let reject = format!(
+                r#"{{"verdict":"reject","required":[{{"finding":"{finding}","path":"feature.rs","correctness":false}}]}}"#
+            );
+            let (approved, _, _) = ctx
+                .split_reject("implement", 1, ordinal, Some(&round), reject)
+                .unwrap();
+            assert!(
+                approved,
+                "ordinal {ordinal}'s wording-only reject converges"
+            );
+        }
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let summaries: Vec<String> = lessons_about(&events, "feature.rs")
+            .iter()
+            .map(|l| l["summary"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            summaries.len() == 2
+                && summaries[0].contains("reword the doc comment")
+                && summaries[1].contains("rename the helper"),
+            "each ordinal records its own lesson: {summaries:?}"
+        );
+    }
+
     #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
