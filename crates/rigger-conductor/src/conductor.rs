@@ -43612,16 +43612,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_first_spec_ambiguity_reject_re_plans_as_today() {
+    /// One step whose gate rejects with `rejects`, one per round, and approves the round after
+    /// them: each reject re-plans before the next round critiques, the last round approves and
+    /// nothing stops.
+    fn assert_re_plans_after_every_reject(rejects: &[String], why: &str) {
         let st = Store::open(":memory:").unwrap();
-        let driver = critique_rounds(&[critique_reject("spec-ambiguity", &["adv-1"])]);
+        let driver = critique_rounds(rejects);
         let rs = critique_step(&st, &driver);
-        assert_eq!(
-            driver.spawn_ids()[..6],
-            critique_round_spawns(2)[..],
-            "the first spec-ambiguity reject re-plans and the next round critiques"
-        );
+        let rounds = critique_round_spawns(rejects.len() as u32 + 1);
+        assert_eq!(driver.spawn_ids()[..rounds.len()], rounds[..], "{why}");
         assert_eq!(
             (
                 rs.units["plan-critique"].status,
@@ -43629,31 +43628,26 @@ mod tests {
                 stop_records(&st)
             ),
             (ledger::Status::Integrated, None, Vec::new()),
-            "the revised DAG approves; nothing stops"
+            "{why}: the round after the rejects approves and nothing stops"
+        );
+    }
+
+    #[test]
+    fn a_first_spec_ambiguity_reject_re_plans_as_today() {
+        assert_re_plans_after_every_reject(
+            &[critique_reject("spec-ambiguity", &["adv-1"])],
+            "the first spec-ambiguity reject re-plans",
         );
     }
 
     #[test]
     fn a_spec_ambiguity_reject_after_a_decomposition_conflict_re_plans_again() {
-        let st = Store::open(":memory:").unwrap();
-        let driver = critique_rounds(&[
-            critique_reject("decomposition-conflict", &["adv-1"]),
-            critique_reject("spec-ambiguity", &["adv-2"]),
-        ]);
-        let rs = critique_step(&st, &driver);
-        assert_eq!(
-            driver.spawn_ids()[..9],
-            critique_round_spawns(3)[..],
-            "a spec-ambiguity reject the previous reject did not share re-plans again"
-        );
-        assert_eq!(
-            (
-                rs.units["plan-critique"].status,
-                rs.budget_halt,
-                stop_records(&st)
-            ),
-            (ledger::Status::Integrated, None, Vec::new()),
-            "the third round approves; nothing stops"
+        assert_re_plans_after_every_reject(
+            &[
+                critique_reject("decomposition-conflict", &["adv-1"]),
+                critique_reject("spec-ambiguity", &["adv-2"]),
+            ],
+            "a spec-ambiguity reject the previous reject did not share re-plans again",
         );
     }
 
