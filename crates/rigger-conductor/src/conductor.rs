@@ -1194,8 +1194,9 @@ impl PriorFailure {
 
     /// The first-class, clearly-delimited prior-failure block prepended to a retry
     /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
-    /// byte-identical to the historical prompt.
-    fn block(&self) -> String {
+    /// byte-identical to the historical prompt. A REQUIRED pattern item asks unit `unit`'s
+    /// attempt `attempt` for one whole-tree audit, recorded under [`audit_id`].
+    fn block(&self, unit: &str, attempt: u32) -> String {
         if self.is_empty() {
             return String::new();
         }
@@ -1231,8 +1232,14 @@ impl PriorFailure {
             b.push('\n');
         }
         if !self.required.is_empty() {
+            let audit = audit_id(unit, attempt);
             b.push_str("REQUIRED - review holds the next round to each of these:\n");
-            b.push_str(&required_lines(&self.required));
+            b.push_str(&required_lines(&self.required, |shape| {
+                format!(
+                    "  PATTERN: {shape}. Audit the whole tree, fix every site, and record \
+                     DecisionMade `{audit}` listing every site checked.\n"
+                )
+            }));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
@@ -4441,6 +4448,7 @@ impl RunCtx<'_> {
                 base,
                 delta,
                 required: prior_required.to_vec(),
+                audit: audit_id(&st.name, attempt),
             });
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
@@ -4789,6 +4797,7 @@ impl RunCtx<'_> {
         let mut sdet_prompt = self.build_prompt_with_failure(
             st,
             &PriorFailure::default(),
+            attempt,
             GroundingSlice::Implement,
         )?;
         // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
@@ -5157,7 +5166,8 @@ impl RunCtx<'_> {
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
                 // via `implement_slice`: a true implement stage gets the trimmed slice, a producer
                 // keeps the FULL context (adv-u36c1-planner-first-spawn-trimmed).
-                let prompt = self.build_prompt_with_failure(st, &prior, implement_slice(st))?;
+                let prompt =
+                    self.build_prompt_with_failure(st, &prior, attempts, implement_slice(st))?;
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -5786,7 +5796,8 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt = self.build_prompt_with_failure(st, &logged, GroundingSlice::Implement)?;
+            let prompt =
+                self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
             let emit = |t: &str, v: Value| self.emit_with_actor(&st.agent, t, v);
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
             match isolation_check.and_then(|()| {
@@ -10288,7 +10299,7 @@ impl RunCtx<'_> {
         // (via `build_review_prompt`) and the planner re-spawn (`re_plan`). Spec 36 trims ONLY the
         // implement stage, so `build_prompt` renders the FULL grounding slice - the review tiers and
         // the producer/planner keep the decisions/lessons/findings bulk the implement slice drops.
-        self.build_prompt_with_failure(st, &PriorFailure::default(), GroundingSlice::Full)
+        self.build_prompt_with_failure(st, &PriorFailure::default(), 0, GroundingSlice::Full)
     }
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
@@ -10323,15 +10334,17 @@ impl RunCtx<'_> {
     /// [`task_block`] (its name and verbatim acceptance criterion, for every non-producer
     /// stage that owns one - implementers and the review tiers alike); the grounding
     /// context; the emit protocol; and, for the producer/planner only, the refine protocol
-    /// carrying every criterion.
+    /// carrying every criterion. `attempt` is the attempt the prompt is for, which names the
+    /// audit record a REQUIRED pattern item asks for ([`audit_id`]).
     fn build_prompt_with_failure(
         &self,
         st: &Stage,
         prior: &PriorFailure,
+        attempt: u32,
         slice: GroundingSlice,
     ) -> Result<String, Error> {
         let mut b = String::new();
-        b.push_str(&prior.block());
+        b.push_str(&prior.block(&st.name, attempt));
         b.push_str(&task_block(st));
         // Spec 29c criterion 5: ensure the unified graph reflects the LIVE project before the
         // traversal below reads it. Exercising this grounding path is what makes the run itself
@@ -11724,6 +11737,9 @@ struct ReviewRound {
     base: String,
     delta: Vec<String>,
     required: Vec<RequiredItem>,
+    /// The DecisionMade id ([`audit_id`]) this attempt's implementer was asked to record a
+    /// whole-tree audit under, for each REQUIRED pattern item.
+    audit: String,
 }
 
 impl ReviewRound {
@@ -11739,9 +11755,14 @@ impl ReviewRound {
         let required = if self.required.is_empty() {
             "That round required no item.\n".to_string()
         } else {
+            let audit = &self.audit;
             format!(
                 "The items that round REQUIRED:\n{}",
-                required_lines(&self.required)
+                required_lines(&self.required, |shape| format!(
+                    "  PATTERN: {shape}. The implementer was asked to audit the whole tree and \
+                     record DecisionMade `{audit}` listing every site checked; check it names \
+                     every site.\n"
+                ))
             )
         };
         format!(
@@ -11755,13 +11776,28 @@ impl ReviewRound {
     }
 }
 
-/// One `- <path>: <finding>` line per REQUIRED item: the one rendering the implementer's
-/// prior-failure block and a later round's review block share.
-fn required_lines(items: &[RequiredItem]) -> String {
+/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
+/// `pattern`'s clause for its shape: the one rendering the implementer's prior-failure block
+/// and a later round's review block share, each with its own pattern clause.
+fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> String {
     items
         .iter()
-        .map(|item| format!("- {}: {}\n", item.path, item.finding))
+        .map(|item| {
+            let mut line = format!("- {}: {}\n", item.path, item.finding);
+            let shape = item.pattern.trim();
+            if !shape.is_empty() {
+                line.push_str(&pattern(shape));
+            }
+            line
+        })
         .collect()
+}
+
+/// The DecisionMade id unit `unit`'s attempt `attempt` records its whole-tree audit of a
+/// REQUIRED pattern item under: the one id the implementer is asked for and the next review
+/// round checks.
+fn audit_id(unit: &str, attempt: u32) -> String {
+    format!("audit-{unit}-{attempt}")
 }
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
@@ -14737,7 +14773,7 @@ mod tests {
             "deadbeef"
         );
         assert_eq!(
-            prior.block(),
+            prior.block("u", 1),
             expected,
             "block() must contain exactly the halted-commit sentence, with no \
              gate/review preamble, when halted_commit is the only field set"
@@ -14767,20 +14803,20 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            review_only.block().starts_with(PREAMBLE),
+            review_only.block("u", 1).starts_with(PREAMBLE),
             "block() must open with the generic preamble when review_reason alone \
              failed (kills the line-1283 `||`-to-`&&` mutant); got:\n{}",
-            review_only.block()
+            review_only.block("u", 1)
         );
         let contradiction_only = PriorFailure {
             contradiction: "a later unit proved this wrong".into(),
             ..Default::default()
         };
         assert!(
-            contradiction_only.block().starts_with(PREAMBLE),
+            contradiction_only.block("u", 1).starts_with(PREAMBLE),
             "block() must open with the generic preamble when contradiction alone \
              failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
-            contradiction_only.block()
+            contradiction_only.block("u", 1)
         );
     }
 
@@ -18078,7 +18114,12 @@ mod tests {
         // (a)+(b) First attempt: the prompt OPENS with the unit's name and its verbatim criterion,
         // ahead of the code neighborhood.
         let first = ctx
-            .build_prompt_with_failure(&unit, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &unit,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
         assert!(
             first.starts_with(header),
@@ -18101,9 +18142,9 @@ mod tests {
             ..Default::default()
         };
         let retry = ctx
-            .build_prompt_with_failure(&unit, &prior, GroundingSlice::Implement)
+            .build_prompt_with_failure(&unit, &prior, 1, GroundingSlice::Implement)
             .unwrap();
-        let lead = prior.block();
+        let lead = prior.block(&unit.name, 1);
         assert!(
             retry.starts_with(&lead),
             "the prior-failure block must lead a retry prompt; prompt was:\n{retry}"
@@ -18144,7 +18185,12 @@ mod tests {
             ..Default::default()
         };
         let bare_prompt = ctx
-            .build_prompt_with_failure(&bare, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &bare,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
         assert!(
             !bare_prompt.contains("UNIT: "),
@@ -19212,7 +19258,7 @@ mod tests {
         // the implement slice); the code-neighborhood-from-traversal claim holds on both, so this
         // exercises the full slice to keep both halves of the claim in one assembly.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Full)
+            .build_prompt_with_failure(&stage, &PriorFailure::default(), 0, GroundingSlice::Full)
             .unwrap();
 
         assert!(
@@ -19312,7 +19358,12 @@ mod tests {
         // This asserts only the code neighborhood, which BOTH slices keep; drive the implement slice
         // (this is a plain implement stage) so it exercises the production doer path.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &stage,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
 
         // (1) The RUN emitted all four extraction event types into the store - it ingested the
@@ -21480,7 +21531,12 @@ mod tests {
         // Design intent is on BOTH slices (spec 36 keeps the intent layer on the trimmed implement
         // prompt); drive the implement slice so this exercises the production doer path.
         let prompt = ctx
-            .build_prompt_with_failure(&stage, &PriorFailure::default(), GroundingSlice::Implement)
+            .build_prompt_with_failure(
+                &stage,
+                &PriorFailure::default(),
+                0,
+                GroundingSlice::Implement,
+            )
             .unwrap();
 
         // (1) RENDERED: the handbook rule that GOVERNS the file and the RA section that SPECIFIES it
