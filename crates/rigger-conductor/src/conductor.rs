@@ -6966,9 +6966,9 @@ impl RunCtx<'_> {
         // noise) but it DOES run `isolation: false` in the unit's own real worktree
         // exactly like a lens or the adversary, and its own spawn is the historically
         // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
-        // driven) - so it carries the SAME worktree-discipline sentence those two tiers
-        // get via `review_protocol` (spec 103, criterion 6), appended directly here.
-        let prompt = format!("{}{REVIEWER_WORKTREE_DISCIPLINE}", self.build_prompt(st)?);
+        // driven) - so it carries the SAME reviewer discipline those two tiers get via
+        // `review_protocol` (spec 103, criterion 6), appended directly here.
+        let prompt = format!("{}{REVIEWER_DISCIPLINE}", self.build_prompt(st)?);
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -11534,20 +11534,22 @@ pub fn review_protocol(actor: &str) -> String {
         "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_WORKTREE_DISCIPLINE}"
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_DISCIPLINE}"
     )
 }
 
-/// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the ONE sentence
-/// every review-tier prompt carries, spelling out in prose what [`RunCtx::
+/// The discipline every review-tier prompt carries. A REVIEW ROUND LEAVES THE TREE IT
+/// REVIEWED (spec 103, criterion 6): its first sentences spell out in prose what [`RunCtx::
 /// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
-/// exists to catch, name in a lesson, and restore. Shared by [`review_protocol`] (the lens
+/// exists to catch, name in a lesson, and restore. A REVIEW NEVER MUTATES: its last sentence
+/// keeps cargo-mutants out of every review, since the check-in gate owns mutation testing and
+/// a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
 /// and adversary tiers, which also record findings through it) and [`RunCtx::
 /// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_WORKTREE_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it.";
+const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run cargo-mutants, directly or through a verify helper: mutation testing belongs to the check-in gate, never to a review.";
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
