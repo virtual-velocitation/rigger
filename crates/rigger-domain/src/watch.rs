@@ -1025,71 +1025,48 @@ mod tests {
 
     // --- Signal 3: dash liveness ---
 
-    /// A dash whose port is held but which did not answer within the probe window is busy,
-    /// not dead: `detect` reports exactly that (naming port, pid and window) and never the
-    /// dead-pid / does-not-answer wording, and never reads it as healthy.
-    #[test]
-    fn an_unresponsive_dash_is_reported_busy_never_dead() {
+    /// `detect` over an otherwise quiet run whose dash probe reads `dash`: exactly one line - a
+    /// dash that is not verifiably serving is never silently healthy - carrying `wording` and none
+    /// of the `never` wordings another dash state gets.
+    fn assert_dash_line(dash: DashProbe, wording: &str, never: &[&str]) {
         let no_heartbeats = BTreeMap::new();
         let inputs = WatchInputs {
-            dash: DashProbe::Unresponsive {
+            dash,
+            ..empty_inputs(&[], &no_heartbeats)
+        };
+        let anomalies = detect(&inputs);
+        assert_eq!(anomalies.len(), 1, "one dash line, never silently healthy");
+        let line = anomalies[0].line();
+        assert!(line.contains(wording), "expected {wording:?}; got: {line}");
+        for other in never {
+            assert!(!line.contains(other), "never {other:?}; got: {line}");
+        }
+    }
+
+    crate::test_cases! {
+        /// A dash whose port is held but which did not answer within the probe window is busy,
+        /// not dead: `detect` reports exactly that (naming port, pid and window) and never the
+        /// dead-pid / does-not-answer wording, and never reads it as healthy.
+        an_unresponsive_dash_is_reported_busy_never_dead: assert_dash_line(
+            DashProbe::Unresponsive {
                 pid: Some(4242),
                 port: 7420,
                 window_ms: 750,
             },
-            ..empty_inputs(&[], &no_heartbeats)
-        };
-        let anomalies = detect(&inputs);
-        assert_eq!(
-            anomalies.len(),
-            1,
-            "a held-but-silent dash is never silently healthy"
+            "dash on port 7420 (pid 4242) did not answer within 750ms - busy, not dead",
+            &["dead pid", "does not answer"],
         );
-        let line = anomalies[0].line();
-        assert!(
-            line.contains(
-                "dash on port 7420 (pid 4242) did not answer within 750ms - busy, not dead"
-            ),
-            "the truthful busy line; got: {line}"
-        );
-        assert!(
-            !line.contains("dead pid") && !line.contains("does not answer"),
-            "a busy dash never reads as dead; got: {line}"
-        );
-    }
-
-    /// A dash the probe could not reach because the probe itself failed is reported with the
-    /// probe's error: nothing proved it busy or dead, so neither wording appears.
-    #[test]
-    fn a_dash_whose_probe_failed_is_reported_with_the_probe_error() {
-        let no_heartbeats = BTreeMap::new();
-        let inputs = WatchInputs {
-            dash: DashProbe::ProbeFailed {
+        /// A dash the probe could not reach because the probe itself failed is reported with the
+        /// probe's error: nothing proved it busy or dead, so neither wording appears.
+        a_dash_whose_probe_failed_is_reported_with_the_probe_error: assert_dash_line(
+            DashProbe::ProbeFailed {
                 pid: Some(4242),
                 port: 7420,
                 error: "Too many open files (os error 24)".to_string(),
             },
-            ..empty_inputs(&[], &no_heartbeats)
-        };
-        let anomalies = detect(&inputs);
-        assert_eq!(
-            anomalies.len(),
-            1,
-            "a probe that could not run is never silently healthy"
-        );
-        let line = anomalies[0].line();
-        assert!(
-            line.contains(
-                "dash on port 7420 (pid 4242) could not be probed: Too many open files (os error \
-                 24) - unknown, not dead"
-            ),
-            "the probe failure, with its error; got: {line}"
-        );
-        assert!(
-            !line.contains("busy")
-                && !line.contains("dead pid")
-                && !line.contains("does not answer"),
-            "a failed probe never reads as a busy or a dead dash; got: {line}"
+            "dash on port 7420 (pid 4242) could not be probed: Too many open files (os error 24) \
+             - unknown, not dead",
+            &["busy", "dead pid", "does not answer"],
         );
     }
 
