@@ -19,13 +19,13 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/canary_store.rs",
-        "start_line": 822,
-        "end_line": 824
+        "start_line": 817,
+        "end_line": 819
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 157,
-        "end_line": 159
+        "start_line": 159,
+        "end_line": 161
       }
     ]
   },
@@ -4069,8 +4069,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 1204,
-        "end_line": 1206
+        "start_line": 1210,
+        "end_line": 1212
       },
       {
         "file": "src/cli/validate.rs",
@@ -4189,8 +4189,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2131,
-        "end_line": 2159
+        "start_line": 2137,
+        "end_line": 2165
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
@@ -5194,8 +5194,8 @@
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 433,
-        "end_line": 436
+        "start_line": 408,
+        "end_line": 411
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5224,13 +5224,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2072,
-        "end_line": 2084
+        "start_line": 2078,
+        "end_line": 2090
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2289,
-        "end_line": 2298
+        "start_line": 2295,
+        "end_line": 2304
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5244,8 +5244,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2428,
-        "end_line": 2430
+        "start_line": 2434,
+        "end_line": 2436
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
