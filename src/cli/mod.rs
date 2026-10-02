@@ -46,6 +46,7 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, su
 
 use rigger::config::RIGGER_DIR;
 
+mod critique;
 mod dashboard;
 mod eval;
 mod graph;
@@ -55,6 +56,7 @@ mod observe;
 mod run;
 mod setup;
 mod validate;
+pub(crate) use critique::*;
 pub(crate) use dashboard::*;
 pub(crate) use eval::*;
 pub(crate) use graph::*;
@@ -264,6 +266,47 @@ struct RunArgs {
     base: Option<String>,
 }
 
+/// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
+/// and `rigger critique`'s, which select their store the same way.
+fn eventstore_flag(
+    value: Option<&String>,
+    verb: &str,
+) -> Result<StoreKind, Box<dyn std::error::Error>> {
+    match value.map(String::as_str) {
+        Some("sqlite") => Ok(StoreKind::Sqlite),
+        Some("kurrentdb") => Ok(StoreKind::KurrentDb),
+        other => {
+            Err(format!("{verb}: --eventstore expects sqlite|kurrentdb, got {other:?}").into())
+        }
+    }
+}
+
+/// The connection url a `--conn` flag's `value` carries, for `verb`'s flag parser.
+fn conn_flag(value: Option<&String>, verb: &str) -> Result<String, Box<dyn std::error::Error>> {
+    value
+        .cloned()
+        .ok_or_else(|| format!("{verb}: --conn expects a connection url").into())
+}
+
+/// One argument of `verb`'s argv that none of its flag arms claimed, under the single-positional
+/// spec rule every spec-taking verb's parser shares (`rigger run`, `rigger workflow`, `rigger
+/// critique`): a `--` argument is an unknown flag, the first positional is the spec path, and a
+/// second positional is refused.
+fn spec_positional(
+    arg: &str,
+    spec: &mut Option<String>,
+    verb: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if arg.starts_with("--") {
+        return Err(format!("{verb}: unknown flag {arg:?}").into());
+    }
+    if spec.is_some() {
+        return Err(format!("{verb}: unexpected second positional argument {arg:?}").into());
+    }
+    *spec = Some(arg.to_string());
+    Ok(())
+}
+
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
 /// criterion 6), and a single positional spec path. Unknown flags and a second positional
@@ -302,36 +345,13 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             }
             "--eventstore" => {
                 i += 1;
-                store = match args.get(i).map(String::as_str) {
-                    Some("sqlite") => Some(StoreKind::Sqlite),
-                    Some("kurrentdb") => Some(StoreKind::KurrentDb),
-                    other => {
-                        return Err(format!(
-                            "run: --eventstore expects sqlite|kurrentdb, got {other:?}"
-                        )
-                        .into())
-                    }
-                };
+                store = Some(eventstore_flag(args.get(i), "run")?);
             }
             "--conn" => {
                 i += 1;
-                conn = match args.get(i) {
-                    Some(c) => Some(c.clone()),
-                    None => return Err("run: --conn expects a connection url".into()),
-                };
+                conn = Some(conn_flag(args.get(i), "run")?);
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("run: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "run: unexpected second positional argument {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "run")?,
         }
         i += 1;
     }
@@ -383,6 +403,17 @@ impl StoreSelection {
     /// Whether this selection is the embedded sqlite backend (whose store is a local file).
     fn is_sqlite(&self) -> bool {
         matches!(self, StoreSelection::Sqlite)
+    }
+
+    /// The environment that hands this selection to a child rigger process: a server's
+    /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
+    /// secret file and the configured store, so the child resolves the same server whichever
+    /// rung selected it here; nothing for sqlite, whose child resolves through configuration.
+    fn handed_env(&self) -> Vec<(String, String)> {
+        match self {
+            StoreSelection::Sqlite => Vec::new(),
+            StoreSelection::Server(conn) => vec![(CONN_ENV.to_string(), conn.clone())],
+        }
     }
 }
 
@@ -449,12 +480,13 @@ fn open_graph_to_read(
     Ok(Projector::open(graph_db, project)?)
 }
 
-/// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as
-/// unset so a stray `KURRENTDB_CONN=` never selects the server with no address.
+/// The environment variable carrying the server's full connection string (§48 rung 2).
+const CONN_ENV: &str = "KURRENTDB_CONN";
+
+/// The [`CONN_ENV`] connection string from the environment, treating an empty value as unset so
+/// a stray `KURRENTDB_CONN=` never selects the server with no address.
 fn env_conn() -> Option<String> {
-    std::env::var("KURRENTDB_CONN")
-        .ok()
-        .filter(|s| !s.is_empty())
+    std::env::var(CONN_ENV).ok().filter(|s| !s.is_empty())
 }
 
 /// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
@@ -8277,6 +8309,44 @@ mod tests {
             after.contains("shared") && after.contains("build cache"),
             "the --build-cache line must name what it reclaims: {:?}",
             &after[..after.len().min(300)]
+        );
+    }
+
+    /// The single-positional-spec rule every spec-taking verb's parser shares: an argument no
+    /// flag arm claimed is an unknown flag when it starts with `--`, the spec when none was
+    /// taken yet, and a refused second positional after one was - each refusal naming the verb.
+    #[test]
+    fn an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional() {
+        let mut spec = None;
+        assert_eq!(
+            spec_positional("--frob", &mut spec, "run")
+                .unwrap_err()
+                .to_string(),
+            "run: unknown flag \"--frob\""
+        );
+        assert_eq!(spec, None, "a refused flag takes no spec");
+        spec_positional("a.md", &mut spec, "workflow").unwrap();
+        assert_eq!(spec.as_deref(), Some("a.md"));
+        assert_eq!(
+            spec_positional("b.md", &mut spec, "workflow")
+                .unwrap_err()
+                .to_string(),
+            "workflow: unexpected second positional argument \"b.md\""
+        );
+        assert_eq!(spec.as_deref(), Some("a.md"), "the first spec stands");
+        let (second_err, flag_err) = (
+            parse_run_args(&["a.md".into(), "b.md".into()])
+                .err()
+                .unwrap(),
+            parse_run_args(&["--frob".into()]).err().unwrap(),
+        );
+        assert_eq!(
+            (second_err.to_string(), flag_err.to_string()),
+            (
+                "run: unexpected second positional argument \"b.md\"".to_string(),
+                "run: unknown flag \"--frob\"".to_string()
+            ),
+            "rigger run refuses through the shared rule"
         );
     }
 

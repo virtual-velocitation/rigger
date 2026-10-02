@@ -1041,8 +1041,9 @@ fn touch_liveness_marker(marker: Option<&Path>) {
 /// The scratch subdirectory a spawn's raw stream-json transcript lives under (spec 104
 /// criterion 2, architecture addendum §4.2) - a sibling of `agent-live`
 /// ([`crate::liveness::MARKER_SUBDIR`]) and `agent-scratch`
-/// ([`crate::driver::replay::spawn_scratch_path`]).
-const AGENT_STREAM_SUBDIR: &str = "agent-stream";
+/// ([`crate::driver::replay::spawn_scratch_path`]). Public so a command that runs this host
+/// outside a loop run (`rigger critique`, spec 112) removes the transcripts it leaves.
+pub const AGENT_STREAM_SUBDIR: &str = "agent-stream";
 
 /// The raw stream-json transcript path for one launch:
 /// `<scratch_root>/agent-stream/<sanitized run_id>/<sanitized spawn_id>.<launch>.jsonl`

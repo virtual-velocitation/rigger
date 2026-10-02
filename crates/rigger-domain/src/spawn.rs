@@ -741,10 +741,20 @@ impl<T: SpawnEventBody> SpawnEvent for T {
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
-/// [`recorded`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
+/// [`requests`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
 /// event is skipped in exactly one place rather than three times over.
 fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
     events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
+}
+
+/// Every [`TYPE_SPAWN_REQUESTED`] event in `events` decoded, in log order, one request per
+/// event - the ONE strict per-event decode: [`recorded`] folds it into its map, and a caller
+/// that counts parks (a re-parked id counting once per park) reads it directly. A malformed
+/// spawn body fails the whole read, never skipped.
+pub fn requests(events: &[Event]) -> Result<Vec<SpawnRequest>, serde_json::Error> {
+    spawn_requested_events(events)
+        .map(SpawnRequest::from_event)
+        .collect()
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -759,12 +769,10 @@ fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
 /// propagates the parse error rather than skipping it - see [`recorded_lenient`] for
 /// the degrade-tolerant sibling a read-only display caller needs instead.
 pub fn recorded(events: &[Event]) -> Result<BTreeMap<String, SpawnRequest>, serde_json::Error> {
-    let mut out = BTreeMap::new();
-    for e in spawn_requested_events(events) {
-        let req = SpawnRequest::from_event(e)?;
-        out.insert(req.id.clone(), req);
-    }
-    Ok(out)
+    Ok(requests(events)?
+        .into_iter()
+        .map(|req| (req.id.clone(), req))
+        .collect())
 }
 
 /// Whether a spawn with `id` has already been parked in `events` - a cheap
@@ -1488,6 +1496,55 @@ mod tests {
             recorded(&events).unwrap().len(),
             1,
             "only the spawn event folds"
+        );
+    }
+
+    #[test]
+    fn requests_decodes_one_request_per_spawn_event_in_log_order_and_recorded_keeps_the_last_per_id(
+    ) {
+        // The ONE strict per-event decode: every `SpawnRequested` event in log order, a re-parked
+        // id once per park, a foreign event or a result skipped. `recorded` folds it into its map,
+        // where a re-parked id collapses to the last-written request.
+        let first = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "first");
+        let other = test_request("v", "implement", ROLE_IMPLEMENTER, 0, "other");
+        let reparked = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "reparked");
+        let events = vec![
+            first.to_event().unwrap(),
+            Event::new("UnitStarted", br#"{"id":"u"}"#.to_vec()),
+            other.to_event().unwrap(),
+            SpawnResult::ok(&first.id, "done").to_event().unwrap(),
+            reparked.to_event().unwrap(),
+        ];
+        assert_eq!(
+            requests(&events).unwrap(),
+            vec![first.clone(), other.clone(), reparked.clone()]
+        );
+        assert_eq!(
+            recorded(&events).unwrap(),
+            BTreeMap::from([(reparked.id.clone(), reparked), (other.id.clone(), other)])
+        );
+        assert_eq!(requests(&events[1..2]).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn an_unreadable_spawn_request_fails_requests_and_recorded_alike() {
+        let unreadable = Event::new(
+            TYPE_SPAWN_REQUESTED,
+            br#"{"id":"u/implementer#1"}"#.to_vec(),
+        );
+        let events = vec![
+            test_request("u", "implement", ROLE_IMPLEMENTER, 0, "p")
+                .to_event()
+                .unwrap(),
+            unreadable,
+        ];
+        assert_eq!(
+            requests(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
+        );
+        assert_eq!(
+            recorded(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
         );
     }
 

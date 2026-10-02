@@ -63,6 +63,9 @@ pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
 pub use rigger_domain::progress;
+/// The review verdict and the spec critique (spec 112): its prompt, finding lines and record.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::review;
 pub use rigger_domain::run;
 pub use rigger_domain::safety;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -98,6 +101,9 @@ pub mod spawn;
 pub use rigger_domain::spec;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::watch;
+/// The wave logic, the plan-critique gate's recognition and the spec critic it names (spec 112).
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::wave;
 /// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
 /// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
 /// folded from already-gathered inputs into one line per anomaly, with in-process

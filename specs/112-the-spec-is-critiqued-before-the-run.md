@@ -37,12 +37,17 @@ replaced by Read, Glob, `mcp__rigger__rigger_graph`, `mcp__rigger__rigger_ground
 `mcp__rigger__rigger_peers` - no Bash, Agent, Grep, or emit, progress or scratch tool - so the
 critic can neither build nor record. The host defines its `lookup` and `verify` helpers on every
 spawn, so the critic may still reach one through the fan-out tool; a helper's build or record is
-denied like the critic's own, by the host's no-prompt permission rule (accepted). The critic's bound
-MCP server, `rigger mcp --spawn <id>`, selects its store through configuration alone, like
-`rigger emit`, so under a server selected by flags alone its `rigger_peers` reads the store that
-configuration selects, or its lookup tools are absent when that store cannot be resolved (accepted).
+denied like the critic's own, by the host's no-prompt permission rule (accepted). The verb hands the
+critic its resolved store selection: under a server selection, whichever rung of `store_selection`
+made it, the flags included, it puts `KURRENTDB_CONN=<conn>` into the critic's `SpawnOpts.env`,
+which the host applies over the ambient environment, so the critic's bound MCP server
+(`rigger mcp --spawn <id>`, whose `require_store_dir` ranks that variable above `.rigger/store.conn`
+and the workflow's `store:` key) and its `rigger_peers` resolve the store the verb records the
+critique to. Under a sqlite selection nothing is handed and that server resolves through
+configuration alone: the local store the verb opened, unless `--eventstore sqlite` overrode a server
+the configuration selects, which the critic then reads (accepted).
 The spawn runs through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the
-operator's ambient environment and login, and no credential variable is read or set. The verb
+operator's ambient environment and login, and no login credential variable is read or set. The verb
 composes the host itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the
 project's `.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it,
 its critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store`
@@ -93,7 +98,8 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
   (`refuse_unless_one_root` takes the invoking command for its message, as
   `resolve_main_worktree_or_refuse` does). It takes the `--eventstore` and `--conn` flags
   `rigger run` takes and resolves its backend through `store_selection` with them, as the run entry
-  it precedes does (a flagless call resolves as `rigger step` does). On a sqlite selection it runs
+  it precedes does (a flagless call resolves as `rigger step` does), and THE CRITIC hands that
+  selection to the critic. On a sqlite selection it runs
   `migrate_local_identity` before opening its backend, as `run_cli` and `run_workflow` do, and it
   opens the project's store as `cmd_step` does, creating `.rigger/` and the store when absent.
   Criterion 1's unit words `refuse_unless_one_root`'s two messages for any invoking command and
@@ -214,17 +220,20 @@ exit status never changes. Words match case-insensitively and whole-word through
 `find_word`. A sentence is the text between `. ` boundaries of a criterion's full block
 (`criterion_blocks`); the measure, identity and comparison-surface words match on the sentence
 masked by the file's one span masker, `strip_inline_code` (*The one masker*), and the twin tell
-reads its spans, the backtick pairs that mask blanks, from the sentence before the mask. A section
+reads its spans, the backtick spans that mask blanks, from the sentence before the mask. A section
 runs from its heading to the next heading of the same or shallower level, as `notes_section_lines`
 reads one, so a heading-shaped line inside a fence counts as a heading (accepted).
 - *The one masker.* Criterion 3's unit corrects `strip_inline_code` in place and adds no second
-  masker: it blanks backtick spans pair by pair (consecutive backtick marks; an unpaired last
-  backtick blanks to the end of the text masked, the sentence for these tells) and keeps its
-  double-quote rule unchanged (one span from the first quote mark through the last when their count
-  is even, to the end of the text masked when it is odd). A code span is a paired Markdown
-  construct, so a measure word between two code spans is prose the twin tell must see; a stray quote
-  is common prose, so quoted text keeps failing closed. A stray backtick pairs with the opener of a
-  real span after it, so that span's text is linted; accepted, since a stray backtick is a Markdown
+  masker: it blanks backtick spans paired by backtick run, as CommonMark delimits a code span (a run
+  of n consecutive backticks opens a span that closes at the next run of exactly n backticks; a run
+  with no closing run of its length blanks to the end of the text masked - the sentence for these
+  tells, the paragraph for F4), and keeps its double-quote rule unchanged (one span from the first
+  quote mark through the last when their count is even, to the end of the text masked when it is
+  odd). The twin tell's one span reader pairs runs the same way and drops an empty span, so the
+  tell never names an empty surface. A code span is a paired Markdown construct, so a measure
+  word between two code spans is prose the twin tell must see; a stray quote is common prose, so
+  quoted text keeps failing closed. A stray backtick run pairs with the opener of the next real span
+  of its length, so that span's text is linted; accepted, since a stray backtick is a Markdown
   defect the rendered spec shows. The correction reaches F4 (`disposition_advisories`, the masker's
   one other caller, which masks a paragraph), whose prose between two backtick spans is now linted.
   In the same commit criterion 3's unit rewrites to the pair rule the masker's doc comment, the doc
@@ -407,10 +416,12 @@ and 5 at any point, 6 last):
   the next call spawns the next attempt; a critique whose copies were not appended is completed on
   the next call, which also removes the scratch directories the crash left; the refusal never
   depended on them. Cold start: every answer is read from the store; a project with no store gets
-  one. Existing data: no critique exists and no critique data is migrated; a pre-spec-09 store has
-  its identity migrated before the verb's first append; a graph.db that owes its rebuild refuses
-  every call, answered or not; a project with no git repository resolves the spec path against its
-  project root and runs with an empty scratch root.
+  one; a server selected by flags alone and configured nowhere reaches the critic through the handed
+  `KURRENTDB_CONN`, so its `rigger_peers` reads that server. Existing data: no critique exists and
+  no critique data is migrated; a pre-spec-09 store has its identity migrated before the verb's
+  first append; a graph.db that owes its rebuild refuses every call, answered or not; a project
+  with no git repository resolves the spec path against its project root and runs with an empty
+  scratch root.
 - *Criterion 2.* Empty: no critique refuses as not critiqued, as does a new run on a spec outside
   the repository, whatever its bytes; a stream with no `RunStarted` mints, so its first command
   needs a critique; a run with no spec is never refused; a new run under a workflow with no critic
@@ -432,16 +443,16 @@ and 5 at any point, 6 last):
   until its spec is critiqued; a consumer workflow naming no adversary begins new runs as before,
   with the one line; a run branch holding another copy of the spec cannot change the hash, taken
   from the bytes read before the anchor.
-- *Criterion 3.* Empty: no criteria, no tells; a sentence whose last backtick is unpaired blanks
-  from it to the sentence end, and one with an odd count of quote marks blanks from its first quote
-  mark to the sentence end. Repeated: a span shared by three criteria yields one advisory per
-  pair; an F11 tell fires once per criterion however many of its sentences offend. Reverted,
-  DROPPED, concurrent, crash-resume: out of scope - a pure function of one text. Cold start: pure.
-  Existing data: committed specs may warn (advisory only), a real span after a stray backtick
-  included; the corpus snapshot pins F10 and F11 at their observed totals and re-pins F4's fire
-  set, which the backtick pairing moves; every other existing test assertion stands unchanged and
-  one pair-rule assertion is added (*The one masker*); any amendment of this spec that moves a
-  total re-pins it.
+- *Criterion 3.* Empty: no criteria, no tells; an unclosed backtick run blanks from it to the
+  sentence end, and an odd count of quote marks blanks from the first quote mark to the sentence
+  end; a double-backtick span masks as one span; an empty span is not a surface. Repeated: a span
+  shared by three criteria yields one advisory per pair; an F11 tell fires once per criterion
+  however many of its sentences offend. Reverted, DROPPED, concurrent, crash-resume: out of scope -
+  a pure function of one text. Cold start: pure. Existing data: committed specs may warn (advisory
+  only), a real span after a stray backtick included; the corpus snapshot pins F10 and F11 at their
+  observed totals and re-pins F4's fire set, which the backtick pairing moves; every other existing
+  test assertion stands unchanged and one pair-rule assertion is added (*The one masker*); any
+  amendment of this spec that moves a total re-pins it.
 - *Criterion 4.* Empty: a project with no skills directory gets one. Repeated: a rerun
   writes nothing. Reverted: an edited installed copy is refreshed like any drifted registry skill.
   DROPPED: an installed copy with a line deleted is refreshed (drift compares the rendered bytes

@@ -38,7 +38,7 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, TierRouting,
+    route_review_tier, verdict_compensates, TierRouting, PLAN_CRITIQUE_RULES,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -51,8 +51,8 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 use rigger_domain::agent::PARKED_MARKER;
 pub use rigger_domain::agent::{
-    classify_failure, no_result_error, parked_spawn, strip_failure_marker, AgentDriver,
-    AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
+    AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
@@ -7539,8 +7539,9 @@ impl RunCtx<'_> {
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
     /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions), plus the unit size cap ([`unit_size_cap`]) as a
-    /// blocking rule. On a re-plan it leads with the prior rejection so
+    /// ownership, open dispositions - [`PLAN_CRITIQUE_RULES`], the text the spec critique
+    /// prompt reads too), plus the unit size cap ([`unit_size_cap`]) as a blocking rule
+    /// pushed after them. On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
     /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
@@ -7561,30 +7562,17 @@ impl RunCtx<'_> {
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
              it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
-             rules 7-8) that per-unit review cannot see:\n\
-             - Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
-             exactly one unit, with the exclusion named on its neighbors; an unassigned or \
-             ambiguously-owned mitigation - two units that will fight over the same concern \
-             through the shared context graph - is a reject.\n\
-             - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-             reviewer to re-litigate; an undecided disposition is a reject.\n",
+             rules 7-8) that per-unit review cannot see:\n",
         );
+        // The Rule 7 and Rule 8 bullets and the shared-blast-radius note: the one text the spec
+        // critique prompt reads too (spec 112).
+        b.push_str(PLAN_CRITIQUE_RULES);
         b.push_str(&format!(
             "- Unit size (blocking): {} A unit over the cap is a reject with \
              \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
              split it into ordered units.\n\n",
             unit_size_cap()
         ));
-        b.push_str(
-            "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
-             defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
-             (each branches off the prior batch's integrated tree), and per-unit worktree \
-             isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
-             and reviews independently. Do NOT reject merely because two units touch the \
-             same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
-             COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
-             not for mechanical overlap the partitioner already serializes.\n\n",
-        );
         b.push_str("Proposed units:\n");
         for (name, files) in radii {
             let st = &stages[name];
@@ -42675,6 +42663,25 @@ mod tests {
                 "the plan-critique prompt must name rule targets ({target:?}); got:\n{prompt}"
             );
         }
+    }
+
+    /// Spec 112, criterion 1: the DAG critique reads its rules from the one const the spec
+    /// critique prompt reads ([`rigger_domain::review::PLAN_CRITIQUE_RULES`]), pushed right
+    /// after its DAG opener and right before its unit-size line.
+    #[test]
+    fn the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size() {
+        let driver = one_unit_critique();
+        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+        let opener = "that per-unit review cannot see:\n";
+        let rules_at = prompt.find(opener).expect("the DAG opener") + opener.len();
+        let size_at = prompt
+            .find("- Unit size (blocking): ")
+            .expect("the unit-size line");
+        assert_eq!(
+            &prompt[rules_at..size_at],
+            rigger_domain::review::PLAN_CRITIQUE_RULES,
+            "the opener, then the shared rules byte for byte, then the unit-size line:\n{prompt}"
+        );
     }
 
     /// One unit size cap, measuring review scope and never code shape, reaches both the

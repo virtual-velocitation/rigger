@@ -195,10 +195,13 @@ fn enforce_definition_pin(
     }
 }
 
-/// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
-/// sweep when the store this step is about to open, the repository `git` resolved for the
-/// same `cwd`, and the scratch root this step is about to sweep disagree on their owning
-/// root - a three-way check, not two.
+/// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any terminal sweep or scratch write
+/// when the store the invoking `command` is about to open, the repository `git` resolved for the
+/// same `cwd`, and the scratch root it is about to use disagree on their owning root - a
+/// three-way check, not two. `rigger step` (which sweeps the scratch root) and `rigger critique`
+/// (which writes a critique's transcript and liveness marker into it and removes them, spec 112)
+/// call it; `command` names the invoking command in the refusal, as
+/// [`resolve_main_worktree_or_refuse`] takes it.
 ///
 /// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
 /// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
@@ -226,10 +229,11 @@ fn enforce_definition_pin(
 ///
 /// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
 /// repo-gated branch in `cmd_step`.
-fn refuse_unless_one_root(
+pub(crate) fn refuse_unless_one_root(
     cwd: &Path,
     repo: &str,
     scratch_root: Option<&str>,
+    command: &str,
 ) -> Result<(), String> {
     if repo.is_empty() {
         return Ok(());
@@ -238,14 +242,14 @@ fn refuse_unless_one_root(
     let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
     if cwd_canon != repo_canon {
         return Err(format!(
-            "rigger step: refusing - the store this step would open and the repository git \
+            "{command}: refusing - the store this command would open and the repository git \
              resolved for this directory disagree on their root: git toplevel (and the scratch \
-             root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
-             opened relative to the current directory {cwd} instead - a DIFFERENT root. This \
-             shape arises when the current directory has no `.git` of its own (e.g. a test \
+             root this command uses, {scratch}) is {repo}, but the store under {RIGGER_DIR} \
+             would be opened relative to the current directory {cwd} instead - a DIFFERENT root. \
+             This shape arises when the current directory has no `.git` of its own (e.g. a test \
              fixture nested under a scratch root): `git rev-parse` then walks UP past it to an \
-             ENCLOSING repository while the store stays right here, so this step's sweep would \
-             act on that enclosing repository's real worktrees using THIS directory's own \
+             ENCLOSING repository while the store stays right here, so this command would act on \
+             that enclosing repository's real worktrees and scratch using THIS directory's own \
              (unrelated) events. Re-run from the repository root.",
             scratch = scratch_root.unwrap_or("(none)"),
             cwd = cwd_canon.display(),
@@ -258,16 +262,16 @@ fn refuse_unless_one_root(
                 .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
             if scratch_repo_canon != repo_canon {
                 return Err(format!(
-                    "rigger step: refusing - the scratch root this step would sweep belongs to \
-                     a DIFFERENT repository than the one this step resolved: git toplevel (and \
-                     the store under {RIGGER_DIR}, opened relative to the current directory \
+                    "{command}: refusing - the scratch root this command would use belongs to \
+                     a DIFFERENT repository than the one this command resolved: git toplevel \
+                     (and the store under {RIGGER_DIR}, opened relative to the current directory \
                      {cwd}) is {repo}, but the scratch root {scratch} resolves to the \
                      repository {scratch_repo} instead - a DIFFERENT root. This shape arises \
                      when `RIGGER_TMPDIR` (or `defaults.workdir`) is pointed at another \
-                     project's own scratch tree: this step's sweep would then act on THAT \
-                     project's real worktrees using this run's events. Point the scratch root \
-                     back under {repo}, or re-run from the repository the scratch root belongs \
-                     to.",
+                     project's own scratch tree: this command would then act on THAT \
+                     project's real worktrees and scratch using this project's events. Point the \
+                     scratch root back under {repo}, or re-run from the repository the scratch \
+                     root belongs to.",
                     cwd = cwd_canon.display(),
                     scratch_repo = scratch_repo_canon.display(),
                 ));
@@ -275,6 +279,17 @@ fn refuse_unless_one_root(
         }
     }
     Ok(())
+}
+
+/// The project scratch root a run entry (`rigger step`, `rigger serve`) and `rigger critique`
+/// work under: `None` in a project with no git repository, where nothing keys a scratch root and
+/// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
+/// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
+/// sweeps, a served run hands its MCP server and a critique writes under, and that
+/// [`refuse_unless_one_root`] checks, can never disagree.
+pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
+    (!repo.is_empty())
+        .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
 }
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
@@ -436,7 +451,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(args.spec.as_deref())?;
+    let (criteria, _) = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
     // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
@@ -445,14 +460,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // changes no answer it was ever going to give, only how early that answer is available. Kept
     // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
     // HALT's own reclaim both still need it (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg);
 
     // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
     // mutation - not merely before the terminal sweep - when the store this step is about to
@@ -473,7 +481,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
     // step that is going to refuse never mutates any repository first - see
     // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
-    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref(), "rigger step")?;
 
     // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
     // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
@@ -1363,7 +1371,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, _) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
@@ -1601,7 +1609,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, _) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
     // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
@@ -1668,11 +1676,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
     // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
     // than a second `git_repo()` re-read.
-    let scratch_root = if repo.is_empty() {
-        String::new()
-    } else {
-        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg).unwrap_or_default();
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
     // whole MCP session, so an active harness is never invisible. Held here (not inside the
@@ -1746,18 +1750,7 @@ fn parse_workflow_args(
                     None => return Err("workflow: --base expects a ref".into()),
                 };
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("workflow: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "workflow: expected at most one spec path, got a second {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "workflow")?,
         }
         i += 1;
     }
@@ -1856,9 +1849,15 @@ pub(crate) fn cmd_workflow(args: &[String]) -> Res {
 /// who launches straight into a run without a separate `rigger validate` pass still sees
 /// the same advisories. Advisory only, exactly like the pre-launch surface: never refuses
 /// the run.
-fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+///
+/// It hands back the criteria beside the exact text its one read read (an empty text, with no
+/// read, when there is no spec path), so a caller that also hashes or prompts on the spec - the
+/// `rigger critique` verb (spec 112) - never reads it a second time.
+pub(crate) fn load_criteria(
+    spec_path: Option<&str>,
+) -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
     let Some(spec_path) = spec_path else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), String::new()));
     };
     let text =
         std::fs::read_to_string(spec_path).map_err(|e| format!("read spec {spec_path}: {e}"))?;
@@ -1872,7 +1871,7 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
         )
         .into());
     }
-    Ok(criteria)
+    Ok((criteria, text))
 }
 
 /// `rigger dash` - serve or export the embedded observability page (spec 11, unit 2).
@@ -4038,9 +4037,9 @@ mod tests {
 
         // A second spec path is still the same clear error; a valueless --base names the fix.
         let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
-        assert!(
-            err.contains("expected at most one spec path"),
-            "a second positional must be rejected; got: {err:?}"
+        assert_eq!(
+            err, "workflow: unexpected second positional argument \"b.md\"",
+            "a second positional must be rejected through the shared spec rule"
         );
         let err = w(&["--base"]).unwrap_err().to_string();
         assert!(
