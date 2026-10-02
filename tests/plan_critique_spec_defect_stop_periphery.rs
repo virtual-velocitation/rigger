@@ -8,9 +8,13 @@
 //! field through `rigger step`, that it is a condition of the stopping PROCESS only (a fresh step
 //! process finds the gate terminal and reports no halt), that a step process re-entering a stop
 //! a crash interrupted completes it from the persisted log alone, that the stop reads the
-//! current run's slice of a store holding an earlier run, and that the spec it names is the
+//! current run's slice of a store holding an earlier run, that the spec it names is the
 //! latest run's `RunStarted.spec` exactly as recorded, through the exported
-//! `run::current_run_spec_path` the conductor calls across the crate boundary.
+//! `run::current_run_spec_path` the conductor calls across the crate boundary, that only a
+//! stopping reject whose cause is `spec-ambiguity` stops (through the exported
+//! `spawn::Adjudication::is_spec_ambiguity`), and that the prompt `rigger prompt` serves every
+//! round's adjudicator - the re-plan round whose reject stops included - asks for that cause on
+//! exactly the defect the stop is for.
 //!
 //! Every run here is minted through `run_store::start_fresh` with a spec path and adopted by the
 //! step (no `--spec`, so the step's criteria are empty and match the minted run's), never at a
@@ -46,6 +50,17 @@ const HALT: &str = "amend the spec and relaunch: plan-critique found a spec defe
 fn spec_ambiguity_first() -> String {
     critique_reject("spec-ambiguity", &["adv-1"])
 }
+
+/// The cause contract of the DAG critique prompt's verdict paragraph, clause by clause: the
+/// `spec-ambiguity` cause the stop reads, asked for only on a defect in a criterion's own text;
+/// `decomposition-conflict`, asked for on every defect a re-plan can fix; and the latter again
+/// when the adjudicator is unsure, so an unsure reject never stops the run.
+const CAUSE_CONTRACT: [&str; 3] = [
+    "\"cause\":\"spec-ambiguity\" only when the upheld defect is in a criterion's own text and \
+     no decomposition can remove it",
+    "\"cause\":\"decomposition-conflict\" for every defect a re-plan can fix",
+    "When unsure, \"cause\":\"decomposition-conflict\".",
+];
 
 /// A plan stage producing the DAG and the plan-critique gate over it. `max_retries: 3` leaves
 /// the gate a re-plan after its second reject, so a stop - not the remediation bound - is what
@@ -150,11 +165,14 @@ fn re_plan_and_review(root: &Path, k: u32) {
     review(root, k);
 }
 
-/// Step to critique round `k`'s adjudicator and answer it with `verdict`.
-fn adjudicate(root: &Path, k: u32, verdict: &str) {
+/// Step to critique round `k`'s adjudicator and answer it with `verdict`, returning the prompt it
+/// was served as a courier fetches it (`rigger prompt`).
+fn adjudicate(root: &Path, k: u32, verdict: &str) -> String {
     let adjudicator = format!("plan-critique/adjudicator#{k}");
     parks(root, &[&adjudicator]);
+    let served = run_rigger_ok(root, &["prompt", &adjudicator]);
     run_rigger_ok(root, &["result", &adjudicator, verdict]);
+    served
 }
 
 /// The ids of every spawn `events` requested, in log order.
@@ -167,15 +185,16 @@ fn requested(events: &[Event]) -> Vec<String> {
 }
 
 /// A project whose latest run, launched on [`SPEC`] after one on [`EARLIER_SPEC`], is driven up
-/// to its stopping step: two `spec-ambiguity` rejects around the re-plan the first one drove,
-/// the second answered but not yet stepped over. Asserts on the way that the first reject
-/// re-plans as before.
-fn answered_second_spec_ambiguity_reject() -> tempfile::TempDir {
+/// to the step after its second critique round: a `spec-ambiguity` reject, the re-plan it drove,
+/// and `second`, the round-1 reject line, answered but not yet stepped over. Asserts on the way
+/// that the first reject re-plans as before. Returns the project and the prompt each round's
+/// adjudicator was served.
+fn answered_second_reject(second: &str) -> (tempfile::TempDir, [String; 2]) {
     let dir = critique_project();
     let root = dir.path();
     launch(root, &[EARLIER_SPEC, SPEC]);
     plan_and_review_first(root);
-    adjudicate(root, 0, &spec_ambiguity_first());
+    let first_round = adjudicate(root, 0, &spec_ambiguity_first());
     // A first `spec-ambiguity` reject re-plans as before: no stop record, no halt.
     re_plan_and_review(root, 1);
     assert_eq!(
@@ -183,13 +202,14 @@ fn answered_second_spec_ambiguity_reject() -> tempfile::TempDir {
         Vec::new(),
         "a first spec-ambiguity reject records no stop"
     );
-    // The second, which the halt names.
-    adjudicate(
-        root,
-        1,
-        &critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
-    );
-    dir
+    let re_plan_round = adjudicate(root, 1, second);
+    (dir, [first_round, re_plan_round])
+}
+
+/// [`answered_second_reject`] up to its stopping step: the second reject is `spec-ambiguity` too,
+/// upholding the `adv-2` and `adv-3` the halt names.
+fn answered_second_spec_ambiguity_reject() -> (tempfile::TempDir, [String; 2]) {
+    answered_second_reject(&critique_reject("spec-ambiguity", &["adv-2", "adv-3"]))
 }
 
 /// Given a run on [`SPEC`] whose plan-critique gate rejected with `spec-ambiguity`, re-planned,
@@ -199,7 +219,7 @@ fn answered_second_spec_ambiguity_reject() -> tempfile::TempDir {
 /// no re-plan after the stopping reject.
 #[test]
 fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step() {
-    let dir = answered_second_spec_ambiguity_reject();
+    let (dir, _) = answered_second_spec_ambiguity_reject();
     let root = dir.path();
     let s = step(root, "the stopping step");
     assert_eq!(
@@ -272,7 +292,7 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
 /// each.
 #[test]
 fn a_later_step_finds_the_stopped_gate_terminal_and_reports_no_halt() {
-    let dir = answered_second_spec_ambiguity_reject();
+    let (dir, _) = answered_second_spec_ambiguity_reject();
     let root = dir.path();
     step(root, "the stopping step");
     let later = step(root, "a later step");
@@ -298,7 +318,7 @@ fn a_later_step_finds_the_stopped_gate_terminal_and_reports_no_halt() {
 /// the stop from the log alone: each record once, the halt reported, and no spawn requested.
 #[test]
 fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
-    let dir = answered_second_spec_ambiguity_reject();
+    let (dir, _) = answered_second_spec_ambiguity_reject();
     step(dir.path(), "the stopping step");
     let log = read_run_events(dir.path());
     for crashed_before in [
@@ -359,5 +379,46 @@ fn an_earlier_runs_spec_ambiguity_reject_is_never_read_across_the_run_boundary()
         stop_records(&read_run_events(root)),
         Vec::new(),
         "only one of the new run's rejects is a spec-ambiguity one, so nothing stops"
+    );
+}
+
+/// Given a run whose plan-critique gate rejected with `spec-ambiguity`, re-planned, and then
+/// rejected with `decomposition-conflict` - a defect a re-plan can fix - when the operator steps,
+/// then the gate re-plans again: the step parks the next re-plan, reports no halt, and the log
+/// carries no stop record.
+#[test]
+fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
+    let (dir, _) = answered_second_reject(&critique_reject("decomposition-conflict", &["adv-2"]));
+    let root = dir.path();
+    parks(root, &["plan/replan#2"]);
+    assert_eq!(
+        stop_records(&read_run_events(root)),
+        Vec::new(),
+        "only the stopping reject's own spec-ambiguity cause stops, so nothing stops"
+    );
+}
+
+/// Given a run whose plan-critique adjudicator is parked at its first round and again at the
+/// re-plan round its first reject drove, when each fetches its prompt as a courier does (`rigger
+/// prompt`), then each prompt states the cause contract once - `spec-ambiguity` only for a
+/// defect in a criterion's own text, `decomposition-conflict` for every defect a re-plan can fix
+/// and when unsure - and an adjudicator answering both rounds with the cause the contract names
+/// for a defect in a criterion's own text stops the run.
+#[test]
+fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
+    let (dir, served) = answered_second_spec_ambiguity_reject();
+    assert_eq!(
+        served
+            .each_ref()
+            .map(|prompt| CAUSE_CONTRACT.map(|clause| prompt.matches(clause).count())),
+        [[1, 1, 1], [1, 1, 1]],
+        "the first round's and the re-plan round's prompts each state every clause once:\n{}",
+        served.join("\n---\n")
+    );
+    assert_eq!(
+        step(dir.path(), "the stopping step")["halted"].as_str(),
+        Some(HALT),
+        "the cause the contract names for a defect in a criterion's own text is the one the stop \
+         reads"
     );
 }
