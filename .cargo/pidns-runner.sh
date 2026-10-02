@@ -103,8 +103,13 @@ export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT
 # legitimate test (the suite passes under it), and a runaway child fails its own allocation at
 # 4G instead of growing until the machine does. The WHOLE sweep is bounded separately by the
 # mutation gate's own memory scope (.rigger/gates/mutation.sh); this cap bounds each process.
-# RIGGER_TEST_AS_BYTES overrides it for one invocation.
+# RIGGER_TEST_AS_BYTES overrides it for one invocation. The test process also runs on two malloc
+# arenas: glibc reserves 64 MiB of address space for each arena and opens another whenever a
+# thread finds the others locked, up to eight per core, so a binary running its tests on many
+# threads grows its address space with lock contention rather than with memory and reaches the
+# cap under load; two arenas keep the cap measuring what the tests really allocate.
 as_bytes="${RIGGER_TEST_AS_BYTES:-4294967296}"
+export MALLOC_ARENA_MAX=2
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
   # TERM here, not KILL: `timeout` forwards a TERM it receives to the test binary and exits;
   # a KILL would end only `timeout` and orphan the binary. The cap below still bounds a
