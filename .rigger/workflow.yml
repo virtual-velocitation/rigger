@@ -200,8 +200,9 @@ gates:                      # the project's verification library, referenced by 
     kind: core
   # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
   # branch's first commit that touches `src/` or `crates/<name>/src/` must be preceded by, or
-  # itself carry, a test change (a `tests` file, an added `#[test]`/`#[cfg(test)]` item, or a
-  # hunk inside the file's trailing test module). The logic lives in
+  # itself carry, a test change (a `tests` file, an added `#[test]` item, or a hunk reaching the
+  # file's test module - from the first column-0 `#[cfg(test)]` that opens a `mod` body to the
+  # end of the file). The logic lives in
   # `.rigger/gates/red-before-green.sh`; `tests/principle_gates_wiring.rs` drives it on
   # fixture repositories. The reviewer lens checks the same order.
   red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
