@@ -108,6 +108,16 @@ fn stand_in_claude() -> (tempfile::TempDir, String) {
     (work, path)
 }
 
+/// [`SPEC`] written outside the repository: the directory holding it, which must outlive every
+/// call, and the file's absolute path.
+fn spec_outside_the_repository() -> (tempfile::TempDir, String) {
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("7-gadget.md");
+    std::fs::write(&outside, SPEC).unwrap();
+    let outside = outside.display().to_string();
+    (elsewhere, outside)
+}
+
 /// The run entry `args` plus `extra` flags, then `--base HEAD`, in `root` with `path` as its
 /// `PATH`: (stdout, stderr, success).
 fn run_entry(root: &Path, path: &str, args: &[&str], extra: &[&str]) -> (String, String, bool) {
@@ -156,19 +166,19 @@ fn refusal(command: &str, spec: &str, open: Option<&[String]>) -> String {
     )
 }
 
-/// The line `command` prints on stderr as it begins a new run on [`SPEC_REL`] under a workflow
-/// naming no critic.
-fn no_critic_line(command: &str) -> String {
-    format!("{command}: no spec critique for {SPEC_REL}: {NO_CRITIC_CLAUSE}\n")
+/// The line `command` prints on stderr as it begins a new run, under a workflow naming no critic,
+/// on the spec it names `named`.
+fn no_critic_line(command: &str, named: &str) -> String {
+    format!("{command}: no spec critique for {named}: {NO_CRITIC_CLAUSE}\n")
 }
 
-/// `command`'s stderr `err` refused nothing and holds its no-critic line ([`no_critic_line`])
-/// `no_critic` times and no other mention of a spec critique.
-fn assert_unrefused(command: &str, err: &str, no_critic: usize) {
+/// `command`'s stderr `err` refused nothing and holds its no-critic line naming `named`
+/// ([`no_critic_line`]) `no_critic` times and no other mention of a spec critique.
+fn assert_unrefused((command, named): (&str, &str), err: &str, no_critic: usize) {
     assert_eq!(
         (
             err.contains("refusing"),
-            err.matches(&no_critic_line(command)).count(),
+            err.matches(&no_critic_line(command, named)).count(),
             err.matches("no spec critique").count()
         ),
         (false, no_critic, no_critic),
@@ -283,7 +293,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
     // the run.
     let absolute = root.join(SPEC_REL).display().to_string();
     resolve(root, "r3", &absolute, std::slice::from_ref(three));
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
     assert_eq!(
         run_payloads(root, "RunStarted")[0]["spec"],
         SPEC_REL,
@@ -300,7 +310,7 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
     // A run with no spec is never refused, under a workflow naming a critic.
     let (_out, err, ok) = on_head(root, &["step"], &[]);
     assert!(ok, "a spec-less step proceeds; stderr:\n{err}");
-    assert_unrefused("rigger step", &err, 0);
+    assert_unrefused(("rigger step", SPEC_REL), &err, 0);
     assert_eq!(
         run_payloads(root, "RunStarted").len(),
         1,
@@ -311,7 +321,7 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
     // with or without --rebase-definition, and is not refused.
     seed_the_specs_run(root);
     for extra in [&[][..], &["--rebase-definition"][..]] {
-        assert_step_proceeds(root, SPEC_REL, extra, (0, 2));
+        assert_step_proceeds(root, (SPEC_REL, extra), SPEC_REL, (0, 2));
     }
 
     // --fresh on the same text begins a new run: refused, as is a new run on dropped criteria.
@@ -348,14 +358,11 @@ fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_nev
 
     // Reverted: the earlier text's clean critique applies again.
     std::fs::write(root.join(SPEC_REL), SPEC).unwrap();
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
 
     // The same bytes outside the repository cannot be critiqued: a new run on them is refused as
     // not critiqued, named by the spelling given.
-    let elsewhere = tempfile::tempdir().unwrap();
-    let outside = elsewhere.path().join("7-gadget.md");
-    std::fs::write(&outside, SPEC).unwrap();
-    let outside = outside.display().to_string();
+    let (_elsewhere, outside) = spec_outside_the_repository();
     assert_refused(
         root,
         step(root, &outside, &["--fresh"]),
@@ -418,9 +425,25 @@ fn a_workflow_naming_no_critic_begins_each_new_run_with_one_line_saying_so() {
 
     // A new run proceeds with the one line, minting the run; a step adopting it names no
     // critique; each further new run says it again.
-    assert_step_proceeds(root, SPEC_REL, &[], (1, 1));
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 1));
-    assert_step_proceeds(root, SPEC_REL, &["--fresh"], (1, 2));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (1, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
+    assert_step_proceeds(root, (SPEC_REL, &["--fresh"]), SPEC_REL, (1, 2));
+}
+
+/// Given a workflow naming no critic, when a step begins a new run on a spelling that normalizes to
+/// the spec, then its one line names the spec repo-relative, as a refusal would; and when it begins
+/// one on a spec outside the repository - which a critic would refuse as never critiqued - then the
+/// run begins, its one line naming the spelling given.
+#[test]
+fn a_workflow_naming_no_critic_names_each_spec_as_a_refusal_would_and_begins_one_outside_the_repository(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, CRITICLESS_WORKFLOW, SPEC_REL, SPEC);
+    assert_step_proceeds(root, ("specs/../specs/7-gadget.md", &[]), SPEC_REL, (1, 1));
+
+    let (_elsewhere, outside) = spec_outside_the_repository();
+    assert_step_proceeds(root, (&outside, &["--fresh"]), &outside, (1, 2));
 }
 
 /// [`CRITICLESS_WORKFLOW`] naming `doubter` as its critic through `defaults.review.adversary`
@@ -460,18 +483,18 @@ fn assert_step_refused(
 }
 
 /// `rigger step --spec <spec>` plus `extra` proceeded, printing its one JSON line, refusing
-/// nothing and printing its no-critic line `no_critic` times ([`assert_unrefused`]), and the run
-/// stream then holds `runs` runs.
+/// nothing and printing its no-critic line naming the spec `named` `no_critic` times
+/// ([`assert_unrefused`]), and the run stream then holds `runs` runs.
 fn assert_step_proceeds(
     root: &Path,
-    spec: &str,
-    extra: &[&str],
+    (spec, extra): (&str, &[&str]),
+    named: &str,
     (no_critic, runs): (usize, usize),
 ) {
     let (out, err, ok) = step(root, spec, extra);
     assert!(ok, "the step on {spec} {extra:?} proceeds; stderr:\n{err}");
     assert_eq!(out.lines().count(), 1, "one JSON line:\n{out}");
-    assert_unrefused("rigger step", &err, no_critic);
+    assert_unrefused(("rigger step", named), &err, no_critic);
     assert_eq!(
         run_payloads(root, "RunStarted").len(),
         runs,
@@ -545,7 +568,7 @@ fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
         "the printed resolution route records it; stderr:\n{err}"
     );
 
-    assert_step_proceeds(root, &dotted, &[], (0, 1));
+    assert_step_proceeds(root, (&dotted, &[]), SPEC_REL, (0, 1));
 }
 
 /// DROPPED, a renamed spec: the critique is keyed on the spec's bytes, so the same bytes at a new
@@ -564,7 +587,7 @@ fn a_renamed_spec_keeps_the_critique_of_its_bytes_but_not_its_old_paths_resoluti
     assert_step_refused(root, (RENAMED_REL, &[]), RENAMED_REL, Some(&open), 0);
 
     resolve(root, "r-new", RENAMED_REL, &open);
-    assert_step_proceeds(root, RENAMED_REL, &[], (0, 1));
+    assert_step_proceeds(root, (RENAMED_REL, &[]), RENAMED_REL, (0, 1));
     assert_eq!(
         run_payloads(root, "RunStarted")[0]["spec"],
         RENAMED_REL,
@@ -589,7 +612,7 @@ fn a_resolution_stands_when_a_later_decision_supersedes_it_without_resolves() {
     ] {
         emit(root, "DecisionMade", &later.to_string());
     }
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
 }
 
 /// Reverted and DROPPED, the critic: under a workflow that drops its critic a new run proceeds with
@@ -606,14 +629,14 @@ fn each_new_run_follows_the_workflows_critic_and_any_critic_reads_the_recorded_c
     let open = reject_ids();
 
     write_scaffold(root, &personas, CRITICLESS_WORKFLOW);
-    assert_step_proceeds(root, SPEC_REL, &[], (1, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (1, 1));
 
     for workflow in [SKEPTIC_WORKFLOW, DEFAULTS_CRITIC_WORKFLOW] {
         write_scaffold(root, &personas, workflow);
         assert_step_refused(root, (SPEC_REL, &["--fresh"]), SPEC_REL, Some(&open), 1);
     }
     resolve(root, "r-all", SPEC_REL, &open);
-    assert_step_proceeds(root, SPEC_REL, &["--fresh"], (0, 2));
+    assert_step_proceeds(root, (SPEC_REL, &["--fresh"]), SPEC_REL, (0, 2));
 }
 
 /// The mint decision at the step: a spec returned to after a later run on other criteria begins a
@@ -631,7 +654,7 @@ fn a_spec_returned_to_after_a_later_run_on_other_criteria_needs_a_clean_critique
     seed_run_events(root, &[("RunStarted", later.as_str())]);
     assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 2);
     record_clean_critique(root, SPEC_REL);
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 3));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 3));
 }
 
 /// Existing data, a run branch holding another copy of the spec: the critique is judged on the
@@ -652,7 +675,7 @@ fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_byt
     git_ok(root, &["checkout", "-q", &home]);
     record_clean_critique(root, SPEC_REL);
 
-    assert_step_proceeds(root, SPEC_REL, &[], (0, 1));
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 1));
     assert_eq!(
         git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
         "rigger-run",
@@ -685,7 +708,7 @@ fn assert_past_the_run_start(
 ) {
     let output = run_entry(root, path, args, extra);
     assert_stopped_at_the_grounder(&output, &format!("{command} {extra:?}"));
-    assert_unrefused(command, &output.1, no_critic);
+    assert_unrefused((command, SPEC_REL), &output.1, no_critic);
     let started = run_payloads(root, "RunStarted");
     assert_eq!(
         (started.len(), &started[started.len() - 1]["spec"]),
