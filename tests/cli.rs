@@ -23446,6 +23446,100 @@ fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_9
     );
 }
 
+/// The check-in stage's content gates (the `style` and `no-os-kill` families) check the whole
+/// spec diff from `$RIGGER_RUN_BASE`, the run branch's tip when the run started, which the
+/// conductor exports to every gate. Run on a check-in branch cut from the run branch after an
+/// operator commit landed there directly, each fails on that commit's em dash or process-ending
+/// shell-out, though the check-in branch's own commit is clean. The implement stage's content
+/// gates keep the run branch as their base: on the very same tree - a unit's shape - they judge
+/// only the branch's own clean commit and pass.
+#[test]
+fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_gates_keep_the_run_branch(
+) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cfg = rigger::config_store::load(root.to_str().unwrap())
+        .unwrap_or_else(|e| panic!("this repository's own workflow must load: {e}"));
+    let content_gates = |stage: &str| -> Vec<(String, String)> {
+        cfg.workflow.stages[stage]
+            .gates
+            .iter()
+            .filter(|id| id.starts_with("style") || id.starts_with("no-os-kill"))
+            .map(|id| (id.clone(), cfg.workflow.gates[id].run.clone()))
+            .collect()
+    };
+
+    // The repository's gate scripts sit in the run's base commit, as in every unit worktree.
+    let dir = temp_git_project_with_commit();
+    let repo = dir.path();
+    let scripts: Vec<(String, String)> = std::fs::read_dir(root.join(".rigger/gates"))
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            (
+                format!(".rigger/gates/{name}"),
+                std::fs::read_to_string(&path).unwrap(),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &str)> = scripts
+        .iter()
+        .map(|(rel, text)| (rel.as_str(), text.as_str()))
+        .collect();
+    let base = common::git::commit_files(repo, &files, "the run's base");
+    git_ok(repo, &["checkout", "-q", "-b", "rigger-run"]);
+    // Assembled at runtime, so this file's own source carries neither shape.
+    let utility = ["ki", "ll"].concat();
+    let landed = format!(
+        "// a dash \u{2014} here\npub fn stop() {{ let _ = std::process::Command::new(\"{utility}\"); }}\n"
+    );
+    common::git::commit_files(repo, &[("src/lib.rs", &landed)], "an operator commit");
+    git_ok(repo, &["checkout", "-q", "-b", "rigger/u/checkin"]);
+    common::git::commit_files(
+        repo,
+        &[("README.md", "clean\n")],
+        "the check-in's own commit",
+    );
+
+    let run_gate = |run: &str| {
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(run)
+            .current_dir(repo)
+            .env("RIGGER_RUN_BASE", &base)
+            .output()
+            .expect("sh must spawn");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.success(), text)
+    };
+    let checkin = content_gates("checkin");
+    assert_eq!(
+        checkin.len(),
+        2,
+        "a style and a no-os-kill gate: {checkin:?}"
+    );
+    for (id, run) in &checkin {
+        let (passed, out) = run_gate(run);
+        assert!(
+            !passed,
+            "check-in gate `{id}` must see the operator commit in the whole spec diff: {out}"
+        );
+    }
+    let unit = content_gates("implement");
+    assert_eq!(unit.len(), 2, "a style and a no-os-kill gate: {unit:?}");
+    for (id, run) in &unit {
+        let (passed, out) = run_gate(run);
+        assert!(
+            passed,
+            "unit gate `{id}` must judge only the branch's own clean commit: {out}"
+        );
+    }
+}
+
 /// Round-8 fix, closing sdet-u69c1r7-fresh-run-own-dead-dash-suppressed-by-mint-order /
 /// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap for real: every sibling dash-
 /// liveness test in this file seeds `RunStarted` and the dash marker DIRECTLY via
