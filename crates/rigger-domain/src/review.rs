@@ -1124,6 +1124,92 @@ mod tests {
         }
     }
 
+    /// A critique of [`HASH`] whose result sits at log position 10, holding `findings` as
+    /// `(id, blocking)` in finding order.
+    fn critique_at_ten(findings: &[(&str, bool)]) -> Critique {
+        Critique {
+            position: 10,
+            attempt: 0,
+            verdict: "reject".to_string(),
+            findings: findings
+                .iter()
+                .map(|(id, blocking)| finding(id, *blocking, ["C", "criterion 1", "r", "f"]))
+                .collect(),
+        }
+    }
+
+    /// A `DecisionMade` at log position `position` governing `governs` and resolving `resolves`.
+    fn resolution(position: u64, governs: &[&str], resolves: &[&str]) -> Event {
+        ev_at(
+            position,
+            crate::contextgraph::TYPE_DECISION_MADE,
+            json!({"id": format!("res-{position}"), "summary": "closed", "governs": governs,
+                   "resolves": resolves}),
+        )
+    }
+
+    /// Spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS CLEAN: the open findings are the
+    /// critique's BLOCKING ids, in finding order, minus each id a `DecisionMade` recorded after
+    /// the critique's result names in `resolves` while its `governs` names the spec under any
+    /// spelling that normalizes to it; nothing else closes one.
+    #[test]
+    fn the_open_findings_are_the_blocking_ids_no_later_resolution_of_the_spec_names() {
+        let root = Path::new("/work/repo");
+        let spec = "specs/a.md";
+        let critique = critique_at_ten(&[
+            ("b1", true),
+            ("n2", false),
+            ("b3", true),
+            ("b4", true),
+            ("b5", true),
+        ]);
+        let open = |decisions: &[Event]| open_findings(&critique, decisions, spec, root);
+        assert_eq!(
+            open(&[]),
+            ["b1", "b3", "b4", "b5"],
+            "unresolved: every BLOCKING id in finding order, never a NON-BLOCKING one"
+        );
+        assert_eq!(
+            open(&[
+                resolution(11, &["./specs/a.md"], &["b1"]),
+                resolution(
+                    12,
+                    &["specs/other.md", "/work/repo/specs/a.md"],
+                    &["b3", "n2", "ghost"]
+                ),
+            ]),
+            ["b4", "b5"],
+            "a later resolution governing the spec, relative or absolute, closes the ids it \
+             names; a NON-BLOCKING or unknown id it names changes nothing"
+        );
+        assert_eq!(
+            open(&[
+                resolution(10, &[spec], &["b1"]),
+                resolution(9, &[spec], &["b3"]),
+                resolution(13, &["specs/other.md"], &["b4"]),
+                resolution(14, &["/elsewhere/specs/a.md", "../specs/a.md"], &["b4"]),
+                ev_at(
+                    15,
+                    crate::contextgraph::TYPE_LESSON_LEARNED,
+                    json!({"id": "l", "governs": [spec], "resolves": ["b5"]})
+                ),
+                ev_at(
+                    16,
+                    crate::contextgraph::TYPE_DECISION_MADE,
+                    json!({"id": "s", "governs": spec, "resolves": ["b5"]})
+                ),
+            ]),
+            ["b1", "b3", "b4", "b5"],
+            "a resolution at or before the critique's result, one governing another spec or a \
+             path outside the root, another event type and a governs that is no list close nothing"
+        );
+        assert_eq!(
+            open_findings(&critique_at_ten(&[("n1", false)]), &[], spec, root),
+            Vec::<String>::new(),
+            "a critique with no BLOCKING finding has none open"
+        );
+    }
+
     #[test]
     fn the_spec_root_is_the_repository_else_the_project_directory() {
         assert_eq!(

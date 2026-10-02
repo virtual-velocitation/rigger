@@ -544,6 +544,46 @@ mod tests {
         ev(TYPE_LESSON_LEARNED, &format!(r#"{{"id":"{id}"}}"#))
     }
 
+    /// THE MINT DECISION (spec 112): a command adopts the latest run when that run's criteria
+    /// equal the spec's and `--fresh` was not passed; it begins a new run on `--fresh`, on a
+    /// stream holding no run, and when the latest run's criteria differ - an earlier run with
+    /// equal criteria is never adopted past a later one.
+    #[test]
+    fn a_command_adopts_the_latest_run_only_for_equal_criteria_without_fresh() {
+        let log = vec![
+            run_started("r1", &["a", "b"]),
+            decision("d1"),
+            run_started("r2", &["a"]),
+            ev("UnitStarted", r#"{"id":"u"}"#),
+        ];
+        let adopted = |events: &[Event], criteria: &[&str], fresh: bool| {
+            let criteria: Vec<String> = criteria.iter().map(|c| c.to_string()).collect();
+            adopted_run(events, &criteria, fresh).map(|run| run.run)
+        };
+        assert_eq!(
+            [
+                adopted(&log, &["a"], false),
+                adopted(&log, &["a"], true),
+                adopted(&log, &["a", "b"], false),
+                adopted(&log, &["b"], false),
+                adopted(&log[..2], &["a", "b"], false),
+                adopted(&[], &[], false),
+                adopted(&[run_started("r0", &[])], &[], false),
+            ],
+            [
+                Some("r2".to_string()),
+                None,
+                None,
+                None,
+                Some("r1".to_string()),
+                None,
+                Some("r0".to_string()),
+            ],
+            "equal criteria adopt the latest run; --fresh, other criteria, an earlier run's \
+             criteria and an empty stream begin a new one; a spec-less run adopts a spec-less one"
+        );
+    }
+
     #[test]
     fn run_attribution_maps_decisions_to_their_window_and_never_attributes_lessons_away() {
         // Spec 21, unit 1 done-when: a decision/finding is attributed to the run whose

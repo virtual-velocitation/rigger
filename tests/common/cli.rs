@@ -154,6 +154,23 @@ pub fn emit(root: &Path, typ: &str, json: &str) {
     assert!(ok, "emit {typ} must succeed; stderr: {err}");
 }
 
+/// What the critic answers for [`record_clean_critique`]: prose, no finding line, an approve.
+const CLEAN_CRITIQUE: &str = "No defects.\n{\"verdict\":\"approve\"}";
+
+/// Record a clean critique of `spec`'s current text in the project at `root` (spec 112), so a
+/// new run on it under a workflow naming a critic is not refused: `rigger critique <spec>` with
+/// the checked-in critique stub first on `PATH` for that one call only, so a fixture's own fake
+/// agent keeps its `PATH` slot for the run it drives. Asserts the critique was recorded clean.
+pub fn record_clean_critique(root: &Path, spec: &str) {
+    let work = tempfile::tempdir().expect("a work directory for the critique stub");
+    let path = super::repo::write_critique_stub(work.path(), CLEAN_CRITIQUE);
+    let (out, err, ok) = run_rigger_envs(root, &["critique", spec], &[("PATH", path.as_str())]);
+    assert!(
+        ok && out == "{\"verdict\":\"approve\"}\n",
+        "rigger critique {spec} must record a clean critique; stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
 /// Create an empty `.rigger/` under `root`.
 pub fn seed_rigger_dir(root: &Path) {
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
