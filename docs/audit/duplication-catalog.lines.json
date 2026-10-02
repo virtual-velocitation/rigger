@@ -4069,8 +4069,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 986,
-        "end_line": 988
+        "start_line": 1204,
+        "end_line": 1206
       },
       {
         "file": "src/cli/validate.rs",
@@ -4180,7 +4180,7 @@
     ]
   },
   {
-    "id": "dup-227133ad22cd",
+    "id": "dup-5449e35bae05",
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
@@ -4189,8 +4189,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 1913,
-        "end_line": 1934
+        "start_line": 2131,
+        "end_line": 2159
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
@@ -5189,8 +5189,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 541,
-        "end_line": 548
+        "start_line": 545,
+        "end_line": 552
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
@@ -5209,13 +5209,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 652,
-        "end_line": 654
+        "start_line": 656,
+        "end_line": 658
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 662,
-        "end_line": 664
+        "start_line": 666,
+        "end_line": 668
       }
     ]
   },
@@ -5224,13 +5224,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 1854,
-        "end_line": 1866
+        "start_line": 2072,
+        "end_line": 2084
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2064,
-        "end_line": 2073
+        "start_line": 2289,
+        "end_line": 2298
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5244,8 +5244,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2203,
-        "end_line": 2205
+        "start_line": 2428,
+        "end_line": 2430
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",

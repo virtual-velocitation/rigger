@@ -90,9 +90,9 @@
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-227133ad22cd",
+    "id": "dup-5449e35bae05",
     "disposition": "not-a-duplicate",
-    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
+    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the multi-assert shape is shared."
   },
   {
     "id": "dup-b43ee3b4b5bb",
