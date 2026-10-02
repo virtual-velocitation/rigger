@@ -1582,12 +1582,14 @@ fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
     Error(format!(
         "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?} failed on infrastructure ({cause}) at \
          attempt {attempt} past the failure taxonomy's infra limit, so the step halts and the \
-         unit is charged no attempt; fix the outage and re-run)"
+         unit is charged no attempt; fix the outage and re-run - the unit resumes at the same \
+         attempt with a fresh bound)"
     ))
 }
 
-/// A unit's infra reruns at one attempt (F3), folded from its [`STATUS_INFRA_RETRY`] marks so
-/// a later `rigger step` process resumes the same count - log-carried, never process state.
+/// A unit's infra reruns at one attempt (F3), folded from its [`STATUS_INFRA_RETRY`] and
+/// [`STATUS_INFRA_HALT`] marks so a later `rigger step` process resumes the same counts -
+/// log-carried, never process state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct InfraRetries {
     /// The retry ordinal the stage's next run carries: one per infra rerun already recorded
@@ -1595,27 +1597,43 @@ struct InfraRetries {
     /// keys ([`gate_key`]) and the reviewers' retry window ([`review_retry_window`]), so a
     /// rerun is fresh work that never replays the run the outage spoiled.
     ordinal: u32,
+    /// The infra reruns recorded since this attempt's latest infra halt: the count the
+    /// taxonomy's infra limit bounds. A halt resets it, so a relaunch after the outage gets a
+    /// fresh bound while the ordinal keeps counting past every spoiled run.
+    since_halt: u32,
 }
 
 impl InfraRetries {
-    /// The reruns `unit` recorded at `attempt` in `events` (this run's log).
+    /// The reruns and halts `unit` recorded at `attempt` in `events` (this run's log), folded
+    /// in log order.
     fn recorded(events: &[Event], unit: &str, attempt: u32) -> Self {
-        unit_status_marks(events, unit, &[STATUS_INFRA_RETRY])
+        unit_status_marks(events, unit, &[STATUS_INFRA_RETRY, STATUS_INFRA_HALT])
             .filter(|(_, at, _)| *at == u64::from(attempt))
-            .fold(Self::default(), |infra, _| infra.retried())
+            .fold(Self::default(), |infra, (status, _, _)| infra.after(status))
     }
 
-    /// The state after one more recorded infra rerun.
-    fn retried(self) -> Self {
-        InfraRetries {
-            ordinal: self.ordinal + 1,
+    /// The state after one more infra mark of `status`: a rerun ([`STATUS_INFRA_RETRY`])
+    /// advances both counts, a halt ([`STATUS_INFRA_HALT`]) restarts the bound and keeps the
+    /// ordinal. The one transition the log fold and the live rerun both apply, so the two can
+    /// never disagree on the next ordinal.
+    fn after(self, status: &str) -> Self {
+        if status == STATUS_INFRA_RETRY {
+            InfraRetries {
+                ordinal: self.ordinal + 1,
+                since_halt: self.since_halt + 1,
+            }
+        } else {
+            InfraRetries {
+                since_halt: 0,
+                ..self
+            }
         }
     }
 
     /// Whether the infra failure of the run at this state halts rather than reruns: the
-    /// reruns already recorded reached the taxonomy's infra `limit`.
+    /// reruns recorded since the latest halt reached the taxonomy's infra `limit`.
     fn exhausted(self, limit: u32) -> bool {
-        self.ordinal >= limit
+        self.since_halt >= limit
     }
 }
 
@@ -4931,7 +4949,7 @@ impl RunCtx<'_> {
         let detail = format!("{cause}: {evidence}");
         self.emit_infra_mark(unit, STATUS_INFRA_RETRY, attempt, infra.ordinal, &detail)?;
         if !infra.exhausted(self.taxonomy.infra_limit()) {
-            return Ok(infra.retried());
+            return Ok(infra.after(STATUS_INFRA_RETRY));
         }
         self.emit_infra_mark(unit, STATUS_INFRA_HALT, attempt, infra.ordinal, &detail)?;
         Err(infra_halt(unit, attempt, cause, evidence))
