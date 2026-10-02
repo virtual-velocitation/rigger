@@ -7741,7 +7741,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "76c7c1a4e2e93c92"
+    "content_hash": "ad2e72f48e8e30e1"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9717,7 +9717,31 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "57f289afce40872b"
+    "content_hash": "3e7d03d6d1af6ff0"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "read_probe_head",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "74b5afba30605b86"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "classify_probe_error",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "23cac76933b4c9df"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "answer",
+    "is_test": false,
+    "proposed_module": "dash::probe_miss",
+    "reason": "method inside `impl ProbeMiss`; grouped with its other `ProbeMiss` methods.",
+    "content_hash": "439c4cf66ff71f2e"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -9725,7 +9749,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "4bce999130001098"
+    "content_hash": "fd502708040902af"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -9893,7 +9917,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "913206772ce1210d"
+    "content_hash": "16d85d5e66fcdab1"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -11193,11 +11217,35 @@
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
+    "name": "an_interrupted_probe_read_is_read_again_inside_the_window",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "011d429baeccbeb3"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "a_probe_error_reads_as_the_peer_a_silent_holder_or_the_probe_failing",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0c6400ffa4213b95"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "a_failed_probe_answers_neither_serving_nor_gone",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "be1c735f48f4a161"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "24cc58a1554df855"
+    "content_hash": "cc5ec8cd09a2f6c8"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

@@ -4543,7 +4543,7 @@
       },
       {
         "file": "tests/mutation_runner_pdeathsig_periphery.rs",
-        "name": "\"cat /proc/self/limits\"",
+        "name": "\"cat /proc/self/limits; echo \\\"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\\\"\"",
         "content_hash": "0a68549443b7c66d"
       },
       {
