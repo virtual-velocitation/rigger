@@ -17095,6 +17095,23 @@ rigger::test_cases! {
             ]
             .concat(),
         );
+    /// Spec 112, criterion 4 (the docs-drift GATE covers the preflight skill, end to end,
+    /// through the compiled binary): given a project whose committed docs `rigger docs` just
+    /// rendered, when the committed `skills/spec-preflight/SKILL.md` alone is hand-edited, then
+    /// `rigger validate` fails naming that file and the `rigger docs` fix - and no other
+    /// registry skill - and passes again once it is re-rendered. Joining the registry is the
+    /// only wiring the entry gets, so only drifting its own committed path proves the gate
+    /// compares it.
+    validate_docs_drift_gate_covers_the_spec_preflight_skill:
+        assert_the_drift_gate_covers(
+            skill_rels(&["spec-preflight"]),
+            [
+                skill_rels(&WATCHING_DISCIPLINE_SKILL_NAMES),
+                skill_rels(&PER_OPERATION_SKILL_NAMES),
+                skill_rels(&["using-rigger", "planning-a-spec"]),
+            ]
+            .concat(),
+        );
 }
 
 /// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
@@ -17625,6 +17642,36 @@ fn spec_112_preflight_body() -> String {
     closing.expect("spec 112's Notes section closes with a fenced block")
 }
 
+/// The `spec-preflight` skill as `rigger setup` installs it and `rigger docs` renders it: spec
+/// 112's shipped body plus the operator-binary section every registry skill carries.
+fn shipped_spec_preflight_skill() -> String {
+    format!(
+        "{}{}",
+        spec_112_preflight_body(),
+        rigger::docs::OPERATOR_BINARY_PROHIBITION
+    )
+}
+
+/// Every backtick span of `text` that is a relative path (opening `./` or `../`), in order, each
+/// asserted to name an existing file from `dir`, the directory the skill file sits in - so a
+/// skill that names no absolute path still names only files its reader can open.
+fn relative_references_resolving_from(text: &str, dir: &Path) -> Vec<String> {
+    let references: Vec<String> = text
+        .lines()
+        .flat_map(|line| line.split('`').skip(1).step_by(2))
+        .filter(|span| span.starts_with("./") || span.starts_with("../"))
+        .map(str::to_string)
+        .collect();
+    for reference in &references {
+        assert!(
+            dir.join(reference).is_file(),
+            "{reference:?} must name a file from {}",
+            dir.display()
+        );
+    }
+    references
+}
+
 /// No token of `text` is an absolute or home path - none opens with `/` or `~` once leading
 /// Markdown quoting is set aside - and no line names the project `root` or the operator's home
 /// directory, so the file reads the same in every checkout it is installed into.
@@ -17666,11 +17713,7 @@ fn setup_ships_the_spec_preflight_skill_and_refreshes_it_on_drift() {
     let proj = assert_setup_installs_each_skill(&["spec-preflight"]);
     let root = proj.path();
     let installed_path = root.join(".claude/skills/spec-preflight/SKILL.md");
-    let shipped = format!(
-        "{}{}",
-        spec_112_preflight_body(),
-        rigger::docs::OPERATOR_BINARY_PROHIBITION
-    );
+    let shipped = shipped_spec_preflight_skill();
     let installed = std::fs::read_to_string(&installed_path).expect("setup installed it");
     assert_eq!(
         installed, shipped,
@@ -17719,6 +17762,204 @@ fn setup_ships_the_spec_preflight_skill_and_refreshes_it_on_drift() {
              got:\n{planning}"
         );
     }
+}
+
+/// Spec 112, criterion 4 (the RENDER seam reaches the preflight skill, through the compiled
+/// binary): given a fresh project, when the operator runs `rigger docs`, then it reports writing
+/// `skills/spec-preflight/SKILL.md`, that file is spec 112's shipped body plus the
+/// operator-binary section byte for byte, the one relative reference it carries names the
+/// `planning-a-spec` skill the same render wrote beside it, and a second render writes the
+/// same bytes. `write_docs` walks the registry in its own loop,
+/// apart from the install loop the setup tests drive, and its output is the committed copy the
+/// docs-drift gate compares.
+#[test]
+fn docs_renders_the_spec_preflight_skill_through_the_compiled_binary() {
+    let proj = temp_project();
+    let root = proj.path();
+    let rel = "skills/spec-preflight/SKILL.md";
+
+    let (out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(rel),
+        "rigger docs must report rendering {rel}; got:\n{out}"
+    );
+    let path = root.join(rel);
+    let rendered = std::fs::read_to_string(&path).expect("rigger docs wrote the skill");
+    assert_eq!(
+        rendered,
+        shipped_spec_preflight_skill(),
+        "the rendered spec-preflight skill must be spec 112's shipped body, byte for byte, plus \
+         the operator-binary section"
+    );
+    assert_eq!(
+        relative_references_resolving_from(&rendered, path.parent().unwrap()),
+        ["../planning-a-spec/SKILL.md"],
+        "the rendered skill names exactly one relative file, the planning-a-spec skill beside it"
+    );
+
+    let (_out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "a second rigger docs run must succeed; stderr:\n{err}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        rendered,
+        "a second render must be byte-identical"
+    );
+}
+
+/// The modification time of each skill installed under `skills_dir` but `except`, by name.
+fn installed_skill_mtimes(
+    skills_dir: &Path,
+    except: &str,
+) -> std::collections::BTreeMap<String, std::time::SystemTime> {
+    std::fs::read_dir(skills_dir)
+        .expect("setup made the skills directory")
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name != except)
+        .map(|name| {
+            let mtime = std::fs::metadata(skills_dir.join(&name).join("SKILL.md"))
+                .unwrap()
+                .modified()
+                .unwrap();
+            (name, mtime)
+        })
+        .collect()
+}
+
+/// Spec 112, criterion 4 (existing data, the upgrade path): given a project `rigger setup`
+/// provisioned before the preflight skill shipped - every other registry skill installed and
+/// current, no `spec-preflight` directory - when the operator reruns `rigger setup`, then the
+/// one skill line it prints installs `spec-preflight`, the file holds the shipped bytes and its
+/// relative reference names the installed `planning-a-spec` skill beside it, and every other
+/// registry skill keeps its mtime.
+#[test]
+fn setup_gives_a_project_provisioned_before_the_preflight_skill_that_skill_alone() {
+    let proj = temp_project();
+    let root = proj.path();
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "the first rigger setup must succeed; stderr:\n{err}");
+    let skills_dir = root.join(".claude/skills");
+    std::fs::remove_dir_all(skills_dir.join("spec-preflight")).unwrap();
+    let before = installed_skill_mtimes(&skills_dir, "spec-preflight");
+    let mut others: Vec<&str> = rigger::docs::skill_registry()
+        .iter()
+        .map(|entry| entry.name)
+        .filter(|name| *name != "spec-preflight")
+        .collect();
+    others.sort_unstable();
+    assert_eq!(
+        before.keys().map(String::as_str).collect::<Vec<_>>(),
+        others,
+        "the provisioned project holds every other registry skill and no spec-preflight"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(
+        ok,
+        "the upgrading rigger setup must succeed; stderr:\n{err}"
+    );
+    assert_eq!(
+        out.lines()
+            .filter(|line| line.contains(" skill (.claude/skills/"))
+            .collect::<Vec<_>>(),
+        ["installed the spec-preflight skill (.claude/skills/spec-preflight/SKILL.md)"],
+        "the upgrade installs spec-preflight and reports no other skill; got:\n{out}"
+    );
+    let installed_path = skills_dir.join("spec-preflight/SKILL.md");
+    let installed = std::fs::read_to_string(&installed_path).expect("setup installed it");
+    assert_eq!(
+        installed,
+        shipped_spec_preflight_skill(),
+        "the upgrade installs the shipped bytes"
+    );
+    assert_eq!(
+        relative_references_resolving_from(&installed, installed_path.parent().unwrap()),
+        ["../planning-a-spec/SKILL.md"],
+        "the installed skill names exactly one relative file, the installed planning-a-spec \
+         skill beside it"
+    );
+    assert_eq!(
+        installed_skill_mtimes(&skills_dir, "spec-preflight"),
+        before,
+        "the upgrade rewrites no other registry skill"
+    );
+}
+
+/// Spec 112, criterion 4 (the DROPPED corner, and the Notes rule that a copy outside the
+/// project is the operator's): given a project under the operator's home holding a
+/// hand-authored `.claude/skills/spec-preflight/SKILL.md`, and that home holding its own
+/// `spec-preflight` skill at `.claude/skills/spec-preflight/SKILL.md`, when the operator runs
+/// `rigger setup` in the project, then the project copy is reported as a refreshed drifted
+/// skill and holds the shipped bytes, while the home copy keeps its bytes and its mtime and
+/// the home's `.claude` gains nothing.
+#[test]
+fn setup_overwrites_a_hand_authored_project_preflight_copy_and_never_one_outside_the_project() {
+    let home = tempfile::tempdir().expect("create a temp home");
+    let root = home.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    git_ok(&root, &["init", "-q"]);
+    let hand_authored =
+        "---\nname: spec-preflight\ndescription: the operator's own preflight\n---\n\n# Mine\n";
+    let copy_in = |dir: &Path| {
+        let path = dir.join(".claude/skills/spec-preflight/SKILL.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, hand_authored).unwrap();
+        path
+    };
+    let home_copy = copy_in(home.path());
+    let project_copy = copy_in(&root);
+    let home_mtime = std::fs::metadata(&home_copy).unwrap().modified().unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (out, err, ok) = run_rigger_envs(
+        &root,
+        &["setup"],
+        &[
+            ("RIGGER_NPM", "true"),
+            ("HOME", home.path().to_str().expect("a utf-8 home")),
+        ],
+    );
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(
+            "refreshed the drifted spec-preflight skill (.claude/skills/spec-preflight/SKILL.md)"
+        ) && !out.contains("installed the spec-preflight skill"),
+        "a hand-authored project copy is drift, refreshed rather than installed; got:\n{out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&project_copy).unwrap(),
+        shipped_spec_preflight_skill(),
+        "the project copy must hold the shipped bytes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&home_copy).unwrap(),
+        hand_authored,
+        "the copy outside the project must keep its bytes"
+    );
+    assert_eq!(
+        std::fs::metadata(&home_copy).unwrap().modified().unwrap(),
+        home_mtime,
+        "the copy outside the project must not even move its mtime"
+    );
+    let listed = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+    assert_eq!(
+        listed(&home.path().join(".claude")),
+        ["skills"],
+        "setup must write nothing under the home's .claude"
+    );
+    assert_eq!(
+        listed(&home.path().join(".claude/skills")),
+        ["spec-preflight"],
+        "setup must install no skill under the home"
+    );
 }
 
 /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
