@@ -7081,11 +7081,19 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "spec_positional",
+    "is_test": false,
+    "proposed_module": "main::provenance",
+    "reason": "name contains \"spec_\" (workflow/spec loading); grouped under `main::provenance`.",
+    "content_hash": "ec6f834bb9c789a4"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "parse_run_args",
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"parse_\" (argument/input parsing); grouped under `main::support`.",
-    "content_hash": "61bc31311ad3c27c"
+    "content_hash": "f97b79cf919f87b9"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7102,6 +7110,14 @@
     "proposed_module": "main::store_selection",
     "reason": "method inside `impl StoreSelection`; grouped with its other `StoreSelection` methods.",
     "content_hash": "be6c704b97561a88"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "handed_env",
+    "is_test": false,
+    "proposed_module": "main::store_selection",
+    "reason": "method inside `impl StoreSelection`; grouped with its other `StoreSelection` methods.",
+    "content_hash": "d1b2ba60ec48aa3c"
   },
   {
     "file": "src/cli/mod.rs",
@@ -7149,7 +7165,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "c1ab21badd6e5eaf"
+    "content_hash": "43530aac8950a621"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8918,6 +8934,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "309afe99203e89ff"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0b8c07f1c44d0fc8"
   },
   {
     "file": "src/cli/mod.rs",

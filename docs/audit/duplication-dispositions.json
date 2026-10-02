@@ -415,9 +415,9 @@
     "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
   },
   {
-    "id": "dup-cd5c22f2a701",
+    "id": "dup-ed7dd2365bce",
     "disposition": "not-a-duplicate",
-    "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
+    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
   {
     "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",

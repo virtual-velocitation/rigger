@@ -4879,6 +4879,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-ed7dd2365bce",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "name": "spawn_request",
+        "content_hash": "ba1ab9247a5311ac"
+      },
+      {
+        "file": "tests/common/mod.rs",
+        "name": "spawn_request",
+        "content_hash": "900c74843b46d5fc"
+      }
+    ],
+    "proposed_home": "one shared `spawn_request` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-2a5626cb9627",
     "classification": "near",
     "sites": [
@@ -5652,25 +5671,6 @@
     ],
     "proposed_home": "claude_code::failing_read_store",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-cd5c22f2a701",
-    "classification": "semantic",
-    "sites": [
-      {
-        "file": "crates/rigger-driver/src/driver/replay.rs",
-        "name": "spawn_request",
-        "content_hash": "ad1c3b1e4462c1d6"
-      },
-      {
-        "file": "tests/common/mod.rs",
-        "name": "spawn_request",
-        "content_hash": "900c74843b46d5fc"
-      }
-    ],
-    "proposed_home": "one shared `spawn_request` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
