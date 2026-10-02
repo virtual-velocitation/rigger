@@ -25,21 +25,27 @@ Criterion 6 needs all five. The spec is launched on a tree carrying spec 101's t
 **THE CRITIC IS THE PLAN-CRITIQUE ADVERSARY, SPAWNED THROUGH THE HEADLESS HOST, decided here.**
 `rigger critique <spec>` resolves the persona the workflow names as the `adversary` of the
 plan-critique gate, the stage `wave::critique_gate_name` returns (this repository:
-`.rigger/agents/adversary.md`), falling back to `defaults.review.adversary`; a workflow naming
-neither refuses with a message naming both keys and records nothing. The critic's system prompt is
+`.rigger/agents/adversary.md`), falling back to `defaults.review.adversary`; that persona is the
+critic, and this lookup is one pure function. A workflow naming neither has no critic:
+`rigger critique` under it refuses, naming both keys, and records nothing, and a new run under it
+is not refused (A NEW RUN IS REFUSED); there is no built-in critic. The critic's system prompt is
 `build_system_prompt(persona, instructions)` (the persona body, the configured instruction layers
 and the communication discipline every spawn gets), and the verb runs the persona with its tools
 replaced by Read, Glob, `mcp__rigger__rigger_graph`, `mcp__rigger__rigger_ground` and
 `mcp__rigger__rigger_peers` - no Bash, Agent, Grep, or emit, progress or scratch tool - so the
-critic can neither build nor record. The spawn runs through spec 104's headless host and its
-`AgentDriver::spawn`: the child inherits the operator's ambient environment and login, and no
-credential variable is read or set. The verb composes the host itself (`bin` and `rigger_bin`
-empty, so resolved on `PATH`; `progress_store` the project's `.rigger/progress.db`; `run_store`
-the critique store below; `scratch_root` the project scratch root; `stop_grace` 30 s; the
-persona's own `max_wall_clock`). `SpawnOpts` carries `dir` the repository root the spec path is
-made relative to, `isolation: false` (the project checkout, like the planner), `unit`
+critic can neither build nor record. The host defines its `lookup` and `verify` helpers on every
+spawn, so the critic may still reach one through the fan-out tool; a helper's build or record is
+denied like the critic's own, by the host's no-prompt permission rule (accepted). The spawn runs
+through spec 104's headless host and its `AgentDriver::spawn`: the child inherits the operator's
+ambient environment and login, and no credential variable is read or set. The verb composes the
+host itself (`bin` and `rigger_bin` empty, so resolved on `PATH`; `progress_store` the project's
+`.rigger/progress.db` namespaced to the project identity, as `run_workflow` composes it, its
+critique rows sharing that file's lifecycle, which no command reclaims (accepted); `run_store` the
+critique store below; `scratch_root` the project scratch root; `stop_grace` 30 s; the persona's
+own `max_wall_clock`). `SpawnOpts` carries `dir` the repository root the spec path is made
+relative to (*The spec path*), `isolation: false` (the project checkout, like the planner), `unit`
 `critique-<hash>`, `stage` `critique`, `run_id` `critique-<hash>`, `title` the spec path, and
-`attempt` (below). The loop's own run composition (`run_cli`, `src/cli/run.rs`) is not changed by
+`attempt` (below). The loop's own driver choice in `run_cli` (`src/cli/run.rs`) is not changed by
 this spec. Criterion 1's unit adds `critique` to `SUBCOMMANDS` (`src/main.rs`) and regenerates the
 two rendered pages that list the command surface (`skills/using-rigger/SKILL.md`,
 `docs/handbook/using-rigger.md`).
@@ -73,6 +79,11 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
 - *The hash.* `<hash>` is `playbooks::fnv1a_64` (`crates/rigger-domain/src/playbooks.rs`) over
   the spec file's raw bytes, as 16 lowercase hex digits. Any byte change is new text; a
   whitespace-only edit costs a re-critique, accepted.
+- *The store.* The verb takes the `--eventstore` and `--conn` flags `rigger run` takes and
+  resolves its backend through `store_selection` with them, as the run entry it precedes does (a
+  flagless call resolves as `rigger step` does). On a sqlite selection it runs
+  `migrate_local_identity` before opening its backend, as `run_cli` and `run_workflow` do, and it
+  opens the project's store as `cmd_step` does, creating `.rigger/` and the store when absent.
 - *The spawn events.* The host records the `SpawnResult` on `run::STREAM` of the store it is
   handed (`spawn_store::record_result_if_absent`, which keeps the first result recorded for a
   spawn id), and the verb parks its `SpawnRequested` the same way (`spawn_store::park_in_run`).
@@ -101,16 +112,21 @@ and the bytes of `PLAN_CRITIQUE_RULES` appear in it and in the DAG critique prom
 - *The graph copy.* For each finding the verb appends one `ReviewFinding` to the project run
   stream (the stream every finding lives on, so `rigger peers <spec>` shows it), skipping an id
   that stream already holds (a typed `ReviewFinding` read of the whole stream), so a repeat
-  appends nothing. The copies go through `ingest::folding_into` over the project store and the
-  project graph `open_graph` opened before the spawn (the wiring `cmd_step` uses for its own
-  appends), each payload first passing `check_fold_payload`; a graph.db that owes its rebuild
-  refuses the verb before any spawn, naming `rigger setup`. Finding ids are
-  `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of the finding line. `by` is `spec-critic`;
-  `about` is `[<spec path>]`. The copies are run-attributed like every finding: pruned with the
-  run current at their append and counted under `spec-critic` in that run's finding totals;
-  accepted. The `ReviewFinding` events are the graph's view; the refusal never reads them.
+  appends nothing; two concurrent calls may each append a copy of one id, accepted, since the
+  graph fold upserts a finding by id (`ensure_node`) and the finding totals count an id once. The
+  copies go through `ingest::folding_into` over the project store and the project graph
+  `open_graph` opened (the wiring `cmd_step` uses for its own appends), each payload first passing
+  `check_fold_payload`. The verb opens that graph before it reads the critique, on every call, so
+  a graph.db that owes its rebuild refuses every call, answered or not, naming `rigger setup`.
+  Finding ids are `sc-<hash>-<attempt>-<k>`, `k` the 1-based order of the finding line. `by` is
+  `spec-critic`; `about` is `[<spec path>]`. The copies are run-attributed like every finding:
+  pruned with the run current at their append and counted under `spec-critic` in that run's
+  finding totals; accepted. The `ReviewFinding` events are the graph's view; the refusal never
+  reads them.
 - *The spec path* is repo-relative with any leading `./` removed; an absolute path inside the
-  repository is made repo-relative; a path outside it is refused.
+  repository is made repo-relative; a path outside it is refused. In a project with no git
+  repository the repository root is the project root (the directory holding `.rigger/`), the root
+  the run entries' repo-less path already uses; `dir` is that root.
 
 **ANSWERED FROM THE STORE, decided here.** When the hash already has a critique, `rigger critique`
 spawns nothing: it appends any missing `ReviewFinding` copy, prints the recorded findings and
@@ -136,52 +152,81 @@ spec: the next call spawns and prints none of the earlier findings.
   is not read: a recorded resolution stands until the text changes. A renamed spec needs its
   resolutions recorded again under the new path. No critique for the hash is refused as "not
   critiqued".
+- *No critic.* Under a workflow with no critic (THE CRITIC's lookup) the refusal does not apply: a
+  command that would begin a new run on a spec prints the one no-critic line in Notes on stderr
+  and proceeds.
 - *The sites.* One CLI function decides it, called before any event is appended: in `cmd_step`
   after the store opens and before the `--fresh` block; and at the top of
   `fresh_run_if_requested`, which serves `rigger run`, `rigger serve` and `rigger workflow`. It
-  takes the backend and the identity and reads the critique only through
-  `Namespaced::new(backend, <identity>-critique)`; `fresh_run_if_requested` gains the backend
-  parameter from its two callers (`run_cli`, `run_workflow`). It hashes the exact bytes
-  `load_criteria` read for this command, read once before the run-branch anchor. A refused command
-  may leave the run branch anchored, the identity migrated and the instance registered; the next
-  command reuses them. The `/rigger` driver (`workflows/rigger.js`, installed by `rigger setup`)
-  couriers `rigger step` and already stops loudly on a failing step, so it needs no change.
+  takes the backend, the identity, the loaded workflow, the spec path, the criteria, `--fresh`, the
+  bytes `load_criteria` read and the invoking command, and reads the critique only through
+  `Namespaced::new(backend, <identity>-critique)`; `fresh_run_if_requested` gains the backend, the
+  loaded workflow, those bytes and the invoking command from its two callers (`run_cli` passes
+  `rigger run`, `run_workflow` its own `command`). It hashes the exact bytes `load_criteria` read
+  for this command, read once before the run-branch anchor, so `load_criteria` hands those bytes
+  back beside the criteria. A refused command may leave the run branch anchored, the identity
+  migrated and the instance registered; the next command reuses them. The `/rigger` driver
+  (`workflows/rigger.js`, installed by `rigger setup`) couriers `rigger step` and already stops
+  loudly on a failing step, so it needs no change.
 - *The refusal* exits non-zero and prints the text in Notes on stderr, its prefix the invoking
   command; it writes nothing to stdout, so a refused `rigger step` prints no JSON line. There is
   no override flag; the only ways past are a clean critique of the current text or a recorded
   resolution.
-- *The fixtures.* Every existing test that begins a new run through a CLI entry records a clean
-  critique for its fixture spec first, through one shared test helper under `tests/common/`;
-  criterion 2's unit owns the helper and those edits. Criterion 1's unit puts its stream-json stub
-  agent writer in `tests/common/`; the helper runs `rigger critique <spec>` with that stub first on
-  `PATH` for that one call only, so a test's existing fake agent keeps its `PATH` slot for the run
-  it drives; no helper writes critique events itself. `rigger replay` and `rigger canary` drive the
-  conductor in their own namespaces without these CLI sites and are unaffected.
+- *The fixtures.* Every existing test that begins a new run through a CLI entry under a workflow
+  with a critic records a clean critique for its fixture spec first, through one shared test
+  helper under `tests/common/`; a fixture whose workflow has no critic needs no adversary and no
+  critique. Criterion 2's unit owns the helper and those edits. Criterion 1's unit puts its
+  stream-json stub agent writer in `tests/common/`; the helper runs `rigger critique <spec>` with
+  that stub first on `PATH` for that one call only, so a test's existing fake agent keeps its
+  `PATH` slot for the run it drives; no helper writes critique events itself. `rigger replay` and
+  `rigger canary` drive the conductor in their own namespaces without these CLI sites and are
+  unaffected.
 
 **THE VALIDATE TELLS, decided here.** Three advisories join `spec::spec_lint_advisories`
 (`crates/rigger-domain/src/spec.rs`), so `rigger validate <spec>` and the in-run `load_criteria`
 print them through `spec_lint_warning_lines` (`src/cli/mod.rs`). Each is a `LintAdvisory` with
-`criterion: Some(n)`; advisory only, the exit status never changes. Words match
-case-insensitively and whole-word through the file's `find_word`. A sentence is the text between
-`. ` boundaries of a criterion's full block (`criterion_blocks`), its backtick and double-quoted
-spans masked by the file's `strip_inline_code`; the twin tell reads its spans before that mask. A
+`criterion: Some(n)`, one per criterion per tell unless the tell says otherwise; advisory only,
+the exit status never changes. Words match case-insensitively and whole-word through the file's
+`find_word`. A sentence is the text between `. ` boundaries of a criterion's full block
+(`criterion_blocks`); the measure, identity and comparison-surface words match on the sentence
+masked by the file's one span masker, `strip_inline_code` (*The one masker*), and the twin tell
+reads its spans, the backtick pairs that mask blanks, from the sentence before the mask. A
 section runs from its heading to the next heading of the same or shallower level, as
 `notes_section_lines` reads one.
+- *The one masker.* Criterion 3's unit corrects `strip_inline_code` in place and adds no second
+  masker: it blanks backtick spans pair by pair (consecutive backtick marks; an unpaired last
+  backtick blanks to the end of the text masked, the sentence for these tells) and keeps its
+  double-quote rule unchanged (one span from the first quote mark through the last when their
+  count is even, to the end of the text masked when it is odd). A code span is a paired Markdown
+  construct, so a measure word between two code spans is prose the twin tell must see; a stray
+  quote is common prose, so quoted text keeps failing closed. The correction reaches F4
+  (`disposition_advisories`, the masker's one other caller, which masks a paragraph), whose prose
+  between two backtick spans is now linted. In the same commit criterion 3's unit rewrites the
+  masker's doc comment and the backtick assertion of
+  `strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule` to pin the pair rule
+  (two backtick spans with prose between them), changes no quote assertion or quote test, and
+  records a `DecisionMade` governing `crates/rigger-domain/src/spec.rs` that narrows
+  `d66-mask-one-span-per-kind`, the id that doc comment cites, to the quote kind, with that
+  reason.
 - *Twin measured surface* (class `F10 landing-order circularity`): criteria i < j each hold a
   sentence carrying the same backtick span and a measure word from `exactly`, `zero`, `at most`,
   `no more than`, `reads no`, `costs`, `materializes`, `appends`. One advisory per pair and span,
-  on criterion j, detail naming criterion i and the span.
+  on criterion j, detail naming criterion i and the span. Criterion 3's fixture includes a twin
+  whose measure word sits between two backtick spans of its sentence; a measure word between two
+  quoted spans is masked and not seen (accepted).
 - *Identity claim without a comparison surface* (class `F11 undecided removal`): a criterion
   sentence carrying `identical`, `byte-identical`, `equal to`, `equals` or `the same as`, and none
   of `projection`, `wire form`, `compared on`, `comparison surface`, `bytes of`, `ordered by`.
 - *Identity claim with no removal corner* (class `F11 undecided removal`): a criterion carrying one
   of those identity words while no line of a section whose heading title starts with `Design` or
-  `Notes` carries `drop`, `drops`, `dropped`, `removed`, `removal`, `absent`, `deleted` or
-  `no longer`.
+  `Notes`, each line read unmasked and fenced lines included, carries `drop`, `drops`, `dropped`,
+  `removed`, `removal`, `absent`, `deleted` or `no longer`.
 - *The corpus snapshot.* Criterion 3's unit extends `spec_lint_self_clean_over_the_committed_corpus`
-  (`tests/spec_lint.rs`) with F10 and F11 pinned at their observed totals as a regression
-  snapshot; no precision over historical specs is claimed or vetted (advisory output). A Design
-  amendment to this spec during the run re-pins any total it moves, in the same commit.
+  (`tests/spec_lint.rs`) with F10 and F11 pinned at their observed totals, and re-pins in the same
+  commit F4's fire set, which the backtick pairing moves (F4 is the one existing class that reads
+  the masker), as a regression snapshot; no precision over historical specs is claimed or vetted
+  (advisory output). A Design amendment to this spec during the run re-pins any total it moves, in
+  the same commit.
 
 **THE SHIPPED SKILL, decided here.** `spec-preflight` is one more `SkillEntry` in `skill_registry`
 (`crates/rigger-domain/src/docs.rs`), its body a `const` beside `PLANNING_A_SPEC_BODY` with a
@@ -203,9 +248,10 @@ failure catalog already holds F9 (unbounded claim surface), so the two new class
 stays complete; `PLANNING_FIELD_GUIDE_BODY` gains one `### F10` and one `### F11` section with its
 tell and countermeasure, each opening by naming itself an F3 shape and the simulation that finds it
 (landing order; the DROPPED corner); and DROPPED and existing data join F3's countermeasure and
-planning-a-spec's step 3, so the shipped docs carry one corner list of eight. The rendered
-`docs/handbook/planning-field-guide.md` and `skills/planning-a-spec/SKILL.md` are regenerated in
-the same unit.
+planning-a-spec's step 3, so the shipped docs carry one corner list of eight; planning-a-spec's
+step 7 gains one sentence naming spec-preflight and `rigger critique <spec>` before launch. The
+rendered `docs/handbook/planning-field-guide.md` and `skills/planning-a-spec/SKILL.md` are
+regenerated in the same unit.
 
 **A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE, decided here.** `plan_critique_loop` numbers its
 rounds by attempt: round `k` critiques at attempt `k`; its reject records `UnitFailed` under replay
@@ -224,11 +270,11 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   owning no criterion, a split the planner chose); when unsure, `decomposition-conflict`.
 - *The stop predicate* is one pure function over the current run slice (`read_current_run`, the
   run's own events from its `RunStarted`), `s` the attempt the gate's next round would run. It
-  holds when the gate's `UnitFailed` records for attempts `s - 2` and `s - 1` both hold a
-  `review_reason` whose parsed cause is `spec-ambiguity`, the re-plan
-  `spawn_id(<plan>, ROLE_REPLAN, s - 1)` is recorded, no re-plan
-  `spawn_id(<plan>, ROLE_REPLAN, s)` is recorded, and the stop's own keyed `UnitEscalated` for
-  attempt `s - 1` (its last record) is absent. A re-plan is recorded when the slice holds its
+  holds when the `UnitFailed` events whose replay key (`META_REPLAY_KEY`) is `<gate>/failed#<s-2>`
+  and `<gate>/failed#<s-1>` both hold a `review_reason` whose parsed cause is `spec-ambiguity`,
+  the re-plan `spawn_id(<plan>, ROLE_REPLAN, s - 1)` is recorded, no re-plan
+  `spawn_id(<plan>, ROLE_REPLAN, s)` is recorded, and no event carries the stop's completion key
+  `<gate>/spec-defect-escalated#<s-1>` (*The stop*). A re-plan is recorded when the slice holds its
   `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or an event the re-planner
   emitted, which carries that spawn id as `META_SPAWN` (a blocking driver records no spawn event).
   So a first `spec-ambiguity` reject re-plans as today, and the stop fires on a `spec-ambiguity`
@@ -242,24 +288,31 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   harvest); then the critique. A round a later step enters re-plans nothing, as today, and a gate
   re-entered by `rigger resume-unit` after a completed stop runs its next critique round as any
   resumed gate does.
-- *The stop* records, each replay-keyed on attempt `s - 1` and in this order: a `LessonLearned`
-  whose `about` is `[<spec>]` and whose summary names the upheld finding ids of that attempt's
-  adjudication (none upheld is said as such), through `emit_lesson`, which gains an optional
-  replay key and an explicit about list (this branch passes both; every other caller is
-  unchanged); the existing `SpecDefect` event (`TYPE_SPEC_DEFECT`), its reason the halt text, whose
-  fold `RunState.spec_defect` is the stop's durable run-state form; then `UnitEscalated` for the
-  gate. It does not call `re_plan`, and the existing escalate branch does not run. `<spec>` is the
-  current run's `RunStarted.spec` as recorded; a run launched with another spelling of the path
-  names that spelling (accepted). A workflow stage that does not wait on the gate may have built
-  code before a reject; the stop fires regardless.
+- *The stop* records three events in this order, each under its own replay key: a
+  `LessonLearned` (key `<gate>/spec-defect-lesson#<s-1>`) whose `about` is `[<spec>]` and whose
+  summary names the upheld finding ids of that attempt's adjudication (none upheld is said as
+  such), through `emit_lesson`, which gains an optional replay key and an explicit about list
+  (this branch passes both; every other caller is unchanged); the existing `SpecDefect` event
+  (`TYPE_SPEC_DEFECT`, key `<gate>/spec-defect#<s-1>`), its reason the halt text, whose fold
+  `RunState.spec_defect` is the stop's durable run-state form; then `UnitEscalated` for the gate
+  (key `<gate>/spec-defect-escalated#<s-1>`, the completion key), its payload `{id}` as on every
+  escalation. These three records are the escalation criterion 5 names: the lesson and
+  `SpecDefect` name the spec and the upheld ids. It does not call `re_plan`, and the existing
+  escalate branch does not run. `<spec>` is the current run's `RunStarted.spec` as recorded; a run
+  launched with another spelling of the path names that spelling (accepted), and an empty one
+  gives an empty about list and a halt text naming `the spec`. A workflow stage that does not wait
+  on the gate may have built code before a reject; the stop fires regardless.
 - *The stop reason.* The stop sets an in-process spec-defect reason; `RunCtx::halt_reason` returns
   the budget reason when both are set, else `amend the spec and relaunch: plan-critique found a
-  spec defect in <spec> (<ids>)`, which rides the step's existing `halted` field. A step whose gate
-  stopped in this process returns its halted state before `check_coverage_or_flag`.
-  `compute_attention` stamps its `halted` entry for the budget reason only; the stop's attention
-  entry is the gate's existing escalated entry. Later steps find the gate terminal and behave as
-  after any plan-critique escalation today (the gate in `escalated`, or the coverage error when
-  the held DAG leaves a criterion uncovered); the lesson and `SpecDefect` carry the amend route.
+  spec defect in <spec> (<ids>)`, which rides the step's existing `halted` field; `cmd_step` fills
+  that field from hung liveness only when it is empty, so its precedence is budget, then spec
+  defect, then hung liveness. A step whose gate stopped in this process returns its halted state
+  before `check_coverage_or_flag`. `compute_attention` stamps its `halted` entry for the budget
+  reason only; the stop's attention entry is the gate's existing escalated entry, and a hung spawn
+  in the stopping step still stamps its own `halted` entry through `merge_hung_attention`
+  (accepted). Later steps find the gate terminal and behave as after any plan-critique escalation
+  today (the gate in `escalated`, or the coverage error when the held DAG leaves a criterion
+  uncovered); the lesson and `SpecDefect` carry the amend route.
 - *Relaunch* is the operator's: amend the spec, then `rigger critique <spec>`, then a new run
   (criteria edited mint one; a Design-only amendment needs `--fresh`), which criterion 2 gates.
 
@@ -270,12 +323,14 @@ round head and the stop). Each asserts its own text by containment, never the DA
 bytes, and neither asserts the other's text.
 
 **CRITERIA 1 AND 2 SPLIT AT THE CRITIQUE RECORD.** Criterion 1 owns the record, the hash, the id
-scheme and the domain reader that returns a hash's critique and its findings; criterion 2 owns the
-resolution filter and the refusal.
+scheme, the critic lookup and the domain reader that returns a hash's critique and its findings;
+criterion 2 owns the resolution filter, the refusal and its no-critic exemption, which calls that
+lookup.
 
 **CRITERIA 2 AND 5 SPLIT AT THE STEP.** Criterion 2 acts before a run is minted, at the CLI;
-criterion 5 acts inside the conductor after a run is minted. Criterion 5's test drives
-`conductor::run` with a test driver and never enters a CLI mint site.
+criterion 5 acts inside the conductor after a run is minted. Criterion 5's test mints its run
+through `start_fresh` with a spec path, which `conductor::run` then adopts, drives
+`conductor::run` with a test driver, and never enters a CLI mint site.
 
 **CRITERIA 3 AND 4 SPLIT AT THE CLASS LABEL.** Criterion 3 owns the advisory class strings;
 criterion 4 owns the catalog prose. The shipped skill names `rigger critique`; that verb's behavior
@@ -287,57 +342,72 @@ and 5 at any point, 6 last):
 
 | First | Without | Shared surface | Does the first one's own text hold? |
 |---|---|---|---|
-| 1 | 2 | critique record | yes - it records and answers; nothing refuses yet |
-| 2 | 1 | critique record, stub writer | not reachable - 2 needs 1 |
+| 1 | 2 | critique record, critic lookup | yes - it records and answers; nothing refuses yet |
+| 2 | 1 | critique record, critic lookup, stub writer | not reachable - 2 needs 1 |
 | 1 | 4 | `SUBCOMMANDS` | yes - 1 adds `critique` and regenerates the command-surface pages; no skill is involved |
 | 4 | 1 | `rigger critique` named in the skill | not reachable - 4 needs 1 |
 | 1 | 5 | DAG critique prompt | yes - the three rule texts move byte for byte into the const, the unit-size line follows it, and 1 asserts the const by containment |
 | 5 | 1 | DAG critique prompt | yes - 5 edits only the verdict paragraph and the gate branch and asserts its text by containment, so 1's later reorder leaves it true |
-| 2 | 3 | `load_criteria` | yes - 2 has it hand back the bytes it read, leaves its lint lines alone and asserts the refusal lines by containment |
-| 3 | 2 | `load_criteria` | yes - 3 asserts `rigger validate` warning lines only |
+| 2 | 3 | `load_criteria` | yes - 2 has it hand back the bytes it read, leaves its lint lines alone and asserts the refusal and no-critic lines by containment |
+| 3 | 2 | `load_criteria` | yes - 3 asserts `rigger validate` warning lines and the lint's own functions only |
 | 2 | 4 | the skill's record step | yes - 2 reads no skill |
 | 4 | 2 | the skill's record step | yes - the skill states the author's rule, not the refusal; its `resolves` field is read by nothing yet |
-| 2 | 5 | `rigger step` | yes - the refusal hashes the bytes `load_criteria` read and calls the mint decision before any plan exists |
-| 5 | 2 | `rigger step` | yes - 5's test drives `conductor::run`, whose adopt-or-mint answer the extracted mint decision leaves unchanged, and enters no CLI mint site |
+| 2 | 5 | `rigger step` | yes - the refusal, or the no-critic line, comes before any plan exists: it hashes the bytes `load_criteria` read and calls the mint decision |
+| 5 | 2 | `rigger step` | yes - 5's test mints its run through `start_fresh` and drives `conductor::run`, whose adopt-or-mint answer the extracted mint decision leaves unchanged, and enters no CLI mint site |
 | 3 | 4 | F10/F11 class names | yes - 3 asserts warning lines only, not catalog text |
 | 4 | 3 | F10/F11 class names | yes - the skill claims nothing about validate output |
 
 **CONSTRAINTS WALK.**
 - *Criterion 1.* Empty: a spec with no Done-when criteria is refused by the verb with the loop-ready
-  message and nothing is recorded; a critic that returns no finding line and an approving verdict
-  line is a clean critique; a verdict that does not approve with no parsed BLOCKING finding is not a
-  critique. Repeated: answered from the store, zero spawns; the copies are skipped by id. Reverted:
+  message and nothing is recorded; a workflow with no critic refuses the verb and nothing is
+  recorded; a critic that returns no finding line and an approving verdict line is a clean
+  critique; a verdict that does not approve with no parsed BLOCKING finding is not a critique.
+  Repeated: answered from the store, zero spawns; the copies are skipped by id. Reverted:
   text back at an earlier hash is answered by that hash's critique. DROPPED: a later hash's critique
   inherits no finding or resolution of an earlier hash (the fixture deletes a line and sees none of
   the earlier findings); a pipe inside a field or a table-formatted line loses no finding to the
   parse. Concurrent: two calls may mint one spawn id; the first recorded result is the critique and
   each call prints what it reads back; calls that mint different attempts both record and the latest
   critique answers; one call's directory removal may cut a concurrent critique's transcript, never
-  its recorded result (accepted); a critique during a live run adds only its run-attributed copies
-  to the run stream and nothing to the wave, and the critic records nothing. Crash-resume: a request
-  with no result is ignored and the next call spawns the next attempt; a critique whose copies were
-  not appended is completed on the next call, which also removes the scratch directories the crash
-  left; the refusal never depended on them. Cold start: every answer is read from the store.
-  Existing data: no critique exists and nothing is migrated; a graph.db that owes its rebuild
-  refuses the verb before any spawn.
+  its recorded result (accepted); two calls answering one critique may both append a copy of one
+  id (accepted); a critique during a live run adds only its run-attributed copies to the run
+  stream and nothing to the wave, and the critic records nothing. Crash-resume: a request with no
+  result is ignored and the next call spawns the next attempt; a critique whose copies were not
+  appended is completed on the next call, which also removes the scratch directories the crash
+  left; the refusal never depended on them. Cold start: every answer is read from the store; a
+  project with no store gets one. Existing data: no critique exists and no critique data is
+  migrated; a pre-spec-09 store has its identity migrated before the verb's first append; a
+  graph.db that owes its rebuild refuses every call, answered or not; a project with no git
+  repository resolves the spec path against its project root.
 - *Criterion 2.* Empty: no critique refuses as not critiqued; a stream with no `RunStarted` mints,
-  so its first command needs a critique; a run with no spec is never refused. Repeated: each
-  refused command refuses again until cleared, reusing the anchor, migration and registration the
-  first one left. Reverted: an earlier hash's critique and its resolutions apply again. DROPPED: a
-  `resolves` id absent from the current critique is ignored; a resolution later superseded without
-  `resolves` stands until the text changes; a renamed spec loses its resolutions; a criterion
-  dropped from the spec mints a new run, which is refused until critiqued. Concurrent: the check
-  reads committed rows; a critique or resolution landing a moment later is seen by the next
-  command. Crash-resume: the check writes nothing; a resumed run is never refused. Cold start: log
-  only. Existing data: every run already in the store is adopted and proceeds, while a `--fresh`
-  restart of a campaign that predates this spec is refused until its spec is critiqued; a run
-  branch holding another copy of the spec cannot change the hash, taken from the bytes read before
-  the anchor.
-- *Criterion 3.* Empty: no criteria, no tells. Repeated: a span shared by three criteria yields one
-  advisory per pair. Reverted, DROPPED, concurrent, crash-resume: out of scope - a pure function of
-  one text. Cold start: pure. Existing data: committed specs may warn (advisory only); the corpus
-  snapshot pins F10 and F11 at their observed totals, re-pinned by any amendment of this spec that
-  moves them.
+  so its first command needs a critique; a run with no spec is never refused; a new run under a
+  workflow with no critic is never refused and prints its one line. Repeated: each refused command
+  refuses again until cleared, reusing the anchor, migration and registration the first one left;
+  under a workflow with no critic each command that begins a new run prints the line again.
+  Reverted: an earlier hash's critique and its resolutions apply again; under a workflow that
+  names a critic again the refusal applies again, judged on any critique already recorded for the
+  hash. DROPPED: a `resolves` id absent from the current critique is ignored; a resolution later
+  superseded without `resolves` stands until the text changes; a renamed spec loses its
+  resolutions; a criterion dropped from the spec mints a new run, which is refused until
+  critiqued; a new run under a workflow that dropped both adversary keys is not refused, and every
+  recorded critique stays in the store; a changed critic persona leaves every recorded critique
+  standing, since the record keys on the spec bytes alone. Concurrent: the check reads committed
+  rows; a critique or resolution landing a moment later is seen by the next command.
+  Crash-resume: the check writes nothing; a resumed run is never refused. Cold start: log and
+  workflow only. Existing data: every run already in the store is adopted and proceeds; under a
+  workflow with a critic, a `--fresh` restart of a campaign that predates this spec is refused
+  until its spec is critiqued; a consumer workflow naming no adversary begins new runs as before,
+  with the one line; a run branch holding another copy of the spec cannot change the hash, taken
+  from the bytes read before the anchor.
+- *Criterion 3.* Empty: no criteria, no tells; a sentence whose last backtick is unpaired blanks
+  from it to the sentence end, and one with an odd count of quote marks blanks from its first quote
+  mark to the sentence end. Repeated: a span shared by three criteria yields one advisory per
+  pair; an F11 tell fires once per criterion however many of its sentences offend. Reverted,
+  DROPPED, concurrent, crash-resume: out of scope - a pure function of one text. Cold start: pure.
+  Existing data: committed specs may warn (advisory only); the corpus snapshot pins F10 and F11 at
+  their observed totals and re-pins F4's fire set, which the backtick pairing moves; every quote
+  test and quote assertion stands unchanged (*The one masker*); any amendment of this spec that
+  moves a total re-pins it.
 - *Criterion 4.* Empty: a project with no skills directory gets one. Repeated: a rerun
   writes nothing. Reverted: an edited installed copy is refreshed like any drifted registry skill.
   DROPPED: an installed copy with a line deleted is refreshed (drift compares the rendered bytes
@@ -347,9 +417,11 @@ and 5 at any point, 6 last):
   `rigger setup`.
 - *Criterion 5.* Empty: a stopping reject that upheld no finding still stops, its lesson and halt
   text saying none were upheld; a slice holding fewer than two gate rejects never satisfies the
-  predicate. Repeated: a third `spec-ambiguity` reject after the stop cannot occur, because the
-  stopped gate is terminal and spawns nothing; a later step finds it terminal and appends nothing,
-  and a replayed step re-reaching the stop appends nothing (each record keyed). Reverted: a gate
+  predicate; a run whose `RunStarted.spec` is empty stops with an empty about list and a halt text
+  naming the spec. Repeated: a third `spec-ambiguity` reject after the stop cannot occur, because
+  the stopped gate is terminal and spawns nothing; a later step finds it terminal and appends
+  nothing, and a replayed step re-reaching the stop appends nothing (each record under its own
+  key). Reverted: a gate
   reopened by `rigger resume-unit` runs its next round, and its next `spec-ambiguity` reject is
   treated as a first one (the stop made no re-plan), so the remediation bound decides as today.
   DROPPED: a re-plan that emitted nothing under a blocking driver reads as absent, so the next
@@ -364,7 +436,8 @@ and 5 at any point, 6 last):
   store are never read across the run boundary; a recorded run that re-planned after its second
   `spec-ambiguity` reject holds that re-plan (`rigger replay` seeds its `SpawnResult`), so the
   predicate is false and replay follows history; an adopted run mid-gate follows the new rule from
-  its next round head.
+  its next round head, and a gate `UnitFailed` with no `review_reason` parses no cause and counts
+  as not `spec-ambiguity`, so such a run needs two rejects that carry one before the stop fires.
 
 **OUT OF SCOPE.** Moving the loop's own spawns onto the headless host; a size limit on anything;
 any `rigger reset` change for the critique stream (it holds only the critique spawns' requests and
@@ -398,6 +471,13 @@ The refusal text, `<command>` the invoking command (`governs` and `resolves` are
 ```
 
 In the not-critiqued case the last line opens `or, once critiqued, record a resolution:`.
+
+The no-critic line, printed on stderr by a command that would begin a new run under a workflow with
+no critic, which then proceeds:
+
+```
+<command>: no spec critique for <spec>: the workflow names neither the plan-critique gate's adversary nor defaults.review.adversary
+```
 
 A copy of a skill named `spec-preflight` outside the project is never touched by rigger; retiring
 it is the operator's.
@@ -541,11 +621,11 @@ When a review or plan-critique reject names a defect in the spec itself:
   stub agent binary first on `PATH`. This criterion OWNS the verb, the critique record, the
   critique prompt and `PLAN_CRITIQUE_RULES`; the refusal is criterion 2's and the plan-critique
   stop is criterion 5's, NOT this one's.
-- [ ] a test proves A NEW RUN NEEDS A CLEAN CRITIQUE: a `rigger step --spec <spec>` that would begin a new run refuses, printing each open BLOCKING finding id and the two clearing commands,
+- [ ] a test proves A NEW RUN NEEDS A CLEAN CRITIQUE: under a workflow naming a critic, a `rigger step --spec <spec>` that would begin a new run refuses, printing each open BLOCKING finding id and the two clearing commands,
   when the spec's hash has no critique or holds a BLOCKING finding no later `DecisionMade`
   resolves, while a step adopting the spec's existing run proceeds. This criterion OWNS the
-  refusal at every CLI run start and the shared critique fixture helper; the critique record is
-  criterion 1's, NOT this one's.
+  refusal at every CLI run start, its no-critic exemption and the shared critique fixture helper;
+  the critique record and the critic lookup are criterion 1's, NOT this one's.
 - [ ] a test proves VALIDATE NAMES THE PREFLIGHT TELLS: `rigger validate <spec>` warns with the criterion number on a twin measured surface, an identity claim naming no comparison surface,
   and an identity claim whose Design and Notes never decide removal. This criterion OWNS the
   three text checks and their class labels; the catalog prose is criterion 4's, NOT this one's.
