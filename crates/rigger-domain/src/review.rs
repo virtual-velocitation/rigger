@@ -952,6 +952,18 @@ mod tests {
     }
 
     #[test]
+    fn two_requests_parked_under_one_critic_spawn_id_count_twice() {
+        // Design spec 112: the attempt is the number of `SpawnRequested` events recorded for the
+        // hash. Two calls racing on one text can mint one id and park it twice; the next attempt
+        // is then 2, never the 1 a count of distinct ids would give.
+        let events = vec![
+            request_at(1, &critique_spawn_id(HASH, 0)),
+            request_at(2, &critique_spawn_id(HASH, 0)),
+        ];
+        assert_eq!(critique_requests(&events, HASH).unwrap(), 2);
+    }
+
+    #[test]
     fn the_why_of_a_spawn_with_no_critique_is_its_own_latest_result_read_by_the_authority() {
         let attempt_1 = critique_spawn_id(HASH, 1);
         let reject = "C1 | BLOCKING | criterion 1 | r | f\n{\"verdict\":\"reject\"}";

@@ -1525,6 +1525,51 @@ fn an_unreadable_request_on_the_critique_stream_fails_the_attempt_count_and_spaw
 /// directories under its root and under `RIGGER_TMPDIR`, when its spec is critiqued, then the
 /// critique records with an empty scratch root and its directory removal is a no-op: every planted
 /// directory stays, and nothing new is written under either base.
+/// Given two calls that raced on one text minted one spawn id, so the critique stream holds two
+/// attempt-0 requests and no result, when the unchanged text is critiqued again, then the next
+/// attempt is the number of requests recorded for the hash, 2, never the number of distinct ids.
+#[test]
+fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let first = critique_spawn_id(SPEC_HASH, 0);
+    let request = json!({
+        "id": first,
+        "unit": format!("critique-{SPEC_HASH}"),
+        "stage": "critique",
+        "prompt": "p",
+    });
+    seed_critique(
+        root,
+        &[
+            (TYPE_SPAWN_REQUESTED, request.clone()),
+            (TYPE_SPAWN_REQUESTED, request),
+        ],
+    );
+    let (work, path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+    assert!(ok, "attempt 2 records a critique; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 2));
+    assert_eq!(critique_stub_spawns(work.path()), 1);
+    assert_eq!(
+        spawn_events(&critique_events(root)),
+        [
+            (TYPE_SPAWN_REQUESTED.to_string(), first.clone()),
+            (TYPE_SPAWN_REQUESTED.to_string(), first),
+            (
+                TYPE_SPAWN_REQUESTED.to_string(),
+                critique_spawn_id(SPEC_HASH, 2)
+            ),
+            (
+                TYPE_SPAWN_RESULT.to_string(),
+                critique_spawn_id(SPEC_HASH, 2)
+            ),
+        ]
+    );
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 2, SPEC_REL));
+}
+
 #[test]
 fn a_project_with_no_git_repository_removes_no_critique_directory_under_its_root_or_tmpdir() {
     let dir = temp_repoless_project();

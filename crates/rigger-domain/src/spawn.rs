@@ -1492,6 +1492,55 @@ mod tests {
     }
 
     #[test]
+    fn requests_decodes_one_request_per_spawn_event_in_log_order_and_recorded_keeps_the_last_per_id(
+    ) {
+        // The ONE strict per-event decode: every `SpawnRequested` event in log order, a re-parked
+        // id once per park, a foreign event or a result skipped. `recorded` folds it into its map,
+        // where a re-parked id collapses to the last-written request.
+        let first = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "first");
+        let other = test_request("v", "implement", ROLE_IMPLEMENTER, 0, "other");
+        let reparked = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "reparked");
+        let events = vec![
+            first.to_event().unwrap(),
+            Event::new("UnitStarted", br#"{"id":"u"}"#.to_vec()),
+            other.to_event().unwrap(),
+            SpawnResult::ok(&first.id, "done").to_event().unwrap(),
+            reparked.to_event().unwrap(),
+        ];
+        assert_eq!(
+            requests(&events).unwrap(),
+            vec![first.clone(), other.clone(), reparked.clone()]
+        );
+        assert_eq!(
+            recorded(&events).unwrap(),
+            BTreeMap::from([(reparked.id.clone(), reparked), (other.id.clone(), other)])
+        );
+        assert_eq!(requests(&events[1..2]).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn an_unreadable_spawn_request_fails_requests_and_recorded_alike() {
+        let unreadable = Event::new(
+            TYPE_SPAWN_REQUESTED,
+            br#"{"id":"u/implementer#1"}"#.to_vec(),
+        );
+        let events = vec![
+            test_request("u", "implement", ROLE_IMPLEMENTER, 0, "p")
+                .to_event()
+                .unwrap(),
+            unreadable,
+        ];
+        assert_eq!(
+            requests(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
+        );
+        assert_eq!(
+            recorded(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
+        );
+    }
+
+    #[test]
     fn step_wave_is_the_full_pending_frontier_never_answered_spawns() {
         // A prior step parked `plan` and it was ANSWERED; this step parks two disjoint
         // units. The wave is every spawn still awaiting a result - the two new ones in
