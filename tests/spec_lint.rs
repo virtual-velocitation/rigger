@@ -1374,10 +1374,11 @@ rigger::test_cases! {
 /// `adv-u66c3-r5-reject-selfclean-live-violation`) corpus-wide result as an executable
 /// REGRESSION SNAPSHOT, not a zero-findings claim: hygiene is verifiably zero everywhere (a
 /// real invariant - the diff gate forbids U+2014 anywhere, so no committed spec ever
-/// carries one); F4 disposition fires on EXACTLY the reviewed set of historical hedges and
+/// carries one); F4 disposition fires on EXACTLY the snapshotted set of historical hedges and
 /// nowhere else; and F1 ownership / F2+F6 shape - independently cross-checked as legitimate
 /// findings by sdet's and the adversary's round-5 manual sweeps - are pinned to their
-/// current corpus-wide totals. ANY future drift (a new false positive, or a lint change
+/// current corpus-wide totals, as are spec 112's F10 and F11 preflight tells at their
+/// observed totals. ANY future drift (a new false positive, or a lint change
 /// that silently drops a true one) fails this test and forces a conscious human review
 /// before it can land, the same way the F4 defect should have been caught five rounds ago
 /// instead of by hand.
