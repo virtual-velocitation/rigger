@@ -279,6 +279,14 @@ pub enum DashProbe {
         port: u16,
         window_ms: u64,
     },
+    /// The probe of the recorded port failed on the prober's side (`error`, its text), so
+    /// nothing is known about the dash - never proof it is busy or gone. `pid` follows
+    /// [`NotServing`](DashProbe::NotServing)'s rule.
+    ProbeFailed {
+        pid: Option<u32>,
+        port: u16,
+        error: String,
+    },
 }
 
 /// What CI says about the run branch's tip commit - GitHub's check runs for that sha, read and
@@ -604,19 +612,25 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
 }
 
 /// The Signal 3 detail a dash probe warrants, or `None` when it warrants none (never recorded,
-/// or serving). A dash that did not answer within the probe window is reported busy - never
-/// with the dead / does-not-answer wording a verifiably absent dash gets.
+/// or serving). A dash that did not answer within the probe window is reported busy, and one
+/// whose probe failed is reported with the probe's error - never with the dead /
+/// does-not-answer wording a verifiably absent dash gets.
 fn dash_anomaly_detail(probe: &DashProbe) -> Option<String> {
+    let named = |pid: &Option<u32>| pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
     Some(match probe {
         DashProbe::NotRecorded | DashProbe::Serving => return None,
         DashProbe::Unresponsive {
             pid,
             port,
             window_ms,
-        } => {
-            let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
-            format!("dash on port {port}{pid} did not answer within {window_ms}ms - busy, not dead")
-        }
+        } => format!(
+            "dash on port {port}{} did not answer within {window_ms}ms - busy, not dead",
+            named(pid)
+        ),
+        DashProbe::ProbeFailed { pid, port, error } => format!(
+            "dash on port {port}{} could not be probed: {error} - unknown, not dead",
+            named(pid)
+        ),
         DashProbe::NotServing {
             pid: Some(pid),
             port,

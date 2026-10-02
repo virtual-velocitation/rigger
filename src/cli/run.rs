@@ -1975,14 +1975,20 @@ enum DashStart {
 /// The recorded-serving predicate the step path's idempotent-start decision
 /// ([`ensure_run_dashboard_at`], via [`dash::dash_start_needed`]) verifies a marker's port
 /// against: the ONE probe `rigger status` ([`dash::dash_status`]) and `rigger watch` also
-/// consume, [`dash::dash_answer_on`], read the same way by all three - only a port nothing
-/// answers as a dash is not serving. A dash that holds its port but does not answer within the
-/// probe window is busy, never gone, so the step starts no second dash that could only fail to
-/// bind the held port. A REAL network probe of the port, never a bare pid-liveness check: a
-/// marker left by a self-reaped or pid-recycled dash must never masquerade as still serving
-/// just because its pid happens to be alive (possibly reused by an unrelated process).
+/// consume, [`dash::dash_answer_on`], read by [`answer_reads_serving`]. A REAL network probe of
+/// the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled
+/// dash must never masquerade as still serving just because its pid happens to be alive
+/// (possibly reused by an unrelated process).
 fn dash_marker_serving(m: dash::DashMarker) -> bool {
-    dash::dash_answer_on(m.port) != dash::DashAnswer::NotServing
+    answer_reads_serving(&dash::dash_answer_on(m.port))
+}
+
+/// The step's reading of one probe answer: only a port the probe PROVED serves no dash
+/// ([`dash::DashAnswer::NotServing`]) is free for a new one. A dash that holds its port but does
+/// not answer within the probe window is busy, and a probe that failed on this side proved
+/// nothing at all, so neither starts a second dash that could only fail to bind the held port.
+fn answer_reads_serving(answer: &dash::DashAnswer) -> bool {
+    *answer != dash::DashAnswer::NotServing
 }
 
 /// Idempotently ensure a run dashboard serves the project whose marker lives at

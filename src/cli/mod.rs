@@ -3088,6 +3088,7 @@ fn watch_poll_over(
             window_ms: dash::DASH_PROBE_WINDOW_MS,
         },
         dash::DashAnswer::NotServing => watch::DashProbe::NotServing { pid, port },
+        dash::DashAnswer::ProbeFailed(error) => watch::DashProbe::ProbeFailed { pid, port, error },
     };
     let marker = dash::DashMarker::read(&marker_path);
     let recorded = recorded_dash_url(loc);

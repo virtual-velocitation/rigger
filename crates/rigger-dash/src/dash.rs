@@ -261,8 +261,9 @@ pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 ///
 /// Returns `Err(ProbeMiss::Silent)` when the port accepted the connection (or the connect itself
 /// timed out) but no header block arrived before the deadline - a holder that is alive but busy,
-/// never proof it is gone - and `Err(ProbeMiss::Refused)` on any other connect/write/read failure
-/// (nothing listening, or the peer reset). Returns `Ok(head)`
+/// never proof it is gone - `Err(ProbeMiss::Refused)` when the peer refused or tore down the
+/// connection, and `Err(ProbeMiss::Failed)` when the probe itself failed; every step's error is
+/// read by [`classify_probe_error`] alone. Returns `Ok(head)`
 /// once EITHER `stop_early` fires, OR the header block ends, OR the byte cap is reached, OR the
 /// peer closes the connection - in every one of those cases the caller inspects `head` itself to
 /// decide what it found (mirroring each original function's own "decide on exactly what arrived"
@@ -320,25 +321,46 @@ fn read_probe_head(
     }
 }
 
-/// How [`probe_dash_head`] reads an error from any of its steps: a timeout means a holder is
-/// alive but silent, anything else that nothing serves the port.
+/// How [`probe_dash_head`] reads an error from any of its steps. Only an error the peer caused
+/// is evidence about the port: a refusal, a reset, an abort or a broken pipe proves nothing
+/// serves it, and a timeout is a holder that is alive but silent. Every other error is the probe
+/// itself failing - no descriptor, file slot or source port left for it, no buffer space or
+/// memory, a denied or interrupted call - which proves nothing about the dash either way.
 fn classify_probe_error(e: io::Error) -> ProbeMiss {
     match e.kind() {
+        io::ErrorKind::ConnectionRefused
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe => ProbeMiss::Refused,
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ProbeMiss::Silent,
-        _ => ProbeMiss::Refused,
+        _ => ProbeMiss::Failed(e.to_string()),
     }
 }
 
 /// Why [`probe_dash_head`] got no header block.
+#[derive(Debug, PartialEq, Eq)]
 enum ProbeMiss {
     /// Nothing listens on the port, or the peer reset the connection.
     Refused,
     /// Something holds the port but did not answer within the probe window.
     Silent,
+    /// The probe itself failed before the port could answer; carries the error's text.
+    Failed(String),
+}
+
+impl ProbeMiss {
+    /// What this miss proves about the probed port.
+    fn answer(self) -> DashAnswer {
+        match self {
+            ProbeMiss::Refused => DashAnswer::NotServing,
+            ProbeMiss::Silent => DashAnswer::Unresponsive,
+            ProbeMiss::Failed(error) => DashAnswer::ProbeFailed(error),
+        }
+    }
 }
 
 /// What a bounded probe of a loopback port found ([`dash_answer_on`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DashAnswer {
     /// A rigger dash answered with its [`DASH_HEADER`].
     Serving,
@@ -347,6 +369,10 @@ pub enum DashAnswer {
     Unresponsive,
     /// Nothing listens there, the peer reset, or what answered is not a rigger dash.
     NotServing,
+    /// The probe itself failed (the error's text) - the probing process ran out of a local
+    /// resource or its call was denied - so nothing is known about the port: neither serving
+    /// nor proof the dash is gone.
+    ProbeFailed(String),
 }
 
 /// The overall wall-clock window [`probe_dash_head`] waits for a header block.
@@ -359,8 +385,8 @@ pub fn dash_answer_on(port: u16) -> DashAnswer {
     let needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
     match probe_dash_head(port, |head| head_has_header_line(head, needle.as_bytes())) {
         Ok(head) if head_has_header_line(&head, needle.as_bytes()) => DashAnswer::Serving,
-        Err(ProbeMiss::Silent) => DashAnswer::Unresponsive,
-        Ok(_) | Err(ProbeMiss::Refused) => DashAnswer::NotServing,
+        Ok(_) => DashAnswer::NotServing,
+        Err(miss) => miss.answer(),
     }
 }
 
@@ -855,6 +881,16 @@ pub enum DashStatus {
         /// The pid a MATCHING marker names, as [`DashStatus::NotServing`] does.
         pid: Option<u32>,
     },
+    /// The probe of the recorded URL's port failed on this side ([`DashAnswer::ProbeFailed`]):
+    /// the failure is reported with its error - never as a busy dash and never as a dead one.
+    ProbeFailed {
+        /// The recorded URL.
+        url: String,
+        /// The pid a MATCHING marker names, as [`DashStatus::NotServing`] does.
+        pid: Option<u32>,
+        /// The probe's error text.
+        error: String,
+    },
 }
 
 /// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
@@ -913,6 +949,11 @@ pub fn dash_status(
         DashAnswer::Unresponsive => DashStatus::Unresponsive {
             url,
             pid: displayable_pid(pid),
+        },
+        DashAnswer::ProbeFailed(error) => DashStatus::ProbeFailed {
+            url,
+            pid: displayable_pid(pid),
+            error,
         },
         DashAnswer::NotServing => {
             // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at

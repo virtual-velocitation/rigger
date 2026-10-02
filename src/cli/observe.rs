@@ -104,8 +104,10 @@ fn canary_stats_lines(
 /// line instead - naming the matching marker's pid when one is known, or naming none when only
 /// a mismatched marker (or none at all) was recorded (round 3: a mismatched marker's pid
 /// belongs to an unrelated dash and must never be printed as though it were this URL's) - plus
-/// both self-heal paths, so an operator is never sent chasing a URL nothing answers.
+/// both self-heal paths, so an operator is never sent chasing a URL nothing answers. A probe
+/// that failed on this side prints its error, never a busy or a dead dash.
 fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
+    let named = |pid: &Option<u32>| pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
     match status {
         dash::DashStatus::Absent => None,
         dash::DashStatus::Serving(url) => Some(format!("dashboard: {url}")),
@@ -118,13 +120,15 @@ fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
              next step restarts it"
                 .to_string(),
         ),
-        dash::DashStatus::Unresponsive { url, pid } => {
-            let pid = pid.map(|p| format!(" (pid {p})")).unwrap_or_default();
-            Some(format!(
-                "dashboard: {url}{pid} did not answer within {}ms - busy, not dead",
-                dash::DASH_PROBE_WINDOW_MS
-            ))
-        }
+        dash::DashStatus::Unresponsive { url, pid } => Some(format!(
+            "dashboard: {url}{} did not answer within {}ms - busy, not dead",
+            named(pid),
+            dash::DASH_PROBE_WINDOW_MS
+        )),
+        dash::DashStatus::ProbeFailed { url, pid, error } => Some(format!(
+            "dashboard: {url}{} could not be probed: {error} - unknown, not dead",
+            named(pid)
+        )),
     }
 }
 
@@ -144,6 +148,9 @@ fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
         }
         dash::DashStatus::Unresponsive { url, pid } => {
             serde_json::json!({"status": "unresponsive", "url": url, "pid": pid})
+        }
+        dash::DashStatus::ProbeFailed { url, pid, error } => {
+            serde_json::json!({"status": "probe_failed", "url": url, "pid": pid, "error": error})
         }
     };
     Some(serde_json::json!({ "dashboard": dashboard }))
