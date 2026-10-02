@@ -38,8 +38,8 @@ const NO_CRITIC_WORKFLOW: &str =
 
 const PLANNER: &str =
     "---\nid: planner\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nDecompose the spec.\n";
-const CRITIC: &str = "---\nid: critic\nmodel: opus\ntools: [Read, Bash, Grep, Agent]\nisolation: \
-     none\n---\nYou are the CRITIC-PERSONA adversary.\n";
+const CRITIC: &str = "---\nid: critic\nmodel_ladder: [sonnet, opus]\ntools: [Read, Bash, Grep, \
+     Agent]\nisolation: none\n---\nYou are the CRITIC-PERSONA adversary.\n";
 const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nJudge. \
      End with {\"verdict\":\"approve\"}.\n";
 
@@ -159,7 +159,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers",
         "the critic's tools are replaced: no Bash, Agent, Grep or emit"
     );
-    assert_eq!(flag_value(&argv, "--model"), "opus", "the persona's rung for attempt 0");
+    assert_eq!(flag_value(&argv, "--model"), "sonnet", "the persona's rung for attempt 0");
     let system = flag_value(&argv, "--system-prompt");
     assert!(
         system.starts_with("You are the CRITIC-PERSONA adversary."),
@@ -329,4 +329,63 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
         "the absolute path is made relative to the project root"
     );
     assert_eq!(critique_stub_spawns(stub.path()), 1);
+}
+
+#[test]
+fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spawns_attempt_one() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let hash = critique_hash(SPEC);
+
+    // When the critic answers with no verdict line ...
+    let silent = tempfile::tempdir().unwrap();
+    let silent_path = write_critique_stub(silent.path(), "I could not decide.");
+    let (out, err, ok) = critique(root, SPEC_REL, &silent_path, &scratch);
+
+    // ... its result is no critique: the verb says why, exits non-zero and copies nothing.
+    assert!(!ok, "a result that is no critique exits non-zero");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: specs/9-demo.md (hash {hash}): no critique was recorded - the \
+             critic's output carries no verdict line"
+        )),
+        "the verb prints why:\n{err}"
+    );
+    assert_eq!(out, "", "no finding or verdict is printed");
+    assert_eq!(review_findings(root), Vec::<Value>::new());
+    let first = critique_spawn_id(&hash, 0);
+    assert_eq!(
+        spawn_events(&critique_events(root)),
+        [
+            (TYPE_SPAWN_REQUESTED.to_string(), first.clone()),
+            (TYPE_SPAWN_RESULT.to_string(), first),
+        ]
+    );
+
+    // When the unchanged text is critiqued again, the recorded request counts: attempt 1 runs.
+    let answering = tempfile::tempdir().unwrap();
+    let answering_path = write_critique_stub(answering.path(), REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &answering_path, &scratch);
+    assert!(ok, "the next attempt records a critique; stderr:\n{err}");
+    assert_eq!(critique_stub_spawns(silent.path()), 1);
+    assert_eq!(critique_stub_spawns(answering.path()), 1);
+    assert!(
+        out.starts_with(&format!("sc-{hash}-1-1 | BLOCKING | criterion 2 | ")),
+        "the finding ids carry attempt 1:\n{out}"
+    );
+    let second = critique_spawn_id(&hash, 1);
+    assert_eq!(
+        spawn_events(&critique_events(root))[2..],
+        [
+            (TYPE_SPAWN_REQUESTED.to_string(), second.clone()),
+            (TYPE_SPAWN_RESULT.to_string(), second),
+        ]
+    );
+    assert_eq!(
+        flag_value(&critique_stub_argv(answering.path()), "--model"),
+        "opus",
+        "attempt 1 runs the persona's rung for attempt 1"
+    );
 }
