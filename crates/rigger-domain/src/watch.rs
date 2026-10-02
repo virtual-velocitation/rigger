@@ -1338,6 +1338,55 @@ mod tests {
         assert!(detect(&inputs).is_empty());
     }
 
+    // --- Signal 7 (beyond the skill's five): a red CI check on the run tip ---
+
+    /// A check that failed on the run branch's tip raises `CiRed`, naming the tip, every failed
+    /// check and the response, whether or not the run is done - a red tip is what the next
+    /// landing builds on. A pending or green CI, a checkout with no run tip, and a CI `gh` could
+    /// not read (not installed, not logged in) raise nothing: an unread CI is reported beside
+    /// the anomalies, never as one.
+    #[test]
+    fn a_red_check_on_the_run_tip_raises_ci_red_and_unknown_raises_nothing() {
+        let done = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
+        ]);
+        let no_heartbeats = BTreeMap::new();
+        for events in [&[][..], &done[..]] {
+            let detect_with = |ci: CiProbe| {
+                detect(&WatchInputs {
+                    ci,
+                    ..empty_inputs(events, &no_heartbeats)
+                })
+            };
+            let red = detect_with(CiProbe::Red {
+                sha: "0123abcd".to_string(),
+                checks: vec!["build-test".to_string(), "kurrentdb".to_string()],
+            });
+            assert_eq!(red.len(), 1, "{red:?}");
+            assert_eq!(
+                (red[0].signal, red[0].subject.as_str(), red[0].magnitude),
+                (Signal::CiRed, "0123abcd", 2)
+            );
+            let line = red[0].line();
+            assert!(
+                line.contains("build-test, kurrentdb") && line.contains("gh run view --log-failed"),
+                "the line names every failed check and the response: {line}"
+            );
+            for quiet in [
+                CiProbe::Unknown("gh is not installed".to_string()),
+                CiProbe::NoRunTip,
+                CiProbe::Pending,
+                CiProbe::Green,
+            ] {
+                assert!(
+                    detect_with(quiet.clone()).is_empty(),
+                    "{quiet:?} raises no anomaly"
+                );
+            }
+        }
+    }
+
     // --- The seeded multi-anomaly scenario (spec 69 Done-when's own combination) ---
 
     #[test]

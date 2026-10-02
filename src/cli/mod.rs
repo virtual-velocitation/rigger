@@ -11515,6 +11515,64 @@ mod tests {
         );
     }
 
+    /// `rigger watch`'s reading of GitHub's check runs for the run tip, by conclusion: a failed,
+    /// timed-out or unstartable check is red, naming each one, even while others still run; a
+    /// check still running, cancelled or awaiting approval leaves it pending, as does a tip no
+    /// check has run on yet; only checks that all passed (success, neutral or skipped) are
+    /// green; a body that does not parse is unknown.
+    #[test]
+    fn check_runs_parse_into_a_ci_probe_by_conclusion() {
+        let probe = |runs: &[String]| {
+            ci_probe_from_check_runs(
+                "0123abcd",
+                &format!(
+                    r#"{{"total_count":{},"check_runs":[{}]}}"#,
+                    runs.len(),
+                    runs.join(",")
+                ),
+            )
+        };
+        let run = |name: &str, status: &str, conclusion: &str| {
+            format!(r#"{{"name":"{name}","status":"{status}","conclusion":{conclusion}}}"#)
+        };
+        let red = |checks: &[&str]| watch::CiProbe::Red {
+            sha: "0123abcd".to_string(),
+            checks: checks.iter().map(|c| c.to_string()).collect(),
+        };
+        assert_eq!(
+            probe(&[
+                run("build-test", "completed", r#""failure""#),
+                run("kurrentdb", "completed", r#""timed_out""#),
+                run("install-nolock", "in_progress", "null"),
+            ]),
+            red(&["build-test", "kurrentdb"])
+        );
+        assert_eq!(
+            probe(&[run("build-test", "completed", r#""startup_failure""#)]),
+            red(&["build-test"])
+        );
+        for pending in [
+            vec![run("build-test", "queued", "null")],
+            vec![run("build-test", "completed", r#""cancelled""#)],
+            vec![run("build-test", "completed", r#""action_required""#)],
+            vec![],
+        ] {
+            assert_eq!(probe(&pending), watch::CiProbe::Pending, "{pending:?}");
+        }
+        assert_eq!(
+            probe(&[
+                run("build-test", "completed", r#""success""#),
+                run("kurrentdb", "completed", r#""neutral""#),
+                run("install-nolock", "completed", r#""skipped""#),
+            ]),
+            watch::CiProbe::Green
+        );
+        assert!(matches!(
+            ci_probe_from_check_runs("0123abcd", "not json"),
+            watch::CiProbe::Unknown(_)
+        ));
+    }
+
     /// `rigger watch`: one poll over the same log reads the run once from its boundary with the
     /// carried-over knowledge by type - no whole-log read for store integrity or anything else -
     /// and a healthy run reports nothing.
