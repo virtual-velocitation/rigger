@@ -4261,6 +4261,30 @@ impl RunCtx<'_> {
         Ok(sha)
     }
 
+    /// THE ROUND DELTA: what unit `unit`'s worktree `wt` changed since its reviewers last
+    /// judged it, as `(base, paths)` - `None` when no review round judged the unit before
+    /// `attempt` (a first round has no delta: the whole unit is new). `base` is
+    /// [`round_delta_base`]'s round-start sha; `paths` are the direct two-dot diff from it
+    /// ([`crate::worktree::DiffMode::Direct`]: `base` is a sha this same worktree's branch
+    /// already passed through) plus whatever the worktree holds uncommitted, so a delta read
+    /// at the build seam, before the pre-gate commit, still sees the implementer's edits.
+    fn round_delta(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+    ) -> Result<Option<(String, Vec<String>)>, Error> {
+        let events = self.read_current_run()?;
+        let Some(base) = round_delta_base(&events, unit, attempt) else {
+            return Ok(None);
+        };
+        let mut paths = wt.diff_names(&base, crate::worktree::DiffMode::Direct)?;
+        paths.extend(wt.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(Some((base, paths)))
+    }
+
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
     /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
@@ -4655,7 +4679,17 @@ impl RunCtx<'_> {
     /// frontier); the caller unwinds per its own discipline - the single lane propagates it
     /// (holding the unit, no commit), a speculation lane collects it into `any_parked` and does
     /// NOT commit that candidate, so a later step replays the sdet and its periphery tests land.
-    fn spawn_sdet_author(&self, st: &Stage, dir: &str, attempt: u32) -> Result<(), Error> {
+    ///
+    /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
+    /// appends [`DOC_ONLY_ROUND`] to the prompt, so a wording round moves an existing pin's
+    /// needle instead of growing the suite.
+    fn spawn_sdet_author(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        dir: &str,
+        attempt: u32,
+    ) -> Result<(), Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
         // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
@@ -4683,11 +4717,18 @@ impl RunCtx<'_> {
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
-        let sdet_prompt = self.build_prompt_with_failure(
+        let mut sdet_prompt = self.build_prompt_with_failure(
             st,
             &PriorFailure::default(),
             GroundingSlice::Implement,
         )?;
+        // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
+        // prompt without it, so this seam still errs only on a park.
+        let delta = wt.and_then(|w| self.round_delta(w, &st.name, attempt).ok().flatten());
+        if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
+            sdet_prompt.push_str("\n\n");
+            sdet_prompt.push_str(DOC_ONLY_ROUND);
+        }
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -5267,7 +5308,7 @@ impl RunCtx<'_> {
                     // crash disposition are the next unit's - so only the replay-safe parked arm
                     // acts here: `?` propagates it, holding the unit with no commit until a later
                     // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, dir, attempts)?;
+                    self.spawn_sdet_author(st, wt, dir, attempts)?;
                     // Commit the implementer's worktree BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
@@ -5724,7 +5765,7 @@ impl RunCtx<'_> {
                     // this step and a later step replays the sdet and commits the candidate
                     // WITH its periphery. The lane dir persists across the park (dropping `wt`
                     // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, &dir, lane) {
+                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane) {
                         debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
                         any_parked = true;
                         continue;
@@ -12646,28 +12687,65 @@ fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
     )
 }
 
-/// The durable [`STATUS_REVIEW_ROUND_START`] sha [`RunCtx::review_round_start_sha`]
-/// stamped the FIRST time `review_unit` was entered for this EXACT `(unit, attempt)`, if
-/// any (spec 103, criterion 6, round 3) - mirrors [`recorded_adoption`]'s own read shape
-/// (whole-stream-scoped find, matching on the event's own `id`/`status`/`attempt` fields
-/// rather than trusting the caller's replay key alone). `None` when this exact
-/// `(unit, attempt)` was never stamped - the caller's own first-entry path handles that
-/// case by stamping fresh rather than calling this at all.
-fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
-    events.iter().find_map(|e| {
+/// Every durable [`STATUS_REVIEW_ROUND_START`] mark [`RunCtx::review_round_start_sha`]
+/// stamped for `unit`, in log order, as `(attempt, sha)` - matching on the event's own
+/// `id`/`status`/`attempt` fields rather than trusting a caller's replay key alone, the
+/// read shape [`recorded_adoption`] shares. A mark carrying no sha is skipped.
+fn review_round_starts<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+) -> impl Iterator<Item = (u64, String)> + 'a {
+    events.iter().filter_map(move |e| {
         if e.type_ != ledger::TYPE_UNIT_STATUS {
             return None;
         }
         let v: Value = serde_json::from_slice(&e.data).ok()?;
         if v.get("id").and_then(Value::as_str) != Some(unit)
             || v.get("status").and_then(Value::as_str) != Some(STATUS_REVIEW_ROUND_START)
-            || v.get("attempt").and_then(Value::as_u64) != Some(u64::from(attempt))
         {
             return None;
         }
-        e.meta.get(META_WORKTREE_SHA).cloned()
+        let attempt = v.get("attempt").and_then(Value::as_u64)?;
+        Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?))
     })
 }
+
+/// The durable [`STATUS_REVIEW_ROUND_START`] sha [`RunCtx::review_round_start_sha`]
+/// stamped the FIRST time `review_unit` was entered for this EXACT `(unit, attempt)`, if
+/// any (spec 103, criterion 6, round 3). `None` when this exact `(unit, attempt)` was
+/// never stamped - the caller's own first-entry path handles that case by stamping fresh
+/// rather than calling this at all.
+fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    review_round_starts(events, unit)
+        .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
+}
+
+/// The base of `unit`'s ROUND DELTA at `attempt` (see [`RunCtx::round_delta`]): the
+/// round-start sha of its latest review round at an EARLIER attempt - the round whose
+/// verdict sent the unit back to build again. `None` when no review round judged the unit
+/// before `attempt`, or the latest one recorded no sha (a repo-less unit).
+fn round_delta_base(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    review_round_starts(events, unit)
+        .filter(|(stamped, _)| *stamped < u64::from(attempt))
+        .max_by_key(|(stamped, _)| *stamped)
+        .map(|(_, sha)| sha)
+        .filter(|sha| !sha.is_empty())
+}
+
+/// Whether a round delta's `paths` changed documentation only: at least one path, and every
+/// one a `*.md` file or under `docs/`.
+fn is_documentation_only(paths: &[String]) -> bool {
+    !paths.is_empty()
+        && paths
+            .iter()
+            .all(|p| p.ends_with(".md") || p.starts_with("docs/"))
+}
+
+/// The rule the sdet-author's prompt carries on a round whose delta changed documentation
+/// only ([`is_documentation_only`]): a reworded sentence moves an existing pin's needle at
+/// most, and a fresh test for every wording round only grows the suite the next round must
+/// keep green. The rule lives here alone, never copied into a persona.
+const DOC_ONLY_ROUND: &str = "This round changed documentation only: extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.";
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
 /// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
@@ -40014,6 +40092,42 @@ mod tests {
                 prompts[1]
             );
         }
+    }
+
+    /// A round delta's base is the round-start sha of the unit's latest review round at an
+    /// attempt BEFORE the one asking - never the asking attempt's own round, never an earlier
+    /// round, never another unit's - and there is none before any round or when that round
+    /// recorded no sha.
+    #[test]
+    fn round_delta_base_is_the_latest_review_round_before_the_attempt() {
+        let start = |unit: &str, attempt: u32, sha: &str| {
+            let mut e = Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": unit,
+                    "status": STATUS_REVIEW_ROUND_START,
+                    "attempt": attempt,
+                }))
+                .unwrap(),
+            );
+            e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
+            e
+        };
+        let events = [
+            start("u", 0, "sha0"),
+            start("u", 1, "sha1"),
+            start("other", 1, "decoy"),
+            start("u", 2, ""),
+        ];
+        let base = |attempt| round_delta_base(&events, "u", attempt);
+        assert_eq!(base(0), None, "no round judged the unit before attempt 0");
+        assert_eq!(base(1).as_deref(), Some("sha0"));
+        assert_eq!(
+            base(2).as_deref(),
+            Some("sha1"),
+            "the latest earlier round wins"
+        );
+        assert_eq!(base(3), None, "the latest earlier round recorded no sha");
     }
 
     #[test]
