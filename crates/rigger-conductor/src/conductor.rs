@@ -324,6 +324,34 @@ fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
 }
 
+/// The replay key of the `UnitFailed` a review reject records for `unit` at its failing
+/// `attempt` (the review stage's and the plan-critique gate's), so a replay re-reaching the
+/// recorded reject appends no duplicate; the plan-critique spec-defect stop
+/// ([`spec_defect_stop`]) reads each reject back by it.
+fn failed_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/failed#{attempt}")
+}
+
+/// The replay key of the lesson a plan-critique `gate`'s spec-defect stop records for its reject
+/// at `attempt` (spec 112, criterion 5): the first of the stop's three records.
+fn spec_defect_lesson_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect-lesson#{attempt}")
+}
+
+/// The replay key of the `SpecDefect` a plan-critique `gate`'s spec-defect stop records for its
+/// reject at `attempt` (spec 112, criterion 5): the second of the stop's three records.
+fn spec_defect_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect#{attempt}")
+}
+
+/// The replay key of the gate's `UnitEscalated` a plan-critique `gate`'s spec-defect stop records
+/// for its reject at `attempt` (spec 112, criterion 5): the last of the stop's three records and
+/// its completion key, which [`spec_defect_stop`] reads to tell a completed stop from one a
+/// crash interrupted.
+fn spec_defect_escalated_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect-escalated#{attempt}")
+}
+
 /// Which gate-keyed record a [`gate_key`] names - each kind keys apart from the others at the
 /// SAME `(unit, attempt, gate)` coordinate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2673,10 +2701,10 @@ const CAUSE_SPEC_AMBIGUITY: &str = "spec-ambiguity";
 /// pure function over the current run slice `run`, `s` the attempt the plan-critique gate `gate`'s
 /// next round would run and `plan` the gate's producer. It holds - answering the stopping reject's
 /// adjudication, whose upheld ids the stop names - when the gate's rejects at attempts `s - 2` and
-/// `s - 1` (each the `UnitFailed` under replay key `<gate>/failed#<k>`) both carry a review reason
+/// `s - 1` (each the `UnitFailed` under its [`failed_key`]) both carry a review reason
 /// whose parsed cause is `spec-ambiguity`, the re-plan `spawn_id(plan, replan, s - 1)` between them
 /// is recorded, the re-plan at `s` is not, and no event carries the stop's completion key
-/// `<gate>/spec-defect-escalated#<s-1>`. A re-plan is recorded by its `SpawnRequested` or
+/// ([`spec_defect_escalated_key`] at `s - 1`). A re-plan is recorded by its `SpawnRequested` or
 /// `SpawnResult` (the stepwise driver records both) or by an event it emitted, stamped with its id
 /// as [`META_SPAWN`] (a blocking driver records no spawn event). So a first `spec-ambiguity` reject
 /// re-plans as before, and the stop fires on one that follows a re-plan which did not clear the
@@ -2689,7 +2717,7 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
             .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
     };
     let spec_ambiguity = |k: u32| {
-        keyed(format!("{gate}/failed#{k}"))
+        keyed(failed_key(gate, k))
             .and_then(Event::decode::<Value>)
             .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
             .filter(|a| a.cause.as_deref() == Some(CAUSE_SPEC_AMBIGUITY))
@@ -2702,7 +2730,7 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
     };
     spec_ambiguity(earlier)?;
     let adjudication = spec_ambiguity(stopping)?;
-    let completed = keyed(format!("{gate}/spec-defect-escalated#{stopping}")).is_some();
+    let completed = keyed(spec_defect_escalated_key(gate, stopping)).is_some();
     (re_planned(stopping) && !re_planned(s) && !completed).then_some(adjudication)
 }
 
@@ -6969,7 +6997,7 @@ impl RunCtx<'_> {
                 ),
             };
             self.emit_keyed_meta(
-                &format!("{}/failed#{failed_attempt}", st.name),
+                &failed_key(&st.name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(&st.name, attempts, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
@@ -7912,7 +7940,7 @@ impl RunCtx<'_> {
     /// (mirrors `run_fan_out_review_loop`).
     ///
     /// Round `k` critiques at attempt `k`; its reject records `UnitFailed` under
-    /// `<gate>/failed#<k>` and returns to the round head at attempt `k + 1`. The round head
+    /// [`failed_key`] at `k` and returns to the round head at attempt `k + 1`. The round head
     /// decides, in order (spec 112, criterion 5): the spec-defect stop
     /// ([`stopped_on_spec_defect`](Self::stopped_on_spec_defect)); else, for a reject this call
     /// recorded, the remediation decision - escalate, or re-plan at the new attempt and
@@ -8105,7 +8133,7 @@ impl RunCtx<'_> {
                 ..Default::default()
             };
             self.emit_keyed(
-                &format!("{gate_name}/failed#{failed_attempt}"),
+                &failed_key(&gate_name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
                 // own - every reject here is the adjudicator's, and its reasoning rides
@@ -8146,16 +8174,16 @@ impl RunCtx<'_> {
                 "plan-critique {gate:?} stopped the run: its spec-ambiguity reject at attempt {k} \
                  followed a re-plan that did not clear the previous one; {halt}"
             ),
-            Some(&format!("{gate}/spec-defect-lesson#{k}")),
+            Some(&spec_defect_lesson_key(gate, k)),
             Some(&about),
         )?;
         self.emit_keyed(
-            &format!("{gate}/spec-defect#{k}"),
+            &spec_defect_key(gate, k),
             TYPE_SPEC_DEFECT,
             json!({"reason": halt}),
         )?;
         self.emit_keyed(
-            &format!("{gate}/spec-defect-escalated#{k}"),
+            &spec_defect_escalated_key(gate, k),
             ledger::TYPE_UNIT_ESCALATED,
             json!({"id": gate}),
         )?;
