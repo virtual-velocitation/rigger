@@ -13522,6 +13522,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn unit_of_gate_key_strips_a_retry_ordinal() {
+        // F3: an infra rerun gates the SAME attempt again under a retry ordinal, which rides
+        // the gate key's coordinate tail exactly as it rides a spawn id, `#{attempt}~retry{n}`.
+        // Every reader of the key must see through it: the unit before `/gate:`, the attempt
+        // before `~retry`.
+        let retried = "u1/gate:test#2~retry1";
+        assert_eq!(unit_of_gate_key(retried), Some("u1"));
+        assert_eq!(
+            gate_key_attempt(retried),
+            Some(2),
+            "the retry ordinal must not hide the attempt the gate ran at"
+        );
+        // The red an infra fault left at ordinal 0 and the green its rerun recorded at ordinal 1
+        // are the SAME attempt: the rerun's verdict is the unit's current outcome.
+        let verdict = |key: &str, pass: bool| {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({
+                    "gate": "test", "pass": pass, "flaky": false, "evidence": ""
+                }))
+                .unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, key)
+        };
+        let rerun_green = vec![verdict("u1/gate:test#2", false), verdict(retried, true)];
+        assert_eq!(
+            recorded_gate_outcome(&rerun_green, "u1"),
+            Some(true),
+            "an infra rerun's green at the same attempt must read passed"
+        );
+    }
+
     /// A minimal `UnitStarted` event carrying `criterion_id` - the exact additive shape
     /// `start_and_run_stage` now stamps (spec 88, ADOPTION KEYS ON THE CRITERION).
     fn started_with_criterion(id: &str, criterion_id: &str) -> Event {
@@ -27369,6 +27402,60 @@ mod tests {
     }
 
     #[test]
+    fn an_adjudicator_infra_fault_reject_reruns_the_review_without_charging() {
+        // F3: an adjudicator that rejects with `cause: infra-fault` reports a gate, tool or
+        // harness failure, not a defect in the author's code - the unit was never judged on
+        // its merits, so the reject charges no attempt. The stage reruns at the SAME attempt
+        // under the next retry ordinal, whose review spawns afresh (a replayed reject would
+        // otherwise re-decide it forever); the committed implementation is not respawned.
+        let cfg = per_unit_panel_cfg(None);
+        let infra_fault =
+            r#"{"verdict":"reject","upheld":[],"discarded":[],"cause":"infra-fault"}"#;
+        let driver = Stub {
+            output_by_spawn_id: HashMap::from([(
+                spawn_id("implement", ROLE_ADJUDICATOR, 0),
+                infra_fault.to_string(),
+            )]),
+            ..Stub::answering(r#"{"verdict":"approve"}"#)
+        };
+        let (rs, events) = run_logged(&cfg, &driver);
+        assert_eq!(
+            rs.units["implement"].status,
+            ledger::Status::Integrated,
+            "the rerun's review approves, so the unit integrates"
+        );
+        assert_eq!(
+            rs.units["implement"].attempts, 0,
+            "an infra-fault reject charges no attempt"
+        );
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra-fault reject must write no UnitFailed"
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the rerun reviews the committed work again; the implementer is not respawned"
+        );
+        let rerun_verdict =
+            spawn_retry_id("implement", ROLE_ADJUDICATOR, 0, REVIEWER_RESPAWN_BOUND + 1);
+        assert!(
+            driver.spawn_ids().contains(&rerun_verdict),
+            "the rerun's adjudicator spawns under the next ordinal's id {rerun_verdict:?}: {:?}",
+            driver.spawn_ids()
+        );
+        assert!(
+            rs.units["implement"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with("infra:review")),
+            "the retry names its infra cause: {:?}",
+            rs.units["implement"].evidence
+        );
+    }
+
+    #[test]
     fn an_always_rejecting_adjudicator_escalates_after_exactly_max_retries_cycles() {
         // FIX 1 (the churn bug): an adjudicator that ALWAYS rejects must NOT loop the
         // unit forever. Each implement -> gates -> review cycle that ends in a reject
@@ -27961,36 +28048,158 @@ mod tests {
         assert_final_attempt_approval_integrates(&cfg, "review", "a standalone review");
     }
 
-    /// Run one stage `s` whose every spawn crashes mid-flight: the run completes (Ok), never
-    /// aborted, and the crashing unit escalates. Returns the run state.
-    fn crashing_spawn_run() -> RunState {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                ..Default::default()
-            },
-        );
-        let driver = Stub {
-            fail_spawn: true,
-            ..Stub::new()
-        };
-        let (rs, _events) = run_logged(&cfg, &driver);
+    /// Run one stage `s` whose gate fails on a product defect every attempt: the run completes
+    /// (Ok) and the unit escalates at the default remediation bound. Returns the run state.
+    fn failing_gate_run() -> RunState {
+        let mut cfg = one_gated_stage_cfg("s");
+        cfg.workflow.gates.insert("ok".into(), gate_def("false"));
+        let (rs, _events) = run_logged(&cfg, &Stub::new());
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
         rs
     }
 
+    /// The replay keys of `events`' `UnitStatus` marks carrying `status`, in log order.
+    fn status_mark_keys(events: &[Event], status: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["status"] == status)
+            })
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+            .collect()
+    }
+
     #[test]
-    fn mid_spawn_crash_escalates_without_aborting_the_run() {
-        let rs = crashing_spawn_run();
-        // spec 69, criterion 3 (the cause wire): a mid-spawn crash's UnitFailed carries
-        // the closed-vocabulary "infra:spawn" cause, never a gate or review label.
+    fn an_infra_spawn_crash_retries_under_a_retry_id_and_charges_nothing() {
+        // F3: a crash mid-spawn is infrastructure - the agent process died and the unit's code
+        // was never judged - so it charges no remediation attempt. The stage reruns at the SAME
+        // attempt under the next retry ordinal: the implementer re-spawns as
+        // `s/implementer#0~retry1` (never the next attempt's `s/implementer#1`), the retry is
+        // recorded as an `infra-retry` mark naming the `infra:spawn` cause, and no `UnitFailed`
+        // is written.
+        let cfg = one_gated_stage_cfg("s");
+        let driver = Stub {
+            fail_spawn_ids: [spawn_id("s", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let (rs, events) = run_logged(&cfg, &driver);
         assert_eq!(
-            rs.units["s"].cause, "infra:spawn",
-            "a mid-spawn crash must be stamped as an infra cause, not inferred downstream"
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the retried spawn succeeds, so the unit integrates"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "a crash charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra crash must write no UnitFailed"
+        );
+        let ids = driver.spawn_ids();
+        assert!(
+            ids.contains(&spawn_retry_id("s", ROLE_IMPLEMENTER, 0, 1)),
+            "the crashed spawn must be retried under its retry id at the same attempt: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 1)),
+            "a crash must never advance the unit to its next attempt: {ids:?}"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            vec!["s/infra-retry#0~0".to_string()],
+            "the crashed ordinal is recorded once, keyed by attempt and ordinal"
+        );
+        assert!(
+            rs.units["s"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with("infra:spawn")),
+            "the retry names its infra cause: {:?}",
+            rs.units["s"].evidence
+        );
+    }
+
+    #[test]
+    fn infra_retries_past_the_bound_halt_the_step_and_a_relaunch_gets_a_fresh_bound() {
+        // F3: an outage that outlasts the taxonomy's infra limit (the shipped rule reruns twice)
+        // must not loop and must not charge the unit either: the third consecutive crash halts
+        // the step LOUDLY with `infra: <evidence>`, recording an `infra-halt` mark - no
+        // UnitFailed, no escalation, no per-unit lesson. The retry count is read from the log
+        // since the attempt's latest `infra-halt`, so a relaunch after the outage starts a
+        // FRESH bound: one more crash there is retried, not halted again.
+        let cfg = one_gated_stage_cfg("s");
+        let st = Store::open(":memory:").unwrap();
+        let crashing = |ordinals: std::ops::Range<u32>| Stub {
+            fail_spawn_ids: ordinals
+                .map(|n| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n))
+                .collect(),
+            ..Stub::new()
+        };
+
+        // The outage: the original spawn and both of its retries crash.
+        let outage = crashing(0..3);
+        let err = match run_isolated(&cfg, &stub_deps(&st, &outage, Vec::new())) {
+            Ok(rs) => panic!(
+                "an outage past the infra bound must halt the step, got {:?}",
+                rs.units["s"].status
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("infra: "),
+            "the halt must say it is infrastructure: {:?}",
+            err.0
+        );
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the operator-facing halt must not carry an internal sentinel marker: {:?}",
+            err.0
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        for charged in [
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+            contextgraph::TYPE_LESSON_LEARNED,
+        ] {
+            assert_eq!(
+                count_of_type(&events, charged),
+                0,
+                "an infra halt charges the unit nothing: no {charged}"
+            );
+        }
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            [
+                "s/infra-retry#0~0",
+                "s/infra-retry#0~1",
+                "s/infra-retry#0~2"
+            ],
+            "every crashed ordinal is recorded"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            ["s/infra-halt#0~2"],
+            "the halt is recorded at the ordinal that reached the bound"
+        );
+
+        // The relaunch after the outage: the next ordinal crashes once more, then recovers.
+        let recovering = crashing(3..4);
+        let rs = run_isolated(&cfg, &stub_deps(&st, &recovering, Vec::new())).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "a relaunch gets a fresh bound: one crash is retried, not halted"
+        );
+        assert_eq!(
+            rs.units["s"].attempts, 0,
+            "the relaunch charges nothing either"
+        );
+        assert!(
+            recovering
+                .spawn_ids()
+                .contains(&spawn_retry_id("s", ROLE_IMPLEMENTER, 0, 4)),
+            "the relaunch continues the retry ordinals, never reusing a crashed id: {:?}",
+            recovering.spawn_ids()
         );
     }
 
@@ -28036,7 +28245,7 @@ mod tests {
         /// escalating attempt is ALSO the unit's third failure - a recurrence - so both entries
         /// fire together; that co-occurrence is correct, not a double-report of the same signal.
         a_newly_escalated_unit_stamps_an_attention_entry: assert_attention(
-            crashing_spawn_run(),
+            failing_gate_run(),
             vec![
                 ledger::AttentionEntry::unit_scoped(
                     ledger::ATTENTION_ESCALATED,
@@ -28164,11 +28373,13 @@ mod tests {
         run_isolated(cfg, &deps).unwrap()
     }
 
-    /// Record a failed result for unit `unit`'s implementer attempt `attempt`.
-    fn fail_implementer(st: &Store, unit: &str, attempt: u32) {
+    /// Answer unit `unit`'s implementer at `attempt`, so the next step gates that attempt - and
+    /// [`parked_unit_u`]'s red gate fails it on a product defect, charging one attempt. (A
+    /// crashed spawn would charge nothing: an infra failure retries uncharged, F3.)
+    fn fail_attempt(st: &Store, unit: &str, attempt: u32) {
         crate::spawn_store::record_result(
             st,
-            &crate::spawn::SpawnResult::failed(spawn_id(unit, ROLE_IMPLEMENTER, attempt), "boom"),
+            &crate::spawn::SpawnResult::ok(spawn_id(unit, ROLE_IMPLEMENTER, attempt), "done"),
         )
         .unwrap();
     }
@@ -28288,10 +28499,12 @@ mod tests {
         );
     }
 
-    /// A config whose one gated unit `u` retries up to `max_retries`, over a started store whose
-    /// first stepwise call freshly parks attempt 0 - crossing no threshold.
+    /// A config whose one unit `u` retries up to `max_retries` against a gate that fails every
+    /// attempt on a product defect, over a started store whose first stepwise call freshly parks
+    /// attempt 0 - crossing no threshold.
     fn parked_unit_u(max_retries: u32) -> (Config, Store) {
         let mut cfg = agent_a_cfg(vec![gated_by_ok("u", &[])]);
+        cfg.workflow.gates.insert("ok".into(), gate_def("false"));
         cfg.workflow.defaults.max_retries = max_retries;
         let st = started_store();
         let rs = replay_step(&cfg, &st);
@@ -28319,7 +28532,7 @@ mod tests {
         let (cfg, st) = parked_unit_u(1);
 
         // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
-        fail_implementer(&st, "u", 0);
+        fail_attempt(&st, "u", 0);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
         assert_eq!(
@@ -28373,7 +28586,7 @@ mod tests {
         let (cfg, st) = parked_unit_u(5);
 
         // Attempt 0 fails: the FIRST failure is not a recurrence.
-        fail_implementer(&st, "u", 0);
+        fail_attempt(&st, "u", 0);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 1);
         assert!(
@@ -28383,7 +28596,7 @@ mod tests {
         );
 
         // Attempt 1 fails: the SECOND failure - a recurrence.
-        fail_implementer(&st, "u", 1);
+        fail_attempt(&st, "u", 1);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 2);
         assert_eq!(
@@ -28399,7 +28612,7 @@ mod tests {
         // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
         // already carries more than two recorded (failed) results while a fresh attempt
         // (#3) is still parked awaiting an answer: the stalled-frontier signal.
-        fail_implementer(&st, "u", 2);
+        fail_attempt(&st, "u", 2);
         let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
         assert_eq!(
@@ -29986,13 +30199,12 @@ mod tests {
     #[test]
     fn a_units_worktree_is_reclaimed_but_its_branch_survives_a_terminal_escalation() {
         // Spec 64, criterion 2's other half: a stage that goes terminal by FAILING (every
-        // attempt crashes and remediation exhausts into `UnitEscalated`, never a park)
+        // attempt fails its gate and remediation exhausts into `UnitEscalated`, never a park)
         // must still remove the worktree exactly as before criterion 1 - but, since only
         // an Ok(true) integrate deletes the branch (`run_stage` conductor.rs ~3155), the
         // branch must SURVIVE as the human's evidence, identical to today's behavior. No
         // existing test drives this through the public `run()` seam with a real repo (the
-        // sibling repo-less test `mid_spawn_crash_escalates_without_aborting_the_run`
-        // cannot observe worktree/branch state at all).
+        // repo-less escalation tests cannot observe worktree/branch state at all).
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -30009,14 +30221,14 @@ mod tests {
             },
         );
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            fail_spawn: true,
-            ..Stub::new()
-        };
+        let driver = Stub::new();
         let deps = Deps {
             store: &store,
             driver: &driver,
-            gates: &RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache),
+            gates: &RecordingRunner {
+                fail: HashSet::from(["ok".to_string()]),
+                ..RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache)
+            },
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -30027,11 +30239,11 @@ mod tests {
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Escalated,
-            "every attempt crashes, so remediation exhausts into an escalation"
+            "every attempt fails its gate, so remediation exhausts into an escalation"
         );
         assert!(
             driver.spawned("a"),
-            "the implementer must actually have been spawned (and crashed), or this test proves nothing"
+            "the implementer must actually have been spawned, or this test proves nothing"
         );
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
@@ -34210,20 +34422,20 @@ mod tests {
             criteria: Vec::new(),
             log: &|_| {},
         };
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        // A persistently failing gate never integrates (an infra HOLD still charges a
-        // remediation attempt - it just must not demote the ratchet).
-        assert_ne!(
-            rs.units["s"].status,
-            ledger::Status::Integrated,
-            "a persistently failing gate must never integrate"
+        // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
+        // rerun to give, the first one halts the step.
+        let halted = run_isolated(&cfg, &deps);
+        assert!(
+            matches!(&halted, Err(e) if e.0.contains("infra: ")),
+            "a zero-limit infra fault must halt the step, never charge or integrate: {:?}",
+            halted.map(|rs| rs.units["s"].status)
         );
-        // limit 0: the gate is NEVER rerun - it ran EXACTLY once per attempt (the default
-        // remediation bound is 3), proving the no-rerun/zero-limit early-return path.
+        // limit 0: the gate is NEVER rerun - it ran EXACTLY once, proving the
+        // no-rerun/zero-limit early-return path.
         assert_eq!(
             always_fail.runs.load(Ordering::SeqCst),
-            3,
-            "a zero-limit infra rule is never rerun: one run per attempt via the early-return"
+            1,
+            "a zero-limit infra rule is never rerun: one run via the early-return, then the halt"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         // The pinned single-authority invariant: an infra fault at the INLINE gate must HOLD
@@ -34290,7 +34502,9 @@ mod tests {
                 criteria: Vec::new(),
                 log: &|_| {},
             };
-            run_isolated(&cfg, &deps).unwrap();
+            // An infra outage halts the step (F3) and a flaky failure escalates: either way the
+            // run ends, and only the gate runs and the ratchet are under test here.
+            let _ = run_isolated(&cfg, &deps);
             let runs = always_fail.runs.load(Ordering::SeqCst);
             let demoted = st
                 .read_stream(STREAM, 0, Direction::Forward)
@@ -34300,9 +34514,10 @@ mod tests {
             (runs, demoted)
         };
 
-        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each
-        // attempt runs the gate 3x (initial + 2 reruns); the default remediation bound is 3,
-        // so 9 runs prove the rerun loop actually ran, and no demote proves the hold.
+        // (a) An infra rule, limit 2, gate always red: reruns exhaust, then HOLD. Each stage
+        // run gates 3x (initial + 2 reruns), and the uncharged stage reruns twice before the
+        // step halts (F3), so 9 runs prove the rerun loop actually ran, and no demote proves
+        // the hold.
         let (infra_runs, infra_demoted) = inline_exhaustion(
             "infra",
             "OUTAGE",
@@ -34310,7 +34525,7 @@ mod tests {
         );
         assert_eq!(
             infra_runs, 9,
-            "an infra rule with limit 2 reruns the gate twice per attempt before exhausting"
+            "an infra rule with limit 2 reruns the gate twice per stage run before exhausting"
         );
         assert!(
             !infra_demoted,
@@ -34331,6 +34546,92 @@ mod tests {
         assert!(
             flaky_demoted,
             "a flaky gate that stays red across every rerun is a believed-real failure and demotes"
+        );
+    }
+
+    #[test]
+    fn an_infra_gate_red_reruns_the_stage_at_the_same_attempt_without_charging() {
+        // F3: a gate that stays red on infrastructure across its in-place reruns is not the
+        // unit's defect, so it charges no remediation attempt. The stage reruns at the SAME
+        // attempt under the next retry ordinal: the implementation is not respawned (its
+        // committed work is what the gate never got to judge), the gate runs again under its
+        // retried key `s/gate:g#0~retry1`, and the rerun's green integrates the unit.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("unused"));
+        // An infra rule rerunning twice in place, with zero backoff so the test never sleeps.
+        cfg.workflow.defaults.failure_rules = vec![config::FailureRuleDef {
+            match_: config::MatchDef {
+                output_regex: Some("No space left on device".into()),
+                ..Default::default()
+            },
+            class: "infra".into(),
+            limit: 2,
+            backoff: config::BackoffDef::default(),
+        }];
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        // Red for the first stage run and both of its in-place reruns, green from then on.
+        let outage = FlakyGate {
+            fail_first: 3,
+            runs: AtomicU32::new(0),
+            evidence: "error: No space left on device (os error 28)".into(),
+        };
+        let deps = Deps {
+            gates: &outage,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the stage's rerun goes green, so the unit integrates"
+        );
+        assert_eq!(rs.units["s"].attempts, 0, "an infra red charges no attempt");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "an infra red must write no UnitFailed"
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            1,
+            "the rerun gates the committed work again; the implementer is not respawned"
+        );
+        assert_eq!(
+            outage.runs.load(Ordering::SeqCst),
+            4,
+            "three in-place runs at ordinal 0, then the stage's rerun at ordinal 1"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-retry"),
+            ["s/infra-retry#0~0"],
+            "the infra-red ordinal is recorded once"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY).map(String::as_str)
+                        == Some("s/gate:g#0~retry1")
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["pass"] == true)),
+            "the rerun records its own green under the retried gate key"
+        );
+        assert_eq!(
+            recorded_gate_outcome(&events, "s"),
+            Some(true),
+            "the unit's recorded gate outcome is the rerun's green"
         );
     }
 

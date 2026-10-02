@@ -425,6 +425,28 @@ mod tests {
     }
 
     #[test]
+    fn infra_limit_is_the_first_infra_rules_limit() {
+        // The shipped infra rule reruns twice: an infra-failed stage gets the same two reruns.
+        assert_eq!(Taxonomy::default().infra_limit(), 2);
+        let rule = |class, limit| FailureRule {
+            matcher: Matcher::any(),
+            class,
+            limit,
+            backoff: Backoff::default(),
+        };
+        // The first infra rule in match order wins; a flaky rule ahead of it is not infra.
+        let tax = Taxonomy::new(vec![
+            rule(FailureClass::Flaky, 5),
+            rule(FailureClass::Infra, 1),
+            rule(FailureClass::Infra, 4),
+        ]);
+        assert_eq!(tax.infra_limit(), 1);
+        // No infra rule: an infra failure is never rerun, so the first one halts.
+        let tax = Taxonomy::new(vec![rule(FailureClass::Product, 3)]);
+        assert_eq!(tax.infra_limit(), 0);
+    }
+
+    #[test]
     fn empty_taxonomy_classifies_nothing() {
         let tax = Taxonomy::new(vec![]);
         assert!(tax.is_empty());
