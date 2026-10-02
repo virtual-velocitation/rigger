@@ -2303,12 +2303,6 @@ mod tests {
         &text[from..from + len]
     }
 
-    /// `text` with every run of whitespace, line breaks included, read as one space, so a test
-    /// pins a sentence of a shipped document whichever line it wraps on.
-    fn flat(text: &str) -> String {
-        text.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
     /// The `spec-preflight` registry entry's own body, before the operator-binary stamp.
     fn spec_preflight_body(ctx: &DocsContext) -> String {
         let registry = skill_registry();
@@ -2427,7 +2421,7 @@ mod tests {
         ] {
             let body = &section(&guide, heading, end)[heading.len()..];
             assert!(
-                flat(body).starts_with(opening),
+                crate::wave::normalize_ws(body).starts_with(opening),
                 "{heading:?} must open with {opening:?}; got:\n{body}"
             );
             let countermeasure = section(body, "**Countermeasure:**", "\n\n");
@@ -2436,7 +2430,7 @@ mod tests {
                     && body.find("The tell is ") < body.find("**Countermeasure:**"),
                 "{heading:?} must state its tell before its countermeasure; got:\n{body}"
             );
-            let countermeasure = flat(countermeasure);
+            let countermeasure = crate::wave::normalize_ws(countermeasure);
             assert!(
                 countermeasure.contains("The `spec-preflight` skill")
                     && countermeasure.contains(step),
@@ -2505,7 +2499,7 @@ mod tests {
             "## Amending mid-run",
         );
         assert!(
-            flat(step).contains(
+            crate::wave::normalize_ws(step).contains(
                 "Run the `spec-preflight` skill and, under a workflow with a critic, `rigger \
                  critique <spec>` before launch."
             ),
