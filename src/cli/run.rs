@@ -3808,6 +3808,37 @@ mod tests {
         }
     }
 
+    /// Gap 108 (A DRIVER RESUME REPLAYS CACHED COURIER STEPS): a resumed driver re-spawns the
+    /// workers of a replayed wave, so `rigger prompt` - the call every worker makes first -
+    /// refuses a spawn whose result is recorded, naming that result's position, while a parked
+    /// spawn and one answered only by the step's liveness fault still get their task.
+    #[test]
+    fn prompt_refuses_a_spawn_whose_result_is_recorded() {
+        let req = crate::test_support::test_request("u", "impl", "implementer", 0, "do it");
+        let parked = req.to_event().unwrap();
+        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
+            .to_event()
+            .unwrap();
+        fault.position = 4;
+        let mut ended = spawn::SpawnResult::ok(&req.id, "done").to_event().unwrap();
+        ended.position = 7;
+
+        assert_eq!(
+            prompt_reply(std::slice::from_ref(&parked), &req.id),
+            Ok("do it".to_string())
+        );
+        assert_eq!(
+            prompt_reply(&[parked.clone(), fault.clone()], &req.id),
+            Ok("do it".to_string()),
+            "a liveness fault never ends a spawn"
+        );
+        let refused = prompt_reply(&[parked, fault, ended], &req.id).unwrap_err();
+        assert!(
+            refused.contains("u/implementer#0") && refused.contains("already ended (result at position 7)"),
+            "the refusal names the spawn and the position of the result that ended it; got {refused}"
+        );
+    }
+
     #[test]
     fn parse_result_meta_must_be_a_json_object() {
         let a = parse_result_args(&[
