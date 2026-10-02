@@ -370,12 +370,17 @@ fn lines_missing_the_workspace_scope(script: &str) -> Vec<&str> {
             if line.starts_with("cargo fmt") {
                 return !has("--all");
             }
-            let lane = ["cargo clippy", "cargo build", "cargo test"]
-                .iter()
-                .any(|command| line.starts_with(command));
-            lane && !has("--workspace")
+            compiles(line) && !has("--workspace")
         })
         .collect()
+}
+
+/// Does the trimmed command `line` compile the workspace on the dev profile: a `cargo clippy`,
+/// `cargo build` or `cargo test`?
+fn compiles(line: &str) -> bool {
+    ["cargo clippy", "cargo build", "cargo test"]
+        .iter()
+        .any(|command| line.starts_with(command))
 }
 
 /// The commands `sh .rigger/gates/lanes.sh <lane>` derives for `lane`, run at the repository root
@@ -469,6 +474,43 @@ fn the_ci_workflow_raises_no_test_address_space_cap() {
         raised.is_empty(),
         ".github/workflows/rust.yml must not name the test runner's address-space override: \
          {raised:#?}"
+    );
+}
+
+/// Every CI job that compiles the workspace on the dev profile (a `cargo clippy`, `cargo build`
+/// or `cargo test` step) sets `CARGO_PROFILE_DEV_DEBUG: line-tables-only` in its job env: the dev
+/// profile's default full debuginfo, in every test binary of every feature lane, outgrows a
+/// hosted runner's disk, while line tables keep the file:line a failing test's panic message and
+/// backtrace need. `cargo install` builds the release profile, so `install-nolock` is not one.
+#[test]
+fn every_job_that_compiles_the_dev_profile_builds_it_with_line_tables_only() {
+    let wf = workflow_yaml();
+    let jobs = wf["jobs"]
+        .as_mapping()
+        .expect("the workflow must have a `jobs` mapping");
+    let compiling: Vec<&str> = jobs
+        .keys()
+        .filter_map(serde_yaml::Value::as_str)
+        .filter(|job| {
+            job_run_scripts(&wf, job)
+                .lines()
+                .map(str::trim)
+                .any(compiles)
+        })
+        .collect();
+    assert!(
+        !compiling.is_empty(),
+        "the workflow must have a job that compiles the dev profile"
+    );
+    let unset: Vec<(&str, &serde_yaml::Value)> = compiling
+        .into_iter()
+        .map(|job| (job, &wf["jobs"][job]["env"]["CARGO_PROFILE_DEV_DEBUG"]))
+        .filter(|(_, debug)| debug.as_str() != Some("line-tables-only"))
+        .collect();
+    assert!(
+        unset.is_empty(),
+        "every job that compiles the dev profile must set `CARGO_PROFILE_DEV_DEBUG: \
+         line-tables-only` in its job env (job, value found): {unset:#?}"
     );
 }
 
