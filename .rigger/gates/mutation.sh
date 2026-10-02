@@ -224,10 +224,11 @@ last="${MUTANTS:-/nonexistent}"
 last="${last%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
 # The recorded base alone owns the misses; HEAD holding the tip governs narrowing alone (see
-# INCREMENTAL RE-SWEEPS).
+# INCREMENTAL RE-SWEEPS). A record with no tip leaves `anchor` empty either way, so `since` is
+# the run base.
 owned="$(cat "$last/base" 2>/dev/null)"
 test "$owned" = "$RIGGER_RUN_BASE" || owned=""
-{ test -n "$owned" && test -n "$anchor" &&
+{ test -n "$owned" &&
     test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0; } || anchor=""
 since="${anchor:-$RIGGER_RUN_BASE}"
 
