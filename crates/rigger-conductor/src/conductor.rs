@@ -12193,11 +12193,12 @@ impl ReviewRound {
 }
 
 /// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
-/// a reject a later review round cannot hold the next attempt to.
+/// a reject a later review round cannot hold the next attempt to. A reject blaming
+/// infrastructure judged no code, so it requires nothing and is never this (F3).
 fn rejects_without_required(output: &str) -> bool {
     !verdict_approves(output)
         && spawn::Adjudication::parse(output)
-            .is_some_and(|a| a.verdict.is_some() && a.required.is_empty())
+            .is_some_and(|a| a.verdict.is_some() && a.required.is_empty() && !a.is_infra_fault())
 }
 
 /// The `reviewed` evidence of a later round's reject that converged: every item it required
