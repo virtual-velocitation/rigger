@@ -657,6 +657,37 @@ mod tests {
         );
     }
 
+    /// The spec path the current run was launched with (spec 112, criterion 5: the plan-critique
+    /// stop names it): the LATEST run's `RunStarted.spec` exactly as recorded - never an earlier
+    /// run's, never stemmed - and empty when no run has started or the run carries no spec.
+    #[test]
+    fn current_run_spec_path_is_the_latest_runs_spec_as_recorded() {
+        let launched = |run: &str, spec: &str| {
+            RunStarted {
+                run: run.to_string(),
+                spec: spec.to_string(),
+                ..Default::default()
+            }
+            .to_event()
+            .unwrap()
+        };
+        let two_runs = vec![
+            launched("r1", "specs/1-old.md"),
+            ev("UnitStarted", r#"{"id":"u"}"#),
+            launched("r2", "./specs/2-new.md"),
+        ];
+        let no_spec = vec![launched("r1", "specs/1-old.md"), run_started("r2", &[])];
+        assert_eq!(
+            (
+                current_run_spec_path(&two_runs),
+                current_run_spec_path(&no_spec),
+                current_run_spec_path(&[ev("UnitStarted", r#"{"id":"u"}"#)]),
+            ),
+            ("./specs/2-new.md".to_string(), String::new(), String::new()),
+            "the latest run's spec as recorded; empty for a run with no spec or no run at all"
+        );
+    }
+
     #[test]
     fn current_run_is_the_suffix_from_the_latest_of_several_runs() {
         let events = vec![

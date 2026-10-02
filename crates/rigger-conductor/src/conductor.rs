@@ -43235,6 +43235,573 @@ mod tests {
         );
     }
 
+    // --- Spec 112, criterion 5: A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE ---
+
+    /// The spec the criterion-5 runs are launched with: minted through `start_fresh`, the way
+    /// a CLI run entry mints one, then adopted by `conductor::run`.
+    const STOP_SPEC: &str = "specs/widget.md";
+
+    /// The halt the stopping run in [`stopped_run`] reports: its spec and the findings its
+    /// second `spec-ambiguity` reject upheld.
+    const STOP_HALT: &str =
+        "amend the spec and relaunch: plan-critique found a spec defect in specs/widget.md \
+         (adv-2, adv-3)";
+
+    /// The lesson the stop in [`stopped_run`] records.
+    const STOP_LESSON: &str =
+        "plan-critique \"plan-critique\" stopped the run: its spec-ambiguity reject at attempt 1 \
+         followed a re-plan that did not clear the previous one; amend the spec and relaunch: \
+         plan-critique found a spec defect in specs/widget.md (adv-2, adv-3)";
+
+    /// A plan-critique adjudicator's reject line carrying `cause` and upholding `upheld`.
+    fn critique_reject(cause: &str, upheld: &[&str]) -> String {
+        json!({"verdict": "reject", "upheld": upheld, "discarded": [], "cause": cause}).to_string()
+    }
+
+    const APPROVE: &str = r#"{"verdict":"approve"}"#;
+
+    /// A plan-critique driver whose planner proposes [`widget_split`] on every spawn and whose
+    /// adjudicator answers round `k` with `rounds[k]` (an approve past the last one).
+    fn critique_rounds(rounds: &[String]) -> Stub {
+        Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+                ("judge".to_string(), APPROVE.to_string()),
+            ]),
+            output_by_spawn_id: rounds
+                .iter()
+                .enumerate()
+                .map(|(k, out)| {
+                    (
+                        spawn_id("plan-critique", ROLE_ADJUDICATOR, k as u32),
+                        out.clone(),
+                    )
+                })
+                .collect(),
+            ..Stub::new()
+        }
+    }
+
+    /// The spawn ids of the plan-critique rounds `0..rounds`, each after the re-plan that
+    /// precedes it: the planner's first spawn, then per round its adversary and adjudicator.
+    fn critique_round_spawns(rounds: u32) -> Vec<String> {
+        let mut ids = vec![spawn_id("plan", ROLE_IMPLEMENTER, 0)];
+        for k in 0..rounds {
+            if k > 0 {
+                ids.push(spawn_id("plan", ROLE_REPLAN, k));
+            }
+            ids.push(spawn_id("plan-critique", ROLE_ADVERSARY, k));
+            ids.push(spawn_id("plan-critique", ROLE_ADJUDICATOR, k));
+        }
+        ids
+    }
+
+    /// The `(type, replay key)` of every spec-defect stop record in `st`'s run stream, in log
+    /// order.
+    fn stop_records(st: &Store) -> Vec<(String, String)> {
+        st.read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| {
+                let key = e.meta.get(META_REPLAY_KEY)?.clone();
+                key.contains("/spec-defect").then_some((e.type_, key))
+            })
+            .collect()
+    }
+
+    /// The three records a stop after attempt 1 appends, each once, in order.
+    fn the_stop_records() -> Vec<(String, String)> {
+        vec![
+            (
+                contextgraph::TYPE_LESSON_LEARNED.to_string(),
+                "plan-critique/spec-defect-lesson#1".to_string(),
+            ),
+            (
+                TYPE_SPEC_DEFECT.to_string(),
+                "plan-critique/spec-defect#1".to_string(),
+            ),
+            (
+                ledger::TYPE_UNIT_ESCALATED.to_string(),
+                "plan-critique/spec-defect-escalated#1".to_string(),
+            ),
+        ]
+    }
+
+    /// The payload of the event recorded under replay `key` in `st`'s run stream.
+    fn keyed_payload(st: &Store, key: &str) -> Value {
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let e = events
+            .iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key))
+            .unwrap_or_else(|| panic!("no event under {key}"));
+        serde_json::from_slice(&e.data).unwrap()
+    }
+
+    /// One step over a store whose run was launched on [`STOP_SPEC`], under a driver whose
+    /// adjudicator rejects rounds 0 and 1 with `spec-ambiguity` - the second after the re-plan
+    /// the first one drove: the store and the driver after the stopping step, with its state.
+    fn stopped_run() -> (Store, Stub, RunState) {
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::start_fresh(&st, &[WIDGET_CRITERION.to_string()], "", "", "", STOP_SPEC)
+            .unwrap();
+        let driver = critique_rounds(&[
+            critique_reject("spec-ambiguity", &["adv-1"]),
+            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+        ]);
+        let rs = critique_step(&st, &driver);
+        (st, driver, rs)
+    }
+
+    #[test]
+    fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_stops_the_run() {
+        let (st, driver, rs) = stopped_run();
+        assert_eq!(
+            driver.spawn_ids(),
+            critique_round_spawns(2),
+            "the stopping reject re-plans nothing and nothing implements"
+        );
+        assert_eq!(
+            stop_records(&st),
+            the_stop_records(),
+            "the lesson, the SpecDefect and the escalation, in that order, each under its key"
+        );
+        let lesson = keyed_payload(&st, "plan-critique/spec-defect-lesson#1");
+        assert_eq!(
+            (&lesson["summary"], &lesson["about"]),
+            (&json!(STOP_LESSON), &json!([STOP_SPEC])),
+            "the lesson names the spec, the upheld findings and the amend route"
+        );
+        assert_eq!(
+            (
+                keyed_payload(&st, "plan-critique/spec-defect#1"),
+                keyed_payload(&st, "plan-critique/spec-defect-escalated#1"),
+            ),
+            (json!({"reason": STOP_HALT}), json!({"id": "plan-critique"})),
+            "the SpecDefect carries the halt text; the escalation is the gate's own"
+        );
+        let gate = &rs.units["plan-critique"];
+        assert_eq!(
+            (gate.status, gate.attempts, rs.spec_defect),
+            (ledger::Status::Escalated, 2, true),
+            "the gate is escalated at its two rejects and the run folds the spec defect"
+        );
+        assert_eq!(
+            rs.attention
+                .iter()
+                .map(|a| (a.kind, a.unit.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ledger::ATTENTION_ESCALATED, "plan-critique"),
+                (ledger::ATTENTION_WORKER_DEATH_RECURRED, "plan-critique"),
+            ],
+            "the stop's attention entry is the gate's escalation, never a halted entry"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            spawn::step_of_pass(&events, rs).unwrap().halted.as_deref(),
+            Some(STOP_HALT),
+            "the step halts with the amend route"
+        );
+    }
+
+    #[test]
+    fn a_first_spec_ambiguity_reject_re_plans_as_today() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = critique_rounds(&[critique_reject("spec-ambiguity", &["adv-1"])]);
+        let rs = critique_step(&st, &driver);
+        assert_eq!(
+            driver.spawn_ids()[..6],
+            critique_round_spawns(2)[..],
+            "the first spec-ambiguity reject re-plans and the next round critiques"
+        );
+        assert_eq!(
+            (
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+                stop_records(&st)
+            ),
+            (ledger::Status::Integrated, None, Vec::new()),
+            "the revised DAG approves; nothing stops"
+        );
+    }
+
+    #[test]
+    fn a_spec_ambiguity_reject_after_a_decomposition_conflict_re_plans_again() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = critique_rounds(&[
+            critique_reject("decomposition-conflict", &["adv-1"]),
+            critique_reject("spec-ambiguity", &["adv-2"]),
+        ]);
+        let rs = critique_step(&st, &driver);
+        assert_eq!(
+            driver.spawn_ids()[..9],
+            critique_round_spawns(3)[..],
+            "a spec-ambiguity reject the previous reject did not share re-plans again"
+        );
+        assert_eq!(
+            (
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+                stop_records(&st)
+            ),
+            (ledger::Status::Integrated, None, Vec::new()),
+            "the third round approves; nothing stops"
+        );
+    }
+
+    #[test]
+    fn a_stop_with_no_upheld_finding_and_no_spec_says_so() {
+        // No `start_fresh`: the conductor mints the run itself, with no spec path.
+        let st = Store::open(":memory:").unwrap();
+        let driver = critique_rounds(&[
+            critique_reject("spec-ambiguity", &[]),
+            critique_reject("spec-ambiguity", &[]),
+        ]);
+        let rs = critique_step(&st, &driver);
+        let halt =
+            "amend the spec and relaunch: plan-critique found a spec defect in the spec (none upheld)";
+        let lesson = keyed_payload(&st, "plan-critique/spec-defect-lesson#1");
+        assert_eq!(
+            (rs.budget_halt.as_deref(), &lesson["about"]),
+            (Some(halt), &json!([])),
+            "an empty spec names `the spec` and is about nothing; no upheld finding is said"
+        );
+    }
+
+    #[test]
+    fn a_stopped_gate_halts_the_step_before_the_coverage_check() {
+        // No fan-out template, so no baseline covers the gadget criterion: the held DAG the
+        // planner proposed leaves it uncovered, which a run past the stop would refuse.
+        let gadget = "the gadget is wired";
+        let cfg = workflow_cfg(
+            &["planner", "worker", "adversary", "judge"],
+            &[],
+            vec![plan_stage(), critique_stage("adversary")],
+        );
+        let st = Store::open(":memory:").unwrap();
+        let criteria = vec![WIDGET_CRITERION.to_string(), gadget.to_string()];
+        crate::run_store::start_fresh(&st, &criteria, "", "", "", STOP_SPEC).unwrap();
+        let driver = critique_rounds(&[
+            critique_reject("spec-ambiguity", &["adv-1"]),
+            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+        ]);
+        let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria))
+            .expect("a stopped gate returns its halted state, never the coverage error");
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                rs.budget_halt.as_deref(),
+                events
+                    .iter()
+                    .filter(|e| e.type_ == TYPE_SPEC_DEFECT)
+                    .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                    .collect::<Vec<_>>()
+            ),
+            (Some(STOP_HALT), vec![json!({"reason": STOP_HALT})]),
+            "the step halts on the stop; the coverage check never runs"
+        );
+    }
+
+    #[test]
+    fn a_later_step_finds_the_stopped_gate_terminal_and_appends_nothing() {
+        let (st, _, _) = stopped_run();
+        let before = st.read_stream(STREAM, 0, Direction::Forward).unwrap().len();
+        let later = Stub::new();
+        let rs = critique_step(&st, &later);
+        assert_eq!(
+            (
+                later.spawn_ids(),
+                st.read_stream(STREAM, 0, Direction::Forward).unwrap().len(),
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+            ),
+            (
+                Vec::<String>::new(),
+                before,
+                ledger::Status::Escalated,
+                None
+            ),
+            "the gate is terminal: nothing spawns or appends, and the halt was the stopping step's"
+        );
+    }
+
+    #[test]
+    fn a_step_re_entering_a_crashed_stop_completes_it_without_spawning() {
+        let (st, _, _) = stopped_run();
+        let log = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // A crash right after the stopping reject's UnitFailed, and one after the SpecDefect.
+        for crashed_before in [
+            "plan-critique/spec-defect-lesson#1",
+            "plan-critique/spec-defect-escalated#1",
+        ] {
+            let at = log
+                .iter()
+                .position(|e| {
+                    e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(crashed_before)
+                })
+                .unwrap();
+            let resumed = Store::open(":memory:").unwrap();
+            for e in &log[..at] {
+                resumed
+                    .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(e))
+                    .unwrap();
+            }
+            let driver = Stub::new();
+            let rs = critique_step(&resumed, &driver);
+            assert_eq!(
+                (
+                    driver.spawn_ids(),
+                    stop_records(&resumed),
+                    rs.budget_halt.as_deref()
+                ),
+                (Vec::<String>::new(), the_stop_records(), Some(STOP_HALT)),
+                "re-entered before {crashed_before}: the stop completes, each record once, \
+                 without spawning"
+            );
+        }
+    }
+
+    /// The gate's `UnitFailed` for its round `k`, under the replay key the gate records it with,
+    /// carrying `review_reason`.
+    fn gate_failed(k: u32, review_reason: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({
+                "id": "plan-critique",
+                "attempts": k + 1,
+                "cause": "reject",
+                "review_reason": review_reason,
+            }))
+            .unwrap(),
+        )
+        .with_meta(META_REPLAY_KEY, &format!("plan-critique/failed#{k}"))
+    }
+
+    /// The re-plan spawn at `attempt`.
+    fn re_plan_id(attempt: u32) -> String {
+        spawn_id("plan", ROLE_REPLAN, attempt)
+    }
+
+    /// The re-plan at `attempt` recorded as the stepwise driver parks it.
+    fn re_plan_requested(attempt: u32) -> Event {
+        crate::spawn::test_request("plan", "plan", ROLE_REPLAN, attempt, "re-plan")
+            .to_event()
+            .unwrap()
+    }
+
+    /// The predicate over `run` for the gate `plan-critique` of producer `plan` at `s`: the
+    /// stopping reject's upheld ids when it holds.
+    fn stops_at(run: &[Event], s: u32) -> Option<Vec<String>> {
+        spec_defect_stop(run, "plan-critique", "plan", s).map(|a| a.upheld)
+    }
+
+    /// Two `spec-ambiguity` rejects at attempts 0 and 1 with the re-plan at 1 between them -
+    /// the slice the stop holds over at attempt 2.
+    fn two_spec_ambiguity_rejects() -> Vec<Event> {
+        vec![
+            gate_failed(0, &critique_reject("spec-ambiguity", &["adv-1"])),
+            re_plan_requested(1),
+            gate_failed(1, &critique_reject("spec-ambiguity", &["adv-2", "adv-3"])),
+        ]
+    }
+
+    #[test]
+    fn the_stop_holds_on_two_spec_ambiguity_rejects_around_a_recorded_re_plan() {
+        let run = two_spec_ambiguity_rejects();
+        let stopping = Some(vec!["adv-2".to_string(), "adv-3".to_string()]);
+        let answered = vec![
+            run[0].clone(),
+            spawn::SpawnResult::ok(re_plan_id(1), "re-planned")
+                .to_event()
+                .unwrap(),
+            run[2].clone(),
+        ];
+        let emitted = vec![
+            run[0].clone(),
+            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, &re_plan_id(1)),
+            run[2].clone(),
+        ];
+        let mut other_stop_done = run.clone();
+        other_stop_done.push(
+            Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
+                .with_meta(META_REPLAY_KEY, "plan-critique/spec-defect-escalated#0"),
+        );
+        assert_eq!(
+            (
+                stops_at(&run, 2),
+                stops_at(&answered, 2),
+                stops_at(&emitted, 2),
+                stops_at(&other_stop_done, 2),
+            ),
+            (
+                stopping.clone(),
+                stopping.clone(),
+                stopping.clone(),
+                stopping
+            ),
+            "a re-plan is recorded by its request, its result or an event it emitted; another \
+             attempt's completion key does not complete this stop"
+        );
+    }
+
+    #[test]
+    fn the_stop_does_not_hold_short_of_its_whole_shape() {
+        let run = two_spec_ambiguity_rejects();
+        let with = |extra: Event| {
+            let mut run = run.clone();
+            run.push(extra);
+            run
+        };
+        let replace = |i: usize, e: Event| {
+            let mut run = run.clone();
+            run[i] = e;
+            run
+        };
+        let other_gate = |e: &Event| {
+            let key = e.meta[META_REPLAY_KEY].replace("plan-critique/", "other-gate/");
+            e.clone().with_meta(META_REPLAY_KEY, &key)
+        };
+        let cases: Vec<(&str, Vec<Event>, u32)> = vec![
+            ("no reject yet", run.clone(), 0),
+            ("one reject", run.clone(), 1),
+            ("no reject at attempt 2", run.clone(), 3),
+            (
+                "the earlier reject is a decomposition conflict",
+                replace(
+                    0,
+                    gate_failed(0, &critique_reject("decomposition-conflict", &[])),
+                ),
+                2,
+            ),
+            (
+                "the later reject is a decomposition conflict",
+                replace(
+                    2,
+                    gate_failed(1, &critique_reject("decomposition-conflict", &[])),
+                ),
+                2,
+            ),
+            (
+                "the earlier reject carries no review reason",
+                replace(0, gate_failed(0, "")),
+                2,
+            ),
+            (
+                "the later reject's verdict names no cause",
+                replace(
+                    2,
+                    gate_failed(1, r#"{"verdict":"reject","upheld":["adv-2"]}"#),
+                ),
+                2,
+            ),
+            (
+                "the re-plan between them left no record (a blocking driver, nothing emitted)",
+                vec![run[0].clone(), run[2].clone()],
+                2,
+            ),
+            (
+                "the re-plan the stopping reject would drive is recorded",
+                with(re_plan_requested(2)),
+                2,
+            ),
+            (
+                "the stop already completed",
+                with(
+                    Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
+                        .with_meta(META_REPLAY_KEY, "plan-critique/spec-defect-escalated#1"),
+                ),
+                2,
+            ),
+            (
+                "the rejects are another gate's",
+                vec![other_gate(&run[0]), run[1].clone(), other_gate(&run[2])],
+                2,
+            ),
+        ];
+        for (why, run, s) in cases {
+            assert_eq!(stops_at(&run, s), None, "{why}");
+        }
+    }
+
+    #[test]
+    fn the_stop_holds_at_any_attempt_its_two_rejects_precede() {
+        let run = vec![
+            gate_failed(1, &critique_reject("spec-ambiguity", &["adv-1"])),
+            re_plan_requested(2),
+            gate_failed(2, &critique_reject("spec-ambiguity", &["adv-4"])),
+        ];
+        assert_eq!(stops_at(&run, 3), Some(vec!["adv-4".to_string()]));
+    }
+
+    #[test]
+    fn the_spec_defect_halt_names_the_spec_and_the_upheld_findings() {
+        assert_eq!(
+            (
+                spec_defect_halt("specs/a.md", &["f1".to_string(), "f2".to_string()]),
+                spec_defect_halt("", &[]),
+            ),
+            (
+                "amend the spec and relaunch: plan-critique found a spec defect in specs/a.md \
+                 (f1, f2)"
+                    .to_string(),
+                "amend the spec and relaunch: plan-critique found a spec defect in the spec \
+                 (none upheld)"
+                    .to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn the_budget_halt_takes_precedence_over_the_spec_defect_stop() {
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.budget = 4;
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let none = ctx.halt_reason();
+        ctx.spec_defect_halt.set("amend".to_string()).unwrap();
+        let spec_defect = ctx.halt_reason();
+        ctx.budget_halted.store(true, Ordering::SeqCst);
+        assert_eq!(
+            (none, spec_defect, ctx.halt_reason()),
+            (
+                None,
+                Some("amend".to_string()),
+                Some("budget exhausted: 0/4 spawns".to_string())
+            ),
+            "budget first, then the spec defect"
+        );
+    }
+
+    /// The verdict paragraph of the DAG critique prompt carries the cause contract that tells
+    /// a spec defect from a decomposition the planner can fix (spec 112, criterion 5).
+    #[test]
+    fn the_dag_critique_verdict_paragraph_carries_the_spec_defect_cause_contract() {
+        let driver = one_unit_critique();
+        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+        let verdict = "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
+             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition back to \
+             the planner. Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) \
+             defect, a unit over the size cap, or a defect in a criterion's own text that no \
+             decomposition can remove - never for mechanical blast-radius overlap alone. A \
+             reject's cause follows this gate's contract, which governs it over any generic \
+             cause wording in your persona: \"cause\":\"spec-ambiguity\" only when the upheld \
+             defect is in a criterion's own text and no decomposition can remove it (two \
+             criteria that contradict under every landing order, a criterion no plan can \
+             satisfy, a demanded mitigation no criterion owns); \
+             \"cause\":\"decomposition-conflict\" for every defect a re-plan can fix (twin \
+             units, a missing exclusion between units, a unit over the size cap, a unit owning \
+             no criterion, a split the planner chose). When unsure, \
+             \"cause\":\"decomposition-conflict\".\n";
+        assert!(
+            prompt.contains(verdict),
+            "the verdict paragraph carries the cause contract:\n{prompt}"
+        );
+    }
+
     #[test]
     fn an_approved_gate_releases_planner_proposed_units_not_only_baselines() {
         // The release direction of the same hold (spec 10, done-when 1: an approve
