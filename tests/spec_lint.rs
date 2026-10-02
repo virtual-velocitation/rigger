@@ -1503,6 +1503,83 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
+    /// Spec 112, *The one masker*, as the operator decided it (`d112-op-backtick-run-pairing`):
+    /// backtick spans pair by backtick RUN, as Markdown delimits a code span. Given a Design
+    /// whose first paragraph names the smell inside a double-backtick span, whose second states
+    /// it as prose and whose third names it inside a span nested in a double-backtick span,
+    /// when the operator runs `rigger validate`, then F4 warns once: each double-backtick
+    /// span masks as one span, its text included, and only the prose smell is linted.
+    validate_masks_a_double_backtick_span_as_one_span_for_the_disposition_lint: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\n\
+             The plan names ``could instead`` as the phrase it rejects.\n\n\
+             The team could instead retry.\n\n\
+             The plan also names `` `could instead` `` as the old phrase.\n\n\
+             ## Done when\n\n- [ ] the daemon retries on failure. This criterion OWNS retry.\n",
+        ),
+        &[Lint::Exactly(
+            "F4 disposition",
+            &["F4 disposition: open disposition (\"could instead\") outside Notes; decide it in \
+               Design or move it to Notes as an explicit deferral"],
+            "a smell inside a double-backtick span is masked with its span, so only the prose \
+             paragraph's smell warns",
+        )],
+    );
+
+    /// The run rule reaching the twin tell: given criteria 1 and 2 measuring `rigger step`,
+    /// criterion 2 spelling it as a double-backtick span, and criteria 3 and 4 naming `store`
+    /// where criterion 4's only measure word sits inside a double-backtick span, when the
+    /// operator runs `rigger validate`, then exactly one twin warns: criterion 2 reads its
+    /// double-backtick span as the surface `rigger step` (never an empty surface), and
+    /// criterion 4's masked measure word is not seen.
+    validate_reads_a_double_backtick_span_as_one_twin_surface: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
+             - [ ] ``rigger step`` costs at most one read. This criterion OWNS the query.\n\
+             - [ ] `store` appends one event. This criterion OWNS the append.\n\
+             - [ ] `store` is named in the ``exactly`` column. This criterion OWNS the column.\n",
+        ),
+        &[Lint::Exactly(
+            "F10 landing-order circularity",
+            &["F10 landing-order circularity (criterion 2): twin measured surface `rigger step` \
+               with criterion 1; if either lands first without the other, does its own text \
+               hold? simulate the landing order and split ownership at the seam in Design"],
+            "a double-backtick span is one surface shared with its single-backtick spelling, \
+             and a measure word inside one is masked",
+        )],
+    );
+
+    /// The unclosed-run corner: given two criteria whose first sentence opens a double-backtick
+    /// run that no later run of two backticks closes (four single backticks follow it) before
+    /// an identity word, and criterion 2 adding a second identity sentence, when the operator
+    /// runs `rigger validate`, then only criterion 2 draws the F11 tells: the unclosed run
+    /// blanks from itself to its sentence end whatever single backticks follow it, and the
+    /// next sentence is read again.
+    validate_blanks_an_unclosed_backtick_run_to_its_sentence_end: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Design\n\nThe rebuild reads the log.\n\n## Done when\n\n\
+             - [ ] the ``export` and `import` views and the log` are byte-identical to the \
+             archive. This criterion OWNS the export.\n\
+             - [ ] the ``export` and `import` views and the log` are byte-identical to the \
+             archive. The rebuild equals the original. This criterion OWNS the rebuild.\n",
+        ),
+        &[Lint::Exactly(
+            "F11 undecided removal",
+            &[
+                "F11 undecided removal (criterion 2): identity claim names no comparison \
+                 surface; name the bytes, projection or ordering it is compared on",
+                "F11 undecided removal (criterion 2): identity claim while no Design or \
+                 Notes line decides removal; decide in Design what a later generation that \
+                 drops a fact does to it",
+            ],
+            "an identity word after an unclosed backtick run is masked to the sentence end, \
+             and an identity sentence after it still warns",
+        )],
+    );
+}
+
+rigger::test_cases! {
     /// The quote corners at the CLI seam: given an identity word after an odd quote mark
     /// (criterion 1), the same odd quote in a first sentence followed by an identity sentence
     /// (criterion 2), and a measure word between two quoted spans (criterion 3) beside two
