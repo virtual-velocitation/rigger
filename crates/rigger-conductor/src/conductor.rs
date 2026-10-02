@@ -8591,9 +8591,10 @@ impl RunCtx<'_> {
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
-        // so the FILE_TOUCHED records and the reindex see the real artifact set whether
-        // or not the unit was pre-committed.
-        let mut files = wt.changed_since_base()?;
+        // so the landing decisions below see whether the unit has anything left to land,
+        // whether or not it was pre-committed. The tail after the landing reads the range
+        // that actually landed instead (`landed`, below).
+        let files = wt.changed_since_base()?;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
         // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
         // genuinely never had anything to land AND for one whose `Worktree::land` already
@@ -8639,27 +8640,20 @@ impl RunCtx<'_> {
                         // the true no-op short circuit.
                         match cached(&self.landed, &conflict_regenerate_key(&st.name, attempt)) {
                             Some((landed_pass, sha, pre_merge)) => {
-                                files = wt
-                                    .diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
                                 already_landed = Some((landed_pass, sha, pre_merge));
                             }
                             None => return Ok(Integration::default()),
                         }
                     } else {
                         // The catch-up made a real regenerate commit on the worktree's own
-                        // branch, still unlanded - recompute `files` and fall through to the
-                        // ordinary merge/land loop below (`already_landed` stays `None`),
-                        // which will merge and land this commit for real (a trivial fast-
-                        // forward, since nothing else changed base-side) and re-check owed
-                        // once more (now empty) before breaking.
-                        files = wt.changed_since_base()?;
+                        // branch, still unlanded - fall through to the ordinary merge/land
+                        // loop below (`already_landed` stays `None`), which will merge and land
+                        // this commit for real (a trivial fast-forward, since nothing else
+                        // changed base-side) and re-check owed once more (now empty) before
+                        // breaking.
                     }
                 }
                 Some((pass, unit_tip, run_tip)) => {
-                    // Recompute the ACTUAL files this already-landed merge touched from the
-                    // OLDER base it merged FROM (the current base has since absorbed them,
-                    // which is exactly why `changed_since_base` read empty above).
-                    files = wt.diff_names(&run_tip, crate::worktree::DiffMode::MergeBase)?;
                     // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
                     // root cause: "row 4 closed" was treated as "fully integrated" without
                     // ever consulting row 3): `Worktree::land` already fast-forwarded the
@@ -8683,7 +8677,6 @@ impl RunCtx<'_> {
                         self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
                         clear_attempt(&self.pending_landing, &st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
-                        files = wt.changed_since_base()?;
                     }
                 }
             }
@@ -8735,6 +8728,11 @@ impl RunCtx<'_> {
         // (unchanged from before this fix) through the post-merge gate suite and staleness
         // marking below.
         let mut lock = self.integrate_mu.lock().unwrap();
+        // The run branch's tip right before THIS call's first landing: a mixed conflict lands
+        // twice (the source resolution, then the owed regeneration), so the range that landed
+        // starts there, never at the last pass's `pre_merge`. `None` when the call itself
+        // landed nothing new (an already-landed resume), which then reads from `pre_merge`.
+        let mut landed_from: Option<String> = None;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `already_landed` is set ONLY
         // when `files` came back empty above AND a still-open landing-intent explained it -
         // together, proof `Worktree::land` already completed this exact landing for real in
@@ -8837,6 +8835,7 @@ impl RunCtx<'_> {
                             worktree::LandOutcome::Landed => {}
                         }
                         self.record_landed(&st.name, attempt, pass, &c, &pre_merge)?;
+                        landed_from.get_or_insert_with(|| pre_merge.clone());
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
                         // implementer's own commit lands, bundling in the ALREADY-staged
@@ -9079,9 +9078,18 @@ impl RunCtx<'_> {
         // FILE_TOUCHED emits below are not - so they come only after every fallible reindex step
         // has succeeded, and a failed reindex leaves none of them for the resume to append a
         // second time.
+        //
+        // Every one of them reads ONE file set: the range that landed, from the run branch's tip
+        // before this call's first landing to the landed tip. It holds the unit's own paths AND
+        // every path a regeneration committed at landing (which rewrites files beyond the
+        // conflicted one), and a fresh landing and a resumed one derive it alike.
+        let landed = wt.diff_names(
+            landed_from.as_deref().unwrap_or(&pre_merge),
+            crate::worktree::DiffMode::MergeBase,
+        )?;
         if !commit.is_empty() {
             if let Some(g) = self.deps.grounder {
-                g.reindex(&self.deps.repo, &files);
+                g.reindex(&self.deps.repo, &landed);
             }
             // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
             // what `graph --show`/`graph --around` read) used to populate only ONCE per process
@@ -9092,9 +9100,9 @@ impl RunCtx<'_> {
             // integration touched - bounded by the merge's own file list, never a whole-project
             // walk - right alongside the grounder's own (already-existing) reindex above, so the
             // two stay in lockstep from every integration on.
-            self.ingest_files_into_graph(&files)?;
+            self.ingest_files_into_graph(&landed)?;
         }
-        for f in &files {
+        for f in &landed {
             self.emit(
                 contextgraph::TYPE_FILE_TOUCHED,
                 json!({"path": f, "by": &st.agent}),
@@ -9106,7 +9114,7 @@ impl RunCtx<'_> {
         // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
         // resume seeding. Computed under the integrate lock so a concurrent integration's
         // staleness view is serialized with the merge it observes.
-        let staled = self.mark_stale_downstream(stages, &st.name, &files);
+        let staled = self.mark_stale_downstream(stages, &st.name, &landed);
         Ok(Integration {
             commit,
             staled,
@@ -9519,8 +9527,8 @@ impl RunCtx<'_> {
     /// `conflict_regenerate_pending` marker sat orphaned and the `accept_incoming` placeholder
     /// content shipped permanently. Mirrors that same loop check exactly (regenerate, record,
     /// clear) but does NOT land the resulting commit itself - the caller must still let the
-    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real,
-    /// so `files` is left for the caller to recompute once this returns. The episode tag
+    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real.
+    /// The episode tag
     /// (`record_regenerate_commit`'s pairing key with the ORIGINAL `record_regenerate_pending`
     /// before-record) can never be recovered here - the pending map holds only paths, not the
     /// episode string that produced them, and by construction this call is reached only from
@@ -9529,7 +9537,7 @@ impl RunCtx<'_> {
     /// no-op naturally reuses the same sha and so the same, correctly-deduplicated tag) is
     /// used instead of trying to reconstruct a value this call structurally cannot know.
     /// Returns whether anything was actually owed (and thus regenerated) so the caller can
-    /// decide whether to recompute `files` at all.
+    /// decide whether anything is left to land.
     fn catch_up_owed_regeneration(
         &self,
         wt: &Worktree,
