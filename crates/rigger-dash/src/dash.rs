@@ -267,25 +267,36 @@ pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 /// peer closes the connection - in every one of those cases the caller inspects `head` itself to
 /// decide what it found (mirroring each original function's own "decide on exactly what arrived"
 /// handling of a peer close).
-fn probe_dash_head(
-    port: u16,
-    mut stop_early: impl FnMut(&[u8]) -> bool,
-) -> Result<Vec<u8>, ProbeMiss> {
+fn probe_dash_head(port: u16, stop_early: impl FnMut(&[u8]) -> bool) -> Result<Vec<u8>, ProbeMiss> {
     use std::io::Read;
 
-    let miss = |e: io::Error| match e.kind() {
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ProbeMiss::Silent,
-        _ => ProbeMiss::Refused,
-    };
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500)).map_err(miss)?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+        .map_err(classify_probe_error)?;
     stream
         .set_write_timeout(Some(Duration::from_millis(500)))
-        .map_err(miss)?;
+        .map_err(classify_probe_error)?;
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .map_err(miss)?;
+        .map_err(classify_probe_error)?;
+    read_probe_head(
+        |buf, remaining| {
+            stream.set_read_timeout(Some(remaining))?;
+            stream.read(buf)
+        },
+        stop_early,
+    )
+}
 
+/// Reads the response head [`probe_dash_head`] asked for, inside its [`DASH_PROBE_WINDOW_MS`]
+/// deadline and byte cap: `read_within` reads once, waiting at most the time it is handed. An
+/// `Interrupted` read is read again inside the same deadline - a signal delivered to this thread
+/// ends a read that has a receive timeout early whatever the signal, which says nothing about
+/// the port.
+fn read_probe_head(
+    mut read_within: impl FnMut(&mut [u8], Duration) -> io::Result<usize>,
+    mut stop_early: impl FnMut(&[u8]) -> bool,
+) -> Result<Vec<u8>, ProbeMiss> {
     let deadline = std::time::Instant::now() + Duration::from_millis(DASH_PROBE_WINDOW_MS);
     const MAX_HEAD_BYTES: usize = 8 * 1024;
     let mut head: Vec<u8> = Vec::with_capacity(512);
@@ -295,8 +306,7 @@ fn probe_dash_head(
             .checked_duration_since(std::time::Instant::now())
             .filter(|r| !r.is_zero())
             .ok_or(ProbeMiss::Silent)?;
-        stream.set_read_timeout(Some(remaining)).map_err(miss)?;
-        match stream.read(&mut buf) {
+        match read_within(&mut buf, remaining) {
             Ok(0) => return Ok(head), // closed: caller decides on exactly what arrived
             Ok(n) => {
                 head.extend_from_slice(&buf[..n]);
@@ -304,8 +314,18 @@ fn probe_dash_head(
                     return Ok(head);
                 }
             }
-            Err(e) => return Err(miss(e)), // a slow/silent holder times out, or the peer reset
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(classify_probe_error(e)),
         }
+    }
+}
+
+/// How [`probe_dash_head`] reads an error from any of its steps: a timeout means a holder is
+/// alive but silent, anything else that nothing serves the port.
+fn classify_probe_error(e: io::Error) -> ProbeMiss {
+    match e.kind() {
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => ProbeMiss::Silent,
+        _ => ProbeMiss::Refused,
     }
 }
 
