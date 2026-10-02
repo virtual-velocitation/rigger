@@ -1090,6 +1090,25 @@ mod tests {
         assert_eq!(approve.verdict.as_deref(), Some("approve"));
     }
 
+    /// The plan-critique spec-defect cause (spec 112, criterion 5) is spelled once, and a verdict
+    /// is a spec ambiguity exactly when its parsed cause is that spelling: never for another
+    /// cause, a cause in another case, or a verdict naming none.
+    #[test]
+    fn a_verdict_is_a_spec_ambiguity_exactly_when_its_cause_is_spec_ambiguity() {
+        let is_spec_ambiguity = |line: &str| Adjudication::parse(line).unwrap().is_spec_ambiguity();
+        assert_eq!(
+            (
+                CAUSE_SPEC_AMBIGUITY,
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"spec-ambiguity"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"decomposition-conflict"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"infra-fault"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"Spec-Ambiguity"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","upheld":["a1"]}"#),
+            ),
+            ("spec-ambiguity", true, false, false, false, false)
+        );
+    }
+
     #[test]
     fn the_sdet_author_role_token_is_a_distinct_first_class_role() {
         // Spec 32 c1: the SDET periphery-test AUTHOR is its OWN role, spawned at the build
