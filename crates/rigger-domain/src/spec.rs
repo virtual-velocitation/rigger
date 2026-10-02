@@ -2634,12 +2634,12 @@ mod tests {
             F10,
             &[twin(2, "s", 1)],
         );
-        /// A double-backtick span reads as two empty pairs, and an empty pair names no span,
-        /// so two criteria measuring one never twin on an empty surface.
-        twin_tell_names_no_empty_span_for_a_double_backtick_span: assert_decided_tells(
-            &["``store`` appends one event.", "``store`` appends two events."],
+        /// A double-backtick span is one span whose text is the surface it names, never an
+        /// empty surface, so it twins with the same surface spelled in single backticks.
+        twin_tell_reads_a_double_backtick_span_as_the_surface_it_delimits: assert_decided_tells(
+            &["``store`` appends one event.", "`store` appends two events."],
             F10,
-            &[],
+            &[twin(2, "store", 1)],
         );
         /// A measure word inside a code span is masked, so it measures nothing.
         twin_tell_does_not_see_a_measure_word_inside_a_code_span: assert_decided_tells(
@@ -2669,6 +2669,53 @@ mod tests {
             &["the `identical` flag is set."],
             F11,
             &[],
+        );
+    }
+
+    /// `strip_inline_code` blanks `text` to exactly `masked`, and `code_spans` reads exactly
+    /// `spans` from it: the masker and the span reader pair backtick runs by one rule.
+    fn assert_backtick_runs(text: &str, masked: &str, spans: &[&str]) {
+        assert_eq!(strip_inline_code(text), masked, "masked {text:?}");
+        assert_eq!(code_spans(text), spans, "spans of {text:?}");
+    }
+
+    crate::test_cases! {
+        /// Spec 112, *The one masker* (`d112-op-backtick-run-pairing`): a run of two backticks
+        /// opens a span that the next run of two closes, so the span blanks through both runs
+        /// and reads as its text; the character right after the closing run stays visible.
+        backtick_runs_mask_a_double_backtick_span_as_one_span: assert_backtick_runs(
+            "a``x``y z",
+            "a     y z",
+            &["x"],
+        );
+        /// Single backticks inside a double-backtick span are its text, as Markdown nests
+        /// them: only the closing run of two ends the span.
+        backtick_runs_read_single_backticks_inside_a_double_backtick_span_as_text: assert_backtick_runs(
+            "`` `a` `` b",
+            "          b",
+            &[" `a` "],
+        );
+        /// A run with no later run of its length blanks to the end of the masked text and
+        /// names no span, whatever shorter runs follow it.
+        backtick_runs_blank_an_unclosed_run_to_the_end_past_shorter_runs: assert_backtick_runs(
+            "x ``a` b `c` d",
+            "x             ",
+            &[],
+        );
+        /// Spans of different widths pair independently and in order, and an unclosed last
+        /// run blanks to the end; prose between the spans stays visible.
+        backtick_runs_pair_each_width_in_order_and_blank_an_unclosed_last_run: assert_backtick_runs(
+            "`a`, ``b``, `c d",
+            "   ,      ,     ",
+            &["a", "b"],
+        );
+        /// A stray single backtick pairs with the opener of the next single-backtick span,
+        /// passing over a double-backtick span as its text, so that span's own text is
+        /// linted and its closing mark blanks to the end.
+        backtick_runs_pair_a_stray_backtick_with_the_next_run_of_its_width: assert_backtick_runs(
+            "`x ``y`` `z` w",
+            "          z   ",
+            &["x ``y`` "],
         );
     }
 
