@@ -28652,10 +28652,11 @@ mod tests {
     fn an_infra_spawn_crash_retries_under_a_retry_id_and_charges_nothing() {
         // F3: a crash mid-spawn is infrastructure - the agent process died and the unit's code
         // was never judged - so it charges no remediation attempt. The stage reruns at the SAME
-        // attempt under the next retry ordinal: the implementer re-spawns as
-        // `s/implementer#0~retry1` (never the next attempt's `s/implementer#1`), the retry is
-        // recorded as an `infra-retry` mark naming the `infra:spawn` cause, and no `UnitFailed`
-        // is written.
+        // attempt under the next retry ordinal: the implementer re-spawns under a retry id of
+        // attempt 0 (never the next attempt's `s/implementer#1`) past the
+        // `~retry1..=CONFLICT_RESOLVE_BOUND` ids the attempt's conflict resolution spawns under,
+        // so neither can replay the other's recorded result; the retry is recorded as an
+        // `infra-retry` mark naming the `infra:spawn` cause, and no `UnitFailed` is written.
         let cfg = one_gated_stage_cfg("s");
         let driver = Stub {
             fail_spawn_ids: [spawn_id("s", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
@@ -28675,9 +28676,21 @@ mod tests {
         );
         let ids = driver.spawn_ids();
         assert!(
-            ids.contains(&spawn_retry_id("s", ROLE_IMPLEMENTER, 0, 1)),
+            ids.contains(&spawn_retry_id(
+                "s",
+                ROLE_IMPLEMENTER,
+                0,
+                CONFLICT_RESOLVE_BOUND + 1
+            )),
             "the crashed spawn must be retried under its retry id at the same attempt: {ids:?}"
         );
+        for conflict_round in 1..=CONFLICT_RESOLVE_BOUND {
+            let conflict_id = spawn_retry_id("s", ROLE_IMPLEMENTER, 0, conflict_round);
+            assert!(
+                !ids.contains(&conflict_id),
+                "an infra rerun must never take the conflict-resolution id {conflict_id:?}: {ids:?}"
+            );
+        }
         assert!(
             !ids.contains(&spawn_id("s", ROLE_IMPLEMENTER, 1)),
             "a crash must never advance the unit to its next attempt: {ids:?}"
@@ -28707,10 +28720,12 @@ mod tests {
         // FRESH bound: one more crash there is retried, not halted again.
         let cfg = one_gated_stage_cfg("s");
         let st = Store::open(":memory:").unwrap();
+        // The implementer of the stage run at infra ordinal `n` spawns under retry id
+        // `n * (CONFLICT_RESOLVE_BOUND + 1)`, past the attempt's conflict-resolution ids.
+        let rerun_id =
+            |n: u32| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n * (CONFLICT_RESOLVE_BOUND + 1));
         let crashing = |ordinals: std::ops::Range<u32>| Stub {
-            fail_spawn_ids: ordinals
-                .map(|n| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, n))
-                .collect(),
+            fail_spawn_ids: ordinals.map(rerun_id).collect(),
             ..Stub::new()
         };
 
@@ -28773,9 +28788,7 @@ mod tests {
             "the relaunch charges nothing either"
         );
         assert!(
-            recovering
-                .spawn_ids()
-                .contains(&spawn_retry_id("s", ROLE_IMPLEMENTER, 0, 4)),
+            recovering.spawn_ids().contains(&rerun_id(4)),
             "the relaunch continues the retry ordinals, never reusing a crashed id: {:?}",
             recovering.spawn_ids()
         );
