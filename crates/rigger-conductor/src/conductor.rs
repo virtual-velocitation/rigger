@@ -40094,30 +40094,33 @@ mod tests {
         }
     }
 
+    /// The mark a review round of `unit` at `attempt` stamps on entry, naming the `sha` it
+    /// judges.
+    fn round_start(unit: &str, attempt: u32, sha: &str) -> Event {
+        let mut e = Event::new(
+            ledger::TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({
+                "id": unit,
+                "status": STATUS_REVIEW_ROUND_START,
+                "attempt": attempt,
+            }))
+            .unwrap(),
+        );
+        e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
+        e
+    }
+
     /// A round delta's base is the round-start sha of the unit's latest review round at an
     /// attempt BEFORE the one asking - never the asking attempt's own round, never an earlier
     /// round, never another unit's - and there is none before any round or when that round
     /// recorded no sha.
     #[test]
     fn round_delta_base_is_the_latest_review_round_before_the_attempt() {
-        let start = |unit: &str, attempt: u32, sha: &str| {
-            let mut e = Event::new(
-                ledger::TYPE_UNIT_STATUS,
-                serde_json::to_vec(&json!({
-                    "id": unit,
-                    "status": STATUS_REVIEW_ROUND_START,
-                    "attempt": attempt,
-                }))
-                .unwrap(),
-            );
-            e.meta.insert(META_WORKTREE_SHA.into(), sha.into());
-            e
-        };
         let events = [
-            start("u", 0, "sha0"),
-            start("u", 1, "sha1"),
-            start("other", 1, "decoy"),
-            start("u", 2, ""),
+            round_start("u", 0, "sha0"),
+            round_start("u", 1, "sha1"),
+            round_start("other", 1, "decoy"),
+            round_start("u", 2, ""),
         ];
         let base = |attempt| round_delta_base(&events, "u", attempt);
         assert_eq!(base(0), None, "no round judged the unit before attempt 0");
@@ -40128,6 +40131,53 @@ mod tests {
             "the latest earlier round wins"
         );
         assert_eq!(base(3), None, "the latest earlier round recorded no sha");
+    }
+
+    /// A round delta takes its base only from the unit branch's own history: the branch's
+    /// earlier round yields the delta since it, while a round-start sha the branch never
+    /// passed through - a sibling speculation lane's tip - leaves the round without a delta,
+    /// so it is reviewed whole, as a first round.
+    #[test]
+    fn a_round_delta_takes_no_base_outside_the_unit_branch_history() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let committed = |unit: &str, file: &str| {
+            let dir = unit_worktree_dir(&scratch, unit);
+            let wt = Worktree::create(&repo_path, &dir, &unit_branch(unit), &scratch).unwrap();
+            std::fs::write(Path::new(&wt.dir).join(file), "work\n").unwrap();
+            wt.commit_checkpoint(file).unwrap();
+            wt
+        };
+        let wt = committed("u", "reviewed.rs");
+        let own = worktree::head_sha_of(&wt.dir);
+        let sibling = worktree::head_sha_of(&committed("u-spec1", "sibling.rs").dir);
+        std::fs::write(Path::new(&wt.dir).join("fix.rs"), "work\n").unwrap();
+        wt.commit_checkpoint("fix").unwrap();
+        let driver = Stub::new();
+        let cfg = Config::default();
+        let delta_from = |base: &str| {
+            let st = Store::open(":memory:").unwrap();
+            st.append(STREAM, ExpectedRevision::Any, &[round_start("u", 0, base)])
+                .unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            RunCtx::for_test(&cfg, &deps)
+                .round_delta(&wt, "u", 1)
+                .unwrap()
+        };
+        assert_eq!(
+            delta_from(&own),
+            Some((own.clone(), vec!["fix.rs".to_string()])),
+            "the branch's own earlier round is the base of the delta since it"
+        );
+        assert_eq!(
+            delta_from(&sibling),
+            None,
+            "a sibling lane's round-start sha is not in this branch's history, so no delta"
+        );
     }
 
     #[test]
