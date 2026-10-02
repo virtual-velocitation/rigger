@@ -3468,6 +3468,8 @@ impl RunCtx<'_> {
         inputs: &[String],
         blast_radius: &[String],
     ) -> Result<(), Error> {
+        // A skip is the same decision on every infra rerun of the attempt (its blast radius
+        // does not change), so it keys at ordinal 0 and is recorded once per attempt.
         let key = gate_key(GateKey::Skip, unit, attempt, 0, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
@@ -3852,14 +3854,14 @@ impl RunCtx<'_> {
                     Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
                     // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
                     // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
-                    // landing refused by the run checkout's local changes) - is an
-                    // infrastructure or configuration fault, not the unit's failure. ONE arm for
-                    // all of them: propagate the loud halt as the wave's error with the
-                    // recognition marker stripped (so the operator's message stays clean), emit
-                    // NO per-unit lesson here (it would misattribute the fault to the unit under
-                    // work; `land_refused` records its own path-naming lesson before minting its
-                    // marker), and charge no attempt - no UnitFailed/UnitEscalated is written on
-                    // any halt's path.
+                    // landing refused by the run checkout's local changes, a unit's infra reruns
+                    // past the taxonomy's infra limit) - is an infrastructure or configuration
+                    // fault, not the unit's failure. ONE arm for all of them: propagate the loud
+                    // halt as the wave's error with the recognition marker stripped (so the
+                    // operator's message stays clean), emit NO per-unit lesson here (it would
+                    // misattribute the fault to the unit under work; `land_refused` records its
+                    // own path-naming lesson before minting its marker), and charge no attempt -
+                    // no UnitFailed/UnitEscalated is written on any halt's path.
                     Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
                         if first_err.is_none() {
                             first_err = Some(Error(
