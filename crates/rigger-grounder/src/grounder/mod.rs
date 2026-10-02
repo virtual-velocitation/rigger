@@ -67,7 +67,23 @@ pub(crate) fn walk_guarded<F>(root: &Path, on_file: &mut F) -> ControlFlow<()>
 where
     F: FnMut(&Path) -> ControlFlow<()>,
 {
-    let walker = ignore::WalkBuilder::new(root)
+    walk_guarded_within(root, None, on_file)
+}
+
+/// [`walk_guarded`], confined to the `named` paths (relative to `root`) when there are any: the
+/// SAME scope rules, descending only the directories on the way to a named path, so a scoped
+/// caller visits exactly the named files the whole walk would visit - never one the scope
+/// excludes - at a cost bounded by the names rather than the tree.
+pub(crate) fn walk_guarded_within<F>(
+    root: &Path,
+    named: Option<&[String]>,
+    on_file: &mut F,
+) -> ControlFlow<()>
+where
+    F: FnMut(&Path) -> ControlFlow<()>,
+{
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker
         // Skip hidden entries: this is the always-excluded set - the VCS metadata dir `.git` and
         // rigger's runtime dir `.rigger` (both dotdirs) - plus the other never-source tooling
         // dotdirs, independent of any ignore file.
@@ -85,9 +101,12 @@ where
         // Root confinement: never follow a symlink, so nothing escapes the root and no cycle forms.
         .follow_links(false)
         // Deterministic traversal order.
-        .sort_by_file_name(|a, b| a.cmp(b))
-        .build();
-    for dent in walker {
+        .sort_by_file_name(|a, b| a.cmp(b));
+    if let Some(named) = named {
+        let wanted: Vec<std::path::PathBuf> = named.iter().map(|n| root.join(n)).collect();
+        walker.filter_entry(move |entry| wanted.iter().any(|w| w.starts_with(entry.path())));
+    }
+    for dent in walker.build() {
         // An entry we cannot read (a permissions race, a broken link) is skipped, never a panic.
         let Ok(entry) = dent else { continue };
         // Only regular files reach the leaf action: directories are descended by the walker, and

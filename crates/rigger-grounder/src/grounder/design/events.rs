@@ -88,38 +88,61 @@ fn sorted_events<T, P: serde::Serialize>(
 /// the graph 29b built the machinery for but left with no caller. Walks with the SHARED
 /// [`walk_guarded`](crate::grounder::walk_guarded) skeleton (the same project scope - the repo's own
 /// ignore rules, the always-excluded dotdirs, and root confinement - the grounders and the code
-/// ingest use, so the design ingest never diverges on which files count), and lowers each readable
-/// file through the shared [`extract_concepts`] / [`extract_links`] scope-gated authority: a design
-/// doc yields concept + link events, a source file yields its `# WHY:` / `# NOTE:` rationale, and a
-/// usage doc (or an unreadable / binary file, which `read_to_string` rejects) yields nothing.
+/// ingest use, so the design ingest never diverges on which files count), and lowers each file
+/// through [`file_batch`].
 /// Returns `(file, events)` per file in SORTED path order (`walk_guarded` visits in sorted file-name
 /// order, and the collected batches are sorted for a deterministic emit order), skipping a file that
 /// carries no design intent. The caller keys each batch on its content, so an unchanged file is not
 /// re-ingested.
 pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
-    use crate::grounder::design::extract::{extract_concepts, extract_links};
-    use crate::grounder::walk_guarded;
+    batches_within(root, None)
+}
+
+/// [`project_batches`] for the `named` files alone (an integration's scoped ingest): the SAME walk
+/// scope and the SAME per-file [`file_batch`], so a named file yields exactly the batch the whole
+/// walk gives it, and a named file the scope excludes (rigger's own `.rigger` dir, an ignored
+/// path) or that carries no design intent yields none.
+pub fn named_batches(root: &str, named: &[String]) -> Vec<(String, Vec<Event>)> {
+    batches_within(root, Some(named))
+}
+
+/// The walk behind [`project_batches`] and [`named_batches`]: every file the scoped walk visits
+/// (all of them, or only the `named` ones) lowered through [`file_batch`], skipping a file with
+/// no design intent, in sorted path order.
+fn batches_within(root: &str, named: Option<&[String]>) -> Vec<(String, Vec<Event>)> {
     use std::ops::ControlFlow;
     use std::path::Path;
 
     let mut batches: Vec<(String, Vec<Event>)> = Vec::new();
-    let _ = walk_guarded(Path::new(root), &mut |path| {
+    let _ = crate::grounder::walk_guarded_within(Path::new(root), named, &mut |path| {
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
             .to_string_lossy()
             .into_owned();
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            let mut events = concept_events(&extract_concepts(&rel, &contents));
-            events.extend(link_events(&extract_links(&rel, &contents)));
-            if !events.is_empty() {
-                batches.push((rel, events));
-            }
+        let events = file_batch(root, &rel);
+        if !events.is_empty() {
+            batches.push((rel, events));
         }
         ControlFlow::Continue(())
     });
     batches.sort_by(|a, b| a.0.cmp(&b.0));
     batches
+}
+
+/// One file's design-intent events, through the shared `extract_concepts` / `extract_links`
+/// scope-gated authority: a design doc yields concept + link events, a source file its `# WHY:` /
+/// `# NOTE:` rationale, and a usage doc or an unreadable / binary file (which `read_to_string`
+/// rejects) nothing.
+fn file_batch(root: &str, rel: &str) -> Vec<Event> {
+    use crate::grounder::design::extract::{extract_concepts, extract_links};
+
+    let Ok(contents) = std::fs::read_to_string(std::path::Path::new(root).join(rel)) else {
+        return Vec::new();
+    };
+    let mut events = concept_events(&extract_concepts(rel, &contents));
+    events.extend(link_events(&extract_links(rel, &contents)));
+    events
 }
 
 #[cfg(test)]

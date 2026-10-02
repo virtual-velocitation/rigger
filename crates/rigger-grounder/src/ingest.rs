@@ -345,28 +345,29 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
 /// INTEGRATION), rather than walking the whole project: the property an integration's OWN reindex
 /// needs, bounded by the merge's OWN file list (Design/Constraints Walk: "the reindex is bounded by
 /// the merge's file list"), never the project's total file count. Reuses the SAME per-file lowering
-/// and keying as the whole-project walk (`crate::grounder::symbols::events::file_batches` and
-/// [`key_batch`], the identical authority [`walk_batches`]'s code half calls) - never a second
-/// lowering path - so a named file's scoped batch is byte-identical to what a full walk would
-/// produce for it, and the content key an event is deduped under can never drift between the two
-/// entries.
+/// and keying as the whole-project walk (`crate::grounder::symbols::events::file_batches` for the
+/// code half, `crate::grounder::design::events::named_batches` for the design half, and
+/// [`key_batch`], the identical authorities [`walk_batches`] calls) - never a second lowering path -
+/// so a named file's scoped batch is byte-identical to what a full walk would produce for it, and
+/// the content key an event is deduped under can never drift between the two entries.
 ///
-/// CODE ONLY (the `gc/` prefix): the design-intent half (`gd/`, spec 29b) stays with the
-/// whole-project walk - this scoped entry exists for the code-graph freshness an integration's
-/// reindex is answerable for, mirroring the EXISTING `Grounder::reindex` it runs alongside (which is
-/// also code-only), not a second, independently-scoped design-intent freshness this spec does not
-/// own.
+/// Both halves: the code (`gc/`) batch of every named file, then the design-intent (`gd/`, spec
+/// 29b) batch of every named file the walk scope admits that carries design intent - so a doc an
+/// integration edits or regenerates reaches the graph as its code does.
 #[cfg(feature = "symbols")]
 pub fn ingest_files_batched(
     root: &str,
     files: &[String],
     mut on_batch: impl BatchSink,
 ) -> IngestStats {
-    let batches = crate::grounder::symbols::events::file_batches(root, files);
+    let code_batches = crate::grounder::symbols::events::file_batches(root, files);
+    let design_batches = crate::grounder::design::events::named_batches(root, files);
     let mut batches_emitted = 0usize;
-    for (file, batch) in &batches {
-        key_batch("gc", file, batch, &mut on_batch);
-        batches_emitted += 1;
+    for (prefix, batches) in [("gc", &code_batches), ("gd", &design_batches)] {
+        for (file, batch) in batches {
+            key_batch(prefix, file, batch, &mut on_batch);
+            batches_emitted += 1;
+        }
     }
     IngestStats {
         batches_emitted,
@@ -391,8 +392,8 @@ pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl Batc
 /// too; this reads the graph's own recording directly.
 ///
 /// A file is FRESH when re-extracting it (through the SAME [`ingest_files_batched`] authority the
-/// live conductor reindexes through) yields EXACTLY the key set `graph.db`'s latest `gc/<file>`
-/// generation already recorded - same content, same event count, same order (the walk is
+/// live conductor reindexes through, reading its code batch alone) yields EXACTLY the key set
+/// `graph.db`'s latest `gc/<file>` generation already recorded - same content, same event count, same order (the walk is
 /// deterministic by construction, so an honest match is exact, never approximate). A file the graph
 /// has NEVER recorded a generation for at all counts as lagging only when its current extraction is
 /// non-empty (a genuinely new file the graph has not yet ingested - the coverage question criterion
@@ -406,10 +407,16 @@ pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<Str
         .iter()
         .filter(|file| {
             let identity = format!("gc/{file}");
+            let generation = format!("{identity}@");
             let mut current_keys: Vec<String> = Vec::new();
             let scoped = std::slice::from_ref(*file);
             let _ = ingest_files_batched(root, scoped, |keyed| {
-                current_keys.extend(keyed.iter().map(|(k, _)| k.clone()));
+                current_keys.extend(
+                    keyed
+                        .iter()
+                        .map(|(k, _)| k.clone())
+                        .filter(|k| k.starts_with(&generation)),
+                );
             });
             match latest.get(&identity) {
                 None => !current_keys.is_empty(),
