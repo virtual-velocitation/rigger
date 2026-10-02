@@ -102,6 +102,10 @@ mod git_fixtures;
 mod ingest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/plan_critique.rs"]
+mod plan_critique_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 // The config fixtures the conductor fixtures name through `super::`.
@@ -116,5 +120,6 @@ mod test_support {
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
     pub use crate::ingest_fixtures::*;
+    pub use crate::plan_critique_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }
