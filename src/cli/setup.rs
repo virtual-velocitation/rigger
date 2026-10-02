@@ -2925,7 +2925,11 @@ mod tests {
             "the committed planner and its scaffold seed"
         );
         for (at, text) in planners {
-            let text = text.to_lowercase();
+            let text = text
+                .to_lowercase()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             for claim in [
                 "split",
                 "exactly one unit",
