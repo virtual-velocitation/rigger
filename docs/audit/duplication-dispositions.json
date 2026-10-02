@@ -365,7 +365,7 @@
     "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
   },
   {
-    "id": "dup-28bd24c1f93d",
+    "id": "dup-6fdd86ee972f",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
@@ -800,7 +800,7 @@
     "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
   },
   {
-    "id": "dup-6193e0f04ade",
+    "id": "dup-82f5fd8ce76a",
     "disposition": "not-a-duplicate",
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
@@ -920,9 +920,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-713e5d449528",
+    "id": "dup-31c9f1cd288f",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -1005,8 +1005,13 @@
     "reason": "Two one-line accessors on two different types reading two different fields (the content-identity policy's metadata key versus the graph file a rebuild lock excludes)."
   },
   {
-    "id": "dup-903206b6dfc3",
+    "id": "dup-8f0f2622431b",
     "disposition": "not-a-duplicate",
-    "reason": "Three runtime driver tests, each running a different scripted harness (per-unit pipelining, a worker settling during the courier step, the heartbeat instruction every marked spawn gets) through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
+    "reason": "Two runtime driver tests, each running a different scripted harness (per-unit pipelining, a worker settling during the courier step) through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
+  },
+  {
+    "id": "dup-b4d4329417cc",
+    "disposition": "not-a-duplicate",
+    "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
   }
 ]
