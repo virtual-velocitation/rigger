@@ -382,8 +382,10 @@ mod tests {
     use crate::config::{Config, Stage};
     use crate::eventstore::sqlite::Store;
     use crate::gate::ExecRunner;
-    use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
-    use crate::test_support::{no_emit, run_isolated};
+    use crate::spawn::{
+        lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
+    };
+    use crate::test_support::{bare_deps, no_emit, run_isolated};
 
     /// An agent `id` on `sonnet` granted `tools`.
     fn sonnet_agent(id: &str, tools: &[&str]) -> AgentDef {
@@ -2248,5 +2250,113 @@ mod tests {
             "a closed sibling window overlapping this unit's own approve must not suppress the \
              emit-only-approve backstop on the replay driver",
         );
+    }
+
+    /// A replay driver whose courier answers `answered` the moment this step re-parks it: the
+    /// worker's result lands while the step's conductor pass is still running, after the pass
+    /// already read the log and parked the spawn.
+    struct AnsweredMidPass<'a> {
+        replay: ReplayDriver<'a>,
+        store: &'a Store,
+        answered: String,
+    }
+
+    impl AgentDriver for AnsweredMidPass<'_> {
+        fn spawn(
+            &self,
+            agent: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let out = self.replay.spawn(agent, prompt, opts, emit);
+            if opts.id == self.answered && matches!(&out, Err(e) if is_parked(e)) {
+                courier_records(self.store, &opts.id, "lens: no blocker");
+            }
+            out
+        }
+    }
+
+    /// One `rigger step` pass over `store` through `driver`, printed as the step prints it.
+    fn step_through(store: &Store, cfg: &Config, driver: &dyn AgentDriver) -> spawn::Step {
+        let rs = run_isolated(cfg, &bare_deps(store, driver, &ExecRunner, ""))
+            .expect("a parked frontier is not a run failure");
+        let (events, _) = crate::run::read::read_current_run(store, STREAM).unwrap();
+        spawn::step_of_pass(&events, rs).unwrap()
+    }
+
+    /// Unit `u` in review with two lenses and an adversary: both lenses parked, `arch`
+    /// answered, and the returned step's pass re-parking `sdet` while its result lands - the
+    /// result is in the log the step reads back, yet the pass never folded it.
+    fn step_with_a_lens_answered_mid_pass() -> (Config, Store, spawn::Step) {
+        let mut cfg = reviewed_unit_cfg();
+        cfg.agents.insert("arch".into(), named("arch"));
+        cfg.agents.insert("devil".into(), named("devil"));
+        let review = &mut cfg.workflow.stages.get_mut("u").unwrap().review;
+        review.lenses = vec!["arch".into(), "sdet".into()];
+        review.adversary = "devil".into();
+        let arch = spawn_id("u", &lens_role("arch"), 0);
+        let sdet = spawn_id("u", &lens_role("sdet"), 0);
+
+        let store = store_with_implemented_unit(&cfg);
+        replay_step(&store, &cfg).unwrap();
+        let parked =
+            spawn::recorded(&store.read_stream(STREAM, 0, Direction::Forward).unwrap()).unwrap();
+        assert!(
+            parked.contains_key(&arch) && parked.contains_key(&sdet),
+            "both lenses park in one step"
+        );
+        courier_records(&store, &arch, "lens: no blocker");
+
+        let racing = AnsweredMidPass {
+            replay: ReplayDriver::new(&store, ""),
+            store: &store,
+            answered: sdet,
+        };
+        let step = step_through(&store, &cfg, &racing);
+        assert!(
+            step.wave.is_empty(),
+            "every request holds a result: {step:?}"
+        );
+        (cfg, store, step)
+    }
+
+    #[test]
+    fn a_lens_answered_during_the_pass_that_parked_it_is_not_a_fixpoint() {
+        // The pass never folded the late lens, so the adversary it owes is undispatched: the
+        // step must not print done, or the driver ends the run with the unit mid-review.
+        let (cfg, store, step) = step_with_a_lens_answered_mid_pass();
+        assert!(
+            !step.done,
+            "a pass that parked a spawn is not a fixpoint, whatever the log holds after it"
+        );
+
+        let next = step_through(&store, &cfg, &ReplayDriver::new(&store, ""));
+        let adversary = spawn_id("u", ROLE_ADVERSARY, 0);
+        assert!(
+            next.wave.iter().any(|w| w.id == adversary),
+            "the next step folds both lenses and dispatches the adversary: {next:?}"
+        );
+        assert!(!next.done);
+    }
+
+    #[test]
+    fn a_lens_answered_during_the_pass_that_parked_it_keeps_the_run_scratch() {
+        // The same race must not read as a terminal run to the scratch teardown either: the
+        // adversary about to run still needs the shared build cache and agent scratch.
+        let (_, store, step) = step_with_a_lens_answered_mid_pass();
+        let (events, _) = crate::run::read::read_current_run(&store, STREAM).unwrap();
+        assert!(
+            !crate::liveness::terminal_and_no_live_worker(&events, &step).unwrap(),
+            "a pass that parked a spawn leaves the run advancing, so its scratch stays"
+        );
+    }
+
+    /// A store whose unit `u` has parked and recorded its implementer, ready for review.
+    fn store_with_implemented_unit(cfg: &Config) -> Store {
+        let store = Store::open(":memory:").unwrap();
+        replay_step(&store, cfg).unwrap();
+        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        store
     }
 }
