@@ -4752,7 +4752,8 @@ impl RunCtx<'_> {
     /// [`ReviewRound::blocks`] does not keep is recorded as a lesson for the operator about its
     /// file and leaves the verdict; a reject that leaves no item converges to an approve whose
     /// evidence is [`CONVERGED`]. Returns the verdict, its reason, and the REQUIRED list the
-    /// next round holds the unit to. A first round's reject keeps every item.
+    /// next round holds the unit to. A first round's reject keeps every item, and so does a
+    /// reject blaming infrastructure.
     fn split_reject(
         &self,
         unit: &str,
@@ -4760,14 +4761,16 @@ impl RunCtx<'_> {
         round: Option<&ReviewRound>,
         reason: String,
     ) -> Result<(bool, String, Vec<RequiredItem>), Error> {
-        let required = spawn::Adjudication::parse(&reason)
-            .map(|a| a.required)
-            .unwrap_or_default();
-        let Some(round) = round else {
-            return Ok((false, reason, required));
+        let adjudication = spawn::Adjudication::parse(&reason).unwrap_or_default();
+        // A reject blaming infrastructure judged no code (F3): it reaches the stage's failure
+        // cause whole, so the stage reruns uncharged.
+        let Some(round) = round.filter(|_| !adjudication.is_infra_fault()) else {
+            return Ok((false, reason, adjudication.required));
         };
-        let (kept, dropped): (Vec<_>, Vec<_>) =
-            required.into_iter().partition(|item| round.blocks(item));
+        let (kept, dropped): (Vec<_>, Vec<_>) = adjudication
+            .required
+            .into_iter()
+            .partition(|item| round.blocks(item));
         for (n, item) in dropped.iter().enumerate() {
             // Replay-keyed on unit + attempt + item: a re-run review over the recorded verdict
             // records each lesson once.
