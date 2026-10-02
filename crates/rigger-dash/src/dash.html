@@ -667,12 +667,13 @@ function render(state) {
   el("ready").innerHTML = table(["spawn", "unit", "stage"],
     wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
 
-  // FUTURE: budget runway (a live halt reason, or a clean fixpoint).
+  // FUTURE: budget runway (a live halt reason - the budget breaker's, a plan-critique
+  // spec-defect stop's or a hung agent's - or a clean fixpoint).
   const halted = step.halted;
   el("runway").innerHTML = halted
     ? '<div class="pill st-bad">HALTED: ' + esc(halted) + '</div>'
     : (step.done ? '<div class="muted">run converged (fixpoint)</div>'
-                 : '<div class="muted">running; no budget halt</div>');
+                 : '<div class="muted">running; no halt</div>');
 
   // FUTURE: declared DAG (each unit and what blocks it).
   el("dag").innerHTML = table(["unit", "depends on", "status"],

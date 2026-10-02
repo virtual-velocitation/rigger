@@ -868,17 +868,20 @@ pub struct Step {
     /// pass to have parked nothing ([`step_of_pass`]), since a result can land after the
     /// pass parked its spawn and before the step reads the log back.
     pub done: bool,
-    /// The halt reason when the run STOPPED on the spawn-budget breaker rather than
-    /// converging (Gap 13): e.g. `"budget exhausted: 200/200 spawns"`. `None` on a clean
-    /// fixpoint, and OMITTED from the wire then, so a converged run still prints
-    /// `{"wave":[],"done":true}` unchanged and a halted one adds `"halted":"..."` - the
-    /// `done`/`halted` split the spec (06, Gap 13) calls for. The thin driver treats a
-    /// present `halted` as a LOUD stop (a workflow failure carrying the reason), never a
-    /// clean completion, so a starved run is never reported as success. Populated by
-    /// `rigger step` (`cmd_step`) from the conductor's LIVE breaker state; [`step_result`]
-    /// leaves it `None` because a halt is a runtime condition of the current run process,
-    /// not derivable from the append-only log alone - a resume with a raised budget clears
-    /// it, yet the earlier halt's `BudgetExhausted` event stays in the log.
+    /// The halt reason when the run STOPPED rather than converging, from one of three sources in
+    /// this precedence: the spawn-budget breaker (Gap 13: e.g. `"budget exhausted: 200/200
+    /// spawns"`), else a plan-critique gate's spec-defect stop (spec 112, criterion 5: `"amend
+    /// the spec and relaunch: ..."`), both stamped by `rigger step` (`cmd_step`) from the
+    /// conductor's LIVE state, else hung liveness (spec 10, unit 3), which `cmd_step` fills only
+    /// when the conductor stamped none. `None` on a clean fixpoint, and OMITTED from the wire
+    /// then, so a converged run still prints `{"wave":[],"done":true}` unchanged and a halted one
+    /// adds `"halted":"..."` - the `done`/`halted` split the spec (06, Gap 13) calls for. The
+    /// thin driver treats a present `halted` as a LOUD stop (a workflow failure carrying the
+    /// reason), never a clean completion, so a starved or stopped run is never reported as
+    /// success. [`step_result`] leaves it `None` because a halt is a runtime condition of the
+    /// current run process, not derivable from the append-only log alone - a resume with a
+    /// raised budget clears a budget halt, yet the earlier halt's `BudgetExhausted` event stays
+    /// in the log, and a step after a spec-defect stop finds the gate terminal and reports none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
     /// The units that ESCALATED - each exhausted remediation and went terminal WITHOUT
@@ -940,10 +943,11 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
-    // A halt is a RUNTIME condition of the live run (the conductor's in-process breaker),
-    // not a fact of the append-only log: a resume with a raised budget clears it while the
-    // earlier `BudgetExhausted` event remains recorded. So this pure log seam never sets it;
-    // `rigger step` stamps `halted` from the conductor's `RunState::budget_halt`.
+    // A halt is a RUNTIME condition of the live run (the conductor's in-process state: its
+    // budget breaker, else a plan-critique spec-defect stop), not a fact of the append-only
+    // log: a resume with a raised budget clears it while the earlier `BudgetExhausted` event
+    // remains recorded. So this pure log seam never sets it; `rigger step` stamps `halted` from
+    // the conductor's `RunState::budget_halt`, and from hung liveness when that is empty.
     Ok(Step {
         wave,
         done,
@@ -962,8 +966,10 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
 
 /// The [`Step`] `rigger step` prints after one conductor pass: [`step_result`]'s pending
 /// frontier over the log read AFTER the pass, with the pass's own live state `rs` stamped on
-/// it - the budget `halted` reason, the `escalated` units and the `attention` entries, each a
-/// fact of this process's run that the log alone cannot give (see those [`Step`] fields).
+/// it - the conductor's `halted` reason (the budget breaker's, else a plan-critique spec-defect
+/// stop's; `rigger step` fills hung liveness after, when this left it empty), the `escalated`
+/// units and the `attention` entries, each a fact of this process's run that the log alone
+/// cannot give (see those [`Step`] fields).
 ///
 /// `done` also needs the pass to have PARKED nothing ([`RunState::parked`]). A courier can
 /// record a result between the pass parking that spawn and the step reading the log back, so
@@ -1956,7 +1962,7 @@ mod tests {
             "wave items must not carry the prompt or persona"
         );
         // A step_result-produced Step is never a halt: the pure log seam does not know the
-        // live breaker state, so the `halted` key is absent from the wire.
+        // live halt state, so the `halted` key is absent from the wire.
         assert!(
             obj.get("halted").is_none(),
             "step_result output must omit the halted field"

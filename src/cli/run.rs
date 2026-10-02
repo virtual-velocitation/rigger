@@ -850,11 +850,12 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
     // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
     // scratch. Surfaced as a loud halt so the driver stops on a named reason instead of reading
-    // a stalled wave as a clean fixpoint. A budget halt already on the channel takes precedence
-    // for the surfaced REASON (it is the harder global rail), so the hung reason is only stamped
-    // when no budget halt is set. (The teardown's never-delete-live guard reads the same hung set
-    // through `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any
-    // halt - not just when its reason is the one surfaced here.)
+    // a stalled wave as a clean fixpoint. A halt the conductor already put on the channel takes
+    // precedence for the surfaced REASON - the budget breaker's (the harder global rail), else a
+    // plan-critique spec-defect stop's - so the hung reason is only stamped when neither is set.
+    // (The teardown's never-delete-live guard reads the same hung set through
+    // `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any halt -
+    // not just when its reason is the one surfaced here.)
     let hung = rigger::liveness::hung_spawns(&events).map_err(|e| e.to_string())?;
     if step.halted.is_none() && !hung.is_empty() {
         // Recovery: record a real result on the named spawn (last-write-wins supersedes the
@@ -983,13 +984,15 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
 /// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
 /// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
-/// call takes precedence, mirroring the SAME precedence the `halted` wire field itself
-/// already gives the budget breaker over the hung fallback, just above this function's call
-/// site). A STABLE sort by [`ledger::attention_kind_rank`] afterward only ever needs to
-/// relocate the ONE entry just appended - `compute_attention`'s own entries are already in
-/// canonical order, and a stable sort never disturbs their relative order (e.g. two
-/// `stalled-frontier` units stay lexical) - so the merged array is byte-identical to what
-/// `compute_attention` alone would have produced had it been able to see this crossing.
+/// call takes precedence, mirroring the precedence the `halted` wire field gives a conductor
+/// halt - the budget breaker's, else a plan-critique spec-defect stop's - over the hung
+/// fallback, just above this function's call site; a spec-defect stop carries no `halted`
+/// attention entry, its entry being the gate's escalation). A STABLE sort by
+/// [`ledger::attention_kind_rank`] afterward only ever needs to relocate the ONE entry just
+/// appended - `compute_attention`'s own entries are already in canonical order, and a stable
+/// sort never disturbs their relative order (e.g. two `stalled-frontier` units stay lexical) -
+/// so the merged array is byte-identical to what `compute_attention` alone would have produced
+/// had it been able to see this crossing.
 fn merge_hung_attention(
     mut attention: Vec<ledger::AttentionEntry>,
     newly_hung: bool,
@@ -4134,9 +4137,9 @@ mod tests {
                 "nothing is newly hung",
             );
         /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
-        /// (mirroring the SAME precedence the `halted` wire field already gives the budget
-        /// breaker over its own hung fallback, just above this function's call site in
-        /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
+        /// (mirroring the precedence the `halted` wire field gives a conductor halt - the budget
+        /// breaker's, else a plan-critique spec-defect stop's - over its hung fallback, just
+        /// above this function's call site in `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
         /// evaluate the reason closure, when one is already present.
         merge_hung_attention_defers_to_an_existing_budget_halt:
             assert_merge_hung_attention_leaves_untouched(
