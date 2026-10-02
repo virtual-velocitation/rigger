@@ -7202,7 +7202,8 @@ impl RunCtx<'_> {
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
     /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions). On a re-plan it leads with the prior rejection so
+    /// ownership, open dispositions), plus the unit size cap ([`unit_size_cap`]) as a
+    /// blocking rule. On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
     /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
@@ -7229,8 +7230,16 @@ impl RunCtx<'_> {
              ambiguously-owned mitigation - two units that will fight over the same concern \
              through the shared context graph - is a reject.\n\
              - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-             reviewer to re-litigate; an undecided disposition is a reject.\n\n\
-             NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
+             reviewer to re-litigate; an undecided disposition is a reject.\n",
+        );
+        b.push_str(&format!(
+            "- Unit size (blocking): {} A unit over the cap is a reject with \
+             \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
+             split it into ordered units.\n\n",
+            unit_size_cap()
+        ));
+        b.push_str(
+            "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
              defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
              (each branches off the prior batch's integrated tree), and per-unit worktree \
              isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
@@ -7282,7 +7291,8 @@ impl RunCtx<'_> {
             "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
              release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
              back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect - never for mechanical blast-radius overlap alone.\n",
+             (open disposition) defect, or a unit over the size cap - never for mechanical \
+             blast-radius overlap alone.\n",
         );
         b
     }
@@ -10145,6 +10155,7 @@ impl RunCtx<'_> {
         format!(
             "\n\n{}\n",
             PLAN_PROTOCOL
+                .replace("{unit_size_cap}", &unit_size_cap())
                 .replace("{implementer}", &self.implementer_agent())
                 .replace("{criteria}", &criteria)
         )
@@ -11620,6 +11631,21 @@ fn gate_failure_cause(evidence: &[String]) -> String {
     format!("gate:{name}")
 }
 
+/// The unit size cap: a unit is too large for one review round when it is expected to add
+/// more than this many lines. It measures review scope, never code shape - no file or
+/// function size limit exists - and no gate measures it: the planner splits a criterion by it
+/// ([`PLAN_PROTOCOL`]) and the plan critique rejects a unit over it.
+const MAX_UNIT_ADDED_LINES: usize = 3000;
+
+/// The one sentence stating [`MAX_UNIT_ADDED_LINES`], carried by both the plan protocol and
+/// the plan critique.
+fn unit_size_cap() -> String {
+    format!(
+        "A unit is too large when it is expected to add more than {MAX_UNIT_ADDED_LINES} lines. \
+         The cap measures review scope - how much one review round must read - never code shape."
+    )
+}
+
 const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
 
 /// The protocol a PLANNER (a `produces: dag`) stage follows. The conductor has ALREADY
@@ -11628,9 +11654,10 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// several units, or add a necessary sub-unit or dependency the baseline missed. Each
 /// refinement is a `UnitProposed` carrying the spec criterion it serves; a proposed
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
-/// placeholder is filled with the run's actual acceptance criteria, and
-/// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+/// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with
+/// the implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with
+/// the one unit size cap sentence ([`unit_size_cap`]) that says when a criterion splits.
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- {unit_size_cap} Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part: every one echoes that criterion's id and ends its `criterion` text with an OWNS sentence naming its part.\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
