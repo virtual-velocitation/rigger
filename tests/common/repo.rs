@@ -53,6 +53,13 @@ const CRITIQUE_ARGV: &str = "critique-argv";
 /// data is written here, beside the stub's symlink in `<work>/bin`; the executable is the
 /// checked-in fixture. Each call takes a fresh `work` directory.
 pub fn write_critique_stub(work: &Path, critique: &str) -> String {
+    write_critique_stub_reporting(work, critique, "connected")
+}
+
+/// [`write_critique_stub`] whose replayed init reports the spawn's `rigger` server with
+/// `rigger_server` as its status, so a test can stand in for a launch whose server did not
+/// connect (any status but `connected`).
+pub fn write_critique_stub_reporting(work: &Path, critique: &str, rigger_server: &str) -> String {
     let path = stub_path(work, "claude", Some(CRITIQUE_STUB));
     let session = "77777777-7777-4777-8777-777777777777";
     let init = serde_json::json!({
@@ -60,7 +67,7 @@ pub fn write_critique_stub(work: &Path, critique: &str) -> String {
         "subtype": "init",
         "session_id": session,
         "tools": ["Read", "Glob"],
-        "mcp_servers": [{"name": "rigger", "status": "connected"}],
+        "mcp_servers": [{"name": "rigger", "status": rigger_server}],
         "model": "claude-opus-stub",
         "permissionMode": "default",
         "apiKeySource": "none",

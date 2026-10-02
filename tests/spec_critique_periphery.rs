@@ -14,16 +14,18 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    read_run_events, rigger_file, run_rigger, run_rigger_envs, run_stream_identity, temp_project,
-    temp_repoless_project, write_scaffold,
+    assert_selected_server, emit, read_run_events, rigger_file, run_rigger, run_rigger_envs,
+    run_stream_identity, seed_store, temp_project, temp_repoless_project, write_scaffold,
 };
+use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
     critique_stub_argv, critique_stub_spawns, critique_stub_task, write_critique_stub,
+    write_critique_stub_reporting,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, Filter};
-use rigger::review::{critique_hash, critique_spawn_id, PLAN_CRITIQUE_RULES};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, Filter};
+use rigger::review::{critique_hash, critique_spawn_id, spec_critique_prompt, PLAN_CRITIQUE_RULES};
 use rigger::spawn::{TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::{json, Value};
@@ -53,6 +55,34 @@ const REJECT: &str = "I read the spec.\n\
      C2 | NON-BLOCKING | Design | renders names no surface | name the surface\n\
      {\"verdict\":\"reject\"}";
 const APPROVE: &str = "No defects.\n{\"verdict\":\"approve\"}";
+
+/// What `rigger critique` prints for a [`REJECT`] critique of `hash` recorded at `attempt`: each
+/// finding as its record id and summary, then the verdict.
+fn reject_out(hash: &str, attempt: u32) -> String {
+    format!(
+        "sc-{hash}-{attempt}-1 | BLOCKING | criterion 2 | hides is undecided when empty | decide \
+         the empty corner in Design\nsc-{hash}-{attempt}-2 | NON-BLOCKING | Design | renders \
+         names no surface | name the surface\n{{\"verdict\":\"reject\"}}\n"
+    )
+}
+
+/// The `ReviewFinding` copies of a [`REJECT`] critique of `hash` at `attempt`, about `spec`.
+fn reject_copies(hash: &str, attempt: u32, spec: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "id": format!("sc-{hash}-{attempt}-1"),
+            "by": "spec-critic",
+            "summary": "BLOCKING | criterion 2 | hides is undecided when empty | decide the empty corner in Design",
+            "about": [spec],
+        }),
+        json!({
+            "id": format!("sc-{hash}-{attempt}-2"),
+            "by": "spec-critic",
+            "summary": "NON-BLOCKING | Design | renders names no surface | name the surface",
+            "about": [spec],
+        }),
+    ]
+}
 
 /// A project at `root` carrying `workflow` with its three personas and the demo spec.
 fn scaffold(root: &Path, workflow: &str) {
@@ -121,20 +151,23 @@ fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     &argv[at + 1]
 }
 
+/// A fresh critique stub answering `critique`: its work directory, which keeps it alive, and the
+/// PATH that runs it.
+fn stub(critique: &str) -> (tempfile::TempDir, String) {
+    let work = tempfile::tempdir().unwrap();
+    let path = write_critique_stub(work.path(), critique);
+    (work, path)
+}
+
 #[test]
 fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let dir = temp_project();
     let root = dir.path();
     scaffold(root, CRITIC_WORKFLOW);
     let scratch = root.join("scratch");
-    let first = tempfile::tempdir().unwrap();
-    let first_path = write_critique_stub(first.path(), REJECT);
+    let (first, first_path) = stub(REJECT);
     let hash = critique_hash(SPEC);
-    let expected_out = format!(
-        "sc-{hash}-0-1 | BLOCKING | criterion 2 | hides is undecided when empty | decide the empty \
-         corner in Design\nsc-{hash}-0-2 | NON-BLOCKING | Design | renders names no surface | \
-         name the surface\n{{\"verdict\":\"reject\"}}\n"
-    );
+    let expected_out = reject_out(&hash, 0);
 
     // When the spec is critiqued for the first time ...
     let (out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
@@ -192,20 +225,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     assert_eq!(spawn_events(&critique_events(root)), recorded);
 
     // ... and each finding is copied to the project run stream, where `rigger peers` shows it.
-    let copies = vec![
-        json!({
-            "id": format!("sc-{hash}-0-1"),
-            "by": "spec-critic",
-            "summary": "BLOCKING | criterion 2 | hides is undecided when empty | decide the empty corner in Design",
-            "about": [SPEC_REL],
-        }),
-        json!({
-            "id": format!("sc-{hash}-0-2"),
-            "by": "spec-critic",
-            "summary": "NON-BLOCKING | Design | renders names no surface | name the surface",
-            "about": [SPEC_REL],
-        }),
-    ];
+    let copies = reject_copies(&hash, 0, SPEC_REL);
     assert_eq!(review_findings(root), copies);
     let (peers, err, ok) = run_rigger(root, &["peers", SPEC_REL]);
     assert!(ok, "rigger peers succeeds; stderr:\n{err}");
@@ -258,8 +278,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     // When one line of the spec is deleted, the new text is critiqued afresh ...
     let edited = SPEC.replace("- [ ] a test proves the widget hides\n", "");
     std::fs::write(root.join(SPEC_REL), &edited).unwrap();
-    let second = tempfile::tempdir().unwrap();
-    let second_path = write_critique_stub(second.path(), APPROVE);
+    let (second, second_path) = stub(APPROVE);
     let (fresh, err, ok) = critique(root, SPEC_REL, &second_path, &scratch);
     assert!(ok, "the edited text's critique exits 0; stderr:\n{err}");
     assert_eq!(
@@ -300,8 +319,7 @@ fn under_a_workflow_with_no_critic_the_verb_refuses_naming_both_keys_and_records
     let root = dir.path();
     scaffold(root, CRITIC_WORKFLOW);
     let scratch = root.join("scratch");
-    let stub = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(stub.path(), REJECT);
+    let (stub, path) = stub(REJECT);
     let (_out, err, ok) = critique(root, SPEC_REL, &path, &scratch);
     assert!(ok, "the critique under a critic records; stderr:\n{err}");
     let before = every_event(root);
@@ -327,8 +345,7 @@ fn a_spec_outside_the_repository_or_with_no_criteria_is_refused_before_any_store
     let root = dir.path();
     scaffold(root, CRITIC_WORKFLOW);
     let scratch = root.join("scratch");
-    let stub = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(stub.path(), REJECT);
+    let (stub, path) = stub(REJECT);
 
     let elsewhere = tempfile::tempdir().unwrap();
     let outside = elsewhere.path().join("9-demo.md");
@@ -361,8 +378,7 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
     let dir = temp_repoless_project();
     let root = dir.path();
     scaffold(root, CRITIC_WORKFLOW);
-    let stub = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(stub.path(), REJECT);
+    let (stub, path) = stub(REJECT);
     let absolute = root.join(SPEC_REL);
     let (out, err, ok) = critique(
         root,
@@ -397,8 +413,7 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
     let hash = critique_hash(SPEC);
 
     // When the critic answers with no verdict line ...
-    let silent = tempfile::tempdir().unwrap();
-    let silent_path = write_critique_stub(silent.path(), "I could not decide.");
+    let (silent, silent_path) = stub("I could not decide.");
     let (out, err, ok) = critique(root, SPEC_REL, &silent_path, &scratch);
 
     // ... its result is no critique: the verb says why, exits non-zero and copies nothing.
@@ -422,8 +437,7 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
     );
 
     // When the unchanged text is critiqued again, the recorded request counts: attempt 1 runs.
-    let answering = tempfile::tempdir().unwrap();
-    let answering_path = write_critique_stub(answering.path(), REJECT);
+    let (answering, answering_path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &answering_path, &scratch);
     assert!(ok, "the next attempt records a critique; stderr:\n{err}");
     assert_eq!(critique_stub_spawns(silent.path()), 1);
@@ -452,8 +466,7 @@ fn the_verb_takes_the_store_flags_rigger_run_takes_and_refuses_malformed_argumen
     let dir = temp_project();
     let root = dir.path();
     scaffold(root, CRITIC_WORKFLOW);
-    let stub = tempfile::tempdir().unwrap();
-    let path = write_critique_stub(stub.path(), REJECT);
+    let (stub, path) = stub(REJECT);
     let scratch = root.join("scratch");
     let envs = [
         ("PATH", path.as_str()),
@@ -509,4 +522,690 @@ fn the_verb_takes_the_store_flags_rigger_run_takes_and_refuses_malformed_argumen
         "the critique is recorded and printed:\n{out}"
     );
     assert_eq!(critique_stub_spawns(stub.path()), 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The SDET periphery layer: the verb's boundary corners - the persisted record's own form, the
+// reverted, crash-resume and existing-data corners the store decides, the authority at the verb's
+// edge, the critic lookup's fallback, and every refusal in the order the Design fixes.
+// ---------------------------------------------------------------------------------------------
+
+/// [`SPEC`]'s content hash, spelled out: FNV-1a 64 over its raw bytes as 16 lowercase hex digits,
+/// the key every critique record of it is persisted under.
+const SPEC_HASH: &str = "ff026c95e7c7af01";
+
+/// [`CRITIC_WORKFLOW`] with a per-spawn wall-clock bound every persona inherits.
+const BOUNDED_CRITIC_WORKFLOW: &str =
+    "defaults:\n  grounder: nop\n  max_wall_clock: 900\nstages:\n  \
+     plan:\n    agent: planner\n    produces: dag\n  plan-critique:\n    needs: [plan]\n    \
+     adversary: critic\n    adjudicator: judge\n";
+
+/// A workflow with no plan-critique gate whose `defaults.review.adversary` is the critic.
+const DEFAULT_ADVERSARY_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    adversary: \
+     critic\nstages:\n  a:\n    agent: planner\n    on_pass: none\n";
+
+/// A workflow whose plan-critique gate names `judge` while `defaults.review.adversary` names
+/// `critic`: the gate's adversary is the critic.
+const GATE_AND_DEFAULT_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    adversary: \
+     critic\nstages:\n  plan:\n    agent: planner\n    produces: dag\n  plan-critique:\n    \
+     needs: [plan]\n    adversary: judge\n    adjudicator: judge\n";
+
+/// The `(type, payload)` of each critique-stream event.
+fn critique_payloads(root: &Path) -> Vec<(String, Value)> {
+    critique_events(root)
+        .iter()
+        .map(|e| (e.type_.clone(), serde_json::from_slice(&e.data).unwrap()))
+        .collect()
+}
+
+/// Append `(type, payload)` events to the critique's own stream of the project at `root`, in the
+/// wire form the verb records them in - standing in for a critique an earlier call recorded.
+fn seed_critique(root: &Path, events: &[(&str, Value)]) {
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &format!("{}-critique", run_stream_identity(root)));
+    for (type_, payload) in events {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(*type_, serde_json::to_vec(payload).unwrap())],
+            )
+            .unwrap();
+    }
+}
+
+/// The types of the project run stream's events, oldest first.
+fn run_types(root: &Path) -> Vec<String> {
+    read_run_events(root)
+        .iter()
+        .map(|e| e.type_.clone())
+        .collect()
+}
+
+#[test]
+fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_request() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, BOUNDED_CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let scratch = root.join("scratch");
+
+    // When the spec is named with a leading `./` ...
+    let (out, err, ok) = critique(root, "./specs/9-demo.md", &path, &scratch);
+    assert!(ok, "the critique records; stderr:\n{err}");
+
+    // ... the findings carry the spec text's literal hash, and the spelling is made repo-relative.
+    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+    let prompt = spec_critique_prompt(SPEC_REL, SPEC);
+    assert_eq!(
+        critique_stub_task(work.path()),
+        prompt,
+        "the critic's task is the critique prompt of the repo-relative path and the raw text, \
+         byte for byte"
+    );
+
+    // The request and the result are persisted on the critique's own stream in their wire form.
+    let repo = std::fs::canonicalize(root).unwrap();
+    let recorded = critique_payloads(root);
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|(t, d)| (t.as_str(), d["id"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                TYPE_SPAWN_REQUESTED,
+                "critique-ff026c95e7c7af01/adversary#0"
+            ),
+            (TYPE_SPAWN_RESULT, "critique-ff026c95e7c7af01/adversary#0"),
+        ]
+    );
+    let request = &recorded[0].1;
+    assert_eq!(
+        (
+            &request["unit"],
+            &request["stage"],
+            &request["title"],
+            &request["dir"],
+            &request["model"],
+            &request["tools"],
+            &request["max_wall_clock"],
+            &request["prompt"],
+        ),
+        (
+            &json!("critique-ff026c95e7c7af01"),
+            &json!("critique"),
+            &json!(SPEC_REL),
+            &json!(repo.to_str().unwrap()),
+            &json!("sonnet"),
+            &json!([
+                "Read",
+                "Glob",
+                "mcp__rigger__rigger_graph",
+                "mcp__rigger__rigger_ground",
+                "mcp__rigger__rigger_peers"
+            ]),
+            &json!(900),
+            &json!(prompt),
+        ),
+        "the critic runs in the repository root on the persona's attempt-0 rung and wall-clock \
+         bound with its tools replaced: {request}"
+    );
+    assert!(
+        request["system_prompt"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are the CRITIC-PERSONA adversary."),
+        "the recorded system prompt opens with the critic persona: {request}"
+    );
+    let result = &recorded[1].1;
+    assert_eq!(
+        (&result["output"], result.get("error")),
+        (&json!(REJECT), None),
+        "the result keeps the critic's whole output and no error: {result}"
+    );
+
+    // The session's liveness marker and transcript lived under the critique run and went with it.
+    for sub in ["agent-live", "agent-stream"] {
+        let left: Vec<std::ffi::OsString> = std::fs::read_dir(scratch.join(sub))
+            .unwrap_or_else(|e| panic!("the session wrote under {sub}: {e}"))
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            left,
+            Vec::<std::ffi::OsString>::new(),
+            "nothing the critique's session wrote is left under {sub}"
+        );
+    }
+
+    // The project run stream holds the two copies and nothing of the spawn.
+    assert_eq!(run_types(root), ["ReviewFinding", "ReviewFinding"]);
+    assert_eq!(
+        every_event(root),
+        4,
+        "two spawn events on the critique stream and two copies on the run stream, nothing else"
+    );
+}
+
+#[test]
+fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_spawns() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let (_first, first_path) = stub(REJECT);
+    let (_out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
+    assert!(ok, "the first text is critiqued; stderr:\n{err}");
+
+    // Given the text was edited and the edit critiqued too ...
+    let edited = SPEC.replace("The widget renders.", "The widget renders twice.");
+    std::fs::write(root.join(SPEC_REL), &edited).unwrap();
+    let (_second, second_path) = stub(APPROVE);
+    let (out, err, ok) = critique(root, SPEC_REL, &second_path, &scratch);
+    assert!(ok, "the edited text is critiqued; stderr:\n{err}");
+    assert_eq!(out, "{\"verdict\":\"approve\"}\n");
+
+    // ... when the text is reverted to the first bytes ...
+    std::fs::write(root.join(SPEC_REL), SPEC).unwrap();
+    let (third, third_path) = stub(APPROVE);
+    let (out, err, ok) = critique(root, SPEC_REL, &third_path, &scratch);
+
+    // ... the first hash's critique answers it, with zero spawns and nothing appended.
+    assert!(ok, "an answered critique exits 0; stderr:\n{err}");
+    assert_eq!(
+        out,
+        reject_out(SPEC_HASH, 0),
+        "the first text's own findings"
+    );
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
+             at attempt 0"
+        )),
+        "the verb says it answered from the record:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(third.path()), 0, "zero spawns");
+    assert_eq!(
+        critique_events(root).len(),
+        4,
+        "two critiques, no third request"
+    );
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+}
+
+#[test]
+fn a_launch_that_records_no_result_says_why_and_the_next_call_runs_the_next_attempt() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+
+    // When the critic's session reports its rigger server failed, the host stops it unrecorded ...
+    let failed = tempfile::tempdir().unwrap();
+    let failed_path = write_critique_stub_reporting(failed.path(), REJECT, "failed");
+    let (out, err, ok) = critique(root, SPEC_REL, &failed_path, &scratch);
+
+    // ... so no critique exists: the verb says why from the spawn's own error and exits non-zero.
+    assert!(!ok, "a launch with no recorded result is no critique");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - "
+        )) && err.contains("MCP server reported status \"failed\" at init"),
+        "the why is the launch fault:\n{err}"
+    );
+    assert_eq!(out, "", "nothing is printed on stdout");
+    assert_eq!(critique_stub_spawns(failed.path()), 1);
+    assert_eq!(
+        spawn_events(&critique_events(root)),
+        [(
+            TYPE_SPAWN_REQUESTED.to_string(),
+            critique_spawn_id(SPEC_HASH, 0)
+        )],
+        "the parked request stands with no result"
+    );
+    assert_eq!(review_findings(root), Vec::<Value>::new());
+
+    // When the unchanged text is critiqued again, the request with no result counts: attempt 1.
+    let (answering, answering_path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &answering_path, &scratch);
+    assert!(ok, "the next attempt records a critique; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 1));
+    assert_eq!(critique_stub_spawns(answering.path()), 1);
+    assert_eq!(
+        spawn_events(&critique_events(root))[1..],
+        [
+            (
+                TYPE_SPAWN_REQUESTED.to_string(),
+                critique_spawn_id(SPEC_HASH, 1)
+            ),
+            (
+                TYPE_SPAWN_RESULT.to_string(),
+                critique_spawn_id(SPEC_HASH, 1)
+            ),
+        ]
+    );
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 1, SPEC_REL));
+}
+
+#[test]
+fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_spawns() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+
+    // Given a store holding attempt 0's critique and, after it, attempt 1's result that is no
+    // critique, with no copy ever appended (a crash between the result and the copies) ...
+    let first = "critique-ff026c95e7c7af01/adversary#0";
+    let second = "critique-ff026c95e7c7af01/adversary#1";
+    let unit = "critique-ff026c95e7c7af01";
+    seed_critique(
+        root,
+        &[
+            (
+                TYPE_SPAWN_REQUESTED,
+                json!({"id": first, "unit": unit, "stage": "critique", "prompt": "p"}),
+            ),
+            (TYPE_SPAWN_RESULT, json!({"id": first, "output": REJECT})),
+            (
+                TYPE_SPAWN_REQUESTED,
+                json!({"id": second, "unit": unit, "stage": "critique", "prompt": "p"}),
+            ),
+            (
+                TYPE_SPAWN_RESULT,
+                json!({"id": second, "output": "I could not decide."}),
+            ),
+        ],
+    );
+    let (work, path) = stub(APPROVE);
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+
+    // ... the next call answers from attempt 0's critique, the latest one, and appends its copies.
+    assert!(ok, "an answered critique exits 0; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert!(
+        err.contains("answered from the critique recorded at attempt 0"),
+        "a later result that is no critique never displaces the critique:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
+    assert_eq!(
+        critique_events(root).len(),
+        4,
+        "nothing appended to the record"
+    );
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+}
+
+#[test]
+fn a_reject_needs_a_blocking_line_and_an_approve_beside_one_is_a_critique_that_still_blocks() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+
+    // When the critic rejects with only a NON-BLOCKING line, its result is no critique.
+    let (_nb, nb_path) = stub("C1 | NON-BLOCKING | Design | x | y\n{\"verdict\":\"reject\"}");
+    let (out, err, ok) = critique(root, SPEC_REL, &nb_path, &scratch);
+    assert!(!ok, "a reject with no BLOCKING finding is no critique");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): no critique was recorded - the \
+             critic's verdict \"reject\" does not approve, yet its output carries no BLOCKING \
+             finding line"
+        )),
+        "the verb prints why:\n{err}"
+    );
+    assert_eq!(out, "");
+    assert_eq!(review_findings(root), Vec::<Value>::new());
+
+    // When the critic approves beside a table-formatted BLOCKING line whose fix holds a pipe, and
+    // prose follows the verdict line, the result is a critique and the line still blocks.
+    let (_bl, bl_path) = stub(
+        "| C1 | BLOCKING | criterion 1 | empty is undecided | decide it | then pin it |\n\
+         {\"verdict\":\"approve\"}\nThat is all.",
+    );
+    let (out, err, ok) = critique(root, SPEC_REL, &bl_path, &scratch);
+    assert!(
+        ok,
+        "an approve beside a BLOCKING line is a critique; stderr:\n{err}"
+    );
+    let summary = "BLOCKING | criterion 1 | empty is undecided | decide it | then pin it";
+    assert_eq!(
+        out,
+        format!("sc-{SPEC_HASH}-1-1 | {summary}\n{{\"verdict\":\"approve\"}}\n")
+    );
+    assert_eq!(
+        review_findings(root),
+        [json!({
+            "id": format!("sc-{SPEC_HASH}-1-1"),
+            "by": "spec-critic",
+            "summary": summary,
+            "about": [SPEC_REL],
+        })]
+    );
+}
+
+#[test]
+fn the_critic_is_the_plan_critique_gates_adversary_else_the_default_review_adversary() {
+    for (workflow, persona) in [
+        (
+            DEFAULT_ADVERSARY_WORKFLOW,
+            "You are the CRITIC-PERSONA adversary.",
+        ),
+        (GATE_AND_DEFAULT_WORKFLOW, "Judge."),
+    ] {
+        let dir = temp_project();
+        let root = dir.path();
+        scaffold(root, workflow);
+        let (work, path) = stub(REJECT);
+        let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(ok, "a workflow naming a critic critiques; stderr:\n{err}");
+        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        let argv = critique_stub_argv(work.path());
+        let system = flag_value(&argv, "--system-prompt");
+        assert!(
+            system.starts_with(persona),
+            "the critic opens with {persona:?}:\n{system}"
+        );
+    }
+}
+
+#[test]
+fn a_workflow_with_no_critic_is_refused_first_and_no_store_or_graph_is_created() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, NO_CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("9-demo.md");
+    std::fs::write(&outside, "# no criteria\n").unwrap();
+    let outside = outside.to_str().unwrap();
+
+    // When a spec outside the repository, with no criteria, is critiqued under no critic ...
+    let (out, err, ok) = critique(root, outside, &path, &root.join("scratch"));
+
+    // ... the critic lookup refuses before the spec path or the loop-ready check is reached.
+    assert!(!ok, "a workflow with no critic refuses");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: refusing to critique {outside}: the workflow names neither the \
+             plan-critique gate's adversary nor defaults.review.adversary"
+        )),
+        "the no-critic refusal names the spec as given and both keys:\n{err}"
+    );
+    assert!(
+        !err.contains("outside the repository") && !err.contains("loop-ready"),
+        "only the first refusal reached is printed:\n{err}"
+    );
+    assert_eq!(out, "");
+    assert_eq!(critique_stub_spawns(work.path()), 0);
+    for file in ["events.db", "graph.db", "progress.db"] {
+        assert!(
+            !rigger_file(root, file).exists(),
+            "no {file} is opened or created before the critic lookup passes"
+        );
+    }
+}
+
+#[test]
+fn a_spec_path_that_climbs_above_the_root_is_outside_and_refused_before_the_loop_ready_check() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let climbing = "specs/../../elsewhere.md";
+    let (_out, err, ok) = critique(root, climbing, &path, &root.join("scratch"));
+    assert!(!ok, "a path climbing above the root is outside it");
+    assert!(
+        err.contains(&format!(
+            "rigger critique: refusing to critique {climbing}: it is outside the repository"
+        )),
+        "the outside refusal, ahead of reading a spec that does not exist:\n{err}"
+    );
+    assert!(!err.contains("read spec"), "the spec is never read:\n{err}");
+    assert_eq!(critique_stub_spawns(work.path()), 0);
+    assert!(!rigger_file(root, "events.db").exists());
+}
+
+#[test]
+fn a_linked_worktree_is_refused_before_the_critic_lookup() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let parent = tempfile::tempdir().unwrap();
+    let linked = parent.path().join("linked");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            linked.to_str().unwrap(),
+            "-b",
+            "linked-critique",
+        ],
+    );
+    scaffold(&linked, NO_CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let (_out, err, ok) = critique(&linked, SPEC_REL, &path, &linked.join("scratch"));
+    assert!(!ok, "a linked worktree is refused");
+    let main = std::fs::canonicalize(root).unwrap();
+    let linked_canon = std::fs::canonicalize(&linked).unwrap();
+    assert!(
+        err.contains(&format!(
+            "rigger critique: refusing to run from inside a linked worktree ({}) - the main \
+             worktree is {}.",
+            linked_canon.display(),
+            main.display()
+        )),
+        "the linked-worktree refusal names the verb and both trees:\n{err}"
+    );
+    assert!(
+        !err.contains("names neither"),
+        "only the first refusal reached is printed:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(work.path()), 0);
+    assert!(!rigger_file(&linked, "events.db").exists());
+}
+
+#[test]
+fn a_project_nested_in_another_repository_is_refused_after_the_critic_lookup() {
+    let dir = temp_project();
+    let enclosing = dir.path();
+    let scratch = enclosing.join("scratchroot");
+    let nested = scratch.join("nested-fixture");
+    let (work, path) = stub(REJECT);
+
+    // Under a workflow with no critic, the critic lookup refuses first ...
+    scaffold(&nested, NO_CRITIC_WORKFLOW);
+    let (_out, err, ok) = critique(&nested, SPEC_REL, &path, &scratch);
+    assert!(!ok);
+    assert!(
+        err.contains("names neither") && !err.contains("disagree on their root"),
+        "the critic lookup comes before the one-root check:\n{err}"
+    );
+
+    // ... and under a workflow with a critic, the one-root check refuses, naming the verb.
+    scaffold(&nested, CRITIC_WORKFLOW);
+    let (_out, err, ok) = critique(&nested, SPEC_REL, &path, &scratch);
+    assert!(
+        !ok,
+        "a store and a repository on different roots are refused"
+    );
+    assert!(
+        err.contains(
+            "rigger critique: refusing - the store this command would open and the repository \
+             git resolved for this directory disagree on their root"
+        ),
+        "the one-root refusal leads with the verb:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(work.path()), 0);
+    assert!(!rigger_file(&nested, "events.db").exists());
+    assert!(!scratch.join("agent-live").exists() && !scratch.join("agent-stream").exists());
+}
+
+#[test]
+fn a_scratch_root_inside_another_repository_is_refused_naming_the_verb() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let other = temp_project();
+    let (work, path) = stub(REJECT);
+    let (_out, err, ok) = critique(
+        root,
+        SPEC_REL,
+        &path,
+        &other.path().join("scratch-elsewhere"),
+    );
+    assert!(!ok, "a scratch root in another repository is refused");
+    assert!(
+        err.contains(
+            "rigger critique: refusing - the scratch root this command would use belongs to a \
+             DIFFERENT repository than the one this command resolved"
+        ),
+        "the scratch-root refusal leads with the verb:\n{err}"
+    );
+    assert_eq!(critique_stub_spawns(work.path()), 0);
+    assert!(!rigger_file(root, "events.db").exists());
+    let elsewhere = other.path().join("scratch-elsewhere");
+    assert!(
+        !elsewhere.join("agent-live").exists() && !elsewhere.join("agent-stream").exists(),
+        "nothing is written into the other repository's scratch tree"
+    );
+}
+
+#[test]
+fn a_graph_that_owes_its_rebuild_refuses_every_call_answered_or_not_naming_rigger_setup() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let (_first, first_path) = stub(REJECT);
+    let (_out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
+    assert!(ok, "the text is critiqued; stderr:\n{err}");
+    std::fs::write(rigger_file(root, "graph.db.owed"), "").unwrap();
+    let refusal = rigger::contextgraph::rebuild_owed_refusal("critique");
+
+    // When the graph owes its rebuild, a call the store would answer is refused ...
+    let (later, later_path) = stub(REJECT);
+    let (out, err, ok) = critique(root, SPEC_REL, &later_path, &scratch);
+    assert!(!ok, "an answered call is refused");
+    assert!(err.contains(&refusal), "it names `rigger setup`:\n{err}");
+    assert_eq!(out, "", "nothing is answered");
+
+    // ... and so is a call on new text, which parks no request and spawns nothing.
+    std::fs::write(
+        root.join(SPEC_REL),
+        SPEC.replace("renders.", "renders now."),
+    )
+    .unwrap();
+    let (out, err, ok) = critique(root, SPEC_REL, &later_path, &scratch);
+    assert!(!ok, "a call on new text is refused");
+    assert!(err.contains(&refusal), "it names `rigger setup`:\n{err}");
+    assert_eq!(out, "");
+    assert_eq!(critique_stub_spawns(later.path()), 0);
+    assert_eq!(critique_events(root).len(), 2, "no request is parked");
+    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+}
+
+#[test]
+fn the_kurrentdb_flag_selects_the_server_backend_and_fabricates_no_local_store() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    let (work, path) = stub(REJECT);
+    let scratch = root.join("scratch");
+    let state = tempfile::tempdir().unwrap();
+    let out = common::cli::rigger_command(
+        root,
+        &[
+            "critique",
+            SPEC_REL,
+            "--eventstore",
+            "kurrentdb",
+            "--conn",
+            "kurrentdb://127.0.0.1:1/?tls=false",
+        ],
+        &[
+            ("PATH", &path),
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+        ],
+        state.path(),
+    )
+    .output()
+    .unwrap();
+    assert_selected_server(&out, root, "rigger critique --eventstore kurrentdb");
+    assert_eq!(critique_stub_spawns(work.path()), 0, "no critic is spawned");
+}
+
+#[test]
+fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_append() {
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    seed_store(root);
+    // Given history recorded under the legacy basename namespace, then a minted identity ...
+    emit(
+        root,
+        "DecisionMade",
+        r#"{"id":"legacy-decision","summary":"pre-mint history","governs":["specs/9-demo.md"]}"#,
+    );
+    std::fs::write(root.join(".rigger/project.id"), "durablemint\n").unwrap();
+    let (_work, path) = stub(REJECT);
+
+    // ... when the spec is critiqued ...
+    let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
+    assert!(ok, "the critique records; stderr:\n{err}");
+    assert_eq!(out, reject_out(SPEC_HASH, 0));
+
+    // ... the history moved to the minted identity first, and the copies follow it there: the
+    // legacy decision, the migration's own recorded decision, then the two copies.
+    assert!(
+        err.contains("migrated project identity") && err.contains("durablemint"),
+        "the verb migrates the identity:\n{err}"
+    );
+    assert_eq!(run_stream_identity(root), "durablemint");
+    assert_eq!(
+        run_types(root),
+        [
+            "DecisionMade",
+            "DecisionMade",
+            "ReviewFinding",
+            "ReviewFinding"
+        ]
+    );
+    assert_eq!(
+        critique_events(root).len(),
+        2,
+        "the record is under durablemint-critique"
+    );
+    let (peers, err, ok) = run_rigger(root, &["peers", SPEC_REL]);
+    assert!(ok, "rigger peers succeeds; stderr:\n{err}");
+    assert!(
+        peers.contains("decision legacy-decision")
+            && peers.contains(&format!("sc-{SPEC_HASH}-0-1")),
+        "the migrated decision and the copies both read back about the spec:\n{peers}"
+    );
+}
+
+#[test]
+fn critique_is_a_known_command_with_its_usage_line() {
+    let dir = temp_project();
+    let (_out, err, ok) = run_rigger(dir.path(), &["no-such-command"]);
+    assert!(!ok);
+    let known = err
+        .lines()
+        .find_map(|line| line.strip_prefix("known commands: "))
+        .unwrap_or_else(|| panic!("an unknown command lists the known ones:\n{err}"));
+    assert!(
+        known.split(", ").any(|command| command == "critique"),
+        "critique is a known command: {known}"
+    );
+    let (_out, usage, _ok) = run_rigger(dir.path(), &["help"]);
+    assert!(
+        usage.contains(
+            "rigger critique <spec>      critique the spec before any run: the workflow's critic\n"
+        ),
+        "the usage names the verb:\n{usage}"
+    );
 }
