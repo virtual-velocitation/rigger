@@ -11573,6 +11573,21 @@ mod tests {
         ));
     }
 
+    /// The run tip's CI reading starts from the run branch: a checkout with no run branch has
+    /// no tip to read CI for, and a tip whose CI `gh` cannot read (here the checkout has no
+    /// GitHub remote at all) reads as unknown with a reason - never as pending or green.
+    #[test]
+    fn the_run_tip_ci_needs_a_run_branch_and_reads_unknown_when_gh_cannot_read_it() {
+        let dir = crate::test_support::temp_git_project_with_commit();
+        let repo = dir.path().to_str().unwrap();
+        assert_eq!(run_tip_ci(repo), watch::CiProbe::NoRunTip);
+        crate::test_support::git_ok(dir.path(), &["branch", RUN_BRANCH]);
+        assert!(
+            matches!(run_tip_ci(repo), watch::CiProbe::Unknown(reason) if !reason.is_empty()),
+            "a CI gh cannot read is unknown, with its reason"
+        );
+    }
+
     /// `rigger watch`: one poll over the same log reads the run once from its boundary with the
     /// carried-over knowledge by type - no whole-log read for store integrity or anything else -
     /// and a healthy run reports nothing.

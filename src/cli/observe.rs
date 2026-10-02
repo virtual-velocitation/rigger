@@ -585,6 +585,31 @@ mod tests {
     use super::*;
     use crate::test_support::CwdGuard;
 
+    /// `rigger watch` notes an unread CI on stderr once per distinct reason, never on every
+    /// poll: the same reason again notes nothing, a new reason notes, and a CI that reads again
+    /// clears the note, so a later unread CI is noted afresh.
+    #[test]
+    fn an_unread_ci_is_noted_once_per_reason() {
+        let unread = |reason: &str| watch::CiProbe::Unknown(reason.to_string());
+        let noted = |reason: &str| Some(format!("rigger: watch: CI not read: {reason}"));
+        let mut last = None;
+        let mut note = |ci: watch::CiProbe| unread_ci_note(&ci, &mut last);
+        assert_eq!(
+            note(unread("gh is not installed")),
+            noted("gh is not installed")
+        );
+        assert_eq!(note(unread("gh is not installed")), None);
+        assert_eq!(
+            note(unread("gh api failed: HTTP 401")),
+            noted("gh api failed: HTTP 401")
+        );
+        assert_eq!(note(watch::CiProbe::Green), None);
+        assert_eq!(
+            note(unread("gh api failed: HTTP 401")),
+            noted("gh api failed: HTTP 401")
+        );
+    }
+
     /// Spec 69, criterion 4: `dash_status_line` renders each [`dash::DashStatus`] outcome to
     /// the EXACT text `rigger status` prints - `Absent` prints nothing (today's silent
     /// no-recorded-dash case), `Serving` prints the unchanged `dashboard: <url>` line, a
