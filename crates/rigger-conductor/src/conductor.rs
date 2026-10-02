@@ -43562,10 +43562,61 @@ mod tests {
     /// adjudicator rejects rounds 0 and 1 with `spec-ambiguity` - the second after the re-plan
     /// the first one drove: the store and the driver after the stopping step, with its state.
     fn stopped_run() -> (Store, Stub, RunState) {
+        stopped_run_under(&critique_cfg())
+    }
+
+    /// [`stopped_run`] under the workflow `cfg`.
+    fn stopped_run_under(cfg: &Config) -> (Store, Stub, RunState) {
         let st = launched_on_stop_spec(&[WIDGET_CRITERION.to_string()]);
         let driver = rejecting_twice_for_spec_ambiguity();
-        let rs = critique_step(&st, &driver);
+        let rs = critique_step_under(cfg, &st, &driver).unwrap();
         (st, driver, rs)
+    }
+
+    /// The summary of every `LessonLearned` in `log`, in log order.
+    fn lesson_summaries(log: &[Event]) -> Vec<Value> {
+        log.iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .map(|e| e.decode::<Value>().unwrap()["summary"].clone())
+            .collect()
+    }
+
+    /// The payload of every `UnitEscalated` in `log`, in log order.
+    fn escalations(log: &[Event]) -> Vec<Value> {
+        log.iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
+            .map(|e| e.decode::<Value>().unwrap())
+            .collect()
+    }
+
+    /// At `max_retries: 2` the stopping reject also exhausts the gate's remediation bound
+    /// (`remediate(1, 2)` escalates). The round head decides the stop before the remediation
+    /// decision, so the stop's records stand, its escalation is the gate's only one, and no
+    /// remediation-exhausted lesson is written.
+    #[test]
+    fn the_stop_is_decided_before_an_exhausted_remediation_bound_escalates() {
+        let mut cfg = critique_cfg();
+        cfg.workflow.defaults.max_retries = 2;
+        let (st, driver, rs) = stopped_run_under(&cfg);
+        let log = run_log(&st);
+        assert_eq!(
+            (
+                driver.spawn_ids(),
+                stop_records(&log),
+                rs.budget_halt.as_deref(),
+                escalations(&log),
+                lesson_summaries(&log),
+            ),
+            (
+                critique_round_spawns(2),
+                the_stop_records(),
+                Some(STOP_HALT),
+                vec![json!({"id": "plan-critique"})],
+                vec![json!(STOP_LESSON)],
+            ),
+            "the stop wins the round head: its three records once each, its halt, the gate's one \
+             escalation, and no escalated-after lesson"
+        );
     }
 
     #[test]
