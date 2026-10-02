@@ -101,9 +101,10 @@ jobs:
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       # The build-environment tests assert against the REAL PATH: config validation
-      # requires `cargo-mutants` resolvable while the repo's own workflow.yml has
-      # build.mutation on, and the build-environment-authority test requires the
-      # `sccache` wrapper it configures to exist. Install both as prebuilt binaries.
+      # requires `cargo-mutants` resolvable while the repo's own workflow.yml declares the
+      # `mutation` gate (declared even while no stage lists it), and the
+      # build-environment-authority test requires the `sccache` wrapper it configures to
+      # exist. Install both as prebuilt binaries.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants,sccache
