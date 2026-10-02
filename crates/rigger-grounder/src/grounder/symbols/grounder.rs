@@ -203,20 +203,23 @@ enum HitKind {
 /// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
 /// tiebreaker ("then by the existing lexical score").
 ///
-/// Gap 104 adds two keys ahead of and inside that order. `coverage` - how many DISTINCT query terms
-/// occur (case-insensitively) in the entity's name or its file path - ranks first, so a query that
-/// names an entity by its shape or its module (`impl EventStore for` -> the impl blocks named
-/// `impl EventStore for Store`; `sqlite store open` -> `open_connection` in `store/sqlite.rs`)
-/// finds that entity above a name that matches one incidental word (`for`, `open`). `test` - the
-/// location is test code ([`Def::is_test`]/[`SymRef::is_test`]) - ranks after tier, so a test
-/// double never outranks the product code it stands in for.
+/// Gap 104 puts three keys ahead of that order, counting DISTINCT query terms case-insensitively.
+/// `name_coverage` - the terms the entity's name holds - ranks first, so a query that names an
+/// entity by its shape (`impl EventStore for` -> the impl blocks named `impl EventStore for
+/// Store`) finds it above a name that holds one incidental word (`for`). `test` - the location is
+/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file under a `tests` directory) - ranks
+/// next, so a test double never outranks the product code it stands in for. `coverage` - the
+/// terms the name OR the file path holds - ranks third, so the words that name the module narrow
+/// the match (`sqlite store open` -> `open_connection` in `store/sqlite.rs` above `reopen_window`
+/// elsewhere).
 ///
 /// [`Def::is_test`]: crate::grounder::symbols::model::Def::is_test
 /// [`SymRef::is_test`]: crate::grounder::symbols::model::SymRef::is_test
 struct ScoredHit<'a> {
+    name_coverage: usize,
+    test: bool,
     coverage: usize,
     tier: u8,
-    test: bool,
     commonness: usize,
     lexical: u8,
     file: &'a str,
@@ -236,15 +239,16 @@ impl ScoredHit<'_> {
         (self.name, self.lang)
     }
 
-    /// The ONE ranking order, best first: coverage, then tier, then product before test code,
-    /// then rarest commonness, then definition over reference, then file and line (a total,
-    /// deterministic order). Both the per-location collapse and the final sort in
-    /// [`scored_hits`] compare by it, so the two can never disagree.
+    /// The ONE ranking order, best first: name coverage, then product before test code, then
+    /// name-and-path coverage, then tier, then rarest commonness, then definition over reference,
+    /// then file and line (a total, deterministic order). Both the per-location collapse and the
+    /// final sort in [`scored_hits`] compare by it, so the two can never disagree.
     fn rank(&self) -> impl Ord + '_ {
         (
+            std::cmp::Reverse(self.name_coverage),
+            self.test,
             std::cmp::Reverse(self.coverage),
             std::cmp::Reverse(self.tier),
-            self.test,
             self.commonness,
             std::cmp::Reverse(self.lexical),
             self.file,
@@ -266,6 +270,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
         let lower_path = path.to_lowercase();
+        let test_file = crate::grounder::symbols::events::is_under_tests_dir(path);
         let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
@@ -296,14 +301,15 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
                 return;
             }
             let lower_name = name.to_lowercase();
-            let coverage = lower_terms
-                .iter()
-                .filter(|t| lower_name.contains(t.as_str()) || lower_path.contains(t.as_str()))
-                .count();
+            let in_name = |t: &&String| lower_name.contains(t.as_str());
             let hit = ScoredHit {
-                coverage,
+                name_coverage: lower_terms.iter().filter(in_name).count(),
+                test: test || test_file,
+                coverage: lower_terms
+                    .iter()
+                    .filter(|t| in_name(t) || lower_path.contains(t.as_str()))
+                    .count(),
                 tier: hit_tier,
-                test,
                 commonness: commonness.get(&(name, fs.lang)).copied().unwrap_or(0),
                 lexical,
                 file: path.as_str(),
