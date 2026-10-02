@@ -14,11 +14,11 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    emit, record_clean_critique, record_critique, run_payloads, run_rigger, run_rigger_envs,
-    seed_run_events, temp_repoless_project, write_spec_project,
+    emit, read_run_events, record_clean_critique, record_critique, run_payloads, run_rigger,
+    run_rigger_envs, seed_run_events, temp_repoless_project, write_scaffold, write_spec_project,
 };
-use common::fixtures::temp_git_project_with_commit;
-use common::repo::stub_path;
+use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
+use common::repo::{stub_path, write_critique_stub};
 use rigger::review::critique_hash;
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
@@ -368,4 +368,284 @@ fn a_workflow_naming_no_critic_begins_each_new_run_with_one_line_saying_so() {
         2,
         "the fresh run is minted"
     );
+}
+
+/// [`CRITICLESS_WORKFLOW`] naming `doubter` as its critic through `defaults.review.adversary`
+/// alone: the plan-critique gate still names no adversary.
+const DEFAULTS_CRITIC_WORKFLOW: &str = "defaults:\n  grounder: nop\n  review:\n    adversary: \
+     doubter\n    adjudicator: arbiter\nstages:\n  plan:\n    agent: planner\n    produces: dag\n  \
+     plan-critique:\n    needs: [plan]\n    adjudicator: arbiter\n  implement:\n    needs: \
+     [plan-critique]\n    agent: planner\n    strategy: fan-out\n    on_pass: none\n";
+
+const DOUBTER: &str =
+    "---\nid: doubter\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nDoubt it again.\n";
+
+/// [`SPEC`] at another path under the root.
+const RENAMED_REL: &str = "specs/7-gadget-renamed.md";
+
+/// The ids of the two BLOCKING findings [`REJECT`] records as the first critique of `text`.
+fn reject_ids(text: &str) -> [String; 2] {
+    let hash = critique_hash(text);
+    [format!("sc-{hash}-0-1"), format!("sc-{hash}-0-3")]
+}
+
+/// `rigger step --spec <spec>` plus `extra` refused a new run on the spec it names `named`, with
+/// `open` ([`assert_refused`]), and appended no event of any type to the run stream.
+fn assert_step_refused(
+    root: &Path,
+    (spec, extra): (&str, &[&str]),
+    named: &str,
+    open: Option<&[&str]>,
+    runs_before: usize,
+) {
+    let events_before = read_run_events(root).len();
+    assert_refused(
+        root,
+        step(root, spec, extra),
+        ("rigger step", named, open),
+        runs_before,
+    );
+    assert_eq!(
+        read_run_events(root).len(),
+        events_before,
+        "a refused step appends nothing to the run stream"
+    );
+}
+
+/// `rigger step --spec <spec>` plus `extra` proceeded with no refusal and no no-critic line, and
+/// the run stream then holds `runs` runs.
+fn assert_step_proceeds(root: &Path, spec: &str, extra: &[&str], runs: usize) {
+    let (out, err, ok) = step(root, spec, extra);
+    assert!(ok, "the step on {spec} {extra:?} proceeds; stderr:\n{err}");
+    assert_eq!(out.lines().count(), 1, "one JSON line:\n{out}");
+    assert!(
+        !err.contains("refusing") && !err.contains("no spec critique"),
+        "the step neither refuses nor names a critique; stderr:\n{err}"
+    );
+    assert_eq!(
+        run_payloads(root, "RunStarted").len(),
+        runs,
+        "the run stream holds {runs} runs"
+    );
+}
+
+/// The command a refusal on `err` prints after the route label `label`, as the arguments a shell
+/// hands `rigger`: the words after `rigger`, then the trailing single-quoted argument unquoted.
+fn printed_command(err: &str, label: &str) -> Vec<String> {
+    let line = err
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix(label))
+        .unwrap_or_else(|| panic!("the refusal prints a `{label}` route; stderr:\n{err}"))
+        .trim();
+    let (words, quoted) = match line.split_once(" '") {
+        Some((words, quoted)) => (words, quoted.strip_suffix('\'')),
+        None => (line, None),
+    };
+    let mut args: Vec<String> = words.split_whitespace().map(str::to_string).collect();
+    assert_eq!(args.remove(0), "rigger", "the route runs rigger: {line}");
+    args.extend(quoted.map(str::to_string));
+    args
+}
+
+/// Given a refusal, when the operator runs each command it prints exactly as printed, then the
+/// refusal moves from not critiqued to the open ids and the run begins. The refusal names the spec
+/// repo-relative under every spelling that normalizes to it, so its printed routes are the ones a
+/// later run start reads.
+#[test]
+fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let dotted = format!("./{SPEC_REL}");
+    let absolute = root.join(SPEC_REL).display().to_string();
+    for given in [&dotted, &absolute] {
+        assert_step_refused(root, (given, &[]), SPEC_REL, None, 0);
+    }
+
+    let (_out, err, _ok) = step(root, &dotted, &[]);
+    let critique = printed_command(&err, "amend the spec and critique it:");
+    assert_eq!(
+        critique,
+        ["critique", SPEC_REL],
+        "the printed critique route"
+    );
+    let work = tempfile::tempdir().unwrap();
+    let path = write_critique_stub(work.path(), REJECT);
+    let critique: Vec<&str> = critique.iter().map(String::as_str).collect();
+    let (_out, err, ok) = run_rigger_envs(root, &critique, &[("PATH", path.as_str())]);
+    assert!(
+        ok,
+        "the printed critique route records a critique; stderr:\n{err}"
+    );
+
+    let [one, three] = reject_ids(SPEC);
+    let open = [one.as_str(), three.as_str()];
+    assert_step_refused(root, (&dotted, &[]), SPEC_REL, Some(&open), 0);
+    let (_out, err, _ok) = step(root, &absolute, &[]);
+    let resolution = printed_command(&err, "or record a resolution:");
+    let decision = format!(
+        "{{\"id\":\"...\",\"governs\":{},\"resolves\":{},\"summary\":\"...\"}}",
+        json!([SPEC_REL]),
+        json!(open)
+    );
+    assert_eq!(
+        resolution,
+        ["emit", "DecisionMade", decision.as_str()],
+        "the printed resolution route"
+    );
+    let resolution: Vec<&str> = resolution.iter().map(String::as_str).collect();
+    let (_out, err, ok) = run_rigger(root, &resolution);
+    assert!(
+        ok,
+        "the printed resolution route records it; stderr:\n{err}"
+    );
+
+    assert_step_proceeds(root, &dotted, &[], 1);
+}
+
+/// DROPPED, a renamed spec: the critique is keyed on the spec's bytes, so the same bytes at a new
+/// path are refused on the critique's open BLOCKING ids, never as not critiqued; the resolutions
+/// recorded under the old path close none of them until recorded again under the new one.
+#[test]
+fn a_renamed_spec_keeps_the_critique_of_its_bytes_but_not_its_old_paths_resolutions() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    record_critique(root, SPEC_REL, REJECT);
+    let ids = reject_ids(SPEC);
+    let open = [ids[0].as_str(), ids[1].as_str()];
+    resolve(root, "r-old", SPEC_REL, &ids);
+
+    std::fs::rename(root.join(SPEC_REL), root.join(RENAMED_REL)).unwrap();
+    assert_step_refused(root, (RENAMED_REL, &[]), RENAMED_REL, Some(&open), 0);
+
+    resolve(root, "r-new", RENAMED_REL, &ids);
+    assert_step_proceeds(root, RENAMED_REL, &[], 1);
+    assert_eq!(
+        run_payloads(root, "RunStarted")[0]["spec"],
+        RENAMED_REL,
+        "the run is on the renamed spec"
+    );
+}
+
+/// DROPPED, a superseded resolution: supersession is not read, so a resolution a later decision
+/// supersedes with no `resolves`, or with an empty one, still closes the ids it named.
+#[test]
+fn a_resolution_stands_when_a_later_decision_supersedes_it_without_resolves() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    record_critique(root, SPEC_REL, REJECT);
+    resolve(root, "r1", SPEC_REL, &reject_ids(SPEC));
+    for later in [
+        json!({"id": "r1-reworded", "summary": "reworded", "governs": [SPEC_REL],
+               "supersedes": "r1"}),
+        json!({"id": "r1-emptied", "summary": "emptied", "governs": [SPEC_REL],
+               "supersedes": "r1-reworded", "resolves": []}),
+    ] {
+        emit(root, "DecisionMade", &later.to_string());
+    }
+    assert_step_proceeds(root, SPEC_REL, &[], 1);
+}
+
+/// Reverted and DROPPED, the critic: under a workflow that drops its critic a new run proceeds with
+/// the one line whatever the recorded critique holds; naming a critic again - the same persona, or
+/// another named only through `defaults.review.adversary` - judges each new run on the critique
+/// already recorded for the text, which a changed critic leaves standing.
+#[test]
+fn each_new_run_follows_the_workflows_critic_and_any_critic_reads_the_recorded_critique() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let personas = [PERSONAS[0], PERSONAS[1], PERSONAS[2], ("doubter", DOUBTER)];
+    write_spec_project(root, &personas, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    record_critique(root, SPEC_REL, REJECT);
+    let ids = reject_ids(SPEC);
+    let open = [ids[0].as_str(), ids[1].as_str()];
+
+    write_scaffold(root, &personas, CRITICLESS_WORKFLOW);
+    let (_out, err, ok) = step(root, SPEC_REL, &[]);
+    assert!(ok, "with no critic the new run proceeds; stderr:\n{err}");
+    let line = format!("rigger step: no spec critique for {SPEC_REL}: {NO_CRITIC_CLAUSE}\n");
+    assert_eq!(
+        err.matches(&line).count(),
+        1,
+        "the one no-critic line; stderr:\n{err}"
+    );
+    assert!(!err.contains("refusing"), "no refusal; stderr:\n{err}");
+    assert_eq!(
+        run_payloads(root, "RunStarted").len(),
+        1,
+        "the run is minted"
+    );
+
+    for workflow in [SKEPTIC_WORKFLOW, DEFAULTS_CRITIC_WORKFLOW] {
+        write_scaffold(root, &personas, workflow);
+        assert_step_refused(root, (SPEC_REL, &["--fresh"]), SPEC_REL, Some(&open), 1);
+    }
+    resolve(root, "r-all", SPEC_REL, &ids);
+    assert_step_proceeds(root, SPEC_REL, &["--fresh"], 2);
+}
+
+/// The mint decision at the step: a spec returned to after a later run on other criteria begins a
+/// new run - the earlier run on its criteria is never adopted past the later one - so it needs a
+/// critique.
+#[test]
+fn a_spec_returned_to_after_a_later_run_on_other_criteria_needs_a_clean_critique() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let earlier = json!({"run": "r-spec", "criteria": rigger::spec::extract_criteria(SPEC),
+                         "spec": SPEC_REL})
+    .to_string();
+    let later = json!({"run": "r-other", "criteria": ["another spec's criterion"],
+                       "spec": "specs/8-other.md"})
+    .to_string();
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", earlier.as_str()),
+            ("RunStarted", later.as_str()),
+        ],
+    );
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 2);
+    record_clean_critique(root, SPEC_REL);
+    assert_step_proceeds(root, SPEC_REL, &[], 3);
+}
+
+/// Existing data, a run branch holding another copy of the spec: the critique is judged on the
+/// bytes the step read before it anchored the run branch, so a clean critique of the checked-out
+/// text lets the run begin though the anchor puts the other copy in the tree; the next step reads
+/// that copy, whose other criteria begin a new run that is refused as not critiqued.
+#[test]
+fn a_run_branch_holding_another_copy_of_the_spec_cannot_change_the_critiqued_bytes() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    let home = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    git_ok(root, &["add", SPEC_REL]);
+    git_ok(root, &["commit", "-q", "-m", "the spec"]);
+    git_ok(root, &["checkout", "-q", "-b", "rigger-run"]);
+    std::fs::write(root.join(SPEC_REL), SPEC_DROPPED).unwrap();
+    git_ok(root, &["commit", "-q", "-am", "the run branch's copy"]);
+    git_ok(root, &["checkout", "-q", &home]);
+    record_clean_critique(root, SPEC_REL);
+
+    assert_step_proceeds(root, SPEC_REL, &[], 1);
+    assert_eq!(
+        git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "rigger-run",
+        "the step anchored the run branch"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(SPEC_REL)).unwrap(),
+        SPEC_DROPPED,
+        "the anchor put the run branch's copy in the tree"
+    );
+    assert_eq!(
+        run_payloads(root, "RunStarted")[0]["criteria"],
+        json!(rigger::spec::extract_criteria(SPEC)),
+        "the run is on the critiqued bytes' criteria"
+    );
+
+    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, None, 1);
 }
