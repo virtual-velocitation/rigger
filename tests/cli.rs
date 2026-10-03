@@ -11778,19 +11778,14 @@ fn write_fake_executable(bindir: &Path, name: &str) {
 /// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
 /// machine running this test happens to have installed (some systems co-locate `ccache`
 /// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
-/// apart) - PLUS a fake `cargo-mutants` staged under `root` (spec 91: every fresh `rigger
-/// init` scaffold now declares `gates.mutation`, so `Config::validate` requires the binary
-/// resolvable regardless of what a wrapper-focused test is actually exercising; distinct
-/// from [`path_with_no_cargo_mutants`] below, which deliberately omits it).
-fn path_with_no_known_wrapper(root: &Path) -> String {
-    let bindir = root.join("fake-cargo-mutants-only-bin");
-    write_fake_executable(&bindir, "cargo-mutants");
-    format!("{}:{}", bindir.display(), real_path_dir_of("git"))
+/// apart). Takes the project root only to share [`path_with_fake_wrapper`]'s shape.
+fn path_with_no_known_wrapper(_: &Path) -> String {
+    real_path_dir_of("git")
 }
 
 /// [`path_with_no_known_wrapper`] with a fake `name` executable ALSO staged in its own fresh
 /// bin dir under `root` and prepended, so `name` resolves unambiguously as the only
-/// wrapper-shaped binary on this synthetic `PATH` while `cargo-mutants` still resolves too.
+/// wrapper-shaped binary on this synthetic `PATH`.
 fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
     let bindir = root.join("fake-wrapper-bin");
     write_fake_executable(&bindir, name);
@@ -11844,44 +11839,6 @@ rigger::test_cases! {
     /// that the real compiled binary's `config::load` path enforces it too.
     validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end:
         assert_validate_fails_naming("build:\n  mutation: on\n", None, &["build.mutation", "91"]);
-    /// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91:
-    /// `gates.mutation` + `stages.checkin` are shipped in `SCAFFOLD_WORKFLOW`) - so `Config::
-    /// validate` requires `cargo-mutants` resolvable on PATH at run start with NO
-    /// `build.mutation` override needed at all, unlike spec 73's retired switch which required
-    /// an explicit `on`. A configured-explicit failure, never a silent skip. Mirrors
-    /// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
-    validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path:
-        assert_validate_fails_naming(
-            "",
-            Some(path_with_no_cargo_mutants()),
-            &["cargo-mutants", "mutation"],
-        );
-}
-
-/// The cross-module seam (spec 91, moved from spec 73's retired switch): `Config::validate`
-/// (`config.rs`) and `cmd_validate`'s own reporting call (`main.rs`) both read the SAME
-/// gates-list-driven `mutation_gate_binary_on_path` resolution - "never a second,
-/// independently re-derived check" (per the doc comments at both call sites). A black-box
-/// exit-code-and-stderr check alone cannot tell WHICH of the two calls actually produced the
-/// failure: `cmd_validate` prints the version line and a "config valid: ..." line to stdout
-/// BEFORE it ever reaches its own report, so if `Config::validate` ever stopped gating this
-/// (leaving only `cmd_validate`'s local report as a redundant backstop), this same scenario
-/// would still exit non-zero and still name the binary and the gate id - but only AFTER
-/// that partial stdout had already printed. Asserting stdout is EMPTY here proves the
-/// failure truly originates in `config::load`'s `Config::validate` call, before
-/// `cmd_validate`'s body runs at all - the single-authority guarantee that also makes every
-/// OTHER `config::load` caller (not just `validate`) fail at run start, not merely this one
-/// command's own report.
-#[test]
-fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants() {
-    let out = assert_validate_fails_naming("", Some(path_with_no_cargo_mutants()), &[]);
-    assert!(
-        out.is_empty(),
-        "the failure must originate in Config::validate (config::load), before cmd_validate \
-         prints anything - a non-empty stdout means some OTHER, later check caught this \
-         instead, which would leave every non-validate config::load caller unprotected; \
-         stdout:\n{out}"
-    );
 }
 
 /// `rigger validate` over an initialized project with `build_block(root)` appended to its
@@ -11992,14 +11949,6 @@ rigger::test_cases! {
             },
             path_with_fake_sccache,
             |_| vec!["build wrapper: none".to_string()],
-        );
-    /// A declared `mutation` gate with `cargo-mutants` resolvable on PATH must not fail
-    /// validate, and `rigger validate` must report it as declared through its output.
-    validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable:
-        assert_validate_reports(
-            |_| String::new(),
-            |root| path_with_fake_wrapper(root, "cargo-mutants"),
-            |_| vec!["mutation gate (\"mutation\"): declared".to_string()],
         );
 }
 
@@ -12262,46 +12211,142 @@ fn a_workflow_without_max_parallel_units_still_validates_through_the_binary() {
 }
 
 // ---------------------------------------------------------------------------
-// `rigger validate` mutation-gate resolution (spec 91: gates-list-driven, moved from the
-// retired per-round `build.mutation` switch spec 73 introduced)
+// `rigger validate` gate requirement resolution (spec 113, A GATE DECLARES WHAT IT REQUIRES)
 // ---------------------------------------------------------------------------
 
-/// A `PATH` that genuinely lacks `cargo-mutants` (unlike every other helper above, which
-/// stages a fake one so a wrapper-focused test is never incidentally blocked by the also-
-/// mandatory scaffolded `mutation` gate): the plain git-only directory, asserted
-/// (rather than merely reasoned in a doc comment) to really lack the tool, so a coincidental
-/// co-location could never silently turn this into a false pass. This repo's own real
-/// ambient PATH genuinely has `cargo-mutants` installed, so this git-only directory is the
-/// only way to exercise the absent-binary direction.
-fn path_with_no_cargo_mutants() -> String {
-    let dir = real_path_dir_of("git");
-    assert!(
-        !Path::new(&dir).join("cargo-mutants").exists(),
-        "the git-only directory {dir:?} unexpectedly also carries a cargo-mutants binary; \
-         this test needs a PATH that genuinely lacks the tool"
+/// The executable the fixture `sweep` gate requires: a name no real machine carries, so only
+/// a stub a test stages resolves it.
+const SWEEP_TOOL: &str = "rigger-fixture-sweep-tool";
+
+/// Replace a scaffolded project's workflow with a fixture declaring only `gates` (the body of
+/// its `gates:` block) - the test's own gates, never the scaffold's, and no stage.
+fn write_gates_only_workflow(root: &Path, gates: &str) {
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!("gates:\n{gates}"),
+    )
+    .unwrap();
+}
+
+/// A scaffolded project whose workflow declares the gate `build`, requiring nothing, and the
+/// gate `sweep`, requiring [`SWEEP_TOOL`].
+fn project_with_a_sweep_gate_requiring_a_tool() -> tempfile::TempDir {
+    let dir = initialized_project();
+    write_gates_only_workflow(
+        dir.path(),
+        &format!(
+            "  build: {{ run: \"true\", kind: core }}\n  \
+             sweep: {{ run: \"true\", kind: core, requires: [{SWEEP_TOOL}] }}\n"
+        ),
     );
     dir
 }
 
-/// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91) - on
-/// this test suite's own real ambient PATH (which genuinely has `cargo-mutants` installed,
-/// per this repo's own committed gate), `rigger validate` must succeed and report it
-/// declared, never the retired switch's "on"/"off" vocabulary.
-#[test]
-fn validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold() {
-    let dir = initialized_project();
-    let root = dir.path();
+/// The `gate <id>:` lines `rigger validate` printed, each asserted to follow the `build
+/// budget:` line directly, in order.
+fn validate_gate_lines(out: &str) -> Vec<String> {
+    let lines: Vec<&str> = out.lines().collect();
+    let budget = lines
+        .iter()
+        .position(|l| l.starts_with("build budget: "))
+        .unwrap_or_else(|| panic!("validate must print its build budget line; stdout:\n{out}"));
+    let after_budget: Vec<String> = lines[budget + 1..]
+        .iter()
+        .take_while(|l| l.starts_with("gate "))
+        .map(|l| (*l).to_string())
+        .collect();
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("gate ")).count(),
+        after_budget.len(),
+        "every gate line follows the build budget line directly; stdout:\n{out}"
+    );
+    after_budget
+}
 
-    let (out, err, ok) = run_rigger(root, &["validate"]);
+/// A fixture gate whose `requires` names a stub executable first on `PATH` (a second stub of
+/// the same name sits later on it) validates, and `rigger validate` reports one line per
+/// declared gate in gate-id order: the gate requiring nothing, then the requirement resolved
+/// at the FIRST `PATH` directory holding it.
+#[test]
+fn validate_reports_each_gate_requirement_resolved_on_path() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    let first = root.join("first-bin");
+    let later = root.join("later-bin");
+    write_fake_executable(&first, SWEEP_TOOL);
+    write_fake_executable(&later, SWEEP_TOOL);
+    let path = format!(
+        "{}:{}:{}",
+        first.display(),
+        later.display(),
+        real_path_dir_of("git")
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         ok,
-        "a fresh scaffold must validate on the real ambient PATH; stdout:\n{out}\nstderr:\n{err}"
+        "a resolvable requirement validates; stdout:\n{out}\nstderr:\n{err}"
     );
+    assert_eq!(
+        validate_gate_lines(&out),
+        vec![
+            "gate build: requires nothing".to_string(),
+            format!(
+                "gate sweep: requires {SWEEP_TOOL} at {}",
+                first.join(SWEEP_TOOL).display()
+            ),
+        ]
+    );
+}
+
+/// Without the stub, the same fixture refuses at the load, before `rigger validate` prints
+/// anything, with the one requirement message naming the gate, the executable and
+/// `gates.sweep.requires` - so every other `config_store::load` caller refuses it too.
+#[test]
+fn validate_refuses_before_any_output_when_a_gate_requirement_is_not_on_path() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    let git_only = real_path_dir_of("git");
     assert!(
-        out.lines()
-            .any(|l| l == "mutation gate (\"mutation\"): declared"),
-        "a fresh scaffold's default-declared mutation gate must report declared through \
-         validate; stdout:\n{out}"
+        !Path::new(&git_only).join(SWEEP_TOOL).exists(),
+        "precondition: {git_only:?} must not carry {SWEEP_TOOL}"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &git_only)]);
+    assert!(
+        !ok,
+        "a missing requirement refuses; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(out, "", "the refusal comes before any output");
+    let message = format!(
+        "gate \"sweep\" requires \"{SWEEP_TOOL}\", which is not an executable on PATH \
+         (config key: gates.sweep.requires)"
+    );
+    assert_eq!(
+        err.matches(&message).count(),
+        1,
+        "the refusal must carry the one requirement message once; stderr:\n{err}"
+    );
+}
+
+/// A fixture gate named `mutation` that declares nothing validates with no `cargo-mutants`
+/// anywhere on `PATH`: a gate needs only what its own `requires` names, whatever its id.
+#[test]
+fn validate_accepts_a_gate_named_mutation_that_declares_nothing_with_no_cargo_mutants_on_path() {
+    let dir = initialized_project();
+    let root = dir.path();
+    write_gates_only_workflow(root, "  mutation: { run: \"true\", kind: core }\n");
+    let git_only = real_path_dir_of("git");
+    assert!(
+        !Path::new(&git_only).join("cargo-mutants").exists(),
+        "precondition: {git_only:?} must not carry cargo-mutants"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &git_only)]);
+    assert!(
+        ok,
+        "a gate requiring nothing validates; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        validate_gate_lines(&out),
+        vec!["gate mutation: requires nothing".to_string()]
     );
 }
 

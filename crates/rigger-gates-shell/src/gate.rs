@@ -1567,60 +1567,303 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(resolve_wrapper_name_from("sccache", &path).is_err());
     }
 
-    // --- mutation_gate_binary_available (spec 91, ENABLED-BUT-ABSENT FAILS LOUD, moved from
-    // the retired `build.mutation` switch spec 73 authored) --------------------------------
+    // --- resolve_requirements (spec 113, A GATE DECLARES WHAT IT REQUIRES) ------------------
     //
     // Same injectable-PATH shape as `resolve_wrapper_name_from`'s own tests above: the pure
-    // core takes PATH as a value so these never touch (or race on) the process-global PATH.
-    // Unlike the retired switch, there is no on/off string to parse here at all - the CALLER
-    // (`Config::validate`) decides whether to probe, keyed on whether the workflow declares
-    // `MUTATION_GATE_ID`; this probe is unconditional once called.
+    // core takes PATH as a value, so these never touch (or race on) the process-global PATH.
+    // The two PATH-component cases stage their stub in this process's working directory,
+    // because an empty component names that directory and a relative one resolves against
+    // it; `tempfile` removes each stub when its test ends.
+
+    /// A gates map of `(gate id, requires)` pairs, every gate's command `true`.
+    fn gates_requiring(
+        gates: &[(&str, &[&str])],
+    ) -> std::collections::BTreeMap<String, rigger_domain::config::Gate> {
+        gates
+            .iter()
+            .map(|(id, requires)| {
+                let gate = rigger_domain::config::Gate {
+                    run: "true".into(),
+                    requires: requires.iter().map(|r| (*r).to_string()).collect(),
+                    ..Default::default()
+                };
+                ((*id).to_string(), gate)
+            })
+            .collect()
+    }
+
+    fn resolved(name: &str, at: &std::path::Path) -> ResolvedRequirement {
+        ResolvedRequirement {
+            name: name.into(),
+            at: at.to_path_buf(),
+        }
+    }
+
+    fn unavailable(gate: &str, requirement: &str) -> RequirementUnavailable {
+        RequirementUnavailable {
+            gate: gate.into(),
+            requirement: requirement.into(),
+        }
+    }
 
     #[test]
-    fn mutation_gate_binary_available_finds_the_binary_on_path() {
+    fn resolve_requirements_resolves_every_entry_in_gate_id_then_list_order_as_written() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_executable(dir.path(), "cargo-mutants");
-        let path = path_var(&[dir.path()]);
-        assert!(mutation_gate_binary_available(&path).is_ok());
-    }
-
-    #[test]
-    fn mutation_gate_binary_available_errors_naming_the_binary_and_gate_id_when_absent() {
-        let empty_path = path_var(&[]);
-        let err = mutation_gate_binary_available(&empty_path).expect_err(
-            "a workflow that declares the mutation gate with no cargo-mutants on PATH must \
-             error, not degrade",
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("cargo-mutants"),
-            "the error must name the missing binary: {msg:?}"
-        );
-        assert!(
-            msg.contains("mutation"),
-            "the error must name the gate id: {msg:?}"
-        );
-    }
-
-    #[test]
-    fn mutation_gate_binary_available_ignores_a_same_named_non_executable_file_on_path() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("cargo-mutants"), "not a binary").expect("write plain file");
-        let path = path_var(&[dir.path()]);
-        // Present as a FILE but not executable: must not count as "found" - a stray
-        // non-executable file of the same name must never masquerade as the real tool.
-        assert!(mutation_gate_binary_available(&path).is_err());
-    }
-
-    #[test]
-    fn mutation_gate_binary_on_path_reads_the_real_ambient_path() {
-        // The ambient-reading edge just forwards to the pure core against the REAL PATH -
-        // proven here by requiring it to actually AGREE with a direct probe of that same
-        // PATH, never asserting a specific outcome this test's own environment does not
-        // control.
+        let tool_a = write_executable(dir.path(), "tool-a");
+        let tool_b = write_executable(dir.path(), "tool-b");
+        let gates = gates_requiring(&[
+            ("sweep", &["tool-b", "tool-a", "tool-b"]),
+            ("build", &[]),
+            ("lint", &["tool-a"]),
+        ]);
         assert_eq!(
-            mutation_gate_binary_on_path().is_ok(),
-            mutation_gate_binary_available(&std::env::var_os("PATH").unwrap_or_default()).is_ok()
+            resolve_requirements(&gates, &path_var(&[dir.path()])),
+            Ok(vec![
+                GateRequirements {
+                    gate: "build".into(),
+                    requires: vec![],
+                },
+                GateRequirements {
+                    gate: "lint".into(),
+                    requires: vec![resolved("tool-a", &tool_a)],
+                },
+                GateRequirements {
+                    gate: "sweep".into(),
+                    requires: vec![
+                        resolved("tool-b", &tool_b),
+                        resolved("tool-a", &tool_a),
+                        resolved("tool-b", &tool_b),
+                    ],
+                },
+            ]),
+            "every gate in gate-id order, each entry in list order, a repeated name twice"
+        );
+    }
+
+    #[test]
+    fn resolve_requirements_of_no_gates_is_empty() {
+        assert_eq!(
+            resolve_requirements(&gates_requiring(&[]), &path_var(&[])),
+            Ok(vec![])
+        );
+    }
+
+    #[test]
+    fn resolve_requirements_resolves_each_entry_at_the_first_path_directory_holding_it() {
+        let first = tempfile::tempdir().expect("tempdir");
+        let second = tempfile::tempdir().expect("tempdir");
+        let in_first = write_executable(first.path(), "tool");
+        write_executable(second.path(), "tool");
+        let only_in_second = write_executable(second.path(), "late-tool");
+        let gates = gates_requiring(&[("sweep", &["tool", "late-tool"])]);
+        assert_eq!(
+            resolve_requirements(&gates, &path_var(&[first.path(), second.path()])),
+            Ok(vec![GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![
+                    resolved("tool", &in_first),
+                    resolved("late-tool", &only_in_second),
+                ],
+            }])
+        );
+    }
+
+    #[test]
+    fn resolve_requirements_answers_the_first_missing_entry_in_gate_id_then_list_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_executable(dir.path(), "present");
+        let gates = gates_requiring(&[
+            ("gamma", &["missing-g"]),
+            ("alpha", &["present"]),
+            ("beta", &["present", "missing-b1", "missing-b2"]),
+        ]);
+        let err = resolve_requirements(&gates, &path_var(&[dir.path()]))
+            .expect_err("a missing requirement refuses");
+        assert_eq!(err, unavailable("beta", "missing-b1"));
+        assert_eq!(
+            err.to_string(),
+            "gate \"beta\" requires \"missing-b1\", which is not an executable on PATH \
+             (config key: gates.beta.requires)"
+        );
+    }
+
+    /// The shared case body: `name` resolves missing on a `PATH` of `dir` alone.
+    fn assert_requirement_missing(dir: &std::path::Path, name: &str, why: &str) {
+        let gates = gates_requiring(&[("sweep", &[name])]);
+        assert_eq!(
+            resolve_requirements(&gates, &path_var(&[dir])),
+            Err(unavailable("sweep", name)),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn resolve_requirements_refuses_a_name_on_no_path_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_requirement_missing(dir.path(), "absent-tool", "nothing on PATH holds it");
+    }
+
+    #[test]
+    fn resolve_requirements_ignores_a_same_named_non_executable_file_on_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("tool"), "not a binary").expect("write plain file");
+        assert_requirement_missing(
+            dir.path(),
+            "tool",
+            "a stray non-executable file of the same name is never the tool",
+        );
+    }
+
+    #[test]
+    fn resolve_requirements_refuses_an_empty_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_requirement_missing(dir.path(), "", "an empty name names no file");
+    }
+
+    #[test]
+    fn resolve_requirements_refuses_a_name_holding_a_slash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let nested = dir.path().join("sub");
+        std::fs::create_dir_all(&nested).expect("mkdir sub");
+        let stub = write_executable(&nested, "tool");
+        assert_requirement_missing(
+            dir.path(),
+            "sub/tool",
+            "a relative name holding `/` names no file in a PATH directory",
+        );
+        assert_requirement_missing(
+            dir.path(),
+            stub.to_str().expect("utf-8 stub path"),
+            "an absolute name names no file in a PATH directory",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_requirements_resolves_a_symlink_to_an_executable_at_the_symlinks_own_path() {
+        let target_dir = tempfile::tempdir().expect("tempdir");
+        let link_dir = tempfile::tempdir().expect("tempdir");
+        let target = write_executable(target_dir.path(), "real-tool");
+        let link = link_dir.path().join("tool");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let gates = gates_requiring(&[("sweep", &["tool"])]);
+        assert_eq!(
+            resolve_requirements(&gates, &path_var(&[link_dir.path()])),
+            Ok(vec![GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![resolved("tool", &link)],
+            }])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_requirements_refuses_a_dangling_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("tool"))
+            .expect("symlink");
+        assert_requirement_missing(dir.path(), "tool", "a dangling symlink resolves missing");
+    }
+
+    /// An executable stub staged in this process's working directory, removed when dropped.
+    fn executable_in_cwd() -> tempfile::NamedTempFile {
+        let stub = tempfile::Builder::new()
+            .prefix("rigger-requires-stub-")
+            .tempfile_in(std::env::current_dir().expect("cwd"))
+            .expect("stub in cwd");
+        std::fs::write(stub.path(), "#!/bin/sh\nexit 0\n").expect("write stub");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(stub.path(), std::fs::Permissions::from_mode(0o755))
+                .expect("chmod stub");
+        }
+        stub
+    }
+
+    fn file_name(path: &std::path::Path) -> String {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf-8 file name")
+            .to_string()
+    }
+
+    #[test]
+    fn resolve_requirements_skips_an_empty_path_component() {
+        let stub = executable_in_cwd();
+        let name = file_name(stub.path());
+        assert!(
+            is_executable_file(&std::path::Path::new("").join(&name)),
+            "precondition: the stub is reachable through an empty component"
+        );
+        let absolute = tempfile::tempdir().expect("tempdir");
+        let path = std::ffi::OsString::from(format!("{}:", absolute.path().display()));
+        let gates = gates_requiring(&[("sweep", &[name.as_str()])]);
+        assert_eq!(
+            resolve_requirements(&gates, &path),
+            Err(unavailable("sweep", &name))
+        );
+    }
+
+    /// A directory staged in this process's working directory holding an executable stub,
+    /// with the directory's relative name, both removed when the directory is dropped.
+    fn relative_dir_holding(name: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::Builder::new()
+            .prefix("rigger-requires-dir-")
+            .tempdir_in(std::env::current_dir().expect("cwd"))
+            .expect("dir in cwd");
+        write_executable(dir.path(), name);
+        let relative = file_name(dir.path());
+        assert!(
+            is_executable_file(&std::path::Path::new(&relative).join(name)),
+            "precondition: the stub is reachable through the relative component"
+        );
+        (dir, relative)
+    }
+
+    #[test]
+    fn resolve_requirements_skips_a_relative_path_component() {
+        let (_dir, relative) = relative_dir_holding("tool");
+        let gates = gates_requiring(&[("sweep", &["tool"])]);
+        assert_eq!(
+            resolve_requirements(&gates, std::ffi::OsStr::new(&relative)),
+            Err(unavailable("sweep", "tool"))
+        );
+    }
+
+    #[test]
+    fn path_has_executable_skips_a_wrapper_reachable_only_through_a_relative_component() {
+        let (dir, relative) = relative_dir_holding("my-wrapper");
+        assert!(!path_has_executable(
+            std::ffi::OsStr::new(&relative),
+            "my-wrapper"
+        ));
+        assert!(path_has_executable(&path_var(&[dir.path()]), "my-wrapper"));
+    }
+
+    #[test]
+    fn resolve_requirements_on_path_resolves_against_the_ambient_path() {
+        let ambient = std::env::var_os("PATH").unwrap_or_default();
+        let nothing = gates_requiring(&[("sweep", &[])]);
+        assert_eq!(
+            resolve_requirements_on_path(&nothing),
+            Ok(vec![GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![],
+            }])
+        );
+        let missing = gates_requiring(&[("sweep", &["rigger-no-such-requirement-on-any-path"])]);
+        assert_eq!(
+            resolve_requirements_on_path(&missing),
+            Err(unavailable(
+                "sweep",
+                "rigger-no-such-requirement-on-any-path"
+            ))
+        );
+        let present = gates_requiring(&[("sweep", &["sh"])]);
+        assert_eq!(
+            resolve_requirements_on_path(&present),
+            resolve_requirements(&present, &ambient)
         );
     }
 

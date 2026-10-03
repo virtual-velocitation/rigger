@@ -2281,12 +2281,12 @@ class: product\n";
             let err = cfg.validate().expect_err(&format!(
                 "build.mutation: {mutation:?} must fail validation"
             ));
-            let msg = err.to_string();
-            assert!(
-                msg.contains("build.mutation"),
-                "the error must name the retired key: {msg:?}"
+            assert_eq!(
+                err.to_string(),
+                "config: the workflow key `build.mutation` is retired (spec 91 retired it: \
+                 nothing reads it): delete the `mutation:` line under `build:` from your workflow.yml (config \
+                 key: build.mutation)"
             );
-            assert!(msg.contains("91"), "the error must name spec 91: {msg:?}");
         }
     }
 
@@ -2325,41 +2325,75 @@ class: product\n";
         );
     }
 
-    /// Spec 91 (GATES-LIST-DRIVEN, moved from the retired `build.mutation` switch): a
-    /// workflow that declares NO gate named `mutation` never probes PATH at all - mirrors
-    /// `validate_accepts_off_wrapper_regardless_of_path`'s own untouched-by-default shape.
+    /// A synthetic workflow declaring the one gate `sweep`, requiring `requires`.
+    fn config_with_sweep_requiring(requires: &[&str]) -> Config {
+        let mut cfg = Config::default();
+        cfg.workflow.gates.insert(
+            "sweep".into(),
+            Gate {
+                run: "true".into(),
+                requires: requires.iter().map(|r| (*r).to_string()).collect(),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    /// Spec 113 (A GATE DECLARES WHAT IT REQUIRES): a declared gate whose requirement is not
+    /// an executable on `PATH` refuses validation with the resolver's one message, naming the
+    /// FIRST missing entry in list order - never a later one. `sh` stands for a present entry
+    /// (this crate already assumes a Unix `PATH`, as the named-wrapper tests below do).
     #[test]
-    fn validate_never_probes_for_cargo_mutants_when_no_mutation_gate_is_declared() {
-        let cfg = Config::default();
-        assert!(!cfg.workflow.gates.contains_key("mutation"));
-        assert!(
-            cfg.validate().is_ok(),
-            "a workflow with no mutation gate must never fail validation over cargo-mutants"
+    fn validate_refuses_the_first_missing_gate_requirement() {
+        let cfg = config_with_sweep_requiring(&[
+            "sh",
+            "rigger-absent-requirement-one",
+            "rigger-absent-requirement-two",
+        ]);
+        let msg = cfg
+            .validate()
+            .expect_err("a missing gate requirement refuses validation")
+            .to_string();
+        assert_eq!(
+            msg,
+            "config: gate \"sweep\" requires \"rigger-absent-requirement-one\", which is not \
+             an executable on PATH (config key: gates.sweep.requires)"
         );
     }
 
-    /// Spec 91 (ENABLED-BUT-ABSENT FAILS AT RUN START, moved from the retired
-    /// `build.mutation` switch): a workflow that DECLARES a gate named `mutation`, with the
-    /// `cargo-mutants` binary genuinely present on this test's real ambient PATH (a setup
-    /// precondition this repo's own mutation gate requires), must validate successfully -
-    /// the positive-resolution half of the contract, mirroring
-    /// `validate_rejects_a_named_build_wrapper_absent_from_path`'s own real-PATH approach.
-    /// The ABSENT-binary failure direction cannot be proven against this repo's real ambient
-    /// PATH the way a nonsense wrapper NAME can (the binary name here is fixed, not
-    /// operator-chosen, and is genuinely installed) - that direction is proven with a
-    /// synthetic PATH at the pure-resolver level
-    /// (`gate::tests::mutation_gate_binary_available_errors_naming_the_binary_and_gate_id_when_absent`)
-    /// and end to end through the real CLI with a controlled PATH in `tests/cli.rs`.
+    /// A declared gate that requires nothing validates, and validation answers the load's own
+    /// resolution: one entry per declared gate, here `sweep` with nothing resolved.
     #[test]
-    fn validate_accepts_a_declared_mutation_gate_when_cargo_mutants_is_on_the_real_path() {
-        let mut cfg = Config::default();
+    fn validate_accepts_a_gate_that_requires_nothing() {
+        let cfg = config_with_sweep_requiring(&[]);
+        assert_eq!(
+            cfg.validate().expect("a gate requiring nothing validates"),
+            vec![crate::gate::GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![],
+            }]
+        );
+    }
+
+    /// The requirement check runs LAST, after `Workflow::failure_taxonomy` (the check before
+    /// it), so a workflow failing both reports the earlier check's message.
+    #[test]
+    fn validate_reports_an_earlier_check_before_a_missing_gate_requirement() {
+        let mut cfg = config_with_sweep_requiring(&["rigger-absent-requirement-one"]);
         cfg.workflow
-            .gates
-            .insert("mutation".into(), Gate::default());
-        assert!(
-            cfg.validate().is_ok(),
-            "a declared mutation gate with cargo-mutants resolvable must validate; this \
-             test's own environment must have cargo-mutants installed"
+            .defaults
+            .failure_rules
+            .push(crate::config::FailureRuleDef {
+                class: "not-a-class".into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            cfg.validate()
+                .expect_err("an unknown failure class refuses validation")
+                .to_string(),
+            "config: failure rule has unknown class \"not-a-class\" (want infra | product | \
+             flaky)",
+            "the failure taxonomy's refusal must win over the requirement check"
         );
     }
 

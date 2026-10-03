@@ -1825,14 +1825,13 @@ mod tests {
             max_concurrent: 4,
             mutation: String::new(),
         };
-        let lines = build_environment_report(Some("sccache"), &build, false);
+        let lines = build_environment_report(Some("sccache"), &build);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: sccache".to_string(),
                 "build cache dir: /tmp/example-cache".to_string(),
                 "build budget: 4".to_string(),
-                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -1850,13 +1849,12 @@ mod tests {
             max_concurrent: 8,
             mutation: String::new(),
         };
-        let lines = build_environment_report(None, &build, false);
+        let lines = build_environment_report(None, &build);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: none".to_string(),
                 "build budget: 8".to_string(),
-                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -1870,41 +1868,67 @@ mod tests {
             max_concurrent: 0,
             ..Default::default()
         };
-        let lines = build_environment_report(None, &build, false);
+        let lines = build_environment_report(None, &build);
         assert!(
             lines.iter().any(|l| l == "build budget: unlimited"),
             "a zero max_concurrent must report as unlimited, got: {lines:?}"
         );
     }
 
-    /// Spec 91: `rigger validate` reports the mutation gate as `declared` when the workflow's
-    /// `gates:` map names it - given the ALREADY-IN-HAND bool, mirroring the wrapper report's
-    /// own already-resolved convention.
+    // --- Spec 113: `rigger validate` reports each declared gate's requirements from the
+    // load's own resolution. ---
+
+    /// A gate requiring nothing renders `requires nothing`.
     #[test]
-    fn build_environment_report_reports_mutation_gate_declared() {
-        let build = config::BuildConfig::default();
-        let lines = build_environment_report(None, &build, true);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l == "mutation gate (\"mutation\"): declared"),
-            "a declared mutation gate must report declared, got: {lines:?}"
+    fn gate_requirement_lines_render_a_gate_requiring_nothing() {
+        let gates = vec![GateRequirements {
+            gate: "build".into(),
+            requires: vec![],
+        }];
+        assert_eq!(
+            gate_requirement_lines(&gates),
+            vec!["gate build: requires nothing".to_string()]
         );
     }
 
-    /// The `not configured` counterpart of
-    /// `build_environment_report_reports_mutation_gate_declared` - the default case for every
-    /// workflow that never declares a `mutation` gate.
+    /// A gate requiring two executables renders each as `<name> at <path>`, joined by `, `,
+    /// one line per gate in the gate-id order the resolution holds.
     #[test]
-    fn build_environment_report_reports_mutation_gate_not_configured() {
-        let build = config::BuildConfig::default();
-        let lines = build_environment_report(None, &build, false);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l == "mutation gate (\"mutation\"): not configured"),
-            "an undeclared mutation gate must report not configured, got: {lines:?}"
+    fn gate_requirement_lines_render_each_resolved_entry_joined_in_gate_id_order() {
+        let gates = vec![
+            GateRequirements {
+                gate: "build".into(),
+                requires: vec![],
+            },
+            GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![
+                    ResolvedRequirement {
+                        name: "cargo-mutants".into(),
+                        at: PathBuf::from("/home/u/.cargo/bin/cargo-mutants"),
+                    },
+                    ResolvedRequirement {
+                        name: "cargo-nextest".into(),
+                        at: PathBuf::from("/usr/local/bin/cargo-nextest"),
+                    },
+                ],
+            },
+        ];
+        assert_eq!(
+            gate_requirement_lines(&gates),
+            vec![
+                "gate build: requires nothing".to_string(),
+                "gate sweep: requires cargo-mutants at /home/u/.cargo/bin/cargo-mutants, \
+                 cargo-nextest at /usr/local/bin/cargo-nextest"
+                    .to_string(),
+            ]
         );
+    }
+
+    /// A workflow declaring no gate prints no gate line.
+    #[test]
+    fn gate_requirement_lines_of_no_gates_is_empty() {
+        assert_eq!(gate_requirement_lines(&[]), Vec::<String>::new());
     }
 
     // --- Spec 71, criterion 3: `rigger validate` detects a stream whose position order and
