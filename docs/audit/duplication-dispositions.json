@@ -340,11 +340,6 @@
     "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
   },
   {
-    "id": "dup-f4d16bef38a8",
-    "disposition": "not-a-duplicate",
-    "reason": "Three one-line adapters fitting three different static documents (the planning-a-spec skill body, the spec-preflight skill body and the planning field guide page) to the uniform `fn(&DocsContext) -> String` render signature the skill registry and the handbook-page list call; no logic is repeated, and spec 112 decides the spec-preflight renderer is shaped exactly like planning-a-spec's."
-  },
-  {
     "id": "dup-c5777007a33f",
     "disposition": "not-a-duplicate",
     "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."

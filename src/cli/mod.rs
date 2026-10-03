@@ -171,11 +171,10 @@ const HANDBOOK_DISCIPLINE_REL: &str = "docs/handbook/using-rigger.md";
 /// as [`HANDBOOK_DISCIPLINE_REL`]. The single source of this path.
 const PLANNING_FIELD_GUIDE_REL: &str = "docs/handbook/planning-field-guide.md";
 
-/// One [`HANDBOOK_PAGES`] entry: the page's committed rel path and the pure render
-/// function that produces its fresh content. Named so clippy's `type_complexity` lint
-/// stays clean and so [`write_docs`]/[`docs_drift`] read as "a rel path and a renderer",
+/// One [`HANDBOOK_PAGES`] entry: the page's committed rel path and the body that renders its
+/// fresh content. Named so [`write_docs`]/[`docs_drift`] read as "a rel path and a body",
 /// not an inline tuple type.
-type HandbookPageEntry = (&'static str, fn(&rigger::docs::DocsContext) -> String);
+type HandbookPageEntry = (&'static str, rigger::docs::DocBody);
 
 /// Every handbook page `rigger docs` renders and the docs-drift gate checks, OUTSIDE the
 /// skill registry (these are handbook chapters, not installable skills - see
@@ -186,11 +185,11 @@ type HandbookPageEntry = (&'static str, fn(&rigger::docs::DocsContext) -> String
 const HANDBOOK_PAGES: &[HandbookPageEntry] = &[
     (
         HANDBOOK_DISCIPLINE_REL,
-        rigger::docs::render_handbook_discipline,
+        rigger::docs::DocBody::Rendered(rigger::docs::render_handbook_discipline),
     ),
     (
         PLANNING_FIELD_GUIDE_REL,
-        rigger::docs::render_planning_field_guide,
+        rigger::docs::DocBody::Static(rigger::docs::PLANNING_FIELD_GUIDE_BODY),
     ),
 ];
 
@@ -5006,8 +5005,8 @@ fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error
         .into_iter()
         .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
         .collect();
-    for (rel, render) in HANDBOOK_PAGES {
-        outputs.push((root.join(rel), render(&ctx)));
+    for (rel, body) in HANDBOOK_PAGES {
+        outputs.push((root.join(rel), body.render(&ctx)));
     }
     let mut written = Vec::with_capacity(outputs.len());
     for (path, contents) in &outputs {
@@ -5999,8 +5998,8 @@ mod tests {
                 )
             })
             .collect();
-        for (rel, render) in HANDBOOK_PAGES {
-            checks.push((manifest.join(rel), render(&ctx)));
+        for (rel, body) in HANDBOOK_PAGES {
+            checks.push((manifest.join(rel), body.render(&ctx)));
         }
         for (path, fresh) in checks {
             let committed = std::fs::read_to_string(&path)

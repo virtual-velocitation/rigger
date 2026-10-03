@@ -17122,7 +17122,7 @@ rigger::test_cases! {
 /// criterion 1) one layer over: THAT test proves the SKILL registry's generalization reaches
 /// a second skill; this one proves the separate HANDBOOK-PAGE list's generalization reaches
 /// a second handbook page. Driving the real binary proves the whole composition path
-/// (docs_context -> render_planning_field_guide -> write) actually produces the committed
+/// (docs_context -> the page's body -> write) actually produces the committed
 /// file an author commits and the drift check re-renders against - the class of regression
 /// an in-process test that only checks the returned path list (names/paths match, but the
 /// loop silently re-renders entry 1 twice, or writes entry 2's bytes to entry 1's path)

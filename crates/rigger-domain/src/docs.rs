@@ -461,13 +461,6 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 | Identity claim rejected with `cause: spec-ambiguity` once a fact is dropped | F11 undecided removal | DROPPED corner + named comparison surface (spec-preflight step 2) |
 "#;
 
-/// Render the `planning-a-spec` skill. `ctx` is accepted only to match the registry's
-/// uniform `fn(&DocsContext) -> String` signature ([`SkillEntry`]); this body has nothing
-/// in it to interpolate from `ctx`.
-fn render_planning_a_spec_skill(_ctx: &DocsContext) -> String {
-    PLANNING_A_SPEC_BODY.to_string()
-}
-
 /// The `spec-preflight` skill's body (spec 112, criterion 4): the pre-launch procedure that runs
 /// after `planning-a-spec` - the landing-order simulation, the per-criterion corner walk and the
 /// `rigger critique` adversary pass, then resolving and recording every BLOCKING finding. Spec
@@ -595,13 +588,6 @@ When a review or plan-critique reject names a defect in the spec itself:
 4. Run Steps 1-3 on the amended spec before the next step spawns.
 "#;
 
-/// Render the `spec-preflight` skill. `ctx` is accepted only to match the registry's uniform
-/// `fn(&DocsContext) -> String` signature ([`SkillEntry`]); this body has nothing in it to
-/// interpolate from `ctx`.
-fn render_spec_preflight_skill(_ctx: &DocsContext) -> String {
-    SPEC_PREFLIGHT_BODY.to_string()
-}
-
 /// The planning field guide's body, committed as-is at
 /// `docs/handbook/planning-field-guide.md` (spec 66, criterion 2): the failure catalog
 /// (F1-F11) this repo's own event history recorded, the mid-run amendment protocol, and
@@ -610,8 +596,9 @@ fn render_spec_preflight_skill(_ctx: &DocsContext) -> String {
 /// the `planning-a-spec` skill and `authoring-loops.md`'s shape rules both point readers
 /// at. Self-contained: a consumer needs no access to this repo's history to use it. Like
 /// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant
-/// rather than a `DocsContext`-parameterized template.
-const PLANNING_FIELD_GUIDE_BODY: &str = r#"# Planning a loop run: the field guide
+/// rather than a `DocsContext`-parameterized template, which the binary's handbook-page list
+/// holds as a [`DocBody::Static`].
+pub const PLANNING_FIELD_GUIDE_BODY: &str = r#"# Planning a loop run: the field guide
 
 The handbook's [authoring-loops](authoring-loops.md) rules say what a loop-ready spec IS. This
 guide is the other half: how to PRODUCE one, distilled from this repository's own event store -
@@ -795,12 +782,27 @@ closed these holes before `rigger run` ever started. Use the `planning-a-spec` s
 this guide as a procedure.
 "#;
 
-/// Render the planning field guide handbook page (spec 66, criterion 2). `ctx` is accepted
-/// only to match the uniform `fn(&DocsContext) -> String` signature every handbook-page
-/// entry in the binary's `HANDBOOK_PAGES` list shares (the same shape [`SkillEntry`] uses
-/// for skills); this body has nothing in it to interpolate from `ctx`.
-pub fn render_planning_field_guide(_ctx: &DocsContext) -> String {
-    PLANNING_FIELD_GUIDE_BODY.to_string()
+/// A shipped document's body: rendered from the code-derived facts a [`DocsContext`]
+/// carries, or a static body committed as-is that no context reaches. The skill registry and
+/// the binary's handbook-page list hold one per entry, so a static document needs no adapter
+/// fitting it to a render signature: [`DocBody::render`] is the one renderer that ignores
+/// `ctx` (`d112-op-seam-items-from-c4`).
+#[derive(Clone, Copy)]
+pub enum DocBody {
+    /// Rendered from the docs context.
+    Rendered(fn(&DocsContext) -> String),
+    /// Committed as-is (`planning-a-spec`, `spec-preflight`, the planning field guide).
+    Static(&'static str),
+}
+
+impl DocBody {
+    /// This body's text for `ctx`: a rendered body's render, a static body as written.
+    pub fn render(&self, ctx: &DocsContext) -> String {
+        match self {
+            DocBody::Rendered(render) => render(ctx),
+            DocBody::Static(body) => (*body).to_string(),
+        }
+    }
 }
 
 /// The fixed shape every per-operation skill renders in: frontmatter naming it, its title,
@@ -1259,9 +1261,9 @@ pub const OPERATOR_BINARY_PROHIBITION: &str = "\n## Operator binary boundary\n\n
      PATH.\n";
 
 /// One skill this binary owns end-to-end (spec 68, criterion 1: the skill registry): a
-/// name and the function that renders its BODY (before the operator-binary prohibition is
-/// stamped on) from the code-derived [`DocsContext`]. An entry whose content carries no
-/// drift-prone facts (`planning-a-spec`) simply ignores `ctx`.
+/// name and its [`DocBody`] (before the operator-binary prohibition is stamped on), rendered
+/// from the code-derived [`DocsContext`]. An entry whose content carries no drift-prone facts
+/// (`planning-a-spec`, `spec-preflight`) is a static body that ignores `ctx`.
 ///
 /// [`skill_registry`] is the ONE enumeration every surface walks - `rigger docs` (renders
 /// each entry to its committed source), `rigger setup` (installs each entry, overlay
@@ -1270,7 +1272,7 @@ pub const OPERATOR_BINARY_PROHIBITION: &str = "\n## Operator binary boundary\n\n
 /// needs its own edit.
 pub struct SkillEntry {
     pub name: &'static str,
-    render_body: fn(&DocsContext) -> String,
+    body: DocBody,
 }
 
 impl SkillEntry {
@@ -1278,7 +1280,7 @@ impl SkillEntry {
     /// [`OPERATOR_BINARY_PROHIBITION`], stamped here - once, for every entry - rather than
     /// by each skill's own author.
     pub fn render(&self, ctx: &DocsContext) -> String {
-        let mut s = (self.render_body)(ctx);
+        let mut s = self.body.render(ctx);
         s.push_str(OPERATOR_BINARY_PROHIBITION);
         s
     }
@@ -1293,47 +1295,47 @@ pub fn skill_registry() -> Vec<SkillEntry> {
     vec![
         SkillEntry {
             name: "using-rigger",
-            render_body: render_using_rigger_skill,
+            body: DocBody::Rendered(render_using_rigger_skill),
         },
         SkillEntry {
             name: "planning-a-spec",
-            render_body: render_planning_a_spec_skill,
+            body: DocBody::Static(PLANNING_A_SPEC_BODY),
         },
         SkillEntry {
             name: "rigger-reset-store",
-            render_body: render_reset_store_skill,
+            body: DocBody::Rendered(render_reset_store_skill),
         },
         SkillEntry {
             name: "rigger-build-graph",
-            render_body: render_build_graph_skill,
+            body: DocBody::Rendered(render_build_graph_skill),
         },
         SkillEntry {
             name: "rigger-reindex",
-            render_body: render_reindex_skill,
+            body: DocBody::Rendered(render_reindex_skill),
         },
         SkillEntry {
             name: "rigger-resume-a-run",
-            render_body: render_resume_a_run_skill,
+            body: DocBody::Rendered(render_resume_a_run_skill),
         },
         SkillEntry {
             name: "rigger-handle-an-escalation",
-            render_body: render_handle_an_escalation_skill,
+            body: DocBody::Rendered(render_handle_an_escalation_skill),
         },
         SkillEntry {
             name: "rigger-watch-a-run",
-            render_body: render_watch_a_run_skill,
+            body: DocBody::Rendered(render_watch_a_run_skill),
         },
         SkillEntry {
             name: "rigger-restore-the-dash",
-            render_body: render_restore_the_dash_skill,
+            body: DocBody::Rendered(render_restore_the_dash_skill),
         },
         SkillEntry {
             name: "rigger-diagnose-churn",
-            render_body: render_diagnose_churn_skill,
+            body: DocBody::Rendered(render_diagnose_churn_skill),
         },
         SkillEntry {
             name: "spec-preflight",
-            render_body: render_spec_preflight_skill,
+            body: DocBody::Static(SPEC_PREFLIGHT_BODY),
         },
     ]
 }
@@ -1786,7 +1788,7 @@ mod tests {
                 "{}: render() must carry the prohibition exactly once",
                 entry.name
             );
-            let raw_body = (entry.render_body)(&ctx);
+            let raw_body = entry.body.render(&ctx);
             assert!(
                 !raw_body.contains(OPERATOR_BINARY_PROHIBITION),
                 "{}: the skill's own body must NOT author the prohibition itself",
@@ -1800,7 +1802,7 @@ mod tests {
     /// registry (not just a placeholder).
     #[test]
     fn planning_a_spec_render_carries_frontmatter_and_the_recipe() {
-        let out = render_planning_a_spec_skill(&sentinel_ctx());
+        let out = PLANNING_A_SPEC_BODY;
         assert!(
             out.starts_with("---\nname: planning-a-spec\n"),
             "must open with skill frontmatter naming it; got: {}",
@@ -1884,7 +1886,7 @@ mod tests {
                 .iter()
                 .find(|e| e.name == *name)
                 .unwrap_or_else(|| panic!("{name} must be in the registry"));
-            let out = (entry.render_body)(&ctx);
+            let out = entry.body.render(&ctx);
             let frontmatter_end = out.find("\n---\n\n").map(|i| i + 6).unwrap_or(out.len());
             let frontmatter = &out[..frontmatter_end];
             assert!(
@@ -1937,7 +1939,7 @@ mod tests {
         ] {
             let registry = skill_registry();
             let entry = registry.iter().find(|e| e.name == name).unwrap();
-            let out = (entry.render_body)(&ctx);
+            let out = entry.body.render(&ctx);
             assert_eq!(
                 out.matches("## Procedure").count(),
                 1,
@@ -1974,7 +1976,7 @@ mod tests {
         let registry = skill_registry();
         for name in family {
             let entry = registry.iter().find(|e| e.name == name).unwrap();
-            let out = (entry.render_body)(&ctx);
+            let out = entry.body.render(&ctx);
             let mentions_a_sibling = family
                 .iter()
                 .filter(|other| **other != name)
@@ -2006,7 +2008,7 @@ mod tests {
             .iter()
             .map(|(name, _)| {
                 let entry = registry.iter().find(|e| e.name == *name).unwrap();
-                (*name, (entry.render_body)(&ctx))
+                (*name, entry.body.render(&ctx))
             })
             .collect();
         for (name, out) in &rendered {
@@ -2310,7 +2312,7 @@ mod tests {
             .iter()
             .find(|e| e.name == "spec-preflight")
             .expect("spec-preflight must be in the registry");
-        (entry.render_body)(ctx)
+        entry.body.render(ctx)
     }
 
     /// Spec 112, criterion 4 (THE SHIPPED SKILL): `spec-preflight` is a registry entry whose
@@ -2357,9 +2359,8 @@ mod tests {
     /// so the table stays complete; F9, F10 and F11 carry their class labels.
     #[test]
     fn churn_table_has_one_row_for_every_catalog_class() {
-        let ctx = sentinel_ctx();
         let every_class: Vec<u32> = (1..=11).collect();
-        let guide = render_planning_field_guide(&ctx);
+        let guide = PLANNING_FIELD_GUIDE_BODY;
         let catalog: Vec<u32> = guide
             .lines()
             .filter_map(|line| line.strip_prefix("### F"))
@@ -2370,7 +2371,7 @@ mod tests {
             "the field guide's catalog runs F1 to F11"
         );
 
-        let skill = render_planning_a_spec_skill(&ctx);
+        let skill = PLANNING_A_SPEC_BODY;
         let header = "| Signature in the run | Catalog class | Fix at spec time |\n|---|---|---|\n";
         let rows = &skill[skill.find(header).expect("the churn table") + header.len()..];
         let mut labels = Vec::new();
@@ -2404,7 +2405,7 @@ mod tests {
     /// countermeasure naming the `spec-preflight` step that runs that simulation.
     #[test]
     fn field_guide_f10_and_f11_open_as_f3_shapes_found_by_their_simulation() {
-        let guide = render_planning_field_guide(&sentinel_ctx());
+        let guide = PLANNING_FIELD_GUIDE_BODY;
         for (heading, end, opening, step) in [
             (
                 "### F10 - Landing-order circularity\n\n",
@@ -2419,7 +2420,7 @@ mod tests {
                 "as its second step",
             ),
         ] {
-            let body = &section(&guide, heading, end)[heading.len()..];
+            let body = &section(guide, heading, end)[heading.len()..];
             assert!(
                 crate::wave::normalize_ws(body).starts_with(opening),
                 "{heading:?} must open with {opening:?}; got:\n{body}"
@@ -2448,8 +2449,8 @@ mod tests {
     #[test]
     fn the_shipped_docs_carry_one_corner_list_of_eight() {
         let ctx = sentinel_ctx();
-        let skill = render_planning_a_spec_skill(&ctx);
-        let guide = render_planning_field_guide(&ctx);
+        let skill = PLANNING_A_SPEC_BODY;
+        let guide = PLANNING_FIELD_GUIDE_BODY;
         let preflight = spec_preflight_body(&ctx);
         let (_, discipline) = crate::instructions::BUILTIN
             .iter()
@@ -2462,15 +2463,11 @@ mod tests {
             ),
             (
                 "planning-a-spec step 3",
-                section(&skill, "**3. Run the constraints walk.**", "**4. "),
+                section(skill, "**3. Run the constraints walk.**", "**4. "),
             ),
             (
                 "the field guide's F3 countermeasure",
-                section(
-                    &guide,
-                    "**Countermeasure:** the constraints walk.",
-                    "### F4",
-                ),
+                section(guide, "**Countermeasure:** the constraints walk.", "### F4"),
             ),
             (
                 "spec-preflight step 2",
@@ -2501,9 +2498,9 @@ mod tests {
     /// under a workflow with a critic, `rigger critique <spec>` before launch.
     #[test]
     fn planning_a_spec_step_7_runs_spec_preflight_and_the_critique_before_launch() {
-        let skill = render_planning_a_spec_skill(&sentinel_ctx());
+        let skill = PLANNING_A_SPEC_BODY;
         let step = section(
-            &skill,
+            skill,
             "**7. Preflight, then launch.**",
             "## Amending mid-run",
         );

@@ -8437,7 +8437,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
-    "content_hash": "73acfbaa6a1354c2"
+    "content_hash": "4b2527eda62d4a6e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8653,7 +8653,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2f49bd053107a1a2"
+    "content_hash": "adc1bfd71567db8a"
   },
   {
     "file": "src/cli/mod.rs",
