@@ -412,7 +412,7 @@ and 5 at any point, 6 last):
 | 1 | 5 | DAG critique prompt | yes - the three rule texts move byte for byte into the const, the unit-size line follows it, and 1 asserts the const by containment |
 | 5 | 1 | DAG critique prompt | yes - 5 edits only the verdict paragraph and the gate branch and asserts its text by containment, so 1's later reorder leaves it true |
 | 2 | 3 | `load_criteria` | yes - 2 has it hand back the bytes it read, leaves its lint lines alone and asserts the refusal and no-critic lines by containment |
-| 3 | 2 | `load_criteria` | yes - 3 asserts `rigger validate` warning lines and the lint's own functions only |
+| 3 | 2 | `load_criteria` | yes - 3 asserts `rigger validate` warning lines, the lint's own functions and the tells a `rigger step` prints before it refuses an unreachable base (`step_prints_the_preflight_tells_before_the_launch`); `cmd_step` refuses that base before `resolve_store`, so 2's refusal is never reached and the test holds in both orders |
 | 2 | 4 | the skill's record step | yes - 2 reads no skill |
 | 4 | 2 | the skill's record step | yes - the skill states the author's rule, not the refusal; its `resolves` field is read by nothing yet |
 | 2 | 5 | `rigger step` | yes - the refusal, or the no-critic line, comes before any plan exists: it hashes the bytes `load_criteria` read and calls the mint decision |

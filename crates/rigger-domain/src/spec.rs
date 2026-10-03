@@ -1054,19 +1054,30 @@ fn backtick_spans(chars: &[char]) -> Vec<(usize, Option<usize>)> {
     spans
 }
 
-/// The text of each closed backtick code span of `text` ([`backtick_spans`]), in order, its
-/// delimiting runs trimmed off: the one backtick code-span reader, so every reader of a
-/// Markdown code span pairs runs by the rule [`strip_inline_code`] masks with. An unclosed
-/// run names no span. No span is empty: runs are maximal, so a closing run never directly
-/// follows its opener, and the trimmed text, which neither starts nor ends with a backtick,
-/// is exactly the span's content - never an empty surface.
+/// The content of each closed backtick code span of `text` ([`backtick_spans`]), in order, as
+/// CommonMark reads it: the one backtick code-span reader, so every reader of a Markdown code
+/// span (the twin tell, the grounder's design links, the canary anchor) pairs runs by the rule
+/// [`strip_inline_code`] masks with and sees one surface for a span and its padded spelling.
+/// The text between the delimiting runs is the content, except that when it begins and ends
+/// with a space and is not all spaces, one leading and one trailing space are stripped
+/// (`d112-op-code-span-padding`). An unclosed run names no span. No span is empty: runs are
+/// maximal, so a closing run never directly follows its opener, and a stripped span keeps a
+/// character that is not a space - never an empty surface.
 pub fn code_spans(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     backtick_spans(&chars)
         .into_iter()
         .filter_map(|(open, close)| {
             let span: String = chars[open..=close?].iter().collect();
-            Some(span.trim_matches('`').to_string())
+            let inner = span.trim_matches('`');
+            let padded =
+                inner.starts_with(' ') && inner.ends_with(' ') && !inner.chars().all(|c| c == ' ');
+            let content = if padded {
+                &inner[1..inner.len() - 1]
+            } else {
+                inner
+            };
+            Some(content.to_string())
         })
         .collect()
 }
