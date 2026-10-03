@@ -848,6 +848,51 @@ mod tests {
         assert_eq!(r.units["u"].resumed, None);
     }
 
+    /// Spec 112, criterion 5 (*The stop*): a plan-critique stop's escalation carries its halt
+    /// text as `reason`, which the fold carries onto the unit and each `UnitEscalated`
+    /// overwrites; a record without the field folds an empty reason and reads as today. The
+    /// unit's spec-defect reason, and the run's, is that reason while the unit stays escalated:
+    /// a resume retires it, and a reasonless re-escalation clears it.
+    #[test]
+    fn an_escalation_folds_its_reason_and_a_reasonless_one_reads_as_today() {
+        let stop = ev(
+            TYPE_UNIT_ESCALATED,
+            r#"{"id":"g","reason":"amend the spec"}"#,
+        );
+        let plain = ev(TYPE_UNIT_ESCALATED, r#"{"id":"g"}"#);
+        let resumed = ev(TYPE_UNIT_RESUMED, r#"{"unit":"g","attempts_granted":1}"#);
+        let fold = |events: &[Event]| {
+            let r = project(events).unwrap();
+            let g = &r.units["g"];
+            (
+                g.status,
+                g.escalation_reason.clone(),
+                g.spec_defect_reason().map(str::to_string),
+                r.spec_defect_reason().map(str::to_string),
+            )
+        };
+        let stopped = Some("amend the spec".to_string());
+        assert_eq!(
+            [
+                fold(std::slice::from_ref(&stop)),
+                fold(std::slice::from_ref(&plain)),
+                fold(&[stop.clone(), resumed.clone()]),
+                fold(&[stop, resumed, plain]),
+            ],
+            [
+                (
+                    Status::Escalated,
+                    "amend the spec".to_string(),
+                    stopped.clone(),
+                    stopped
+                ),
+                (Status::Escalated, String::new(), None, None),
+                (Status::Failed, "amend the spec".to_string(), None, None),
+                (Status::Escalated, String::new(), None, None),
+            ]
+        );
+    }
+
     #[test]
     fn a_failed_unit_is_not_terminal() {
         // A unit that FAILED a review/gate but has NOT yet escalated (attempts < the

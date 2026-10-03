@@ -562,6 +562,23 @@ mod tests {
             .lines(),
             vec!["u-esc: escalated after exhausting remediation"]
         );
+        /// A gate stopped on a spec defect (spec 112, criterion 5) is listed under its own kind,
+        /// its escalation's reason the detail, never as an exhausted-remediation escalation.
+        dock_lists_a_gate_stopped_on_a_spec_defect_under_its_own_kind: assert_eq!(
+            docked_one(
+                &[
+                    ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"plan-critique"}"#),
+                    ev(
+                        ledger::TYPE_UNIT_ESCALATED,
+                        r#"{"id":"plan-critique","reason":"amend the spec and relaunch: x"}"#,
+                    ),
+                ],
+                ledger::ATTENTION_SPEC_DEFECT,
+                "plan-critique",
+            )
+            .lines(),
+            vec!["plan-critique: amend the spec and relaunch: x"]
+        );
         /// The dock lists a currently-spent budget, run-scoped (no `unit`), from the SAME
         /// durable `BudgetExhausted` fact `blocker::classify`'s run-level line already reads.
         dock_lists_a_currently_spent_budget: assert_eq!(

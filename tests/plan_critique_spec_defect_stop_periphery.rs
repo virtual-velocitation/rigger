@@ -5,11 +5,11 @@
 //!
 //! The conductor's own tests drive `conductor::run` in one process over an in-memory store. What
 //! they cannot see is what this file pins: that the halt reaches the step's printed `halted`
-//! field through `rigger step`, that it is a condition of the stopping PROCESS only (a fresh step
-//! process finds the gate terminal and reports no halt), that a step process re-entering a stop
-//! a crash interrupted completes it from the persisted log alone, that the stop reads the
-//! current run's slice of a store holding an earlier run, that the spec it names is the
-//! latest run's `RunStarted.spec` exactly as recorded, through the exported
+//! field through `rigger step`, that it is carried by the log, never by the stopping process (a
+//! fresh step process finds the gate terminal and reports the same halt), that a step process
+//! re-entering a stop a crash interrupted completes it from the persisted log alone, that the
+//! stop reads the current run's slice of a store holding an earlier run, that the spec it names
+//! is the latest run's `RunStarted.spec` exactly as recorded, through the exported
 //! `run::current_run_spec_path` the conductor calls across the crate boundary, that only a
 //! stopping reject whose cause is `spec-ambiguity` stops (through the exported
 //! `spawn::Adjudication::is_spec_ambiguity`), and that the prompt `rigger prompt` serves every
@@ -244,12 +244,12 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
             Some(halt().as_str()),
             json!(["plan-critique"]),
             vec![
-                ("escalated", "plan-critique"),
+                ("spec-defect", "plan-critique"),
                 ("worker-death-recurred", "plan-critique"),
             ],
         ),
         "the step parks nothing, halts with the amend route and names the gate escalated; its \
-         attention is the gate's escalation, never a halted entry"
+         attention is the stop's own kind in place of the gate's escalation, never a halted entry"
     );
     let events = read_run_events(root);
     assert_eq!(
@@ -267,10 +267,10 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
         (
             &json!([SPEC]),
             json!({"reason": halt()}),
-            json!({"id": "plan-critique"}),
+            json!({"id": "plan-critique", "reason": halt()}),
         ),
-        "the lesson is about the spec as recorded, the SpecDefect carries the halt, the \
-         escalation is the gate's own"
+        "the lesson is about the spec as recorded; the SpecDefect and the gate's own escalation \
+         carry the halt"
     );
     assert_eq!(
         (
@@ -293,10 +293,10 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
 }
 
 /// Given a stopped run, when the operator steps again in a fresh process, then nothing parks,
-/// no halt is reported (the halt was the stopping process's), and the stop's records stand once
-/// each.
+/// the halt is reported again (it is carried by the log, never by the stopping process), no
+/// attention entry is stamped, and the stop's records stand once each.
 #[test]
-fn a_later_step_finds_the_stopped_gate_terminal_and_reports_no_halt() {
+fn a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt() {
     let (dir, _) = answered_second_spec_ambiguity_reject();
     let root = dir.path();
     step(root, "the stopping step");
@@ -304,17 +304,20 @@ fn a_later_step_finds_the_stopped_gate_terminal_and_reports_no_halt() {
     assert_eq!(
         (
             wave(&later),
-            later.get("halted"),
+            later["halted"].as_str(),
+            later.get("attention"),
             later["escalated"].clone(),
             stop_records(&read_run_events(root)),
         ),
         (
             Vec::new(),
+            Some(halt().as_str()),
             None,
             json!(["plan-critique"]),
             the_stop_records()
         ),
-        "the gate is terminal: nothing parks, no halt, the stop recorded once"
+        "the gate is terminal: nothing parks, the halt is reported again, nothing is stamped, \
+         the stop recorded once"
     );
 }
 

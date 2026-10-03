@@ -7133,7 +7133,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "39de6f160ca4baed"
+    "content_hash": "a729deb09bc12cb6"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7149,7 +7149,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c3d86dfc128530ea"
+    "content_hash": "7d7e454676bcf13f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7193,11 +7193,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "a_later_step_finds_the_stopped_gate_terminal_and_appends_nothing",
+    "name": "a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt_appending_nothing",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b6c0884428b57a8a"
+    "content_hash": "f0171ceb57be3941"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7293,7 +7293,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e4d09c76630f50c2"
+    "content_hash": "16eac555b5bd2b55"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -9565,7 +9565,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1c39fd50ec11ca36"
+    "content_hash": "b94d83fe814e05c4"
   },
   {
     "file": "src/cli/mod.rs",
@@ -11414,6 +11414,22 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "2e19339a633ced39"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "a_unit_view_carries_the_spec_defect_reason_of_a_gate_stopped_on_one",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9821792d7ca7634d"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "the_spec_defect_block_prints_a_stopped_gate_s_reason_before_the_uncovered_text",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e3986a54d6dd8003"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

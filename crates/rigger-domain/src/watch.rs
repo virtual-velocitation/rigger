@@ -854,6 +854,34 @@ mod tests {
         assert!(line.contains("rigger-handle-an-escalation"));
     }
 
+    /// Spec 112, criterion 5: a gate stopped on a spec defect is reported under its own signal,
+    /// its escalation's reason the detail and the Design's directive the response - never as an
+    /// escalated blocker routed to the escalation skill.
+    #[test]
+    fn a_gate_stopped_on_a_spec_defect_is_reported_under_its_own_signal_with_the_amend_route() {
+        let reason = "amend the spec and relaunch: plan-critique found a spec defect in x";
+        let escalated = serde_json::json!({"id": "plan-critique", "reason": reason}).to_string();
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"plan-critique"}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, &escalated),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(
+            anomalies
+                .iter()
+                .map(|a| (a.signal, a.subject.as_str(), a.detail.as_str(), a.line()))
+                .collect::<Vec<_>>(),
+            vec![(
+                Signal::SpecDefect,
+                "plan-critique",
+                reason,
+                format!(
+                    "spec defect: plan-critique - {reason} (respond: amend the spec and relaunch)"
+                )
+            )]
+        );
+    }
+
     // --- Signal 4: reject-recurrence, per cause ---
 
     #[test]

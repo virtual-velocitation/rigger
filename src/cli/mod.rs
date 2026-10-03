@@ -10099,8 +10099,9 @@ mod tests {
     /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
     /// response protocols are spec 68's skills, referenced by name"), `worker-death-recurred`
     /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
-    /// the same halt), and `stalled-frontier` names the Design's own literal directive instead
-    /// of inventing a sixth skill - exactly as `Signal::FrontierStall` does on the pull side.
+    /// the same halt), and `stalled-frontier` and `spec-defect` each name their Design's own
+    /// literal directive instead of inventing another skill - exactly as `Signal::FrontierStall`
+    /// and `Signal::SpecDefect` do on the pull side.
     /// This is a RENDER-ONLY relay (spec 69: "log lines only, no new stops, no retry-rule
     /// changes"), so the function must never call `stop(`; an entry-less step must render
     /// nothing, which iterating the wire's own array (never a second anomaly list) guarantees
@@ -10142,11 +10143,12 @@ mod tests {
             "each attention entry must render as a log() line naming its kind and detail"
         );
 
-        // The five wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
+        // The six wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
         // each resolve to a response - pinned against the SAME string constants the wire stamp
         // uses, so a renamed kind breaks this test rather than silently going unmapped.
         for (kind, response) in [
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
+            (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
             (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
             (
                 ledger::ATTENTION_WORKER_DEATH_RECURRED,

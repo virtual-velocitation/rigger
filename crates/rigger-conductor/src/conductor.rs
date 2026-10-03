@@ -43603,7 +43603,7 @@ mod tests {
                 critique_round_spawns(2),
                 the_stop_records(),
                 Some(stop_halt().as_str()),
-                vec![json!({"id": "plan-critique"})],
+                vec![json!({"id": "plan-critique", "reason": stop_halt()})],
                 vec![json!(stop_lesson())],
             ),
             "the stop wins the round head: its three records once each, its halt, the gate's one \
@@ -43685,26 +43685,37 @@ mod tests {
             ),
             (
                 json!({"reason": stop_halt()}),
-                json!({"id": "plan-critique"})
+                json!({"id": "plan-critique", "reason": stop_halt()})
             ),
-            "the SpecDefect carries the halt text; the escalation is the gate's own"
+            "the SpecDefect and the gate's own escalation both carry the halt text"
         );
         let gate = &rs.units["plan-critique"];
         assert_eq!(
-            (gate.status, gate.attempts, rs.spec_defect),
-            (ledger::Status::Escalated, 2, true),
-            "the gate is escalated at its two rejects and the run folds the spec defect"
+            (
+                gate.status,
+                gate.attempts,
+                rs.spec_defect,
+                gate.escalation_reason.clone()
+            ),
+            (ledger::Status::Escalated, 2, true, stop_halt()),
+            "the gate is escalated at its two rejects carrying the halt, and the run folds the \
+             spec defect"
         );
         assert_eq!(
             rs.attention
                 .iter()
-                .map(|a| (a.kind, a.unit.as_str()))
+                .map(|a| (a.kind, a.unit.as_str(), a.detail.clone()))
                 .collect::<Vec<_>>(),
             vec![
-                (ledger::ATTENTION_ESCALATED, "plan-critique"),
-                (ledger::ATTENTION_WORKER_DEATH_RECURRED, "plan-critique"),
+                (ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt()),
+                (
+                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    "plan-critique",
+                    "2 attempts".to_string()
+                ),
             ],
-            "the stop's attention entry is the gate's escalation, never a halted entry"
+            "the stop's attention entry is its own kind carrying the halt, in place of the \
+             gate's escalation entry, and never a halted entry"
         );
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
@@ -43799,26 +43810,30 @@ mod tests {
         );
     }
 
+    /// The stop's halt is log-carried (*The stop reason*): a second step, in a fresh conductor
+    /// pass over the stopped run, finds the gate terminal and runs the tail past it - spawning
+    /// and appending nothing - yet still halts with the amend route its fold carries, and stamps
+    /// no attention entry, since nothing crossed.
     #[test]
-    fn a_later_step_finds_the_stopped_gate_terminal_and_appends_nothing() {
+    fn a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt_appending_nothing() {
         let (st, _, _) = stopped_run();
         let before = st.read_stream(STREAM, 0, Direction::Forward).unwrap().len();
         let later = Stub::new();
         let rs = critique_step(&st, &later);
+        let after = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let (status, attention) = (rs.units["plan-critique"].status, rs.attention.clone());
+        let halted = spawn::step_of_pass(&after, rs).unwrap().halted;
         assert_eq!(
-            (
-                later.spawn_ids(),
-                st.read_stream(STREAM, 0, Direction::Forward).unwrap().len(),
-                rs.units["plan-critique"].status,
-                rs.budget_halt,
-            ),
+            (later.spawn_ids(), after.len(), status, attention, halted),
             (
                 Vec::<String>::new(),
                 before,
                 ledger::Status::Escalated,
-                None
+                Vec::new(),
+                Some(stop_halt())
             ),
-            "the gate is terminal: nothing spawns or appends, and the halt was the stopping step's"
+            "the gate is terminal: nothing spawns or appends, no entry is stamped, and the step \
+             halts with the amend route"
         );
     }
 
@@ -44085,26 +44100,26 @@ mod tests {
         );
     }
 
+    /// The halt's precedence: the budget breaker's reason first, else the spec-defect halt the
+    /// fold of the run carries (an escalated unit's reason), else none.
     #[test]
     fn the_budget_halt_takes_precedence_over_the_spec_defect_stop() {
+        let (st, driver, stopped) = stopped_run();
         let mut cfg = Config::default();
         cfg.workflow.defaults.budget = 4;
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
         let deps = stub_deps(&st, &driver, Vec::new());
         let ctx = RunCtx::for_test(&cfg, &deps);
-        let none = ctx.halt_reason();
-        ctx.spec_defect_halt.set("amend".to_string()).unwrap();
-        let spec_defect = ctx.halt_reason();
+        let none = ctx.halt_reason(&RunState::default());
+        let spec_defect = ctx.halt_reason(&stopped);
         ctx.budget_halted.store(true, Ordering::SeqCst);
         assert_eq!(
-            (none, spec_defect, ctx.halt_reason()),
+            (none, spec_defect, ctx.halt_reason(&stopped)),
             (
                 None,
-                Some("amend".to_string()),
+                Some(stop_halt()),
                 Some("budget exhausted: 0/4 spawns".to_string())
             ),
-            "budget first, then the spec defect"
+            "budget first, then the spec defect the fold carries"
         );
     }
 
