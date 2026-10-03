@@ -2718,11 +2718,21 @@ mod tests {
             &["x"],
         );
         /// Single backticks inside a double-backtick span are its text, as Markdown nests
-        /// them: only the closing run of two ends the span.
+        /// them: only the closing run of two ends the span, and the one padding space each
+        /// side of the nested span is stripped from its content.
         backtick_runs_read_single_backticks_inside_a_double_backtick_span_as_text: assert_backtick_runs(
             "`` `a` `` b",
             "          b",
-            &[" `a` "],
+            &["`a`"],
+        );
+        /// A span's content is read as CommonMark reads it (`d112-op-code-span-padding`): one
+        /// leading and one trailing space are stripped when the text between the runs begins
+        /// and ends with a space and is not all spaces; an all-space span, or one padded on
+        /// one side only, reads as is.
+        backtick_runs_strip_one_padding_space_each_side_of_a_padded_span: assert_backtick_runs(
+            "` a `, `  b  `, `  `, ` c`",
+            "     ,        ,     ,     ",
+            &["a", " b ", "  ", " c"],
         );
         /// A run with no later run of its length blanks to the end of the masked text and
         /// names no span, whatever shorter runs follow it.

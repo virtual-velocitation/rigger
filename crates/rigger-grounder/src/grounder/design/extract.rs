@@ -659,6 +659,14 @@ mod tests {
              ```\nlet p = \"src/example.rs\";\nuse `src/fenced.rs`;\n```\n",
             &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
         );
+        /// A padded code span specifies the path CommonMark reads in it
+        /// (`d112-op-code-span-padding`): the one span reader strips one leading and one
+        /// trailing space, so the link names the path, never the padded text.
+        a_padded_code_span_specifies_the_path_it_holds: assert_links(
+            "docs/architecture.md",
+            "# Reference architecture\n\nPadded: ` src/padded.rs `.\n",
+            &[("docs/architecture.md", LinkRel::Specifies, "src/padded.rs")],
+        );
     }
 
     #[test]

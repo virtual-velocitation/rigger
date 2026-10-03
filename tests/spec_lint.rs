@@ -987,8 +987,8 @@ rigger::test_cases! {
         &[
             Lint::Silent(
                 &["F4 disposition"],
-                "an odd backtick count fails closed to the paragraph end, independently of the \
-                 quote kind - the invariant outranks recall",
+                "a backtick run that no later run of its length closes fails closed to the \
+                 paragraph end, independently of the quote kind - the invariant outranks recall",
             ),
         ],
     );
@@ -1547,6 +1547,26 @@ rigger::test_cases! {
                hold? simulate the landing order and split ownership at the seam in Design"],
             "a double-backtick span is one surface shared with its single-backtick spelling, \
              and a measure word inside one is masked",
+        )],
+    );
+
+    /// The padding rule reaching the twin tell (`d112-op-code-span-padding`): given criteria 1
+    /// and 2 measuring `store`, criterion 2 spelling it as a span padded with one space each
+    /// side, when the operator runs `rigger validate`, then one twin warns on the surface
+    /// `store`: the one span reader returns a span's content as CommonMark reads it, so both
+    /// spellings are one surface.
+    validate_reads_a_padded_code_span_as_one_twin_surface_with_its_unpadded_spelling: validate_and_summarize(
+        Spec::Fixture(
+            "# Widget\n\n## Done when\n\n\
+             - [ ] `store` appends one event. This criterion OWNS the append.\n\
+             - [ ] ` store ` costs at most one read. This criterion OWNS the read.\n",
+        ),
+        &[Lint::Exactly(
+            "F10 landing-order circularity",
+            &["F10 landing-order circularity (criterion 2): twin measured surface `store` with \
+               criterion 1; if either lands first without the other, does its own text hold? \
+               simulate the landing order and split ownership at the seam in Design"],
+            "a span padded with one space each side is the surface its unpadded spelling names",
         )],
     );
 
