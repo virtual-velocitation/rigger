@@ -995,7 +995,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// see `conductor::compute_attention`'s own doc comment for why that decision cannot live
 /// inside `conductor::run` itself).
 ///
-/// `attention` already carries whatever `compute_attention` built (escalated /
+/// `attention` already carries whatever `compute_attention` built (escalated / spec-defect /
 /// budget-halted / worker-death-recurred / budget-final-tenth / stalled-frontier, in THAT
 /// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
 /// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
@@ -1003,7 +1003,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// call takes precedence, mirroring the precedence the `halted` wire field gives a conductor
 /// halt - the budget breaker's, else a plan-critique spec-defect stop's - over the hung
 /// fallback, just above this function's call site; a spec-defect stop carries no `halted`
-/// attention entry, its entry being the gate's escalation). A STABLE sort by
+/// attention entry, its entry being the gate's own `spec-defect` one). A STABLE sort by
 /// [`ledger::attention_kind_rank`] afterward only ever needs to relocate the ONE entry just
 /// appended - `compute_attention`'s own entries are already in canonical order, and a stable
 /// sort never disturbs their relative order (e.g. two `stalled-frontier` units stay lexical) -

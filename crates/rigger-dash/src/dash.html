@@ -681,10 +681,14 @@ function render(state) {
       esc((u.depends_on || []).join(", ") || "-"),
       '<span class="pill ' + stClass(u.status) + '">' + esc(u.status) + '</span>']));
 
-  // FUTURE: uncovered criteria (the run flagged a spec defect rather than deviating).
-  el("uncovered").innerHTML = run.spec_defect
-    ? '<div class="pill st-bad">a criterion is uncovered (spec defect flagged)</div>'
-    : '<div class="muted">no uncovered criteria flagged</div>';
+  // FUTURE: spec defects - the reason a plan-critique gate stopped the run, which its unit
+  // carries, else an uncovered criterion (the run flagged a spec defect rather than deviating).
+  const stops = units.map(u => u.spec_defect_reason).filter(Boolean);
+  el("uncovered").innerHTML = stops.length
+    ? stops.map(r => '<div class="pill st-bad">' + esc(r) + '</div>').join("")
+    : run.spec_defect
+      ? '<div class="pill st-bad">a criterion is uncovered (spec defect flagged)</div>'
+      : '<div class="muted">no uncovered criteria flagged</div>';
 
   // Event feed (present): the raw tail, newest last.
   if (state.events) renderFeed(state.events);

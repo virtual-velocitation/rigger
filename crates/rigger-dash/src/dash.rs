@@ -1212,6 +1212,9 @@ pub struct UnitView {
     pub commit: String,
     pub branch: String,
     pub evidence: BTreeMap<String, String>,
+    /// The spec-defect stop this unit carries ([`ledger::Unit::spec_defect_reason`], spec 112
+    /// criterion 5), empty for every other unit: the reason the page's spec-defect block prints.
+    pub spec_defect_reason: String,
 }
 
 /// The metrics projection, with the two derived ratios materialized for the client.
@@ -1526,6 +1529,7 @@ pub fn build_state(
             commit: u.commit.clone(),
             branch: u.branch.clone(),
             evidence: u.evidence.clone(),
+            spec_defect_reason: u.spec_defect_reason().unwrap_or_default().to_string(),
         })
         .collect();
 

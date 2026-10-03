@@ -113,6 +113,23 @@ pub struct Unit {
     /// escalation after the grant is final again until the next resume" - so a stale
     /// banner never survives past the grant it described.
     pub resumed: Option<ResumeGrant>,
+    /// The most recent `UnitEscalated`'s `reason` (spec 112, criterion 5): the halt text a
+    /// plan-critique spec-defect stop records on the gate's escalation; empty on every other
+    /// escalation, and on a record that predates the field (serde-defaulted), which reads as
+    /// before. Raw passthrough like `cause` - each `UnitEscalated` overwrites it and a resume
+    /// leaves it - so it is read through [`Unit::spec_defect_reason`], which holds it only while
+    /// the unit stays escalated.
+    pub escalation_reason: String,
+}
+
+impl Unit {
+    /// The spec-defect stop this unit carries (spec 112, criterion 5): its escalation's reason
+    /// while the unit stays escalated and the reason is non-empty, else `None` - the one fact
+    /// the step's halt and every needs-you surface derive a stop from.
+    pub fn spec_defect_reason(&self) -> Option<&str> {
+        (self.status == Status::Escalated && !self.escalation_reason.is_empty())
+            .then_some(self.escalation_reason.as_str())
+    }
 }
 
 /// One item a review's reject requires fixed - an entry of its verdict line's `required` list,
@@ -154,13 +171,13 @@ pub struct RunState {
     /// conductor's DeferredGateFailed event; gates `done` so a
     /// deferred failure can never be reported as a finished run.
     pub deferred_gate_failed: bool,
-    /// The run's live HALT reason when the spawn-budget breaker stopped this run process
-    /// with ready work unscheduled (Gap 13) - e.g. `"budget exhausted: 200/200 spawns"` -
-    /// else when a plan-critique gate stopped it on a spec defect (spec 112, criterion 5:
-    /// `"amend the spec and relaunch: ..."`), or `None` on a clean fixpoint. Unlike the
-    /// other fields this is NOT folded from the log by [`project`]: a halt is a condition of
-    /// the CURRENT run process, so `conductor::run` stamps it from its in-process state after
-    /// projecting (the stop's durable form is its `SpecDefect`, folded into `spec_defect`).
+    /// The run's live HALT reason, or `None` on a clean fixpoint: the spawn-budget breaker's
+    /// when it stopped this run process with ready work unscheduled (Gap 13) - e.g. `"budget
+    /// exhausted: 200/200 spawns"` - else a plan-critique spec-defect stop's (spec 112,
+    /// criterion 5: `"amend the spec and relaunch: ..."`). Unlike the other fields this is NOT
+    /// set by [`project`]: `conductor::run` stamps it after projecting, the budget half from
+    /// its IN-PROCESS breaker state and the spec-defect half from this fold
+    /// ([`RunState::spec_defect_reason`]), so every step of a stopped run reports the stop.
     /// Folding the durable `BudgetExhausted` event would falsely re-report a halt the operator
     /// has since resolved by raising the budget (a resume then schedules the work and never
     /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
@@ -201,26 +218,32 @@ pub struct RunState {
     pub spec_path: String,
 }
 
-/// One of the five spec-69 watching-discipline signals `AttentionEntry::kind` carries.
-/// Closed vocabulary (never inferred downstream) - kept as `&str` constants rather than an
-/// enum so the wire value and the Rust match arm are the same literal, with no separate
-/// `as_str`/`parse` translation to drift out of sync.
+/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five, and
+/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]). Closed vocabulary (never inferred
+/// downstream) - kept as `&str` constants rather than an enum so the wire value and the Rust
+/// match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
+/// of sync.
 pub const ATTENTION_ESCALATED: &str = "escalated";
+/// A plan-critique gate stopped the run on a spec defect (spec 112, criterion 5): listed for
+/// the stopped unit in place of its [`ATTENTION_ESCALATED`] entry, its detail the stop's reason
+/// ([`AttentionEntry::escalation`]).
+pub const ATTENTION_SPEC_DEFECT: &str = "spec-defect";
 pub const ATTENTION_HALTED: &str = "halted";
 pub const ATTENTION_WORKER_DEATH_RECURRED: &str = "worker-death-recurred";
 pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
 pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
-/// The canonical kind order (spec 69, criterion 5): escalated, halted, worker-death-recurred,
-/// budget-final-tenth, stalled-frontier. `conductor::compute_attention` constructs its own
-/// entries in this order already (so it never needs this function); `rigger step` (main.rs)
-/// calls it to re-sort `attention` (via a STABLE sort, so entries of the SAME kind keep their
-/// relative order) after appending the hung-liveness half of signal 2, which `main.rs` computes
-/// separately and merges in - see `compute_attention`'s own doc comment for why. An unknown
-/// kind (never produced today) sorts last rather than panicking.
+/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5): escalated,
+/// spec-defect, halted, worker-death-recurred, budget-final-tenth, stalled-frontier.
+/// `conductor::compute_attention` and the console's dock sort their entries by it (a STABLE
+/// sort, so entries of the SAME kind keep their lexical unit order); `rigger step` (main.rs)
+/// re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
+/// `main.rs` computes separately and merges in - see `compute_attention`'s own doc comment for
+/// why. An unknown kind (never produced today) sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 5] = [
+    const ORDER: [&str; 6] = [
         ATTENTION_ESCALATED,
+        ATTENTION_SPEC_DEFECT,
         ATTENTION_HALTED,
         ATTENTION_WORKER_DEATH_RECURRED,
         ATTENTION_BUDGET_FINAL_TENTH,
@@ -231,7 +254,7 @@ pub fn attention_kind_rank(kind: &str) -> usize {
 
 /// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
 /// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
-/// the five `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
+/// the `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
 /// and is empty (omitted from the wire) for a run-scoped one (`halted`,
 /// `budget-final-tenth`); `detail` is the human-readable why, so a later criterion's
 /// narrator line needs no further log lookup to render one line naming event + unit.
@@ -244,7 +267,7 @@ pub struct AttentionEntry {
 }
 
 impl AttentionEntry {
-    /// A unit-scoped entry (escalated / worker-death-recurred / stalled-frontier).
+    /// A unit-scoped entry (escalated / spec-defect / worker-death-recurred / stalled-frontier).
     pub fn unit_scoped(
         kind: &'static str,
         unit: impl Into<String>,
@@ -260,6 +283,20 @@ impl AttentionEntry {
     /// A run-scoped entry (halted / budget-final-tenth) - no single unit is the subject.
     pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
         Self::unit_scoped(kind, String::new(), detail)
+    }
+
+    /// The entry for an escalated `unit`: a spec-defect stop's own kind carrying its reason
+    /// ([`Unit::spec_defect_reason`], spec 112 criterion 5) in place of the exhausted-remediation
+    /// escalation every other escalated unit gets.
+    pub fn escalation(unit: &Unit) -> Self {
+        match unit.spec_defect_reason() {
+            Some(reason) => Self::unit_scoped(ATTENTION_SPEC_DEFECT, &unit.id, reason),
+            None => Self::unit_scoped(
+                ATTENTION_ESCALATED,
+                &unit.id,
+                "escalated after exhausting remediation",
+            ),
+        }
     }
 
     /// The one-line render (spec 93, criterion 4): `"<subject>: <detail>"`, where a
@@ -466,6 +503,10 @@ struct UnitFailed {
 #[derive(Deserialize)]
 struct UnitEscalated {
     id: String,
+    /// A plan-critique spec-defect stop's halt text (spec 112, criterion 5); absent on every
+    /// other escalation, and on a record that predates it.
+    #[serde(default)]
+    reason: String,
 }
 #[derive(Deserialize)]
 struct UnitResumed {
@@ -514,6 +555,7 @@ impl RunState {
             required: Vec::new(),
             resume_bound: 0,
             resumed: None,
+            escalation_reason: String::new(),
         })
     }
 
@@ -563,6 +605,7 @@ impl RunState {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
                 let u = self.unit(&p.id);
                 u.status = Status::Escalated;
+                u.escalation_reason = p.reason;
                 // Spec 88, criterion 3: a fresh escalation retires any earlier grant's
                 // display banner - "a second escalation after the grant is final
                 // again until the next resume". `resume_bound` is left alone: it is
@@ -702,6 +745,12 @@ impl RunState {
             .filter(|u| u.status == Status::Escalated)
             .map(|u| u.id.clone())
             .collect()
+    }
+
+    /// The halt of the spec-defect stop this run carries (spec 112, criterion 5): the first
+    /// unit's, in lexical order, [`Unit::spec_defect_reason`], or `None`.
+    pub fn spec_defect_reason(&self) -> Option<&str> {
+        self.units.values().find_map(Unit::spec_defect_reason)
     }
 
     /// Fold the manual-review inbox into [`RunState::manual_review`]: distinct unit ids that

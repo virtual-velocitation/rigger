@@ -445,7 +445,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "f88da45f3e1b3193"
+    "content_hash": "44ef64bfa018bc5e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -453,7 +453,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "91cfada8fffe0c61"
+    "content_hash": "60d786cd756cd8e1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -461,7 +461,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "bc009c27e5b58c22"
+    "content_hash": "a055e66c2881fd65"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -493,7 +493,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d9562968ca070193"
+    "content_hash": "24e1d117c3749c93"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -705,19 +705,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "budget_halt_reason",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "06ad48125e39a84e"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "halt_reason",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "7e524f7cafbd59f6"
+    "content_hash": "42f18307b4b1e19c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1069,7 +1061,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "38b867f95dc571ad"
+    "content_hash": "b7cc4c862419b4b9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1077,7 +1069,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "3783cc5e7e6d30c6"
+    "content_hash": "4ee9c3fd7704885b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1085,7 +1077,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "3e794a6b99f6942f"
+    "content_hash": "e6de0ae760337b79"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3861,7 +3853,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa1a60c2f83acb4a"
+    "content_hash": "d4020f827e28576e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5085,7 +5077,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8ab5ca96004f486a"
+    "content_hash": "f743171f7a562ffa"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -10325,7 +10317,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2c230bec5be85701"
+    "content_hash": "7b880e5535e9163d"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

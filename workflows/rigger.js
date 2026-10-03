@@ -286,11 +286,14 @@ const STATUS = {
 // `budget-final-tenth` resolves to the resume skill too - a preemptive, run-scoped warning
 // for the SAME halt an operator would otherwise only learn of via `halted` once it actually
 // trips. `stalled-frontier` names the Design's own literal directive verbatim instead of
-// inventing a sixth skill, exactly as `Signal::FrontierStall` does on the pull side. An
+// inventing a sixth skill, exactly as `Signal::FrontierStall` does on the pull side, and
+// `spec-defect` (a plan-critique gate stopped the run on a spec defect) names its Design's
+// directive the same way, as `Signal::SpecDefect` does - never the escalation skill. An
 // unrecognized kind (never produced today - the wire's vocabulary is closed) falls back to
 // the umbrella watch skill rather than rendering nothing.
 const ATTENTION_RESPONSE = {
   'escalated': 'rigger-handle-an-escalation',
+  'spec-defect': 'amend the spec and relaunch',
   'halted': 'rigger-resume-a-run',
   'worker-death-recurred': 'rigger-diagnose-churn',
   'budget-final-tenth': 'rigger-resume-a-run',

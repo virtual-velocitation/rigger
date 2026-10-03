@@ -878,16 +878,17 @@ pub struct Step {
     /// this precedence: the spawn-budget breaker (Gap 13: e.g. `"budget exhausted: 200/200
     /// spawns"`), else a plan-critique gate's spec-defect stop (spec 112, criterion 5: `"amend
     /// the spec and relaunch: ..."`), both stamped by `rigger step` (`cmd_step`) from the
-    /// conductor's LIVE state, else hung liveness (spec 10, unit 3), which `cmd_step` fills only
-    /// when the conductor stamped none. `None` on a clean fixpoint, and OMITTED from the wire
+    /// conductor's `RunState::budget_halt` - the breaker's from its live state, the stop's from
+    /// the fold of the run, so every step of a stopped run reports it - else hung liveness (spec
+    /// 10, unit 3), which `cmd_step` fills only when the conductor stamped none. `None` on a clean fixpoint, and OMITTED from the wire
     /// then, so a converged run still prints `{"wave":[],"done":true}` unchanged and a halted one
     /// adds `"halted":"..."` - the `done`/`halted` split the spec (06, Gap 13) calls for. The
     /// thin driver treats a present `halted` as a LOUD stop (a workflow failure carrying the
     /// reason), never a clean completion, so a starved or stopped run is never reported as
-    /// success. [`step_result`] leaves it `None` because a halt is a runtime condition of the
-    /// current run process, not derivable from the append-only log alone - a resume with a
-    /// raised budget clears a budget halt, yet the earlier halt's `BudgetExhausted` event stays
-    /// in the log, and a step after a spec-defect stop finds the gate terminal and reports none.
+    /// success. [`step_result`] leaves it `None` because this pure seam folds only the spawn
+    /// stream, and a budget halt is a runtime condition of the current run process - a resume
+    /// with a raised budget clears it, yet the earlier halt's `BudgetExhausted` event stays in
+    /// the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
     /// The units that ESCALATED - each exhausted remediation and went terminal WITHOUT
@@ -949,11 +950,11 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
-    // A halt is a RUNTIME condition of the live run (the conductor's in-process state: its
-    // budget breaker, else a plan-critique spec-defect stop), not a fact of the append-only
-    // log: a resume with a raised budget clears it while the earlier `BudgetExhausted` event
-    // remains recorded. So this pure log seam never sets it; `rigger step` stamps `halted` from
-    // the conductor's `RunState::budget_halt`, and from hung liveness when that is empty.
+    // A halt is the conductor's to stamp: its budget breaker's from its in-process state (a
+    // resume with a raised budget clears it while the earlier `BudgetExhausted` event remains
+    // recorded), else a plan-critique spec-defect stop's from the fold of the run. So this pure
+    // spawn-stream seam never sets it; `rigger step` stamps `halted` from the conductor's
+    // `RunState::budget_halt`, and from hung liveness when that is empty.
     Ok(Step {
         wave,
         done,
