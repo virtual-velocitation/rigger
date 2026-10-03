@@ -1,7 +1,10 @@
 # 113 - Gates are opaque to the core
 
 **Goal:** rigger knows no gate by name. A gate is a command a project's `.rigger/workflow.yml`
-wires into a stage, so adding or removing one changes no Rust source and no test (issue #33).
+wires into a stage, so adding or removing one there changes no Rust source and no test text
+(issue #33), while the three retained tests that load this repository's workflow through the
+validating `config_store::load` need, at run time, whatever executables that workflow's `requires`
+names, which is the environment, not the test (TESTS PIN FIXTURES AND THE SCAFFOLD).
 Today the core knows one gate and its tool. Lines naming them - `cargo-mutants`, `cargo mutants`,
 `mutation.sh`, `rigger-mutants`, the upper-case word `MUTANTS`, `MUTATION_GATE_ID` or the string
 literal `"mutation"` - number 130 in 17 files under `src/` and `crates/`
@@ -51,11 +54,14 @@ so a `requires` key there would stop the run that builds it.
 
 **A GATE DECLARES WHAT IT REQUIRES, decided here.** `config::Gate`
 (`crates/rigger-domain/src/config.rs`) gains `requires: Vec<String>` under the config key
-`gates.<id>.requires`, `#[serde(default)]`: executable names, empty when absent. One resolver in
-`crates/rigger-gates-shell/src/gate.rs`, `resolve_requirements(gates, path_var)`, resolves every
-entry of every declared gate in gate-id order, then list order, as written (a name listed twice
-resolves twice), and answers the first missing entry as its `Err`, `RequirementUnavailable`, so its
-success value holds resolved entries only. It looks each entry up as a file name in each `PATH`
+`gates.<id>.requires`, `#[serde(default)]`: executable names, empty when absent. An entry means an
+executable on `PATH`, by decision: a `cargo` subcommand `cargo install` put in `$CARGO_HOME/bin`
+resolves only while that directory is on `PATH`, and the Rust set's comment tells the consumer so
+(Notes). One resolver in `crates/rigger-gates-shell/src/gate.rs`,
+`resolve_requirements(gates, path_var)`, resolves every entry of every declared gate in gate-id
+order, then list order, as written (a name listed twice resolves twice), and answers the first
+missing entry as its `Err`, `RequirementUnavailable`, so its success value holds resolved entries
+only. It looks each entry up as a file name in each `PATH`
 directory in order through `find_executable`, which returns the first executable regular file it
 finds; `path_has_executable`, the wrapper probe, calls it, so one lookup serves both.
 `find_executable` searches only absolute `PATH` directories and skips an empty or relative `PATH`
@@ -109,23 +115,32 @@ which rewrites every declared gate's command to `true` and asserts only the deco
 requirement check runs on it; the stage and agent assertions of
 `project_events_reads_this_projects_own_real_workflow_yml` read it through
 `config_store::load_workflow`, and `handbook_config_example_reproduces_the_repo_grounder_default`
-(`tests/handbook_grounder_accuracy.rs`) reads its `grounder:` line as text, neither validating. None
-of them needs an executable on `PATH`, because this repository's workflow declares no `requires`
-(Deferrals). Pins on this repository's `.rigger/agents/` prose (the persona pins criterion 8
-moves) are outside the Goal's "no Rust source and no test" claim, because that claim is about
-adding or removing a gate in `.rigger/workflow.yml`, which no persona pin reads; a persona edit is
-the operator's own text change and its pin moves with it.
+(`tests/handbook_grounder_accuracy.rs`) reads its `grounder:` line as text, neither validating.
+The Goal's claim is therefore scoped to text: adding or removing a gate in `.rigger/workflow.yml`
+changes no Rust source and no test text, and the three retained tests that load this repository's
+workflow through the validating `config_store::load` need, at run time, whatever executables that
+workflow's `requires` names, which is the environment, not the test. None of the three needs one,
+because this repository's workflow declares no `requires` (Deferrals). Pins on this repository's
+`.rigger/agents/` prose (the persona pins criterion 8 moves and
+`every_persona_carries_its_principle_gate_checklist_line`) are outside that claim, because no
+persona pin reads `.rigger/workflow.yml`; a persona edit is the operator's own text change and its
+pin moves with it.
 
 **THE GATE SCRATCH ROOT IS HANDED GENERICALLY, decided here.** Every gate that runs for a unit is
 handed `RIGGER_GATE_SCRATCH` (`GATE_SCRATCH_ENV`, beside `STORE_FENCE_ENV` in
 `crates/rigger-gates-shell/src/gate.rs`) naming `<scratch root>/rigger-gate-<slug>`: the
 `unit_sibling` of the unit worktree under `UNIT_GATE_SCRATCH_PREFIX` (`"rigger-gate-"`, in
 `crates/rigger-domain/src/spawn.rs`). `run_gates_at` and `run_regenerate_command` derive it where
-they derive the mutants root today, from the `dir` their caller passes, and `ExecRunner::run` sets
-the variable only when the derived path is non-empty. Set: `run_single_stage`'s three gate passes
-and `run_speculation`'s two (through `run_gates`) pass the unit's or the lane's `rigger-wt-`
-worktree, and `regenerate_conflicted_paths` passes the worktree it integrates, so each gate gets
-that worktree's sibling; `integrate_and_emit`'s post-merge re-gate passes its throwaway
+they derive the mutants root today, from the `dir` their caller passes. `ExecRunner::run` sets the
+variable when the derived path is non-empty and, when it is empty, removes it from the child's
+environment (`Command::env_remove`), so no gate inherits a root from the process that runs it:
+this repository's own `test` gate runs the suite with the variable set to the outer unit's root,
+and an inner rigger's gate on a review worktree, or with no worktree, still runs without it. The
+unset case is asserted with the variable present in the test's own process
+(`exec_runner_removes_an_inherited_gate_scratch_root_when_handed_none`). Set: `run_single_stage`'s
+three gate passes and `run_speculation`'s two (through `run_gates`) pass the unit's or the lane's
+`rigger-wt-` worktree, and `regenerate_conflicted_paths` passes the worktree it integrates, so each
+gate gets that worktree's sibling; `integrate_and_emit`'s post-merge re-gate passes its throwaway
 `Throwaway::POSTMERGE` worktree under `GateSelection::PostMerge`, whose fallback to the unit's own
 worktree path (`unit_worktree_dir`) sets the variable to that unit's sibling, as it sets
 `CARGO_TARGET_DIR`. Unset: `run_fan_out_review_loop` passes a standalone review stage's
@@ -136,18 +151,23 @@ conductor's test runners, `ReplayRunner` in `src/cli/mod.rs`, the runners in
 `gate_scratches`. rigger never creates the root; a gate that uses it creates it. A per-gate root, or
 any path or variable keyed by a gate id, is NOT this root. A gate creates and removes only the names
 it, or a tool it runs, created under the root, so the gates sharing a unit's root never collide.
-`.rigger/gates/mutation.sh` takes its root as `MUTANTS=${RIGGER_GATE_SCRATCH-}` at its top and keeps
-its anchor at `${MUTANTS%/*}/mutation-anchor` beside the root. Under the root it creates `rerun/`
-(its by-name rerun's `--output`), `rerun.args`, `rerun.re`, `rerun.all`, `rerun.list`, `rerun.todo`,
-`rerun.diff`, `examined.txt` and `last.new/`, and it hands the root to cargo-mutants as `TMPDIR`,
-where cargo-mutants makes its `cargo-mutants-*` build copies and the tests it runs make their
-temporary files; its one `rm -rf` names nothing else there, and its first pass's `mutants.out` stays
-in the worktree. Its gate-environment paragraph names `RIGGER_GATE_SCRATCH` and `unit_sibling`. A
-`mutation.sh` an earlier binary scaffolded into a consumer project reads `$MUTANTS`, which no gate
-is handed: wired, the script this tree ships fails at its `${MUTANTS:?}` expansion with the shell's
-own message naming `MUTANTS`. That script is the consumer's to replace: delete
-`.rigger/gates/mutation.sh` and rerun `rigger init`, which writes the matched set's absent files, as
-the handbook's check-in mutation subsection says (THE HANDBOOK).
+`.rigger/gates/mutation.sh`'s root line is its first command,
+`MUTANTS=${RIGGER_GATE_SCRATCH:?is empty or unset - this gate runs only for a unit}`: an empty or
+unset `RIGGER_GATE_SCRATCH` refuses there, with the shell's message naming `RIGGER_GATE_SCRATCH`,
+before any read or write. The anchor is derived after that check, at
+`${MUTANTS%/*}/mutation-anchor` beside the root, with no `/nonexistent` default, and the `rm -rf`
+names `"$MUTANTS"` where it expanded `"${MUTANTS:?}"`: the root line's check replaces both. Under
+the root it creates `rerun/` (its by-name rerun's `--output`), `rerun.args`, `rerun.re`,
+`rerun.all`, `rerun.list`, `rerun.todo`, `rerun.diff`, `examined.txt` and `last.new/`, and it hands
+the root to cargo-mutants as `TMPDIR`, where cargo-mutants makes its `cargo-mutants-*` build copies
+and the tests it runs make their temporary files; its one `rm -rf` names nothing else there, and its
+first pass's `mutants.out` stays in the worktree. Its gate-environment paragraph names
+`RIGGER_GATE_SCRATCH` and `unit_sibling`. A `mutation.sh` an earlier binary scaffolded into a
+consumer project reads `$MUTANTS` from its environment, which no gate is handed: wired, that earlier
+script fails at its `${MUTANTS:?}` expansion with the shell's own message naming `MUTANTS`. That
+script is the consumer's to replace: delete `.rigger/gates/mutation.sh` and rerun `rigger init`,
+which writes the matched set's absent files, as the handbook's check-in mutation subsection says
+(THE HANDBOOK).
 
 **THE GATE SCRATCH ROOT HAS ONE LIFECYCLE, decided here.** Naming the root and classifying it at
 every scratch walk is one lifecycle: a root nothing reclaims is NOT an implementation. One
@@ -243,9 +263,14 @@ beyond the shell utilities and the `cargo` and `git` the set's own gates already
 fails at validate, never mid-run. It scaffolds no `boundary` or `audit` gate: neither has a
 per-language implementation, and a stand-in is banned. The scaffolded adjudicator seed's checklist
 line becomes `A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.`,
-naming no gate the scaffold may lack, and `PERSONA_CHECKLIST` pins it; this repository's own
-`.rigger/agents/` keep their own line, so `every_persona_carries_its_principle_gate_checklist_line`,
-which reads them against `PERSONA_CHECKLIST`, is deleted. Every `src/cli/setup.rs` test that reads
+naming no gate the scaffold may lack, and that sentence replaces the `boundary` line as
+`PERSONA_CHECKLIST`'s adjudicator entry. This repository's adjudicator persona carries the same
+sentence beside its own `boundary` sentence, which names a gate this repository wires, so
+`every_persona_carries_its_principle_gate_checklist_line` stays whole: through
+`missing_checklist_lines`, which matches each entry as a substring of its persona file, the
+repository check asserts every `PERSONA_CHECKLIST` entry on the persona it names under this
+repository's `.rigger/agents/`, and the scaffold check asserts the same table on the seeds
+`rigger init` writes. Every `src/cli/setup.rs` test that reads
 `SCAFFOLD_WORKFLOW` reads `scaffold_workflow` output instead, every rendering where it asserts the
 workflow loads. A test that needs gates in a scaffolded project declares them in its own fixture
 workflow.
@@ -266,7 +291,12 @@ source, Rust or not, exactly as every file under this repository's `src/` and `c
 is today (`crates/rigger-dash/src/dash.html`, the fonts under `crates/rigger-console/src/console/`
 and the instruction `.md` files under `crates/rigger-domain/src/instructions/` are gated); a
 consumer whose documentation lives under a `src/` component (an mdBook's `book/src/`) edits its own
-copy of the script, which is theirs after `rigger init`.
+copy of the script, which is theirs after `rigger init`. Criterion 6's scaffolded-command case (a
+test-less `src/` commit fails, a branch whose test commit comes first passes) is a behaviour pin:
+`is_source_path` matches `src/*` today, so the case is green when unit 6 starts and pins what the
+shipped script already does, never code written before its test. The unit's red is the layout case
+(`tools/x/src/lib.rs`): today's script passes that test-less commit, so the case fails until the
+source rule widens.
 
 **THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED, decided here.** Deleted whole:
 `MUTATION_SCRATCH_SUBDIR`, `mutation_scratch_path`, `reclaim_unit_mutation_scratch` and
@@ -372,11 +402,13 @@ Criterion 8 removes every occurrence criteria 1, 3, 4, 5 and 7 leave:
 
 **THE HANDBOOK, decided here.** `docs/handbook/authoring-loops.md` is hand-written - no `rigger`
 render produces it - and three criteria edit disjoint parts of it with the text in Notes: criterion
-1 adds the `requires` paragraph to the "The workflow" section after its example; criterion 3 adds
-the gate scratch sentence to the "The per-unit lifecycle" subsection; criterion 5 rewrites the "The
-check-in mutation sweep" subsection to say the Rust set ships the script unwired, how to wire it and
-how a consumer replaces a script an earlier binary scaffolded, and rewrites step 2 of the
-new-project checklist.
+1 adds the `requires` paragraph, which names `config_store::load` and the
+`load_with_gate_requirements` it wraps as the validating loads that refuse a missing requirement
+and `load_workflow` and `read_scratch_defaults` as reads that never validate, to the "The workflow"
+section after its example; criterion 3 adds the gate scratch sentence to the "The per-unit
+lifecycle" subsection; criterion 5 rewrites the "The check-in mutation sweep" subsection to say the
+Rust set ships the script unwired, how to wire it and how a consumer replaces a script an earlier
+binary scaffolded, and rewrites step 2 of the new-project checklist.
 
 **CRITERIA 1 AND 2 SPLIT AT `.github/workflows/rust.yml`.** Criterion 1 owns the `cargo-mutants`
 install and that step's comment; criterion 2 owns the `build-test` job's lanes comment
@@ -393,10 +425,11 @@ of `missing_principle_gates`; criterion 5 replaces the rest of that test with
 `init_writes_each_file_the_rust_set_lists` and deletes the rest of the principle-gate check, whose
 scaffold half the Rust set's exact stage lists subsume (Notes).
 
-**CRITERIA 3 AND 5 SPLIT AT `.rigger/gates/mutation.sh`.** Criterion 3 owns its root line and its
-gate-environment paragraph, whose `$RIGGER_RUN_BASE` sentences describe the conductor's run base and
-stay as written. Criterion 5 owns every sentence of the script that describes the scaffold, what a
-stage carries or a stage order:
+**CRITERIA 3 AND 5 SPLIT AT `.rigger/gates/mutation.sh`.** Criterion 3 owns its root line, the two
+expansions the root line's check replaces (the anchor line's `/nonexistent` default and the `rm -rf`
+line's `${MUTANTS:?}`) and its gate-environment paragraph, whose `$RIGGER_RUN_BASE` sentences
+describe the conductor's run base and stay as written. Criterion 5 owns every sentence of the
+script that describes the scaffold, what a stage carries or a stage order:
 
 - the first paragraph, which names the gate, says the Rust set ships the script unwired and how to
   wire it, and names no project's workflow;
@@ -418,7 +451,7 @@ surface):
 |---|---|---|---|
 | 1 | 2 | `Config::validate` over this repository's workflow, which a live-workflow test calls; `.github/workflows/rust.yml` | yes - that workflow declares no `requires`, so its validation holds with no `cargo-mutants` on `PATH`; in `rust.yml` 1 edits the install step and its comment, 2 the `build-test` job's lanes comment, disjoint lines |
 | 2 | 1 | the same | yes - 2 deletes that test, and its conductor fixture declares no `requires`; the same disjoint `rust.yml` lines |
-| 1 | 3 | `crates/rigger-gates-shell/src/gate.rs`; the handbook | yes - 1 changes the probe items and `path_has_executable`, 3 changes `ExecRunner::run` and the `Runner` doc; disjoint items and sections |
+| 1 | 3 | `crates/rigger-gates-shell/src/gate.rs`; the handbook | yes - 1 changes the probe items, `path_has_executable` and their tests, 3 changes `ExecRunner::run` and the `Runner` doc and adds the removal test; disjoint items and sections |
 | 3 | 1 | the same | yes - the same disjoint items and sections |
 | 1 | 5 | `SCAFFOLD_WORKFLOW`; `rigger validate` on a fresh scaffold; the handbook | yes - the placeholder `mutation` gate declares no `requires`, so a fresh scaffold validates, and 1 deletes only its stale sentence |
 | 5 | 1 | the scaffold comment naming `requires` | not reachable - 5 needs 1 |
@@ -437,7 +470,7 @@ surface):
 | 8 | 2 | the same | not reachable - 8 needs 5, which needs 2 |
 | 3 | 4 | `crates/rigger-domain/src/spawn.rs`; `crates/rigger-worktree-git/src/worktree.rs` | yes - 3 adds its prefix beside `UNIT_MUTANTS_PREFIX`, which `reclaim_cache_sibling` and its tests still read, and no gate this repository runs writes the root |
 | 4 | 3 | the same | not reachable - 4 needs 3 |
-| 3 | 5 | `.rigger/gates/mutation.sh`; the handbook | yes - 3 edits the script's root line and gate-environment paragraph; init still writes the file from the same path |
+| 3 | 5 | `.rigger/gates/mutation.sh`; the handbook | yes - 3 edits the script's root line, the two expansions its check replaces and the gate-environment paragraph; init still writes the file from the same path |
 | 5 | 3 | the same | not reachable - 5 needs 3 |
 | 3 | 7 | `crates/rigger-conductor/src/conductor.rs`; `src/cli/mod.rs` | yes - 3 renames the runner parameter and edits `run_gates_at`, 7 deletes the terminal-unit reclaim and `footprint_report`'s input; disjoint items |
 | 7 | 3 | the same | yes - the same disjoint items |
@@ -447,7 +480,7 @@ surface):
 | 6 | 5 | the same | not reachable - 6 needs 5 |
 | 5 | 7 | `tests/cli.rs` | yes - in it 5 edits only a test that needs gates in a scaffolded project, moving it onto its own fixture workflow; the tests 7 deletes or trims there (the cache-home tests, the hostile spawn-id tests, the validate footprint tests) read no scaffolded gate: they write their own workflows or assert `rigger validate`'s footprint lines, which the no-set scaffold's ungated fan-out advisory does not match |
 | 7 | 5 | the same | yes - 7 deletes and trims only those tests, and no test 5 adds or edits reads one of them; disjoint items |
-| 5 | 8 | `tests/principle_gates_wiring.rs` | yes - 5 rewrites the scaffolded-project test, edits `PERSONA_CHECKLIST` and deletes the principle-gate helpers and the repository persona check, 8 adds moved persona tests; disjoint items |
+| 5 | 8 | `tests/principle_gates_wiring.rs` | yes - 5 rewrites the scaffolded-project test, edits `PERSONA_CHECKLIST`'s adjudicator entry, which the kept repository check finds on this repository's adjudicator persona, and deletes the principle-gate helpers, 8 adds moved persona tests; disjoint items |
 | 6 | 4, 7, 8 | this repository's own `red-before-green` gate, run on each later unit's branch | yes - every file a later unit touches under `src/` or `crates/<name>/src/` is source under both rules, and every tracked file outside `tests/` with a `src/` component is already under one of those, so no later unit's verdict changes |
 | 6 | 3 | the same | not reachable - 6 needs 5, which needs 3 |
 | 3, 4, 7 | 6 | the same | yes - none of them changes a file 6 asserts over |
@@ -472,27 +505,33 @@ surface):
   file metadata only. Crash-resume: nothing is written, so a resumed step re-runs the check. Cold
   start: pure over the workflow and `PATH`. Existing data: a workflow with no `requires` key parses
   unchanged; a workflow that declares a gate named `mutation` with no `requires` validates with no
-  `cargo-mutants` anywhere; a symlinked tool directory on `PATH` resolves through its links; the
-  `build.mutation` refusal still names its key and spec 91.
+  `cargo-mutants` anywhere; a symlinked tool directory on `PATH` resolves through its links; a
+  `cargo` subcommand in `$CARGO_HOME/bin` with that directory off `PATH` resolves missing, by
+  decision (Design); the `build.mutation` refusal still names its key and spec 91.
 - *Criterion 2.* Empty: out of scope - the fixture always has criteria. Repeated: two runs of one
   fixture record one order. Reverted, DROPPED: a gate added to or removed from this repository's
   workflow touches no test; that is the property the deletions buy. Concurrent: implement units may
   gate concurrently; the assertions compare stage-exclusive gate ids by recorded order, which holds
   under any interleaving of implement units. Crash-resume: out of scope - an in-process fixture run.
   Cold start: an in-memory store. Existing data: the deleted tests carry no data.
-- *Criterion 3.* Empty: a gate on a standalone review worktree, or on a run with no worktree, gets
-  the variable unset, and the post-merge re-gate gets its unit's root (Design). Repeated: every gate
-  run of a unit is handed the same root, and each gate there touches only the names it created.
-  Reverted: a unit resumed after escalation keeps its slug and so its root. DROPPED: a gate removed
-  from a stage stops receiving the root, and what it left there goes with the root (criterion 4).
-  Concurrent: two units, and two speculation lanes of one unit, get distinct roots because their
-  worktree names differ; two gates of one unit share the root and never collide, each touching only
-  its own names. Crash-resume: a step that dies mid-gate leaves the root in place, and the resumed
-  unit's next gate is handed the same path. Cold start: derived from the worktree path alone,
-  nothing stored. Existing data: a `cargo-mutants-<slug>` directory left by an earlier binary is
-  never handed to a gate again (Notes); a `mutation.sh` an earlier binary scaffolded fails once
-  wired, at its unset `MUTANTS`, and the consumer replaces it by deleting it and rerunning
-  `rigger init` (Design).
+- *Criterion 3.* Empty: a gate on a standalone review worktree, or on a run with no worktree, runs
+  without the variable, removed even when the gate's parent process holds it, and the post-merge
+  re-gate gets its unit's root (Design); the shipped `mutation.sh` wired there refuses at its root
+  line, naming `RIGGER_GATE_SCRATCH`, before any read or write. Repeated: every gate run of a unit
+  is handed the same root, and each gate there touches only the names it created. Reverted: a unit
+  resumed after escalation keeps its slug and so its root. DROPPED: a gate removed from a stage
+  stops receiving the root, and what it left there goes with the root (criterion 4). Concurrent: two
+  units, and two speculation lanes of one unit, get distinct roots because their worktree names
+  differ; two gates of one unit share the root and never collide, each touching only its own names;
+  each gate's variable follows its own `gate_scratch` alone, so a test that sets the variable in its
+  own process changes no concurrent test's gate. Crash-resume: a step that dies mid-gate leaves the
+  root in place, and the resumed unit's next gate is handed the same path. Cold start: derived from
+  the worktree path alone, nothing stored. Existing data: a `cargo-mutants-<slug>` directory left by
+  an earlier binary is never handed to a gate again (Notes); a `mutation.sh` an earlier binary
+  scaffolded fails once wired, at its unset `MUTANTS`, and the consumer replaces it by deleting it
+  and rerunning `rigger init` (Design); a nested run - this repository's own `test` gate runs the
+  suite with `RIGGER_GATE_SCRATCH` set to the outer unit's root - hands an inner review-worktree or
+  no-worktree gate no variable, because `ExecRunner::run` removes it when the derived path is empty.
 - *Criterion 4.* Empty: a scratch root with no `rigger-gate-` entry is walked as today; a bare
   `rigger-gate-` is classified as a bare `cargo-target-` is today. Repeated: a second walk over a
   reclaimed root reclaims nothing. Reverted: a unit live again after a resume has its root spared by
@@ -523,7 +562,8 @@ surface):
   with a workflow keeps it, gets no gate added and no no-set line, and gets the matched set's absent
   files, an earlier binary's `mutation.sh` kept as every present file is; this repository already
   holds every Rust-set file, so `rigger setup` here writes none; this repository's adjudicator
-  persona keeps its own checklist line (Notes).
+  persona carries the new adjudicator entry beside its own `boundary` line, so the kept repository
+  check holds once the entry changes (Design).
 - *Criterion 6.* Empty: a unit branch with no commit since the run branch passes, and a repository
   with no merge base passes with the script's message; a branch that touches only build scripts has
   no source commit and passes. Repeated, reverted, concurrent: a function of the branch's history
@@ -654,7 +694,7 @@ check-in comment loses its `then sweeps mutants` clause; the check-in coverage b
 Handbook text, `docs/handbook/authoring-loops.md`. Criterion 1, after the workflow example:
 
 ```
-A gate may declare `requires:`, the executables its command runs (`requires: [cargo-mutants, cargo-nextest]`). Every configuration load, `rigger validate`'s included, refuses a declared gate whose requirement is not an executable on `PATH`, and `rigger validate` prints one `gate <id>:` line per declared gate naming where each requirement resolved.
+A gate may declare `requires:`, the executables its command runs (`requires: [cargo-mutants, cargo-nextest]`). Every validating load (`config_store::load`, and `config_store::load_with_gate_requirements`, which it wraps and `rigger validate` calls) refuses a declared gate whose requirement is not an executable on `PATH`, and `rigger validate` prints one `gate <id>:` line per declared gate naming where each requirement resolved. `config_store::load_workflow`, and `config_store::read_scratch_defaults`, through which `rigger status` and `rigger watch` read their `defaults:`, never validate, so neither checks a requirement.
 ```
 
 Criterion 3, in the per-unit lifecycle subsection:
@@ -692,6 +732,8 @@ gates: |
   # each clause). To run it, declare it and list it after test in the checkin stage's gates
   # (checkin: [fmt, build, test, lint, mutation]):
   #   mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }
+  # Each requires entry is an executable on PATH: cargo subcommands that cargo install adds live in
+  # $CARGO_HOME/bin, which must be on PATH for requires to see them.
 implement: [fmt, build, test, lint, red-before-green]
 checkin: [fmt, build, test, lint]
 ```
@@ -712,7 +754,7 @@ LIVE-WORKFLOW TESTS (criterion 2):
 | `rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_91_shape` | `tests/cli.rs` | deleted; the check-in shape is the conductor fixture test's and the scaffold's |
 | `the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_gates_keep_the_run_branch` | `tests/cli.rs` | re-homed as `the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_without_one`: the same fixture repository, running `sh .rigger/gates/content.sh <check> "$RIGGER_RUN_BASE"` and `sh .rigger/gates/content.sh <check>` for `style` and `no-os-kill` |
 | `ci_and_the_lanes_gate_run_one_script_that_derives_its_members` | `tests/ci_lanes.rs` | deleted; its CI half is `ci_runs_the_no_default_and_core_lanes_through_the_lanes_script`; the module doc and the docs of `LANES_SCRIPT` and that test, which name the check-in stage's `lanes` gate, and the `build-test` job's comment in `.github/workflows/rust.yml` that calls `.rigger/gates/lanes.sh` "the script the check-in stage's `lanes` gate runs too", then say CI runs the lanes script and name no check-in gate |
-| `this_repository_wires_every_principle_gate_on_the_stages_it_guards` | `tests/principle_gates_wiring.rs` | deleted, with the repository mode of `missing_principle_gates` and `PrincipleGate::repo_command`; the module doc names the scaffold only |
+| `this_repository_wires_every_principle_gate_on_the_stages_it_guards` | `tests/principle_gates_wiring.rs` | deleted, with the repository mode of `missing_principle_gates` and `PrincipleGate::repo_command`; the module doc names the scaffold as the one workflow the file reads |
 | `the_fmt_clippy_and_build_gates_cover_the_workspace` | `tests/principle_gates_wiring.rs` | deleted: it reads this repository's commands; the Rust set's workspace-wide commands are the text of `scaffold/rust/set.yml` (Notes) |
 | `the_test_gate_covers_the_workspace_with_the_container_runtime` | `tests/principle_gates_wiring.rs` | deleted |
 | `the_test_gate_runs_the_tests_in_a_worktree_that_predates_the_snippet`, `the_test_gate_fails_when_its_snippet_fails_to_source`, helper `run_test_gate` | `tests/principle_gates_wiring.rs` | deleted: they run this repository's inline `test` command |
@@ -733,9 +775,10 @@ OTHER TEST DISPOSITIONS:
 | `build_environment_report_reports_mutation_gate_declared`, `build_environment_report_reports_mutation_gate_not_configured` | `src/cli/validate.rs` | replaced by `gate_requirement_lines` tests: a gate requiring nothing, and a gate requiring two executables rendered `<name> at <path>` joined by `, `, in gate-id order | 1 |
 | `two_units_gate_environments_never_share_a_mutants_root` | `crates/rigger-conductor/src/conductor.rs` | renamed `two_units_gate_environments_never_share_a_gate_scratch_root` | 3 |
 | `an_implement_stage_gate_round_creates_no_mutants_directory` | `crates/rigger-conductor/src/conductor.rs` | renamed `a_gate_round_never_creates_the_gate_scratch_root`, reading `$RIGGER_GATE_SCRATCH` | 3 |
+| (new) `exec_runner_removes_an_inherited_gate_scratch_root_when_handed_none` | `crates/rigger-gates-shell/src/gate.rs` | with `RIGGER_GATE_SCRATCH` set in the test's own process, `ExecRunner::run` handed an empty `gate_scratch` runs a command that finds the variable unset (`${RIGGER_GATE_SCRATCH+set}` expands empty), and handed a path runs one that finds that path | 3 |
 | `the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo` | `crates/rigger-conductor/src/conductor.rs` | its mutants-root assertion reads the gate scratch root | 3 |
 | `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest` | `crates/rigger-worktree-git/src/worktree.rs` | renamed `unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest`, on `UNIT_GATE_SCRATCH_PREFIX` | 3 |
-| the `MUTANTS` environment and `cargo-mutants-checkin` directories | `tests/checkin_mutation_diff_base_periphery.rs` | `RIGGER_GATE_SCRATCH` and `rigger-gate-checkin` | 3 |
+| the `MUTANTS` environment and `cargo-mutants-checkin` directories | `tests/checkin_mutation_diff_base_periphery.rs` | `RIGGER_GATE_SCRATCH` and `rigger-gate-checkin`, plus a run whose `RIGGER_GATE_SCRATCH` is empty, which fails naming `RIGGER_GATE_SCRATCH` and leaves no `unit.diff` in the fixture repository | 3 |
 | `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` | `src/cli/mod.rs` | gains a live and a dead unit's `rigger-gate-<slug>`: the dead one reclaimed and counted, the live one spared | 4 |
 | `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` | `src/cli/mod.rs` | gains a dead unit's `rigger-gate-<slug>`, reported among the caches with its size, and a live unit's, omitted | 4 |
 | `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share`, for `scratch_totals` | `src/cli/mod.rs` | gains a live and a dead `rigger-gate-<slug>`, both in the per-unit caches total | 4 |
@@ -749,8 +792,8 @@ OTHER TEST DISPOSITIONS:
 | (new) `init_project_matching_no_set_writes_a_gateless_workflow_and_the_no_set_line` | `src/cli/setup.rs` | `init_project` beside no marker reports no `gate_set`, writes a workflow that loads with no gate and `[]` on `implement` and `checkin`, and `scaffold_summary_lines` holds the no-set line | 5 |
 | (new) `tests/template_sets_build.rs` | `tests/` | refuses an absolute path, a `..` segment and a missing file, naming the set and the path, and a set directory missing `set.yml` or missing `files`, naming the set; skips a file directly under `scaffold/`; returns `scaffold/`, both files of every set and every listed file as watch paths | 5 |
 | `a_scaffolded_consumer_project_carries_every_principle_gate_and_checklist_line` | `tests/principle_gates_wiring.rs` | renamed `a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_line`, criterion 5's init test: `rigger init` in a fixture with a root `Cargo.toml` writes a workflow that loads through `config_store::load`, declares exactly `fmt`, `build`, `test`, `lint` and `red-before-green`, and lists `[fmt, build, test, lint, red-before-green]` on `implement` and `[fmt, build, test, lint]` on `checkin`, the one pin of the Rust set's gate ids and stage lists, and the scaffolded personas carry every `PERSONA_CHECKLIST` line, its adjudicator entry being the scaffold's new line; `missing_principle_gates`, `PRINCIPLE_GATES` and `PrincipleGate`, which those exact lists subsume, are deleted | 5 |
-| `every_persona_carries_its_principle_gate_checklist_line` | `tests/principle_gates_wiring.rs` | deleted | 5 |
-| (new) `red_before_green_fails_a_test_less_commit_to_a_member_outside_crates` | `tests/principle_gates_wiring.rs` | a case beside the red-before-green cases: a test-less commit to `tools/x/src/lib.rs` fails, naming the commit | 6 |
+| `every_persona_carries_its_principle_gate_checklist_line` | `tests/principle_gates_wiring.rs` | kept whole: with the adjudicator entry changed it asserts the gate-agnostic sentence on this repository's adjudicator persona, which carries it beside its `boundary` sentence | 5 |
+| (new) `red_before_green_fails_a_test_less_commit_to_a_member_outside_crates` | `tests/principle_gates_wiring.rs` | a case beside the red-before-green cases: a test-less commit to `tools/x/src/lib.rs` fails, naming the commit; the unit's red, beside the scaffolded-command behaviour pin (Design) | 6 |
 | `footprint_report_folds_a_none_mutation_root_to_a_zero_contribution`; every `mutation_scratch_*` and `reclaim_unit_mutation_scratch_*` test in `replay.rs`; `tests/mutation_scratch_root_periphery.rs` and `tests/mutation_scratch_reap_base_guard_periphery.rs` whole; in `tests/spawn_scratch_reap_authorized_root_periphery.rs` the three tests whose names hold `mutation_scratch_dir`; in `tests/cli.rs` `populated_mutation_scratch`, `registered_mutation_scratch_root`, `assert_a_speculation_exit_reaps_every_lanes_mutation_scratch` and every test whose name holds `mutation_scratch` | several | deleted | 7 |
 | `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root`, helper `assert_a_hostile_spawn_id_spares_its_neighbours`, `validate_reports_footprint_by_category_and_flags_a_dead_share_breach`, `validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store`, `validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id` (`tests/cli.rs`); `footprint_report_measures_every_category_on_a_seeded_fixture_tree`, `footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn`, `footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims` (`src/cli/mod.rs`); `spawn_scratch_path_and_mutation_scratch_path_hex_escape_a_dotdot_id_so_it_can_never_escape` (`replay.rs`) | several | the cache-home half dropped, every other assertion kept | 7 |
 | `reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_held_dir` | `tests/reset_build_cache_periphery.rs` | its dead mutation-scratch leaf, that leaf's assertion, its `mutation_scratch_root` call and the cache-home binding only that call reads dropped; every other assertion kept, the mutation anchor's survival among them | 7 |
@@ -764,15 +807,17 @@ Deferrals and leftovers:
 - Re-wiring the mutation gate into this repository's check-in stage (issue #32) is OUT, and so is
   giving that gate `requires: [cargo-mutants, cargo-nextest]`: the requirement check applies to
   every declared gate, so the key would make every load of this repository's configuration need both
-  executables on `PATH`, the retained live-workflow tests' loads in CI among them, where
-  `.github/workflows/rust.yml` then installs neither. The re-wiring change adds the key and installs
+  executables on `PATH`, the three retained tests' validating loads in CI among them, where
+  `.github/workflows/rust.yml` then installs neither: that need is the environment the Goal's claim
+  leaves out (TESTS PIN FIXTURES AND THE SCAFFOLD). The re-wiring change adds the key and installs
   both in CI together; until then the gate declares no `requires`. The operator's edits to the
-  pinned definition, made outside a run, are two comments in `.rigger/workflow.yml`: the one above
+  pinned `.rigger/workflow.yml`, made outside a run, are two comments: the one above
   the `mutation` gate, which still says declaring the id requires `cargo-mutants`, and the one above
   the `red-before-green` gate, which still names the old source rule (`src/` or
   `crates/<name>/src/`).
-- This repository's adjudicator persona keeps its `boundary` checklist line: it names a gate this
-  repository wires, and the persona set is the pinned definition.
+- This repository's adjudicator persona carries both its own `boundary` sentence, which names a
+  gate this repository wires, and the gate-agnostic sentence that becomes `PERSONA_CHECKLIST`'s
+  adjudicator entry; the persona set is the pinned definition, and no unit edits it.
 - A `cargo-mutants-<slug>` directory under a scratch root and an empty `<cache home>/rigger-mutants`
   directory left by an earlier binary are the operator's to delete; nothing reclaims them.
 - A `.rigger/gates/mutation.sh` an earlier binary scaffolded into a consumer project is the
@@ -815,12 +860,13 @@ Deferrals and leftovers:
   criterion OWNS that test and every disposition in the Notes table LIVE-WORKFLOW TESTS; the
   scaffold's own pins are criterion 5's, NOT this one's.
 - [ ] a test proves THE GATE SCRATCH ROOT IS HANDED GENERICALLY: a gate run in a unit worktree is handed `RIGGER_GATE_SCRATCH` naming that worktree's `rigger-gate-<slug>` sibling, distinct per unit,
-  and unset on a standalone review worktree or a run with no worktree, asserted in
-  `two_units_gate_environments_never_share_a_gate_scratch_root`,
-  `unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest` and
-  `a_gate_round_never_creates_the_gate_scratch_root`. This criterion OWNS the variable,
-  `UNIT_GATE_SCRATCH_PREFIX`, the `Runner::run` parameter rename, `RecordingRunner`'s field, the
-  post-merge re-gate's fallback, the root line and gate-environment paragraph of
+  and unset on a standalone review worktree or a run with no worktree even when the gate's parent
+  process holds it, asserted in `two_units_gate_environments_never_share_a_gate_scratch_root`,
+  `unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest`,
+  `a_gate_round_never_creates_the_gate_scratch_root` and
+  `exec_runner_removes_an_inherited_gate_scratch_root_when_handed_none`. This criterion OWNS the
+  variable, `UNIT_GATE_SCRATCH_PREFIX`, the `Runner::run` parameter rename, `RecordingRunner`'s
+  field, the post-merge re-gate's fallback, the root line and gate-environment paragraph of
   `.rigger/gates/mutation.sh` and its handbook sentence; the root's reclamation is criterion 4's,
   NOT this one's.
 - [ ] a test proves THE GATE SCRATCH ROOT HAS ONE LIFECYCLE: every scratch walk classifies a `rigger-gate-<slug>` as its unit's per-unit cache, reclaiming it when the unit is not live and sparing it when it is,
