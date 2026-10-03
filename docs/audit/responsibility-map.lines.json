@@ -5299,219 +5299,231 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "stop_halt",
+    "start_line": 43496,
+    "end_line": 43498
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "stop_lesson",
+    "start_line": 43501,
+    "end_line": 43507
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_rounds",
-    "start_line": 43510,
-    "end_line": 43530
+    "start_line": 43513,
+    "end_line": 43533
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "critique_round_spawns",
-    "start_line": 43534,
-    "end_line": 43544
+    "start_line": 43537,
+    "end_line": 43547
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "launched_on_stop_spec",
-    "start_line": 43548,
-    "end_line": 43552
+    "start_line": 43551,
+    "end_line": 43555
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rejecting_twice_for_spec_ambiguity",
-    "start_line": 43556,
-    "end_line": 43561
+    "start_line": 43559,
+    "end_line": 43564
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stopped_run",
-    "start_line": 43566,
-    "end_line": 43568
+    "start_line": 43569,
+    "end_line": 43571
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "stopped_run_under",
-    "start_line": 43571,
-    "end_line": 43576
+    "start_line": 43574,
+    "end_line": 43579
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_is_decided_before_an_exhausted_remediation_bound_escalates",
-    "start_line": 43583,
-    "end_line": 43609
+    "start_line": 43586,
+    "end_line": 43612
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_stopped_gate_re_plans_its_next_spec_ambiguity_reject_as_a_first_one",
-    "start_line": 43617,
-    "end_line": 43657
+    "start_line": 43620,
+    "end_line": 43660
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_stops_the_run",
-    "start_line": 43660,
-    "end_line": 43709
+    "start_line": 43663,
+    "end_line": 43715
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_re_plans_after_every_reject",
-    "start_line": 43714,
-    "end_line": 43729
+    "start_line": 43720,
+    "end_line": 43735
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_first_spec_ambiguity_reject_re_plans_as_today",
-    "start_line": 43732,
-    "end_line": 43737
+    "start_line": 43738,
+    "end_line": 43743
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_spec_ambiguity_reject_after_a_decomposition_conflict_re_plans_again",
-    "start_line": 43740,
-    "end_line": 43748
+    "start_line": 43746,
+    "end_line": 43754
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stop_with_no_upheld_finding_and_no_spec_says_so",
-    "start_line": 43751,
-    "end_line": 43767
+    "start_line": 43757,
+    "end_line": 43772
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stopped_gate_halts_the_step_before_the_coverage_check",
-    "start_line": 43770,
-    "end_line": 43792
+    "start_line": 43775,
+    "end_line": 43800
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_step_finds_the_stopped_gate_terminal_and_appends_nothing",
-    "start_line": 43795,
-    "end_line": 43815
+    "start_line": 43803,
+    "end_line": 43823
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_step_re_entering_a_crashed_stop_completes_it_without_spawning",
-    "start_line": 43818,
-    "end_line": 43843
+    "start_line": 43826,
+    "end_line": 43855
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stop_whose_lesson_append_fails_records_nothing_after_it_and_the_next_step_completes_it",
-    "start_line": 43846,
-    "end_line": 43880
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "gate_failed",
-    "start_line": 43884,
+    "start_line": 43858,
     "end_line": 43896
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "gate_failed",
+    "start_line": 43900,
+    "end_line": 43912
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "re_plan_id",
-    "start_line": 43899,
-    "end_line": 43901
+    "start_line": 43915,
+    "end_line": 43917
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "re_plan_requested",
-    "start_line": 43904,
-    "end_line": 43908
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "stops_at",
-    "start_line": 43912,
-    "end_line": 43914
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "two_spec_ambiguity_rejects",
-    "start_line": 43918,
+    "start_line": 43920,
     "end_line": 43924
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "stops_at",
+    "start_line": 43928,
+    "end_line": 43930
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "two_spec_ambiguity_rejects",
+    "start_line": 43934,
+    "end_line": 43940
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_holds_on_two_spec_ambiguity_rejects_around_a_recorded_re_plan",
-    "start_line": 43927,
-    "end_line": 43963
+    "start_line": 43943,
+    "end_line": 43979
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_does_not_hold_short_of_its_whole_shape",
-    "start_line": 43966,
-    "end_line": 44042
+    "start_line": 43982,
+    "end_line": 44058
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_stop_holds_at_any_attempt_its_two_rejects_precede",
-    "start_line": 44045,
-    "end_line": 44052
+    "start_line": 44061,
+    "end_line": 44068
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_spec_defect_halt_names_the_spec_and_the_upheld_findings",
-    "start_line": 44055,
-    "end_line": 44070
+    "start_line": 44071,
+    "end_line": 44086
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_budget_halt_takes_precedence_over_the_spec_defect_stop",
-    "start_line": 44073,
-    "end_line": 44093
+    "start_line": 44089,
+    "end_line": 44109
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_dag_critique_verdict_paragraph_carries_the_spec_defect_cause_contract",
-    "start_line": 44098,
-    "end_line": 44105
+    "start_line": 44114,
+    "end_line": 44121
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "an_approved_gate_releases_planner_proposed_units_not_only_baselines",
-    "start_line": 44108,
-    "end_line": 44165
+    "start_line": 44124,
+    "end_line": 44181
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_re_plan_directive_instructs_reusing_the_existing_unit_id",
-    "start_line": 44168,
-    "end_line": 44239
+    "start_line": 44184,
+    "end_line": 44255
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "new",
-    "start_line": 44252,
-    "end_line": 44257
+    "start_line": 44268,
+    "end_line": 44273
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "spawn",
-    "start_line": 44260,
-    "end_line": 44280
+    "start_line": 44276,
+    "end_line": 44296
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review",
-    "start_line": 44284,
-    "end_line": 44314
+    "start_line": 44300,
+    "end_line": 44330
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_parked_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 44317,
-    "end_line": 44371
+    "start_line": 44333,
+    "end_line": 44387
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_budget_refused_plan_critique_gate_keeps_its_review_worktree",
-    "start_line": 44374,
-    "end_line": 44418
+    "start_line": 44390,
+    "end_line": 44434
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "the_conductors_one_event_authority_reports_a_write_the_store_lost",
-    "start_line": 44431,
-    "end_line": 44450
+    "start_line": 44447,
+    "end_line": 44466
   },
   {
     "file": "src/cli/mod.rs",

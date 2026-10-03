@@ -117,7 +117,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8f6a4198293f",
+    "id": "dup-340eefdbe122",
     "classification": "near",
     "sites": [
       {
@@ -151,6 +151,11 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "name": "spec_defect_halt_text",
+        "content_hash": "7963312db697b9f4"
+      },
+      {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "closed_unit_line",
         "content_hash": "5d23ae9ae3e76aee"
@@ -166,7 +171,7 @@
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 8 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 9 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/common/fixtures/plan_critique.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -4141,6 +4146,30 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, tests/replan_episode_identity.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-da45cd3da239",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "stop_halt",
+        "content_hash": "9497d4ff100dfabe"
+      },
+      {
+        "file": "crates/rigger-domain/src/metrics.rs",
+        "name": "canary_run_marker",
+        "content_hash": "9497d4ff100dfabe"
+      },
+      {
+        "file": "tests/plan_critique_spec_defect_stop_periphery.rs",
+        "name": "halt",
+        "content_hash": "9497d4ff100dfabe"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/metrics.rs, tests/plan_critique_spec_defect_stop_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

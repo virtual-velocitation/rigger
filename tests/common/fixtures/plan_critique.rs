@@ -23,6 +23,13 @@ pub const DAG_CRITIQUE_VERDICT_PARAGRAPH: &str = "Render your final verdict as a
     missing exclusion between units, a unit over the size cap, a unit owning no criterion, a \
     split the planner chose). When unsure, \"cause\":\"decomposition-conflict\".";
 
+/// The halt a plan-critique spec-defect stop reports, naming the run's spec as `spec` spells it
+/// and the stopping reject's upheld finding ids as `upheld` lists them: the one expected text the
+/// stop's tests read (the conductor's formatter pin keeps its own literals).
+pub fn spec_defect_halt_text(spec: &str, upheld: &str) -> String {
+    format!("amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld})")
+}
+
 /// A plan-critique adjudicator's reject line carrying `cause` and upholding `upheld`.
 pub fn critique_reject(cause: &str, upheld: &[&str]) -> String {
     serde_json::json!({"verdict": "reject", "upheld": upheld, "discarded": [], "cause": cause})

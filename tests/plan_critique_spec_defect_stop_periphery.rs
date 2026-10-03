@@ -30,8 +30,9 @@ use common::cli::{
     run_rigger_ok, step_line, temp_repoless_project, with_run_store, write_scaffold,
 };
 use common::fixtures::{
-    critique_reject, keyed_index, keyed_payload, stop_records, the_stop_records,
-    DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+    critique_reject, keyed_index, keyed_payload, spec_defect_halt_text, stop_records,
+    the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+    STOP_SPEC_DEFECT_KEY,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -55,8 +56,9 @@ const AMENDED_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws one widg
 
 /// The halt a stop on [`SPEC`] reports after a second `spec-ambiguity` reject that upheld
 /// `adv-2` and `adv-3`.
-const HALT: &str = "amend the spec and relaunch: plan-critique found a spec defect in \
-                    ./specs/widget.md (adv-2, adv-3)";
+fn halt() -> String {
+    spec_defect_halt_text(SPEC, "adv-2, adv-3")
+}
 
 /// The first `spec-ambiguity` reject line of the stopping run's gate.
 fn spec_ambiguity_first() -> String {
@@ -239,7 +241,7 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
         ),
         (
             Vec::new(),
-            Some(HALT),
+            Some(halt().as_str()),
             json!(["plan-critique"]),
             vec![
                 ("escalated", "plan-critique"),
@@ -264,7 +266,7 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
         ),
         (
             &json!([SPEC]),
-            json!({"reason": HALT}),
+            json!({"reason": halt()}),
             json!({"id": "plan-critique"}),
         ),
         "the lesson is about the spec as recorded, the SpecDefect carries the halt, the \
@@ -344,7 +346,12 @@ fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
                 stop_records(&events),
                 requested(&events),
             ),
-            (Vec::new(), Some(HALT), the_stop_records(), requested_before),
+            (
+                Vec::new(),
+                Some(halt().as_str()),
+                the_stop_records(),
+                requested_before
+            ),
             "re-entered before {crashed_before}: the stop completes, each record once, without \
              a spawn"
         );
@@ -433,7 +440,7 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
     let root = dir.path();
     assert_eq!(
         step(root, "the stopping step")["halted"].as_str(),
-        Some(HALT),
+        Some(halt().as_str()),
         "the run is stopped on its spec defect"
     );
     std::fs::create_dir_all(root.join("specs")).unwrap();

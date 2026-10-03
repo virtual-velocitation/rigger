@@ -970,9 +970,14 @@
     "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
   },
   {
-    "id": "dup-8f6a4198293f",
+    "id": "dup-340eefdbe122",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
+  },
+  {
+    "id": "dup-da45cd3da239",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line fixtures over different inputs that share only their shape: the conductor suite's and the periphery suite's expected spec-defect halt, each reading the one `spec_defect_halt_text` builder with the spec spelled as that suite launched its run, and the metrics canary's run marker event."
   },
   {
     "id": "dup-e10b6988960c",

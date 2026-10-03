@@ -14121,9 +14121,9 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log, stop_records,
-        the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-        STOP_SPEC_DEFECT_KEY,
+        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
+        spec_defect_halt_text, stop_records, the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH,
+        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -43493,15 +43493,18 @@ mod tests {
 
     /// The halt the stopping run in [`stopped_run`] reports: its spec and the findings its
     /// second `spec-ambiguity` reject upheld.
-    const STOP_HALT: &str =
-        "amend the spec and relaunch: plan-critique found a spec defect in specs/widget.md \
-         (adv-2, adv-3)";
+    fn stop_halt() -> String {
+        spec_defect_halt_text(STOP_SPEC, "adv-2, adv-3")
+    }
 
-    /// The lesson the stop in [`stopped_run`] records.
-    const STOP_LESSON: &str =
-        "plan-critique \"plan-critique\" stopped the run: its spec-ambiguity reject at attempt 1 \
-         followed a re-plan that did not clear the previous one; amend the spec and relaunch: \
-         plan-critique found a spec defect in specs/widget.md (adv-2, adv-3)";
+    /// The lesson the stop in [`stopped_run`] records: its account of the stop, then its halt.
+    fn stop_lesson() -> String {
+        format!(
+            "plan-critique \"plan-critique\" stopped the run: its spec-ambiguity reject at \
+             attempt 1 followed a re-plan that did not clear the previous one; {}",
+            stop_halt()
+        )
+    }
 
     const APPROVE: &str = r#"{"verdict":"approve"}"#;
 
@@ -43552,7 +43555,7 @@ mod tests {
     }
 
     /// A plan-critique driver whose adjudicator rejects rounds 0 and 1 with `spec-ambiguity`,
-    /// the second upholding the findings [`STOP_HALT`] names.
+    /// the second upholding the findings [`stop_halt`] names.
     fn rejecting_twice_for_spec_ambiguity() -> Stub {
         critique_rounds(&[
             critique_reject("spec-ambiguity", &["adv-1"]),
@@ -43599,9 +43602,9 @@ mod tests {
             (
                 critique_round_spawns(2),
                 the_stop_records(),
-                Some(STOP_HALT),
+                Some(stop_halt().as_str()),
                 vec![json!({"id": "plan-critique"})],
-                vec![json!(STOP_LESSON)],
+                vec![json!(stop_lesson())],
             ),
             "the stop wins the round head: its three records once each, its halt, the gate's one \
              escalation, and no escalated-after lesson"
@@ -43672,7 +43675,7 @@ mod tests {
         let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
         assert_eq!(
             (&lesson["summary"], &lesson["about"]),
-            (&json!(STOP_LESSON), &json!([STOP_SPEC])),
+            (&json!(stop_lesson()), &json!([STOP_SPEC])),
             "the lesson names the spec, the upheld findings and the amend route"
         );
         assert_eq!(
@@ -43680,7 +43683,10 @@ mod tests {
                 keyed_payload(&run_log(&st), STOP_SPEC_DEFECT_KEY),
                 keyed_payload(&run_log(&st), STOP_ESCALATED_KEY),
             ),
-            (json!({"reason": STOP_HALT}), json!({"id": "plan-critique"})),
+            (
+                json!({"reason": stop_halt()}),
+                json!({"id": "plan-critique"})
+            ),
             "the SpecDefect carries the halt text; the escalation is the gate's own"
         );
         let gate = &rs.units["plan-critique"];
@@ -43703,7 +43709,7 @@ mod tests {
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
             spawn::step_of_pass(&events, rs).unwrap().halted.as_deref(),
-            Some(STOP_HALT),
+            Some(stop_halt().as_str()),
             "the step halts with the amend route"
         );
     }
@@ -43756,12 +43762,11 @@ mod tests {
             critique_reject("spec-ambiguity", &[]),
         ]);
         let rs = critique_step(&st, &driver);
-        let halt =
-            "amend the spec and relaunch: plan-critique found a spec defect in the spec (none upheld)";
+        let halt = spec_defect_halt_text("the spec", "none upheld");
         let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
         assert_eq!(
             (rs.budget_halt.as_deref(), &lesson["about"]),
-            (Some(halt), &json!([])),
+            (Some(halt.as_str()), &json!([])),
             "an empty spec names `the spec` and is about nothing; no upheld finding is said"
         );
     }
@@ -43786,7 +43791,10 @@ mod tests {
                 rs.budget_halt.as_deref(),
                 payloads_of_type(&run_log(&st), TYPE_SPEC_DEFECT)
             ),
-            (Some(STOP_HALT), vec![json!({"reason": STOP_HALT})]),
+            (
+                Some(stop_halt().as_str()),
+                vec![json!({"reason": stop_halt()})]
+            ),
             "the step halts on the stop; the coverage check never runs"
         );
     }
@@ -43835,7 +43843,11 @@ mod tests {
                     stop_records(&run_log(&resumed)),
                     rs.budget_halt.as_deref()
                 ),
-                (Vec::<String>::new(), the_stop_records(), Some(STOP_HALT)),
+                (
+                    Vec::<String>::new(),
+                    the_stop_records(),
+                    Some(stop_halt().as_str())
+                ),
                 "re-entered before {crashed_before}: the stop completes, each record once, \
                  without spawning"
             );
@@ -43874,7 +43886,11 @@ mod tests {
                 stop_records(&run_log(&st)),
                 rs.budget_halt.as_deref()
             ),
-            (Vec::<String>::new(), the_stop_records(), Some(STOP_HALT)),
+            (
+                Vec::<String>::new(),
+                the_stop_records(),
+                Some(stop_halt().as_str())
+            ),
             "the next healthy step completes the stop, each record once, without spawning"
         );
     }

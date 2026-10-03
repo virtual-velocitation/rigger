@@ -105,7 +105,7 @@
     ]
   },
   {
-    "id": "dup-8f6a4198293f",
+    "id": "dup-340eefdbe122",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -136,6 +136,11 @@
         "file": "crates/rigger-store-sqlite/src/spawn_store.rs",
         "start_line": 73,
         "end_line": 75
+      },
+      {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "start_line": 29,
+        "end_line": 31
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -4041,6 +4046,26 @@
         "file": "tests/replan_episode_identity.rs",
         "start_line": 274,
         "end_line": 284
+      }
+    ]
+  },
+  {
+    "id": "dup-da45cd3da239",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 43496,
+        "end_line": 43498
+      },
+      {
+        "file": "crates/rigger-domain/src/metrics.rs",
+        "start_line": 2733,
+        "end_line": 2735
+      },
+      {
+        "file": "tests/plan_critique_spec_defect_stop_periphery.rs",
+        "start_line": 59,
+        "end_line": 61
       }
     ]
   },
