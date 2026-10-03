@@ -180,6 +180,37 @@ pub fn record_clean_critique(root: &Path, spec: &str) {
     );
 }
 
+/// The `DecisionMade` a refusal of a new run on `spec` prints for the operator to record (spec
+/// 112, Notes), resolving `resolves`.
+pub fn printed_decision(spec: &str, resolves: &str) -> String {
+    format!(
+        "{{\"id\":\"...\",\"governs\":{},\"resolves\":{resolves},\"summary\":\"...\"}}",
+        serde_json::json!([spec])
+    )
+}
+
+/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes):
+/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique.
+pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> String {
+    let (why, route, resolves) = match open {
+        None => (
+            "not critiqued".to_string(),
+            "or, once critiqued, record a resolution:",
+            "[<ids>]".to_string(),
+        ),
+        Some(ids) => (
+            format!("open BLOCKING findings: {}", ids.join(", ")),
+            "or record a resolution:          ",
+            serde_json::json!(ids).to_string(),
+        ),
+    };
+    format!(
+        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  amend the spec and \
+         critique it:   rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
+        printed_decision(spec, &resolves)
+    )
+}
+
 /// Create an empty `.rigger/` under `root`.
 pub fn seed_rigger_dir(root: &Path) {
     std::fs::create_dir_all(root.join(".rigger")).unwrap();

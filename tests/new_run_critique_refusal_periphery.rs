@@ -14,9 +14,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_stopped_at_the_grounder, emit, read_run_events, record_clean_critique, record_critique,
-    run_payloads, run_rigger, run_rigger_envs, seed_run_events, stopping_at_the_grounder,
-    temp_repoless_project, write_scaffold, write_spec_project,
+    assert_stopped_at_the_grounder, emit, printed_decision, read_run_events, record_clean_critique,
+    record_critique, refused_new_run, run_payloads, run_rigger, run_rigger_envs, seed_run_events,
+    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
 };
 use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
 use common::repo::{stub_path, write_critique_stub};
@@ -135,37 +135,6 @@ fn step(root: &Path, spec: &str, extra: &[&str]) -> (String, String, bool) {
     on_head(root, &args, &[])
 }
 
-/// The `DecisionMade` a refusal on `spec` prints for the operator to record, resolving
-/// `resolves`.
-fn printed_decision(spec: &str, resolves: &str) -> String {
-    format!(
-        "{{\"id\":\"...\",\"governs\":{},\"resolves\":{resolves},\"summary\":\"...\"}}",
-        json!([spec])
-    )
-}
-
-/// The text the refusal of a new run on `spec` by `command` ends stderr with: `open` the open
-/// BLOCKING finding ids, `None` when the spec's text has no critique.
-fn refusal(command: &str, spec: &str, open: Option<&[String]>) -> String {
-    let (why, route, resolves) = match open {
-        None => (
-            "not critiqued".to_string(),
-            "or, once critiqued, record a resolution:",
-            "[<ids>]".to_string(),
-        ),
-        Some(ids) => (
-            format!("open BLOCKING findings: {}", ids.join(", ")),
-            "or record a resolution:          ",
-            json!(ids).to_string(),
-        ),
-    };
-    format!(
-        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  amend the spec and \
-         critique it:   rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
-        printed_decision(spec, &resolves)
-    )
-}
-
 /// The line `command` prints on stderr as it begins a new run, under a workflow naming no critic,
 /// on the spec it names `named`.
 fn no_critic_line(command: &str, named: &str) -> String {
@@ -197,7 +166,7 @@ fn assert_refused(
 ) {
     assert!(!ok, "{command} refuses the new run; stdout:\n{out}");
     assert!(
-        err.ends_with(&refusal(command, spec, open)),
+        err.ends_with(&refused_new_run(command, spec, open)),
         "{command} ends stderr with the refusal; stderr:\n{err}"
     );
     assert!(
