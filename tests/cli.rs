@@ -33,6 +33,7 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
+use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
     write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
@@ -24993,29 +24994,26 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
 }
 
 /// `rigger run --driver <driver> --base HEAD --fresh` over a workflow whose grounder
-/// `select_grounder` rejects, so the run fails fast and deterministically right after
-/// `fresh_run_if_requested` returns - never entering the MCP-serving loop at all, so it can
-/// never hang on stdin. The --fresh notice fires regardless, on stdout when `on_stdout` and
-/// otherwise on stderr and NEVER on stdout.
+/// `select_grounder` rejects ([`stopping_at_the_grounder`]), so the run fails fast and
+/// deterministically right after `fresh_run_if_requested` returns - never entering the
+/// MCP-serving loop at all, so it can never hang on stdin. The --fresh notice fires regardless,
+/// on stdout when `on_stdout` and otherwise on stderr and NEVER on stdout.
 fn assert_the_fresh_notice_prints(driver: &str, on_stdout: bool) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        "defaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
+        stopping_at_the_grounder(TWO_STAGE_WORKFLOW.body),
     )
     .unwrap();
 
-    let (out, err, ok) = run_rigger(
+    let output = run_rigger(
         root,
         &["run", "--driver", driver, "--base", "HEAD", "--fresh"],
     );
-    assert!(
-        !ok,
-        "the bogus grounder makes the run fail right after the --fresh notice (expected); \
-         stdout:\n{out}\nstderr:\n{err}"
-    );
+    assert_stopped_at_the_grounder(&output, &format!("rigger run --driver {driver} --fresh"));
+    let (out, err, _) = &output;
     let (shown, hidden) = if on_stdout {
         (&out, None)
     } else {
