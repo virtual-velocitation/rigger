@@ -27,7 +27,10 @@ pub const DAG_CRITIQUE_VERDICT_PARAGRAPH: &str = "Render your final verdict as a
 /// and the stopping reject's upheld finding ids as `upheld` lists them: the one expected text the
 /// stop's tests read (the conductor's formatter pin keeps its own literals).
 pub fn spec_defect_halt_text(spec: &str, upheld: &str) -> String {
-    format!("amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld})")
+    format!(
+        "amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld}); \
+         critique the amended spec, then start the run again"
+    )
 }
 
 /// A plan-critique adjudicator's reject line carrying `cause` and upholding `upheld`.

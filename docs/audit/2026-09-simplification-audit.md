@@ -1622,7 +1622,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:3041-3043` `code_entity_id`
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
-- `tests/common/fixtures/plan_critique.rs:29-31` `spec_defect_halt_text`
+- `tests/common/fixtures/plan_critique.rs:29-34` `spec_defect_halt_text`
 - `tests/compaction_generations_periphery.rs:5218-5223` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
@@ -3190,7 +3190,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-conductor/src/conductor.rs:43492-43494` `stop_halt`
 - `crates/rigger-domain/src/metrics.rs:2733-2735` `canary_run_marker`
-- `tests/plan_critique_spec_defect_stop_periphery.rs:59-61` `halt`
+- `tests/plan_critique_spec_defect_stop_periphery.rs:66-68` `halt`
 
 #### `dup-78c48ff4c88e` (semantic, 2 sites)
 
@@ -3806,9 +3806,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-domain/src/metrics.rs:1538-1543` `failed`
 - `crates/rigger-domain/src/metrics.rs:1545-1550` `integrated`
 - `crates/rigger-domain/src/metrics.rs:1552-1554` `escalated`
-- `crates/rigger-domain/src/run.rs:556-558` `decision`
-- `crates/rigger-domain/src/run.rs:559-561` `finding`
-- `crates/rigger-domain/src/run.rs:562-564` `lesson`
+- `crates/rigger-domain/src/run.rs:610-612` `decision`
+- `crates/rigger-domain/src/run.rs:613-615` `finding`
+- `crates/rigger-domain/src/run.rs:616-618` `lesson`
 
 #### `dup-d07779dc106d` (near, 2 sites)
 
@@ -4381,8 +4381,8 @@ Proposed home: `run_store::support (consolidate these 2 sites into one function 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/run_store.rs:591-605` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
-- `crates/rigger-store-sqlite/src/run_store.rs:660-675` `ensure_started_mints_a_new_run_when_the_criteria_change`
+- `crates/rigger-store-sqlite/src/run_store.rs:627-641` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
+- `crates/rigger-store-sqlite/src/run_store.rs:696-711` `ensure_started_mints_a_new_run_when_the_criteria_change`
 
 #### `dup-90067fabd6a8` (near, 2 sites)
 
@@ -5180,7 +5180,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8222 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8229 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4879-4920` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14941-14963` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

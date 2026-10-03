@@ -1988,6 +1988,43 @@ mod tests {
         }
     }
 
+    /// Spec 112 (*Relaunch*): the skills route a run stopped on a spec defect through critique,
+    /// then relaunch - `rigger-resume-a-run` says such a run is never adopted by a command naming
+    /// its spec and keeps `--fresh` for a wedged run on an unchanged spec, and the preflight's
+    /// amend step names the critique before the relaunch.
+    #[test]
+    fn the_skills_route_a_run_stopped_on_a_spec_defect_through_critique_then_relaunch() {
+        let ctx = sentinel_ctx();
+        let registry = skill_registry();
+        let body = |name: &str| {
+            let entry = registry.iter().find(|e| e.name == name).unwrap();
+            crate::wave::normalize_ws(&entry.body.render(&ctx))
+        };
+        for (name, wanted) in [
+            (
+                "rigger-resume-a-run",
+                "A run its plan-critique gate stopped on a spec defect (its halt opens `amend the \
+                 spec and relaunch`) is never adopted by a command naming its spec: amend the \
+                 spec, critique it with `rigger critique <spec>`, then relaunch on it, which \
+                 begins a new run with no `--fresh`.",
+            ),
+            (
+                "rigger-resume-a-run",
+                "a run wedged in a terminal state (for example a plan-critique escalation) on a \
+                 spec that is otherwise UNCHANGED",
+            ),
+            (
+                "spec-preflight",
+                "1. Amend Design and Global constraints only; a criterion edit orphans the live \
+                 run, and a plan-critique stop is closed by critiquing the amended spec (`rigger \
+                 critique <spec>`), then relaunching on it, which begins a new run.",
+            ),
+        ] {
+            let wanted = crate::wave::normalize_ws(wanted);
+            assert!(body(name).contains(&wanted), "{name} must say {wanted:?}");
+        }
+    }
+
     /// Spec 68, criterion 2 (the scope boundary): "no registry skill's body exceeds one
     /// operation's scope" - each per-operation skill's own primary command anchor appears
     /// ONLY in its own render, never reproduced as another skill's procedure. A neighbor

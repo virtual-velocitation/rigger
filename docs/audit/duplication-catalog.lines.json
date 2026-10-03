@@ -140,7 +140,7 @@
       {
         "file": "tests/common/fixtures/plan_critique.rs",
         "start_line": 29,
-        "end_line": 31
+        "end_line": 34
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -4064,8 +4064,8 @@
       },
       {
         "file": "tests/plan_critique_spec_defect_stop_periphery.rs",
-        "start_line": 59,
-        "end_line": 61
+        "start_line": 66,
+        "end_line": 68
       }
     ]
   },
@@ -5204,18 +5204,18 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 556,
-        "end_line": 558
+        "start_line": 610,
+        "end_line": 612
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 559,
-        "end_line": 561
+        "start_line": 613,
+        "end_line": 615
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 562,
-        "end_line": 564
+        "start_line": 616,
+        "end_line": 618
       }
     ]
   },
@@ -6459,13 +6459,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 591,
-        "end_line": 605
+        "start_line": 627,
+        "end_line": 641
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 660,
-        "end_line": 675
+        "start_line": 696,
+        "end_line": 711
       }
     ]
   },

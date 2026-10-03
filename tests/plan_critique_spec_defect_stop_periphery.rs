@@ -17,17 +17,20 @@
 //! exactly the defect the stop is for.
 //!
 //! Every run here is minted through `run_store::start_fresh` with a spec path and adopted by the
-//! step (no `--spec`, so the step's criteria are empty and match the minted run's), never at a
-//! CLI mint site: a mint is criterion 2's surface, and an adopted run is never refused there. The
-//! one exception is the relaunch the halt directs (Design *Relaunch*), where the stopped run meets
-//! criterion 2's refusal and criterion 1's verb: its new run is begun by `rigger step --spec
-//! --fresh` on purpose, the boundary only the three criteria together hold.
+//! step, never at a CLI mint site: a mint is criterion 2's surface, and an adopted run is never
+//! refused there. A run minted with no criteria is stepped with no `--spec` (the step's criteria
+//! are empty and match), one minted on [`SPEC`]'s criteria with `--spec` [`SPEC`], as the
+//! workflow driver steps a run it began on its spec. The one exception is the relaunch the halt
+//! directs (Design *Relaunch*), where the stopped run meets criterion 2's refusal and criterion
+//! 1's verb: its new run is begun by `rigger step --spec` - with `--fresh`, and with none after an
+//! amendment that leaves the criteria equal - the boundary only the three criteria together
+//! hold.
 
 mod common;
 
 use common::cli::{
     read_run_events, record_clean_critique, refused_new_run, run_payloads, run_rigger,
-    run_rigger_ok, step_line, temp_repoless_project, with_run_store, write_scaffold,
+    run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
 };
 use common::fixtures::{
     critique_reject, keyed_index, keyed_payload, spec_defect_halt_text, stop_records,
@@ -48,6 +51,10 @@ const EARLIER_SPEC: &str = "specs/old.md";
 
 /// The one criterion of [`SPEC`], which the planner's unit ([`plan`]) covers.
 const CRITERION: &str = "the widget renderer is implemented";
+
+/// [`SPEC`]'s text as a run is launched on it: a Design sentence and [`CRITERION`].
+const ORIGINAL_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
+                             ## Done when\n\n- [ ] the widget renderer is implemented\n";
 
 /// [`SPEC`]'s text as the operator amends it after the stop: a Design sentence closing the
 /// defect, and [`CRITERION`].
@@ -90,19 +97,30 @@ fn critique_project() -> tempfile::TempDir {
     dir
 }
 
-/// Mint one run per spec in `specs`, in order, each with no criteria: the step adopts the last.
-fn launch(root: &Path, specs: &[&str]) {
+/// Mint one run per spec in `specs`, in order, each on `criteria`: the step adopts the last.
+fn launch(root: &Path, specs: &[&str], criteria: &[String]) {
     with_run_store(root, |store| {
         for spec in specs {
-            rigger::run_store::start_fresh(store, &[], "", "", "", spec).unwrap();
+            rigger::run_store::start_fresh(store, criteria, "", "", "", spec).unwrap();
         }
     });
 }
 
-/// One real `rigger step` over `root`, parsed.
+/// One real `rigger step` over `root`, which must exit 0, parsed: on `--spec` [`SPEC`] when the
+/// latest run was begun on criteria, else with no spec.
 fn step(root: &Path, what: &str) -> Value {
-    let line = step_line(root, what);
-    serde_json::from_str(&line).unwrap_or_else(|e| panic!("{what}: {e}; line: {line}"))
+    let on_spec = run_payloads(root, "RunStarted")
+        .last()
+        .is_some_and(|run| run["criteria"] != json!([]));
+    let args: &[&str] = if on_spec {
+        &["step", "--spec", SPEC]
+    } else {
+        &["step"]
+    };
+    let (out, err, ok) = run_rigger(root, args);
+    assert!(ok, "{what}; stderr: {err}");
+    let line = out.trim();
+    serde_json::from_str(line).unwrap_or_else(|e| panic!("{what}: {e}; line: {line}"))
 }
 
 /// The spawn ids `step` parked.
@@ -189,15 +207,20 @@ fn requested(events: &[Event]) -> Vec<String> {
         .collect()
 }
 
-/// A project whose latest run, launched on [`SPEC`] after one on [`EARLIER_SPEC`], is driven up
-/// to the step after its second critique round: a `spec-ambiguity` reject, the re-plan it drove,
-/// and `second`, the round-1 reject line, answered but not yet stepped over. Asserts on the way
-/// that the first reject re-plans as before. Returns the project and the prompt each round's
-/// adjudicator was served.
-fn answered_second_reject(second: &str) -> (tempfile::TempDir, [String; 2]) {
+/// A project holding [`ORIGINAL_SPEC`] at [`SPEC`] whose latest run, launched on [`SPEC`] after
+/// one on [`EARLIER_SPEC`], both on `criteria`, is driven up to the step after its second critique
+/// round: a `spec-ambiguity` reject, the re-plan it drove, and `second`, the round-1 reject line,
+/// answered but not yet stepped over. Asserts on the way that the first reject re-plans as before.
+/// Returns the project and the prompt each round's adjudicator was served.
+fn answered_second_reject_on(
+    criteria: &[String],
+    second: &str,
+) -> (tempfile::TempDir, [String; 2]) {
     let dir = critique_project();
     let root = dir.path();
-    launch(root, &[EARLIER_SPEC, SPEC]);
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(root.join(SPEC), ORIGINAL_SPEC).unwrap();
+    launch(root, &[EARLIER_SPEC, SPEC], criteria);
     plan_and_review_first(root);
     let first_round = adjudicate(root, 0, &spec_ambiguity_first());
     // A first `spec-ambiguity` reject re-plans as before: no stop record, no halt.
@@ -209,6 +232,11 @@ fn answered_second_reject(second: &str) -> (tempfile::TempDir, [String; 2]) {
     );
     let re_plan_round = adjudicate(root, 1, second);
     (dir, [first_round, re_plan_round])
+}
+
+/// [`answered_second_reject_on`] runs launched with no criteria.
+fn answered_second_reject(second: &str) -> (tempfile::TempDir, [String; 2]) {
+    answered_second_reject_on(&[], second)
 }
 
 /// [`answered_second_reject`] up to its stopping step: the second reject is `spec-ambiguity` too,
@@ -369,12 +397,12 @@ fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
 fn an_earlier_runs_spec_ambiguity_reject_is_never_read_across_the_run_boundary() {
     let dir = critique_project();
     let root = dir.path();
-    launch(root, &[EARLIER_SPEC]);
+    launch(root, &[EARLIER_SPEC], &[]);
     plan_and_review_first(root);
     adjudicate(root, 0, &spec_ambiguity_first());
     parks(root, &["plan/replan#1"]);
 
-    launch(root, &[SPEC]);
+    launch(root, &[SPEC], &[]);
     plan_and_review_first(root);
     // A defect a re-plan can fix.
     adjudicate(
@@ -430,25 +458,24 @@ fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
     );
 }
 
-/// Given a run its plan-critique gate stopped on a spec defect, when the operator relaunches as
-/// the halt directs - amends the spec, then begins a new run on it with `--fresh` - then the new
-/// run is refused as not critiqued, on stderr alone, and nothing is appended; and once `rigger
-/// critique` has recorded a clean critique of the amended text, the same command begins the new
-/// run, whose first step parks the planner and the gate's round-0 adversary with no halt, no
-/// escalation and no attention: the stopped run's records stand once and never cross the run
-/// boundary.
-#[test]
-fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_starts_clean() {
-    let (dir, _) = answered_second_spec_ambiguity_reject();
-    let root = dir.path();
-    assert_eq!(
-        step(root, "the stopping step")["halted"].as_str(),
-        Some(halt().as_str()),
-        "the run is stopped on its spec defect"
-    );
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(root.join(SPEC), AMENDED_SPEC).unwrap();
-    let relaunch = || run_rigger(root, &["step", "--spec", SPEC, "--fresh"]);
+/// The relaunch the halt directs, over `root` whose stopped run's spec now holds its amended text:
+/// `rigger step --spec` [`SPEC`] plus `flags` is refused as not critiqued, on stderr alone, naming
+/// the spec repo-relative and appending nothing; once `rigger critique` has recorded a clean
+/// critique of the amended text, the same command begins the new run, whose first step parks the
+/// planner and the gate's round-0 adversary with no halt, no escalation and no attention, the
+/// stopped run's records standing once, all before the new run's boundary. `runs` is the spec and
+/// criteria of every run the store then holds.
+fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
+    root: &Path,
+    flags: &[&str],
+    runs: Vec<(Value, Value)>,
+) {
+    let args: Vec<&str> = ["step", "--spec", SPEC]
+        .iter()
+        .chain(flags)
+        .copied()
+        .collect();
+    let relaunch = || run_rigger(root, &args);
 
     let stopped = read_run_events(root).len();
     let (out, err, ok) = relaunch();
@@ -460,20 +487,19 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
             read_run_events(root).len(),
         ),
         (false, "", true, stopped),
-        "the relaunch on uncritiqued amended text is refused on stderr alone, naming the spec \
-         repo-relative, and appends nothing; stderr:\n{err}"
+        "the relaunch {flags:?} on uncritiqued amended text is refused on stderr alone, naming the \
+         spec repo-relative, and appends nothing; stderr:\n{err}"
     );
 
     record_clean_critique(root, SPEC);
     let (out, err, ok) = relaunch();
     assert!(
         ok,
-        "the clean critique lets the relaunch begin its new run; stderr:\n{err}"
+        "the clean critique lets the relaunch {flags:?} begin its new run; stderr:\n{err}"
     );
     let first: Value = serde_json::from_str(out.trim())
         .unwrap_or_else(|e| panic!("the relaunch prints its step line: {e}; stdout: {out}"));
     let events = read_run_events(root);
-    let runs = run_payloads(root, "RunStarted");
     assert_eq!(
         (
             wave(&first),
@@ -482,7 +508,8 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
                 first.get("escalated"),
                 first.get("attention")
             ],
-            runs.iter()
+            run_payloads(root, "RunStarted")
+                .iter()
                 .map(|run| (run["spec"].clone(), run["criteria"].clone()))
                 .collect::<Vec<_>>(),
             stop_records(&events),
@@ -494,16 +521,65 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
                 "plan/implementer#0".to_string()
             ],
             [None, None, None],
-            vec![
-                (json!(EARLIER_SPEC), json!([])),
-                (json!(SPEC), json!([])),
-                (json!(SPEC), json!([CRITERION])),
-            ],
+            runs,
             the_stop_records(),
             Vec::new(),
         ),
         "the new run on the amended spec starts its gate afresh: the planner and round 0's \
          adversary park, nothing halts, escalates or asks for attention, and the stopped run's \
          three records stand once, all before the new run's boundary"
+    );
+}
+
+/// Given a run its plan-critique gate stopped on a spec defect, when the operator amends the spec
+/// and relaunches on it with `--fresh`, then the relaunch is refused until the amended text is
+/// critiqued and then begins a new run that starts clean.
+#[test]
+fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_starts_clean() {
+    let (dir, _) = answered_second_spec_ambiguity_reject();
+    let root = dir.path();
+    assert_eq!(
+        step(root, "the stopping step")["halted"].as_str(),
+        Some(halt().as_str()),
+        "the run is stopped on its spec defect"
+    );
+    std::fs::write(root.join(SPEC), AMENDED_SPEC).unwrap();
+    assert_the_relaunch_begins_a_clean_run_once_critiqued(
+        root,
+        &["--fresh"],
+        vec![
+            (json!(EARLIER_SPEC), json!([])),
+            (json!(SPEC), json!([])),
+            (json!(SPEC), json!([CRITERION])),
+        ],
+    );
+}
+
+/// Given a run begun on [`SPEC`]'s criteria that its plan-critique gate stopped on a spec defect,
+/// when the operator amends only the spec's Design, its criteria unchanged, and relaunches with no
+/// `--fresh`, then the stopped run is never adopted: the relaunch is refused until the amended text
+/// is critiqued, and then begins a new run that starts clean.
+#[test]
+fn a_run_stopped_on_its_specs_criteria_relaunches_with_no_fresh_after_a_design_amendment() {
+    let criteria = vec![CRITERION.to_string()];
+    let (dir, _) = answered_second_reject_on(
+        &criteria,
+        &critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+    );
+    let root = dir.path();
+    assert_eq!(
+        step(root, "the stopping step")["halted"].as_str(),
+        Some(halt().as_str()),
+        "the run begun on the spec's criteria is stopped on its spec defect"
+    );
+    std::fs::write(root.join(SPEC), AMENDED_SPEC).unwrap();
+    assert_the_relaunch_begins_a_clean_run_once_critiqued(
+        root,
+        &[],
+        vec![
+            (json!(EARLIER_SPEC), json!([CRITERION])),
+            (json!(SPEC), json!([CRITERION])),
+            (json!(SPEC), json!([CRITERION])),
+        ],
     );
 }

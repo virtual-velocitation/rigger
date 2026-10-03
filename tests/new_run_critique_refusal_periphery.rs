@@ -307,6 +307,40 @@ fn a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses(
     );
 }
 
+/// A run its plan-critique gate stopped on a spec defect (an escalation carrying the stop's
+/// reason, spec 112 criterion 5) is terminal for adoption by spec: after an amendment that leaves
+/// the criteria equal, a step on the spec, and every other run entry on it, begins a new run -
+/// refused while the amended text is uncritiqued, appending nothing - and once the amended text is
+/// critiqued clean the step begins it.
+#[test]
+fn a_run_stopped_on_a_spec_defect_is_never_adopted_by_spec_and_its_new_run_is_gated() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_spec_project(root, &PERSONAS, SKEPTIC_WORKFLOW, SPEC_REL, SPEC);
+    seed_the_specs_run(root);
+    seed_run_events(
+        root,
+        &[(
+            "UnitEscalated",
+            r#"{"id":"plan-critique","reason":"amend the spec and relaunch: a defect"}"#,
+        )],
+    );
+    let amended = SPEC.replace("The gadget spins.", "The gadget spins once per call.");
+    std::fs::write(root.join(SPEC_REL), amended).unwrap();
+
+    assert_refused(
+        root,
+        step(root, SPEC_REL, &[]),
+        ("rigger step", SPEC_REL, None),
+        1,
+    );
+    let (_work, path) = stand_in_claude();
+    assert_each_run_entry_refuses(root, &path, &[], None, 1);
+
+    record_clean_critique(root, SPEC_REL);
+    assert_step_proceeds(root, (SPEC_REL, &[]), SPEC_REL, (0, 2));
+}
+
 #[test]
 fn a_critique_answers_only_its_own_text_and_a_spec_outside_the_repository_is_never_critiqued() {
     let dir = temp_git_project_with_commit();

@@ -553,6 +553,60 @@ mod tests {
         .unwrap()
     }
 
+    /// The terminal-for-adoption rule (spec 112, *Relaunch*): a latest run whose plan-critique
+    /// gate stopped on a spec defect - a unit escalated with a reason, still escalated in the
+    /// fold of the run's slice - is never adopted by a command naming a spec, which begins a new
+    /// run; a command naming none (the conductor's own adopt-or-mint, a step with no spec)
+    /// adopts it as before, and a command naming a spec adopts the latest run once an operator
+    /// has resumed the stopped unit, when its escalation carries no reason, or when a later run
+    /// follows the stopped one. The mint decision reads the run stream whole or its
+    /// [`MINT_DECISION_TYPES`] alone and answers the same.
+    #[test]
+    fn a_run_stopped_on_a_spec_defect_is_never_adopted_by_a_command_naming_a_spec() {
+        let stop = ev(
+            crate::ledger::TYPE_UNIT_ESCALATED,
+            r#"{"id":"plan-critique","reason":"amend the spec"}"#,
+        );
+        let plain = ev(crate::ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#);
+        let resumed = ev(
+            crate::ledger::TYPE_UNIT_RESUMED,
+            r#"{"unit":"plan-critique","attempts_granted":1}"#,
+        );
+        let started = ev("UnitStarted", r#"{"id":"plan-critique"}"#);
+        let adopted = |events: &[Event], by_spec: bool| {
+            let criteria = vec!["a".to_string()];
+            let typed: Vec<Event> = events
+                .iter()
+                .filter(|e| MINT_DECISION_TYPES.contains(&e.type_.as_str()))
+                .cloned()
+                .collect();
+            let whole = adopted_run(events, &criteria, false, by_spec).map(|run| run.run);
+            assert_eq!(
+                whole,
+                adopted_run(&typed, &criteria, false, by_spec).map(|run| run.run),
+                "the whole stream and its mint-decision types answer the same"
+            );
+            whole
+        };
+        let r1 = || run_started("r1", &["a"]);
+        assert_eq!(
+            [
+                adopted(&[r1(), started, stop.clone()], true),
+                adopted(&[r1(), stop.clone()], false),
+                adopted(&[r1(), plain], true),
+                adopted(&[r1(), stop.clone(), resumed], true),
+                adopted(&[r1(), stop, run_started("r2", &["a"])], true),
+            ],
+            [
+                None,
+                Some("r1".to_string()),
+                Some("r1".to_string()),
+                Some("r1".to_string()),
+                Some("r2".to_string()),
+            ]
+        );
+    }
+
     fn decision(id: &str) -> Event {
         ev(TYPE_DECISION_MADE, &format!(r#"{{"id":"{id}"}}"#))
     }
@@ -577,7 +631,7 @@ mod tests {
         ];
         let adopted = |events: &[Event], criteria: &[&str], fresh: bool| {
             let criteria: Vec<String> = criteria.iter().map(|c| c.to_string()).collect();
-            adopted_run(events, &criteria, fresh).map(|run| run.run)
+            adopted_run(events, &criteria, fresh, !criteria.is_empty()).map(|run| run.run)
         };
         assert_eq!(
             [

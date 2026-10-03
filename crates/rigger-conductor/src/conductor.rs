@@ -44087,10 +44087,10 @@ mod tests {
             ),
             (
                 "amend the spec and relaunch: plan-critique found a spec defect in specs/a.md \
-                 (f1, f2)"
+                 (f1, f2); critique the amended spec, then start the run again"
                     .to_string(),
                 "amend the spec and relaunch: plan-critique found a spec defect in the spec \
-                 (none upheld)"
+                 (none upheld); critique the amended spec, then start the run again"
                     .to_string(),
             )
         );

@@ -554,13 +554,49 @@ mod tests {
             assert_stamped_once_at_mint(
                 ("", "", "specs/82-unique-pr-heads.md"),
                 ("", "", "specs/99-other.md"),
-                |events| adopted_run(events, &["crit".to_string()], false).map(|run| run.spec),
+                |events| adopted_run(events, &["crit".to_string()], false, true).map(|run| run.spec),
                 "specs/82-unique-pr-heads.md",
                 "start_fresh persists the launching spec path in the RunStarted body",
                 "adopt keeps the spec path the original mint stamped; it never re-stamps",
                 Some(""),
                 "",
             );
+    }
+
+    /// The terminal-for-adoption rule at the store's adopt-or-mint (spec 112, *Relaunch*): a run
+    /// entry naming a spec (it passes the spec path) mints past a latest run its plan-critique
+    /// gate stopped on a spec defect, while the conductor's own adopt-or-mint, which names none,
+    /// adopts that run - and, once the entry has minted, the run the entry ensured.
+    #[test]
+    fn a_run_entry_naming_a_spec_mints_past_a_stopped_run_the_conductor_adopts() {
+        let store = Store::open(":memory:").unwrap();
+        let criteria = ["crit".to_string()];
+        let stopped = start_fresh(&store, &criteria, "", "", "", "specs/a.md").unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[ev(
+                    rigger_domain::ledger::TYPE_UNIT_ESCALATED,
+                    r#"{"id":"plan-critique","reason":"amend the spec"}"#,
+                )],
+            )
+            .unwrap();
+        let adopted_by_the_conductor = ensure_started(&store, &criteria).unwrap();
+        let entry = ensure_started_pinned(&store, &criteria, "", false, "", "", "specs/a.md")
+            .unwrap()
+            .run()
+            .to_string();
+        assert_eq!(
+            (
+                adopted_by_the_conductor == stopped,
+                entry != stopped,
+                ensure_started(&store, &criteria).unwrap() == entry,
+            ),
+            (true, true, true),
+            "the conductor adopts the stopped run, the entry naming the spec mints past it, and \
+             the conductor then adopts the run the entry minted"
+        );
     }
 
     #[test]
@@ -581,7 +617,7 @@ mod tests {
             "the RunStarted carries its own run id in metadata"
         );
         assert_eq!(
-            adopted_run(&events, &["crit".to_string()], false).map(|started| started.run),
+            adopted_run(&events, &["crit".to_string()], false, true).map(|started| started.run),
             Some(run),
             "the minted run is the one a same-criteria step adopts"
         );
@@ -724,7 +760,7 @@ mod tests {
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let started = adopted_run(&events, &["crit".to_string()], false).unwrap();
+        let started = adopted_run(&events, &["crit".to_string()], false, true).unwrap();
         assert_eq!(
             started.definition, "hash-A",
             "the RunStarted pins the current definition hash"
