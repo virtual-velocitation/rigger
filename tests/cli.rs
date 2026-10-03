@@ -17665,8 +17665,10 @@ fn relative_references_resolving_from(text: &str, dir: &Path) -> Vec<String> {
 }
 
 /// No line of `text` holds an absolute or home path, so the file reads the same in every
-/// checkout it is installed into: no `/` or `~` opens a path at the start of a whitespace token
-/// or right after a `"`, `'`, `=`, `:`, `[`, `(`, `<` or backtick inside one, and no line names
+/// checkout it is installed into: a `/` or `~` inside a whitespace token is relative only when
+/// the character before it is an ASCII alphanumeric, `.`, `-`, `_` or `/` - one at the token
+/// start, or after any other character (a quote, `=`, `:`, a bracket, a redirect, a comma, a
+/// pipe, ...), opens a path and fails (`d112-op-home-path-allowlist`) - and no line names
 /// `$HOME`, `${HOME}`, the project `root` or the operator's home directory (a home of `/` or
 /// none is not looked for).
 fn assert_no_absolute_or_home_path(text: &str, root: &Path) {
@@ -17678,7 +17680,7 @@ fn assert_no_absolute_or_home_path(text: &str, root: &Path) {
             for (at, _) in token.match_indices(['/', '~']) {
                 let before = token[..at].chars().next_back();
                 assert!(
-                    !before.is_none_or(|c| "\"'=:[(<`".contains(c)),
+                    before.is_some_and(|c| c.is_ascii_alphanumeric() || ".-_/".contains(c)),
                     "line {}: {token:?} holds an absolute or home path:\n{line}",
                     n + 1
                 );
@@ -17713,10 +17715,11 @@ rigger::test_cases! {
     #[should_panic(expected = "names \"$HOME\"")]
     home_path_check_fails_on_dollar_home:
         probe_no_absolute_or_home_path("Copy it to $HOME/.claude/skills/spec-preflight.\n");
-    /// The check fails on `${HOME}` anywhere in a line.
+    /// The check fails on `${HOME}` anywhere in a line, a `${HOME}` no slash follows
+    /// included, which only the name rule catches (a slash after its `}` opens a path).
     #[should_panic(expected = "names \"${HOME}\"")]
     home_path_check_fails_on_braced_home:
-        probe_no_absolute_or_home_path("Copy it to ${HOME}/.claude/skills/spec-preflight.\n");
+        probe_no_absolute_or_home_path("Copy it into ${HOME} under .claude.\n");
     /// The check fails on a JSON value holding an absolute path: a `/` right after a `"`.
     #[should_panic(expected = "an absolute or home path")]
     home_path_check_fails_on_a_json_value_holding_an_absolute_path:
