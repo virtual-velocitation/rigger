@@ -149,8 +149,8 @@
       },
       {
         "file": "tests/new_run_critique_refusal_periphery.rs",
-        "start_line": 171,
-        "end_line": 173
+        "start_line": 140,
+        "end_line": 142
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -814,8 +814,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 207,
-        "end_line": 207
+        "start_line": 238,
+        "end_line": 238
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -3049,43 +3049,43 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 185,
-        "end_line": 185
+        "start_line": 216,
+        "end_line": 216
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 196,
-        "end_line": 196
+        "start_line": 227,
+        "end_line": 227
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 217,
-        "end_line": 217
+        "start_line": 248,
+        "end_line": 248
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 234,
-        "end_line": 234
+        "start_line": 265,
+        "end_line": 265
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 508,
-        "end_line": 508
+        "start_line": 539,
+        "end_line": 539
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 509,
-        "end_line": 509
+        "start_line": 540,
+        "end_line": 540
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 622,
-        "end_line": 622
+        "start_line": 653,
+        "end_line": 653
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 719,
-        "end_line": 719
+        "start_line": 750,
+        "end_line": 750
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5639,13 +5639,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 279,
-        "end_line": 279
+        "start_line": 310,
+        "end_line": 310
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 730,
-        "end_line": 730
+        "start_line": 761,
+        "end_line": 761
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -7244,8 +7244,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 568,
-        "end_line": 575
+        "start_line": 599,
+        "end_line": 606
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7259,13 +7259,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 604,
-        "end_line": 624
+        "start_line": 635,
+        "end_line": 655
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 628,
-        "end_line": 644
+        "start_line": 659,
+        "end_line": 675
       },
       {
         "file": "tests/store_secrets.rs",

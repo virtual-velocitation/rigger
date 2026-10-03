@@ -1621,7 +1621,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/compaction_generations_periphery.rs:5218-5223` `closed_unit_line`
-- `tests/new_run_critique_refusal_periphery.rs:171-173` `no_critic_line`
+- `tests/new_run_critique_refusal_periphery.rs:140-142` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
 #### `dup-27610bbbcb28` (exact, 2 sites)
@@ -1844,7 +1844,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/cli.rs:27041-27041` `Command::new`
 - `tests/common/cli.rs:18-18` `Command::new`
 - `tests/common/cli.rs:54-54` `Command::new`
-- `tests/common/cli.rs:207-207` `Command::new`
+- `tests/common/cli.rs:238-238` `Command::new`
 - `tests/common/fixtures/conductor.rs:283-283` `Command::new`
 - `tests/common/fixtures/conductor.rs:366-366` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -2858,14 +2858,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:27410-27410` `".rigger"`
 - `tests/cli.rs:27441-27441` `"scaffolded .rigger/instructions/README.md"`
 - `tests/cli.rs:27445-27445` `".rigger/instructions/README.md"`
-- `tests/common/cli.rs:185-185` `".rigger"`
-- `tests/common/cli.rs:196-196` `".rigger"`
-- `tests/common/cli.rs:217-217` `".rigger"`
-- `tests/common/cli.rs:234-234` `".rigger"`
-- `tests/common/cli.rs:508-508` `".rigger"`
-- `tests/common/cli.rs:509-509` `"create .rigger/agents"`
-- `tests/common/cli.rs:622-622` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:719-719` `".rigger"`
+- `tests/common/cli.rs:216-216` `".rigger"`
+- `tests/common/cli.rs:227-227` `".rigger"`
+- `tests/common/cli.rs:248-248` `".rigger"`
+- `tests/common/cli.rs:265-265` `".rigger"`
+- `tests/common/cli.rs:539-539` `".rigger"`
+- `tests/common/cli.rs:540-540` `"create .rigger/agents"`
+- `tests/common/cli.rs:653-653` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:750-750` `".rigger"`
 - `tests/common/fixtures/config.rs:101-101` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
@@ -4010,8 +4010,8 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/cli.rs:846-846` `Connection::open`
 - `tests/cli.rs:889-889` `Connection::open`
 - `tests/cli.rs:9668-9668` `Connection::open`
-- `tests/common/cli.rs:279-279` `Connection::open`
-- `tests/common/cli.rs:730-730` `Connection::open`
+- `tests/common/cli.rs:310-310` `Connection::open`
+- `tests/common/cli.rs:761-761` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/compaction_generations_periphery.rs:100-100` `Connection::open`
@@ -4757,7 +4757,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:568-575` `write_workflow`
+- `tests/common/cli.rs:599-606` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4766,8 +4766,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:604-624` `assert_selected_server`
-- `tests/common/cli.rs:628-644` `assert_selected_sqlite`
+- `tests/common/cli.rs:635-655` `assert_selected_server`
+- `tests/common/cli.rs:659-675` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5177,7 +5177,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8212 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8213 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4882-4923` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14943-14965` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
