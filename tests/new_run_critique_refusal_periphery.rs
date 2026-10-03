@@ -14,13 +14,13 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_stopped_at_the_grounder, emit, printed_decision, read_run_events, record_clean_critique,
-    record_critique, refused_new_run, run_payloads, run_rigger, run_rigger_envs, seed_run_events,
-    stopping_at_the_grounder, temp_repoless_project, write_scaffold, write_spec_project,
+    assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
+    record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
+    run_rigger_envs, seed_run_events, stopping_at_the_grounder, temp_repoless_project,
+    write_scaffold, write_spec_project,
 };
 use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
 use common::repo::{stub_path, write_critique_stub};
-use rigger::review::critique_hash;
 use rigger::wave::NO_CRITIC_CLAUSE;
 use serde_json::json;
 
@@ -66,14 +66,12 @@ const APPROVE_BESIDE_BLOCKING: &str = "Read it.\n\
      S | BLOCKING | criterion 2 | stops names no bound | bound it in Design\n\
      {\"verdict\":\"approve\"}";
 
-/// The id of the `k`-th finding of the first critique of [`SPEC`].
-fn finding_id(k: u32) -> String {
-    format!("sc-{}-0-{k}", critique_hash(SPEC))
-}
-
 /// The ids of the two BLOCKING findings [`REJECT`] records as the first critique of [`SPEC`].
 fn reject_ids() -> [String; 2] {
-    [finding_id(1), finding_id(3)]
+    [
+        critique_finding_id(SPEC, 0, 1),
+        critique_finding_id(SPEC, 0, 3),
+    ]
 }
 
 /// The personas every workflow here names: a planner, the `skeptic` critic and the `arbiter`.
@@ -248,7 +246,7 @@ fn a_new_step_refuses_until_every_blocking_finding_of_its_text_is_resolved() {
         root,
         "r1",
         &format!("./{SPEC_REL}"),
-        &[one.clone(), finding_id(2)],
+        &[one.clone(), critique_finding_id(SPEC, 0, 2)],
     );
     resolve(root, "r2", "specs/other.md", std::slice::from_ref(three));
     assert_refused(
@@ -370,7 +368,13 @@ fn an_approving_critique_holding_a_blocking_finding_refuses_a_new_run_on_that_fi
         out.ends_with("\n{\"verdict\":\"approve\"}\n"),
         "the recorded critique approves; stdout:\n{out}"
     );
-    assert_step_refused(root, (SPEC_REL, &[]), SPEC_REL, Some(&[finding_id(2)]), 0);
+    assert_step_refused(
+        root,
+        (SPEC_REL, &[]),
+        SPEC_REL,
+        Some(&[critique_finding_id(SPEC, 0, 2)]),
+        0,
+    );
 }
 
 #[test]

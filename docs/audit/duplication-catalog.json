@@ -38,7 +38,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-7afdebdbbc9e",
+    "id": "dup-b6dc10b9c376",
     "classification": "near",
     "sites": [
       {
@@ -110,14 +110,9 @@
         "file": "tests/simplification_audit.rs",
         "name": "sample_key",
         "content_hash": "1314e6adae890d88"
-      },
-      {
-        "file": "tests/spec_critique_periphery.rs",
-        "name": "reject_out",
-        "content_hash": "7f40f97a5c856b17"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs, tests/spec_critique_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -14,9 +14,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, emit, read_run_events, rigger_file, run_payloads, run_rigger,
-    run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, emit, read_run_events, rigger_file, run_payloads,
+    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store,
+    temp_project, temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
@@ -57,27 +57,29 @@ const REJECT: &str = "I read the spec.\n\
      {\"verdict\":\"reject\"}";
 const APPROVE: &str = "No defects.\n{\"verdict\":\"approve\"}";
 
-/// What `rigger critique` prints for a [`REJECT`] critique of `hash` recorded at `attempt`: each
+/// What `rigger critique` prints for a [`REJECT`] critique of `text` recorded at `attempt`: each
 /// finding as its record id and summary, then the verdict.
-fn reject_out(hash: &str, attempt: u32) -> String {
+fn reject_out(text: &str, attempt: u32) -> String {
     format!(
-        "sc-{hash}-{attempt}-1 | BLOCKING | criterion 2 | hides is undecided when empty | decide \
-         the empty corner in Design\nsc-{hash}-{attempt}-2 | NON-BLOCKING | Design | renders \
-         names no surface | name the surface\n{{\"verdict\":\"reject\"}}\n"
+        "{} | BLOCKING | criterion 2 | hides is undecided when empty | decide the empty corner in \
+         Design\n{} | NON-BLOCKING | Design | renders names no surface | name the surface\n\
+         {{\"verdict\":\"reject\"}}\n",
+        critique_finding_id(text, attempt, 1),
+        critique_finding_id(text, attempt, 2)
     )
 }
 
-/// The `ReviewFinding` copies of a [`REJECT`] critique of `hash` at `attempt`, about `spec`.
-fn reject_copies(hash: &str, attempt: u32, spec: &str) -> Vec<Value> {
+/// The `ReviewFinding` copies of a [`REJECT`] critique of `text` at `attempt`, about `spec`.
+fn reject_copies(text: &str, attempt: u32, spec: &str) -> Vec<Value> {
     vec![
         json!({
-            "id": format!("sc-{hash}-{attempt}-1"),
+            "id": critique_finding_id(text, attempt, 1),
             "by": "spec-critic",
             "summary": "BLOCKING | criterion 2 | hides is undecided when empty | decide the empty corner in Design",
             "about": [spec],
         }),
         json!({
-            "id": format!("sc-{hash}-{attempt}-2"),
+            "id": critique_finding_id(text, attempt, 2),
             "by": "spec-critic",
             "summary": "NON-BLOCKING | Design | renders names no surface | name the surface",
             "about": [spec],
@@ -164,7 +166,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let scratch = root.join("scratch");
     let (first, first_path) = stub(REJECT);
     let hash = critique_hash(SPEC);
-    let expected_out = reject_out(&hash, 0);
+    let expected_out = reject_out(SPEC, 0);
 
     // When the spec is critiqued for the first time ...
     let (out, err, ok) = critique(root, SPEC_REL, &first_path, &scratch);
@@ -247,12 +249,13 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     assert_eq!(spawn_events(&critique_events(root)), recorded);
 
     // ... and each finding is copied to the project run stream, where `rigger peers` shows it.
-    let copies = reject_copies(&hash, 0, SPEC_REL);
+    let copies = reject_copies(SPEC, 0, SPEC_REL);
     assert_eq!(review_findings(root), copies);
     let (peers, err, ok) = run_rigger(root, &["peers", SPEC_REL]);
     assert!(ok, "rigger peers succeeds; stderr:\n{err}");
     assert!(
-        peers.contains(&format!("sc-{hash}-0-1")) && peers.contains(&format!("sc-{hash}-0-2")),
+        peers.contains(&critique_finding_id(SPEC, 0, 1))
+            && peers.contains(&critique_finding_id(SPEC, 0, 2)),
         "the graph shows the copied findings about the spec:\n{peers}"
     );
     for sub in ["agent-live", "agent-stream"] {
@@ -409,9 +412,8 @@ fn a_project_with_no_git_repository_critiques_its_spec_against_the_project_root(
         &root.join("scratch"),
     );
     assert!(ok, "a repo-less project critiques; stderr:\n{err}");
-    let hash = critique_hash(SPEC);
     assert!(
-        out.contains(&format!("sc-{hash}-0-1 | BLOCKING")),
+        out.contains(&format!("{} | BLOCKING", critique_finding_id(SPEC, 0, 1))),
         "the finding is printed:\n{out}"
     );
     let about: Vec<Value> = review_findings(root)
@@ -470,7 +472,10 @@ fn a_result_that_is_no_critique_exits_non_zero_saying_why_and_the_next_call_spaw
     assert_eq!(critique_stub_spawns(silent.path()), 1);
     assert_eq!(critique_stub_spawns(answering.path()), 1);
     assert!(
-        out.starts_with(&format!("sc-{hash}-1-1 | BLOCKING | criterion 2 | ")),
+        out.starts_with(&format!(
+            "{} | BLOCKING | criterion 2 | ",
+            critique_finding_id(SPEC, 1, 1)
+        )),
         "the finding ids carry attempt 1:\n{out}"
     );
     let second = critique_spawn_id(&hash, 1);
@@ -545,7 +550,10 @@ fn the_verb_takes_the_store_flags_rigger_run_takes_and_refuses_malformed_argumen
         "--eventstore sqlite selects the local store; stderr:\n{err}"
     );
     assert!(
-        out.starts_with(&format!("sc-{}-0-1 | BLOCKING | ", critique_hash(SPEC))),
+        out.starts_with(&format!(
+            "{} | BLOCKING | ",
+            critique_finding_id(SPEC, 0, 1)
+        )),
         "the critique is recorded and printed:\n{out}"
     );
     assert_eq!(critique_stub_spawns(stub.path()), 1);
@@ -623,8 +631,8 @@ fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_
     assert!(ok, "the critique records; stderr:\n{err}");
 
     // ... the findings carry the spec text's literal hash, and the spelling is made repo-relative.
-    assert_eq!(out, reject_out(SPEC_HASH, 0));
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+    assert_eq!(out, reject_out(SPEC, 0));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 0, SPEC_REL));
     let prompt = spec_critique_prompt(SPEC_REL, SPEC);
     assert_eq!(
         critique_stub_task(work.path()),
@@ -750,11 +758,7 @@ fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_sp
 
     // ... the first hash's critique answers it, with zero spawns and nothing appended.
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
-    assert_eq!(
-        out,
-        reject_out(SPEC_HASH, 0),
-        "the first text's own findings"
-    );
+    assert_eq!(out, reject_out(SPEC, 0), "the first text's own findings");
     assert!(
         err.contains(&format!(
             "rigger critique: {SPEC_REL} (hash {SPEC_HASH}): answered from the critique recorded \
@@ -768,7 +772,7 @@ fn a_text_reverted_to_a_critiqued_hash_is_answered_by_that_critique_with_zero_sp
         4,
         "two critiques, no third request"
     );
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 0, SPEC_REL));
 }
 
 #[test]
@@ -807,7 +811,7 @@ fn a_launch_that_records_no_result_says_why_and_the_next_call_runs_the_next_atte
     let (answering, answering_path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &answering_path, &scratch);
     assert!(ok, "the next attempt records a critique; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 1));
+    assert_eq!(out, reject_out(SPEC, 1));
     assert_eq!(critique_stub_spawns(answering.path()), 1);
     assert_eq!(
         spawn_events(&critique_events(root))[1..],
@@ -822,7 +826,7 @@ fn a_launch_that_records_no_result_says_why_and_the_next_call_runs_the_next_atte
             ),
         ]
     );
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 1, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 1, SPEC_REL));
 }
 
 #[test]
@@ -859,7 +863,7 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
 
     // ... the next call answers from attempt 0's critique, the latest one, and appends its copies.
     assert!(ok, "an answered critique exits 0; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert_eq!(out, reject_out(SPEC, 0));
     assert!(
         err.contains("answered from the critique recorded at attempt 0"),
         "a later result that is no critique never displaces the critique:\n{err}"
@@ -870,7 +874,7 @@ fn a_recorded_critique_whose_copies_were_never_appended_is_completed_with_zero_s
         4,
         "nothing appended to the record"
     );
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 0, SPEC_REL));
 }
 
 #[test]
@@ -909,12 +913,15 @@ fn a_reject_needs_a_blocking_line_and_an_approve_beside_one_is_a_critique_that_s
     let summary = "BLOCKING | criterion 1 | empty is undecided | decide it | then pin it";
     assert_eq!(
         out,
-        format!("sc-{SPEC_HASH}-1-1 | {summary}\n{{\"verdict\":\"approve\"}}\n")
+        format!(
+            "{} | {summary}\n{{\"verdict\":\"approve\"}}\n",
+            critique_finding_id(SPEC, 1, 1)
+        )
     );
     assert_eq!(
         review_findings(root),
         [json!({
-            "id": format!("sc-{SPEC_HASH}-1-1"),
+            "id": critique_finding_id(SPEC, 1, 1),
             "by": "spec-critic",
             "summary": summary,
             "about": [SPEC_REL],
@@ -937,7 +944,7 @@ fn the_critic_is_the_plan_critique_gates_adversary_else_the_default_review_adver
         let (work, path) = stub(REJECT);
         let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
         assert!(ok, "a workflow naming a critic critiques; stderr:\n{err}");
-        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert_eq!(out, reject_out(SPEC, 0));
         let argv = critique_stub_argv(work.path());
         let system = flag_value(&argv, "--system-prompt");
         assert!(
@@ -1140,7 +1147,7 @@ fn a_graph_that_owes_its_rebuild_refuses_every_call_answered_or_not_naming_rigge
     assert_eq!(out, "");
     assert_eq!(critique_stub_spawns(later.path()), 0);
     assert_eq!(critique_events(root).len(), 2, "no request is parked");
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 0, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 0, SPEC_REL));
 }
 
 #[test]
@@ -1207,7 +1214,7 @@ fn a_server_selected_by_flags_alone_is_handed_to_the_critic_whose_bound_server_r
             ],
         );
         assert!(ok, "the critique records on the server; stderr:\n{err}");
-        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert_eq!(out, reject_out(SPEC, 0));
         assert!(
             !rigger_file(root, "events.db").exists(),
             "the critique lives on the server, never a local store"
@@ -1251,7 +1258,10 @@ fn a_server_selected_by_flags_alone_is_handed_to_the_critic_whose_bound_server_r
             "the critic's bound server starts under the handed selection; stderr:\n{}",
             String::from_utf8_lossy(&answered.stderr)
         );
-        for id in [format!("sc-{SPEC_HASH}-0-1"), format!("sc-{SPEC_HASH}-0-2")] {
+        for id in [
+            critique_finding_id(SPEC, 0, 1),
+            critique_finding_id(SPEC, 0, 2),
+        ] {
             assert!(
                 reply.contains(&id),
                 "rigger_peers reads the critique copy {id} from the server:\n{reply}"
@@ -1278,7 +1288,7 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
     // ... when the spec is critiqued ...
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
     assert!(ok, "the critique records; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert_eq!(out, reject_out(SPEC, 0));
 
     // ... the history moved to the minted identity first, and the copies follow it there: the
     // legacy decision, the migration's own recorded decision, then the two copies.
@@ -1305,7 +1315,7 @@ fn a_store_from_before_the_minted_identity_is_migrated_before_the_verbs_first_ap
     assert!(ok, "rigger peers succeeds; stderr:\n{err}");
     assert!(
         peers.contains("decision legacy-decision")
-            && peers.contains(&format!("sc-{SPEC_HASH}-0-1")),
+            && peers.contains(&critique_finding_id(SPEC, 0, 1)),
         "the migrated decision and the copies both read back about the spec:\n{peers}"
     );
 }
@@ -1464,7 +1474,7 @@ fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessi
     let (next, next_path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &next_path, &scratch);
     assert!(ok, "attempt 1 records a critique; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 1));
+    assert_eq!(out, reject_out(SPEC, 1));
     assert_eq!(critique_stub_spawns(next.path()), 1);
     assert_eq!(
         spawn_events(&critique_events(root))[2..],
@@ -1479,7 +1489,7 @@ fn a_result_recorded_first_for_the_critics_spawn_id_is_read_back_never_the_sessi
             ),
         ]
     );
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 1, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 1, SPEC_REL));
 }
 
 /// Given the critique stream holds a spawn request that cannot be read - its attempt cannot be
@@ -1543,7 +1553,7 @@ fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
     let (work, path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
     assert!(ok, "attempt 2 records a critique; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 2));
+    assert_eq!(out, reject_out(SPEC, 2));
     assert_eq!(critique_stub_spawns(work.path()), 1);
     assert_eq!(
         spawn_events(&critique_events(root)),
@@ -1560,7 +1570,7 @@ fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
             ),
         ]
     );
-    assert_eq!(review_findings(root), reject_copies(SPEC_HASH, 2, SPEC_REL));
+    assert_eq!(review_findings(root), reject_copies(SPEC, 2, SPEC_REL));
 }
 
 /// Given one spawn id parked twice on the project's run stream with different prompts, another
@@ -1620,7 +1630,7 @@ fn a_project_with_no_git_repository_removes_no_critique_directory_under_its_root
     let (work, path) = stub(REJECT);
     let (out, err, ok) = critique(root, SPEC_REL, &path, &tmpdir);
     assert!(ok, "a repo-less project critiques; stderr:\n{err}");
-    assert_eq!(out, reject_out(SPEC_HASH, 0));
+    assert_eq!(out, reject_out(SPEC, 0));
     assert_eq!(critique_stub_spawns(work.path()), 1);
     for run in &planted {
         let entries: Vec<std::ffi::OsString> = std::fs::read_dir(run)
@@ -1671,7 +1681,7 @@ fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the
             ok,
             "the critique records on the configured server; stderr:\n{err}"
         );
-        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert_eq!(out, reject_out(SPEC, 0));
         assert!(
             !rigger_file(root, "events.db").exists(),
             "the configured server holds the critique, never a local store"
@@ -1701,7 +1711,7 @@ fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the
             ok,
             "the critique records on the flagged server; stderr:\n{err}"
         );
-        assert_eq!(out, reject_out(SPEC_HASH, 0));
+        assert_eq!(out, reject_out(SPEC, 0));
         assert_eq!(critique_stub_spawns(work.path()), 1);
         assert_eq!(
             critique_stub_conn(work.path()),

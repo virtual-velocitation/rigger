@@ -10,9 +10,9 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-7afdebdbbc9e",
+    "id": "dup-b6dc10b9c376",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id, the critique printout a spec-critique periphery case expects); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
   },
   {
     "id": "dup-4b3a37bb0a60",

@@ -169,6 +169,12 @@ pub fn record_critique(root: &Path, spec: &str, answer: &str) -> String {
     out
 }
 
+/// The id `rigger critique` records the `k`-th finding line of a critique of `text` under, at
+/// `attempt` (spec 112): `sc-<hash>-<attempt>-<k>`, `<hash>` the content hash of `text`.
+pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
+    format!("sc-{}-{attempt}-{k}", rigger::review::critique_hash(text))
+}
+
 /// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]:
 /// prose, no finding line, an approve), so a new run on it under a workflow naming a critic is not
 /// refused (spec 112).

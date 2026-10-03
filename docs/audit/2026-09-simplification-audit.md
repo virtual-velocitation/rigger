@@ -1556,7 +1556,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-204 clusters (1400 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+204 clusters (1399 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
@@ -1586,9 +1586,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/canary_store.rs:817-819` `any_finding_is_critical`
 - `crates/rigger-grounder/src/grounder/design/extract.rs:159-161` `is_handbook_path`
 
-#### `dup-7afdebdbbc9e` (near, 15 sites)
+#### `dup-b6dc10b9c376` (near, 14 sites)
 
-Proposed home: `a new shared module (sites span 7 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs, tests/spec_critique_periphery.rs)`
+Proposed home: `a new shared module (sites span 6 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/spawn.rs, crates/rigger-driver/src/driver/claude_code.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
@@ -1606,7 +1606,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
 - `tests/simplification_audit.rs:6000-6002` `sample_key`
-- `tests/spec_critique_periphery.rs:62-68` `reject_out`
 
 #### `dup-8f6a4198293f` (near, 9 sites)
 
@@ -1621,7 +1620,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:329-331` `group_stream`
 - `crates/rigger-store-sqlite/src/spawn_store.rs:73-75` `what`
 - `tests/compaction_generations_periphery.rs:5218-5223` `closed_unit_line`
-- `tests/new_run_critique_refusal_periphery.rs:140-142` `no_critic_line`
+- `tests/new_run_critique_refusal_periphery.rs:138-140` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
 
 #### `dup-27610bbbcb28` (exact, 2 sites)
@@ -1844,7 +1843,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/cli.rs:27071-27071` `Command::new`
 - `tests/common/cli.rs:18-18` `Command::new`
 - `tests/common/cli.rs:54-54` `Command::new`
-- `tests/common/cli.rs:238-238` `Command::new`
+- `tests/common/cli.rs:244-244` `Command::new`
 - `tests/common/fixtures/conductor.rs:283-283` `Command::new`
 - `tests/common/fixtures/conductor.rs:366-366` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -2858,14 +2857,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:27440-27440` `".rigger"`
 - `tests/cli.rs:27471-27471` `"scaffolded .rigger/instructions/README.md"`
 - `tests/cli.rs:27475-27475` `".rigger/instructions/README.md"`
-- `tests/common/cli.rs:216-216` `".rigger"`
-- `tests/common/cli.rs:227-227` `".rigger"`
-- `tests/common/cli.rs:248-248` `".rigger"`
-- `tests/common/cli.rs:265-265` `".rigger"`
-- `tests/common/cli.rs:539-539` `".rigger"`
-- `tests/common/cli.rs:540-540` `"create .rigger/agents"`
-- `tests/common/cli.rs:653-653` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:750-750` `".rigger"`
+- `tests/common/cli.rs:222-222` `".rigger"`
+- `tests/common/cli.rs:233-233` `".rigger"`
+- `tests/common/cli.rs:254-254` `".rigger"`
+- `tests/common/cli.rs:271-271` `".rigger"`
+- `tests/common/cli.rs:545-545` `".rigger"`
+- `tests/common/cli.rs:546-546` `"create .rigger/agents"`
+- `tests/common/cli.rs:659-659` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:756-756` `".rigger"`
 - `tests/common/fixtures/config.rs:101-101` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
@@ -3079,9 +3078,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:59-59` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:222-222` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:233-233` `".rigger"`
-- `tests/spec_critique_periphery.rs:350-350` `".rigger/workflow.yml"`
-- `tests/spec_critique_periphery.rs:591-591` `".rigger"`
-- `tests/spec_critique_periphery.rs:1275-1275` `".rigger/project.id"`
+- `tests/spec_critique_periphery.rs:353-353` `".rigger/workflow.yml"`
+- `tests/spec_critique_periphery.rs:599-599` `".rigger"`
+- `tests/spec_critique_periphery.rs:1285-1285` `".rigger/project.id"`
 - `tests/statusline_command_periphery.rs:118-118` `".rigger"`
 - `tests/step_sheds_the_freshen.rs:67-67` `".rigger/grounding"`
 - `tests/step_sheds_the_freshen.rs:216-216` `".rigger/symbols/index.json"`
@@ -4000,8 +3999,8 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/cli.rs:847-847` `Connection::open`
 - `tests/cli.rs:890-890` `Connection::open`
 - `tests/cli.rs:9669-9669` `Connection::open`
-- `tests/common/cli.rs:310-310` `Connection::open`
-- `tests/common/cli.rs:761-761` `Connection::open`
+- `tests/common/cli.rs:316-316` `Connection::open`
+- `tests/common/cli.rs:767-767` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/compaction_generations_periphery.rs:100-100` `Connection::open`
@@ -4747,7 +4746,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:599-606` `write_workflow`
+- `tests/common/cli.rs:605-612` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4756,8 +4755,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:635-655` `assert_selected_server`
-- `tests/common/cli.rs:659-675` `assert_selected_sqlite`
+- `tests/common/cli.rs:641-661` `assert_selected_server`
+- `tests/common/cli.rs:665-681` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
