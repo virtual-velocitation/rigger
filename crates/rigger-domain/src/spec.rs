@@ -955,21 +955,46 @@ fn heading_level(line: &str) -> Option<usize> {
     }
 }
 
-/// For each line (0-based), whether it sits inside a fenced code block. The ` ``` `
-/// delimiter lines themselves count as inside, so a phrase on the fence line is never
-/// flagged.
-fn fenced_code_lines(text: &str) -> Vec<bool> {
+/// For each line (0-based), whether it sits inside a fenced code block, read as CommonMark
+/// reads a fence: a line whose text, leading whitespace aside, opens with a run of three or
+/// more backticks or tildes opens a block (a backtick run whose rest holds a backtick is
+/// inline code, never a fence), and only a later line holding nothing but a run of the SAME
+/// character at least as long closes it - so a tilde line inside a backtick fence, or a
+/// shorter run inside a longer one, is the block's text. Both fence lines count as inside, so
+/// a phrase on a fence line is never read as prose, and an unclosed block runs to the end of
+/// the text. Leading whitespace of any width is allowed before a fence, as a fence nested in
+/// a list item is indented. The one Markdown fence reader (`d112-op-seam-items-from-c4`): the
+/// spec lint and the grounder's design-doc links both read fences through it, so the two
+/// never disagree on which lines are code.
+pub fn fenced_code_lines(text: &str) -> Vec<bool> {
     let mut out = Vec::with_capacity(text.lines().count());
-    let mut fenced = false;
+    let mut open: Option<(char, usize)> = None;
     for line in text.lines() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            out.push(true);
-        } else {
-            out.push(fenced);
-        }
+        let fence = fence_run(line.trim_start());
+        let inside = match (open, fence) {
+            (None, Some((mark, len, rest))) if mark == '~' || !rest.contains('`') => {
+                open = Some((mark, len));
+                true
+            }
+            (Some((mark, len)), Some((run, run_len, rest)))
+                if run == mark && run_len >= len && rest.trim().is_empty() =>
+            {
+                open = None;
+                true
+            }
+            _ => open.is_some(),
+        };
+        out.push(inside);
     }
     out
+}
+
+/// The fence run `text` opens with - its mark (a backtick or a tilde), its length (three or
+/// more) and the text after it - or `None` when `text` opens with no such run.
+fn fence_run(text: &str) -> Option<(char, usize, &str)> {
+    let mark = text.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let len = text.chars().take_while(|&c| c == mark).count();
+    (len >= 3).then(|| (mark, len, &text[len..]))
 }
 
 /// `text` with quoted-or-named text blanked to spaces (never dropped, so word boundaries

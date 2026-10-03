@@ -35,7 +35,7 @@
 
 use std::collections::BTreeSet;
 
-use rigger_domain::spec::code_spans;
+use rigger_domain::spec::{code_spans, fenced_code_lines};
 
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
 use crate::grounder::symbols::events::is_under_tests_dir;
@@ -270,7 +270,9 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         ConceptKind::Rationale => return,
     };
     let from = path.to_string();
-    for line in unfenced_lines(contents) {
+    // Fenced code EXAMPLES are skipped, as the one Markdown fence reader reads a fence.
+    let fenced = fenced_code_lines(contents);
+    for (line, _) in contents.lines().zip(fenced).filter(|&(_, code)| !code) {
         // Inline-code CODE-path mentions -> the doc's kind-specific design->code relation ("this
         // doc designs / constrains / governs this code").
         for span in code_spans(line) {
@@ -316,25 +318,6 @@ fn rationale_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
             });
         }
     }
-}
-
-/// The lines of a markdown doc OUTSIDE a fenced code block (` ``` ` / `~~~`), and never the fence
-/// markers themselves - so a code EXAMPLE that happens to contain a path is not mistaken for the doc
-/// specifying that code. Deterministic: a pure function of the contents.
-fn unfenced_lines(contents: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for line in contents.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if !in_fence {
-            out.push(line);
-        }
-    }
-    out
 }
 
 /// Every markdown link / image target on a line, in order (the `target` of `[text](target)` or
