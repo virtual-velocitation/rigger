@@ -2387,7 +2387,7 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `src/cli/setup.rs:2824-2824` `".rigger"`
 - `src/cli/setup.rs:2843-2843` `".rigger/agents/{f}"`
 - `src/cli/setup.rs:2969-2969` `".rigger/agents/rust-engineer.md"`
-- `src/cli/setup.rs:2992-2992` `".rigger/agents/sdet-author.md"`
+- `src/cli/setup.rs:2995-2995` `".rigger/agents/sdet-author.md"`
 - `src/cli/validate.rs:844-844` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1288-1288` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\

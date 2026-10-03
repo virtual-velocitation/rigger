@@ -2985,19 +2985,43 @@ mod tests {
         }
     }
 
-    /// The CLI handlers live in `src/cli/`; the periphery author's CLI-surface probe diffs
-    /// them alongside the registry in `src/main.rs`.
+    /// The periphery author's surface probes: the CLI probe diffs the handlers in `src/cli/`
+    /// alongside the registry in `src/main.rs`, every probe reads a raw diff written to a file,
+    /// never a pipe from the git command, and an empty accounting cites the diff's stat with a
+    /// positive control, so a probe that returns nothing on added source lines reads as a broken
+    /// instrument (`d112-op-sdet-probe-raw-diff`).
     #[test]
-    fn sdet_author_probes_the_cli_modules_for_new_cli_surface() {
+    fn sdet_author_probes_read_raw_diff_files_and_prove_an_empty_accounting() {
         let text = std::fs::read_to_string(repo().join(".rigger/agents/sdet-author.md")).unwrap();
         assert!(
             text.contains("git diff BASE -- src/main.rs src/cli"),
             "the CLI probe must cover src/cli"
         );
-        assert!(
-            !text.contains("git diff BASE -- src/main.rs |"),
-            "the CLI probe must not stop at src/main.rs"
+        let probes: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("git diff BASE"))
+            .collect();
+        assert_eq!(probes.len(), 5, "five probes diff BASE: {probes:?}");
+        for probe in &probes {
+            assert!(
+                !probe.contains('|'),
+                "a probe never pipes the git command's output: {probe:?}"
+            );
+        }
+        let flat = rigger::wave::normalize_ws(&text);
+        assert_eq!(
+            flat.matches("> <scratch>/diff.patch").count(),
+            5,
+            "each of the five probes writes its raw diff to the scratch file first"
         );
+        for wanted in [
+            "`git diff --stat BASE`",
+            "with a positive control",
+            "A probe that returns nothing on a diff whose stat shows added source lines is a \
+             broken instrument, not an empty surface.",
+        ] {
+            assert!(flat.contains(wanted), "sdet-author.md must say {wanted:?}");
+        }
     }
 
     /// The fan-out helpers the working discipline names live at `.claude/agents/`: committed

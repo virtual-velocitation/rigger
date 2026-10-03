@@ -33,24 +33,35 @@ for every item the mechanics find.
 
 Determine your unit's base (the commit your worktree branched from; `git merge-base HEAD
 <run-branch>` if unsure). Then RUN each probe below against the diff and CITE its output as
-your evidence. Every hit is a surface item you MUST account for; you may not skip one.
+your evidence. Every hit is a surface item you MUST account for; you may not skip one. Each
+probe first writes the RAW diff to a file in your scratch directory, then filters that file -
+never a pipe from the git command, whose output a wrapper or pager on the way can reshape.
 
     surface                        probe (run it; cite the output)                  periphery layer
     ----------------------------   ----------------------------------------------   -------------------
-    new / changed public API       git diff BASE -- '*.rs' | grep -nE              API test (drives
-                                   '^\+.*\bpub (fn|struct|enum|trait|const|type)'   the built binary)
-    trait impl                     git diff BASE -- '*.rs' | grep -nE              backend-agnostic
-                                   '^\+.*impl .* for '                              contract test module
-    CLI subcommand / flag          git diff BASE -- src/main.rs src/cli | grep      a test that drives
-                                   the command/flag registry additions             the binary
-    event type / serialized form   git diff BASE | grep -nE '^\+.*(TYPE_|derive.*   round-trip +
-                                   Serialize|Deserialize)'                          back-compat test
-    cross-module seam / fold arm   read the diff: a new call from module A into     an integration test
-                                   module B, or a new fold/projection arm
+    new / changed public API       git diff BASE -- '*.rs' > <scratch>/diff.patch   API test (drives
+                                   then grep -nE '^\+.*\bpub (fn|struct|enum|       the built binary)
+                                   trait|const|type)' <scratch>/diff.patch
+    trait impl                     git diff BASE -- '*.rs' > <scratch>/diff.patch   backend-agnostic
+                                   then grep -nE '^\+.*impl .* for '                contract test module
+                                   <scratch>/diff.patch
+    CLI subcommand / flag          git diff BASE -- src/main.rs src/cli             a test that drives
+                                   > <scratch>/diff.patch then read its added       the binary
+                                   lines for the command/flag registry additions
+    event type / serialized form   git diff BASE > <scratch>/diff.patch then        round-trip +
+                                   grep -nE '^\+.*(TYPE_|derive.*Serialize|         back-compat test
+                                   Deserialize)' <scratch>/diff.patch
+    cross-module seam / fold arm   git diff BASE > <scratch>/diff.patch then read   an integration test
+                                   it: a new call from module A into module B, or
+                                   a new fold/projection arm
 
-An empty accounting is valid ONLY when every probe above returns NOTHING - and you must show
-that (cite the empty results). "I looked and saw no seam" is NOT acceptable; "these five
-probes returned zero added public items / impls / CLI / events / cross-module calls" is.
+An empty accounting is valid ONLY when every probe above returns NOTHING over its diff file
+AND you cite `git diff --stat BASE` beside the empty results with a positive control: the
+probe's `^\+` filter over the same file, returning one added line of a source file the stat
+lists. A probe that returns nothing on a diff whose stat shows added source lines is a broken
+instrument, not an empty surface. "I looked and saw no seam" is NOT acceptable; "these five
+probes returned zero added public items / impls / CLI / events / cross-module calls over a
+diff file whose stat and positive control show the added source lines" is.
 
 ## Account for every item
 
