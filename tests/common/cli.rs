@@ -154,6 +154,78 @@ pub fn emit(root: &Path, typ: &str, json: &str) {
     assert!(ok, "emit {typ} must succeed; stderr: {err}");
 }
 
+/// Record the critic's `answer` as the critique of `spec`'s current text in the project at `root`
+/// (spec 112): `rigger critique <spec>` with the checked-in critique stub, answering `answer`,
+/// first on `PATH` for that one call only, so a fixture's own fake agent keeps its `PATH` slot for
+/// the run it drives. Asserts the verb succeeded and returns its stdout.
+pub fn record_critique(root: &Path, spec: &str, answer: &str) -> String {
+    let work = tempfile::tempdir().expect("a work directory for the critique stub");
+    let path = super::repo::write_critique_stub(work.path(), answer);
+    let (out, err, ok) = run_rigger_envs(root, &["critique", spec], &[("PATH", path.as_str())]);
+    assert!(
+        ok,
+        "rigger critique {spec} must record a critique; stderr:\n{err}"
+    );
+    out
+}
+
+/// The id `rigger critique` records the `k`-th finding line of a critique of `text` under, at
+/// `attempt` (spec 112): `sc-<hash>-<attempt>-<k>`, `<hash>` the content hash of `text`.
+pub fn critique_finding_id(text: &str, attempt: u32, k: u32) -> String {
+    format!("sc-{}-{attempt}-{k}", rigger::review::critique_hash(text))
+}
+
+/// Record a clean critique of `spec`'s current text in the project at `root` ([`record_critique`]:
+/// prose, no finding line, an approve), so a new run on it under a workflow naming a critic is not
+/// refused (spec 112).
+pub fn record_clean_critique(root: &Path, spec: &str) {
+    let out = record_critique(root, spec, "No defects.\n{\"verdict\":\"approve\"}");
+    assert_eq!(
+        out, "{\"verdict\":\"approve\"}\n",
+        "a clean critique of {spec}: no finding and an approve"
+    );
+}
+
+/// The `DecisionMade` a refusal of a new run on `spec` prints for the operator to record (spec
+/// 112, Notes), resolving `resolves`.
+pub fn printed_decision(spec: &str, resolves: &str) -> String {
+    format!(
+        "{{\"id\":\"...\",\"governs\":{},\"resolves\":{resolves},\"summary\":\"...\"}}",
+        serde_json::json!([spec])
+    )
+}
+
+/// The route label the refusal of a new run prints before `rigger critique <spec>` (spec 112,
+/// Notes).
+pub const CRITIQUE_ROUTE: &str = "amend the spec and critique it:";
+
+/// The route label the refusal of a new run on a critiqued spec prints before the resolution it
+/// offers (spec 112, Notes).
+pub const RESOLUTION_ROUTE: &str = "or record a resolution:";
+
+/// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes):
+/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique. The route
+/// labels are padded to one column.
+pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> String {
+    let (why, route, resolves) = match open {
+        None => (
+            "not critiqued".to_string(),
+            "or, once critiqued, record a resolution:".to_string(),
+            "[<ids>]".to_string(),
+        ),
+        Some(ids) => (
+            format!("open BLOCKING findings: {}", ids.join(", ")),
+            format!("{RESOLUTION_ROUTE:<33}"),
+            serde_json::json!(ids).to_string(),
+        ),
+    };
+    format!(
+        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  {CRITIQUE_ROUTE}   \
+         rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
+        printed_decision(spec, &resolves)
+    )
+}
+
 /// Create an empty `.rigger/` under `root`.
 pub fn seed_rigger_dir(root: &Path) {
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
@@ -235,6 +307,16 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// The decoded payloads of the events of type `type_` in `root`'s namespaced run stream, oldest
+/// first.
+pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
+    read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == type_)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect()
 }
 
 /// Hold `graph_db` under another writer's write lock while `run` runs, past every busy timeout
@@ -476,6 +558,55 @@ pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
             .expect("write an agent definition");
     }
     std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+}
+
+/// A project at `root` holding `workflow` and its `agents` ([`write_scaffold`]) and `text` as
+/// the spec at the root-relative path `spec`.
+pub fn write_spec_project(
+    root: &Path,
+    agents: &[(&str, &str)],
+    workflow: &str,
+    spec: &str,
+    text: &str,
+) {
+    write_scaffold(root, agents, workflow);
+    let spec = root.join(spec);
+    std::fs::create_dir_all(spec.parent().expect("a spec path under the root"))
+        .expect("create the spec's directory");
+    std::fs::write(spec, text).expect("write the spec");
+}
+
+/// The grounder name [`stopping_at_the_grounder`] plants and [`assert_stopped_at_the_grounder`]
+/// recognizes: one the binary's grounder registry rejects.
+const REJECTED_GROUNDER: &str = "no-such-grounder";
+
+/// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a run entry
+/// (`rigger step`, `rigger run` on either driver, `rigger serve`) that gets past its run start -
+/// its run minted or adopted - then stops selecting the grounder, before it drives an agent or
+/// serves stdin, so a run start that should have refused fails its test instead of hanging it.
+pub fn stopping_at_the_grounder(workflow: &str) -> String {
+    let stopping = workflow.replace("grounder: nop", &format!("grounder: {REJECTED_GROUNDER}"));
+    assert_ne!(
+        stopping, workflow,
+        "fixture bug: the workflow must name the nop grounder for the stop to replace"
+    );
+    stopping
+}
+
+/// The run entry whose `(stdout, stderr, success)` is `output` stopped at the grounder
+/// [`stopping_at_the_grounder`] planted: it failed, its last stderr line opening with the
+/// unknown-grounder clause that names the rejected grounder - never the registry's list of valid
+/// names, which a new grounder extends. `what` names the entry in the failure.
+pub fn assert_stopped_at_the_grounder(output: &(String, String, bool), what: &str) {
+    let (out, err, ok) = output;
+    let clause = format!("rigger: unknown grounder \"{REJECTED_GROUNDER}\"");
+    assert!(
+        !ok && err
+            .lines()
+            .last()
+            .is_some_and(|last| last.starts_with(&clause)),
+        "{what} gets past its run start and stops at the grounder; stdout:\n{out}\nstderr:\n{err}"
+    );
 }
 
 /// Write a one-stage `workflow.yml` (plus its `worker` agent) under `root`, with `block`

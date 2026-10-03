@@ -46,6 +46,7 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, su
 
 use rigger::config::RIGGER_DIR;
 
+mod critique;
 mod dashboard;
 mod eval;
 mod graph;
@@ -55,6 +56,7 @@ mod observe;
 mod run;
 mod setup;
 mod validate;
+pub(crate) use critique::*;
 pub(crate) use dashboard::*;
 pub(crate) use eval::*;
 pub(crate) use graph::*;
@@ -169,11 +171,10 @@ const HANDBOOK_DISCIPLINE_REL: &str = "docs/handbook/using-rigger.md";
 /// as [`HANDBOOK_DISCIPLINE_REL`]. The single source of this path.
 const PLANNING_FIELD_GUIDE_REL: &str = "docs/handbook/planning-field-guide.md";
 
-/// One [`HANDBOOK_PAGES`] entry: the page's committed rel path and the pure render
-/// function that produces its fresh content. Named so clippy's `type_complexity` lint
-/// stays clean and so [`write_docs`]/[`docs_drift`] read as "a rel path and a renderer",
+/// One [`HANDBOOK_PAGES`] entry: the page's committed rel path and the body that renders its
+/// fresh content. Named so [`write_docs`]/[`docs_drift`] read as "a rel path and a body",
 /// not an inline tuple type.
-type HandbookPageEntry = (&'static str, fn(&rigger::docs::DocsContext) -> String);
+type HandbookPageEntry = (&'static str, rigger::docs::DocBody);
 
 /// Every handbook page `rigger docs` renders and the docs-drift gate checks, OUTSIDE the
 /// skill registry (these are handbook chapters, not installable skills - see
@@ -184,11 +185,11 @@ type HandbookPageEntry = (&'static str, fn(&rigger::docs::DocsContext) -> String
 const HANDBOOK_PAGES: &[HandbookPageEntry] = &[
     (
         HANDBOOK_DISCIPLINE_REL,
-        rigger::docs::render_handbook_discipline,
+        rigger::docs::DocBody::Rendered(rigger::docs::render_handbook_discipline),
     ),
     (
         PLANNING_FIELD_GUIDE_REL,
-        rigger::docs::render_planning_field_guide,
+        rigger::docs::DocBody::Static(rigger::docs::PLANNING_FIELD_GUIDE_BODY),
     ),
 ];
 
@@ -264,6 +265,47 @@ struct RunArgs {
     base: Option<String>,
 }
 
+/// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
+/// and `rigger critique`'s, which select their store the same way.
+fn eventstore_flag(
+    value: Option<&String>,
+    verb: &str,
+) -> Result<StoreKind, Box<dyn std::error::Error>> {
+    match value.map(String::as_str) {
+        Some("sqlite") => Ok(StoreKind::Sqlite),
+        Some("kurrentdb") => Ok(StoreKind::KurrentDb),
+        other => {
+            Err(format!("{verb}: --eventstore expects sqlite|kurrentdb, got {other:?}").into())
+        }
+    }
+}
+
+/// The connection url a `--conn` flag's `value` carries, for `verb`'s flag parser.
+fn conn_flag(value: Option<&String>, verb: &str) -> Result<String, Box<dyn std::error::Error>> {
+    value
+        .cloned()
+        .ok_or_else(|| format!("{verb}: --conn expects a connection url").into())
+}
+
+/// One argument of `verb`'s argv that none of its flag arms claimed, under the single-positional
+/// spec rule every spec-taking verb's parser shares (`rigger run`, `rigger workflow`, `rigger
+/// critique`): a `--` argument is an unknown flag, the first positional is the spec path, and a
+/// second positional is refused.
+fn spec_positional(
+    arg: &str,
+    spec: &mut Option<String>,
+    verb: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if arg.starts_with("--") {
+        return Err(format!("{verb}: unknown flag {arg:?}").into());
+    }
+    if spec.is_some() {
+        return Err(format!("{verb}: unexpected second positional argument {arg:?}").into());
+    }
+    *spec = Some(arg.to_string());
+    Ok(())
+}
+
 /// Parse `rigger run`'s flags: `--driver <cli|workflow>`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
 /// criterion 6), and a single positional spec path. Unknown flags and a second positional
@@ -302,36 +344,13 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             }
             "--eventstore" => {
                 i += 1;
-                store = match args.get(i).map(String::as_str) {
-                    Some("sqlite") => Some(StoreKind::Sqlite),
-                    Some("kurrentdb") => Some(StoreKind::KurrentDb),
-                    other => {
-                        return Err(format!(
-                            "run: --eventstore expects sqlite|kurrentdb, got {other:?}"
-                        )
-                        .into())
-                    }
-                };
+                store = Some(eventstore_flag(args.get(i), "run")?);
             }
             "--conn" => {
                 i += 1;
-                conn = match args.get(i) {
-                    Some(c) => Some(c.clone()),
-                    None => return Err("run: --conn expects a connection url".into()),
-                };
+                conn = Some(conn_flag(args.get(i), "run")?);
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("run: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "run: unexpected second positional argument {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "run")?,
         }
         i += 1;
     }
@@ -383,6 +402,17 @@ impl StoreSelection {
     /// Whether this selection is the embedded sqlite backend (whose store is a local file).
     fn is_sqlite(&self) -> bool {
         matches!(self, StoreSelection::Sqlite)
+    }
+
+    /// The environment that hands this selection to a child rigger process: a server's
+    /// connection string as [`CONN_ENV`], the rung of [`store_selection`] that outranks the
+    /// secret file and the configured store, so the child resolves the same server whichever
+    /// rung selected it here; nothing for sqlite, whose child resolves through configuration.
+    fn handed_env(&self) -> Vec<(String, String)> {
+        match self {
+            StoreSelection::Sqlite => Vec::new(),
+            StoreSelection::Server(conn) => vec![(CONN_ENV.to_string(), conn.clone())],
+        }
     }
 }
 
@@ -449,12 +479,13 @@ fn open_graph_to_read(
     Ok(Projector::open(graph_db, project)?)
 }
 
-/// The `KURRENTDB_CONN` connection string from the environment, treating an empty value as
-/// unset so a stray `KURRENTDB_CONN=` never selects the server with no address.
+/// The environment variable carrying the server's full connection string (§48 rung 2).
+const CONN_ENV: &str = "KURRENTDB_CONN";
+
+/// The [`CONN_ENV`] connection string from the environment, treating an empty value as unset so
+/// a stray `KURRENTDB_CONN=` never selects the server with no address.
 fn env_conn() -> Option<String> {
-    std::env::var("KURRENTDB_CONN")
-        .ok()
-        .filter(|s| !s.is_empty())
+    std::env::var(CONN_ENV).ok().filter(|s| !s.is_empty())
 }
 
 /// The connection string from the per-machine secret file `<rigger_dir>/store.conn` (§48 rung 3),
@@ -4974,8 +5005,8 @@ fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error
         .into_iter()
         .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
         .collect();
-    for (rel, render) in HANDBOOK_PAGES {
-        outputs.push((root.join(rel), render(&ctx)));
+    for (rel, body) in HANDBOOK_PAGES {
+        outputs.push((root.join(rel), body.render(&ctx)));
     }
     let mut written = Vec::with_capacity(outputs.len());
     for (path, contents) in &outputs {
@@ -5935,6 +5966,17 @@ mod tests {
         ]);
     }
 
+    rigger::test_cases! {
+        /// Spec 112, criterion 4 (the accuracy pin, extending its spec-68 and spec-69 siblings to
+        /// the preflight skill): every bare `rigger <cmd>` `spec-preflight` teaches - `rigger
+        /// critique`, `rigger validate` and `rigger emit` - names a REAL entry in [`SUBCOMMANDS`]
+        /// and is literally present in its rendered output.
+        spec_preflight_skill_references_only_real_subcommands:
+            assert_skills_reference_only_real_subcommands(&[
+            ("spec-preflight", &["critique", "validate", "emit"]),
+        ]);
+    }
+
     /// Spec 20, unit 2; spec 68, criterion 1; spec 66, criterion 2 (the CI-lane guard,
     /// generalized over the whole registry AND every [`HANDBOOK_PAGES`] entry): EVERY REAL
     /// committed registry skill plus every handbook page must be byte-identical to a fresh
@@ -5956,8 +5998,8 @@ mod tests {
                 )
             })
             .collect();
-        for (rel, render) in HANDBOOK_PAGES {
-            checks.push((manifest.join(rel), render(&ctx)));
+        for (rel, body) in HANDBOOK_PAGES {
+            checks.push((manifest.join(rel), body.render(&ctx)));
         }
         for (path, fresh) in checks {
             let committed = std::fs::read_to_string(&path)
@@ -8280,6 +8322,44 @@ mod tests {
         );
     }
 
+    /// The single-positional-spec rule every spec-taking verb's parser shares: an argument no
+    /// flag arm claimed is an unknown flag when it starts with `--`, the spec when none was
+    /// taken yet, and a refused second positional after one was - each refusal naming the verb.
+    #[test]
+    fn an_unclaimed_argument_is_an_unknown_flag_the_spec_or_a_refused_second_positional() {
+        let mut spec = None;
+        assert_eq!(
+            spec_positional("--frob", &mut spec, "run")
+                .unwrap_err()
+                .to_string(),
+            "run: unknown flag \"--frob\""
+        );
+        assert_eq!(spec, None, "a refused flag takes no spec");
+        spec_positional("a.md", &mut spec, "workflow").unwrap();
+        assert_eq!(spec.as_deref(), Some("a.md"));
+        assert_eq!(
+            spec_positional("b.md", &mut spec, "workflow")
+                .unwrap_err()
+                .to_string(),
+            "workflow: unexpected second positional argument \"b.md\""
+        );
+        assert_eq!(spec.as_deref(), Some("a.md"), "the first spec stands");
+        let (second_err, flag_err) = (
+            parse_run_args(&["a.md".into(), "b.md".into()])
+                .err()
+                .unwrap(),
+            parse_run_args(&["--frob".into()]).err().unwrap(),
+        );
+        assert_eq!(
+            (second_err.to_string(), flag_err.to_string()),
+            (
+                "run: unexpected second positional argument \"b.md\"".to_string(),
+                "run: unknown flag \"--frob\"".to_string()
+            ),
+            "rigger run refuses through the shared rule"
+        );
+    }
+
     #[test]
     fn parse_run_args_defaults_to_cli_and_an_unset_store() {
         let a = parse_run_args(&[]).unwrap();
@@ -9790,15 +9870,16 @@ mod tests {
             "anomalous exits must stop loudly via a throwing `stop()`, never a silent success return"
         );
 
-        // 6d. A spawn-budget HALT (Gap 13) is a LOUD stop, never a clean completion: `rigger
-        //     step` reports a `halted` reason distinct from `done` convergence, and the driver
-        //     routes a halted step through the throwing `stop()` (so a starved run surfaces as a
-        //     workflow failure instead of the `done` fixpoint reading it as success). The STEP
+        // 6d. A HALT (the spawn-budget breaker's, Gap 13; a plan-critique spec-defect stop's; or
+        //     hung liveness) is a LOUD stop, never a clean completion: `rigger step` reports a
+        //     `halted` reason distinct from `done` convergence, and the driver routes a halted
+        //     step through the throwing `stop()` (so a starved run surfaces as a workflow failure
+        //     instead of the `done` fixpoint reading it as success). The STEP
         //     schema must also ADMIT the optional `halted` field - the top level rejects unknown
         //     properties, so a halted step's JSON would otherwise fail validation and be lost.
         assert!(
             code.contains("step.halted"),
-            "the driver must inspect `step.halted` and stop loudly on a budget halt \
+            "the driver must inspect `step.halted` and stop loudly on a halt \
              (a halted run is never a clean completion)"
         );
         assert!(
@@ -10018,8 +10099,9 @@ mod tests {
     /// existing spec-68 skills the Design's own Notes point at by name ("resume and escalation
     /// response protocols are spec 68's skills, referenced by name"), `worker-death-recurred`
     /// to the churn skill, `budget-final-tenth` to the resume skill (a preemptive warning for
-    /// the same halt), and `stalled-frontier` names the Design's own literal directive instead
-    /// of inventing a sixth skill - exactly as `Signal::FrontierStall` does on the pull side.
+    /// the same halt), and `stalled-frontier` and `spec-defect` each name their Design's own
+    /// literal directive instead of inventing another skill - exactly as `Signal::FrontierStall`
+    /// and `Signal::SpecDefect` do on the pull side.
     /// This is a RENDER-ONLY relay (spec 69: "log lines only, no new stops, no retry-rule
     /// changes"), so the function must never call `stop(`; an entry-less step must render
     /// nothing, which iterating the wire's own array (never a second anomaly list) guarantees
@@ -10061,11 +10143,12 @@ mod tests {
             "each attention entry must render as a log() line naming its kind and detail"
         );
 
-        // The five wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
+        // The six wire kinds (ledger::ATTENTION_*, the closed vocabulary criterion 5 stamps)
         // each resolve to a response - pinned against the SAME string constants the wire stamp
         // uses, so a renamed kind breaks this test rather than silently going unmapped.
         for (kind, response) in [
             (ledger::ATTENTION_ESCALATED, "rigger-handle-an-escalation"),
+            (ledger::ATTENTION_SPEC_DEFECT, "amend the spec and relaunch"),
             (ledger::ATTENTION_HALTED, "rigger-resume-a-run"),
             (
                 ledger::ATTENTION_WORKER_DEATH_RECURRED,

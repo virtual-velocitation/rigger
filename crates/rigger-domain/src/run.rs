@@ -149,6 +149,44 @@ fn latest(events: &[Event]) -> Option<RunStarted> {
         .and_then(Event::decode::<RunStarted>)
 }
 
+/// The run-stream event types [`adopted_run`] reads: the run starts, and the escalations and
+/// resumes whose fold tells whether the latest run stopped on a spec defect. A caller hands it the
+/// whole run stream or these types alone, and both answer the same.
+pub const MINT_DECISION_TYPES: [&str; 3] = [
+    TYPE_RUN_STARTED,
+    crate::ledger::TYPE_UNIT_ESCALATED,
+    crate::ledger::TYPE_UNIT_RESUMED,
+];
+
+/// THE MINT DECISION (spec 112): the run a command adopts, or `None` when it begins a new run.
+/// A command begins a new run when `--fresh` was passed (`fresh`), when `events` (the run
+/// stream, or its [`MINT_DECISION_TYPES`] events alone) holds no run, when the latest run's
+/// criteria differ from `criteria`, or when the command names a spec (`by_spec`: a run entry
+/// invoked with `--spec`) and the latest run stopped on a spec defect - a unit still escalated
+/// with a reason in the fold of its slice ([`crate::ledger::RunState::spec_defect_reason`]):
+/// such a run is terminal for adoption by spec, so a relaunch on the amended spec begins a new
+/// run, which the critique refusal gates. Otherwise it adopts that latest run - a resume, with
+/// or without `--rebase-definition`; a command naming no spec (the conductor's own adopt-or-mint,
+/// which adopts the run its entry ensured, or a step with no spec) adopts a stopped run like any
+/// other, and a slice the fold cannot decode is adopted, left to the conductor's fold of it to
+/// fail loudly. The one decision: the store's adopt-or-mint (`run_store::ensure_started_pinned`)
+/// and the CLI's spec-critique refusal both ask it.
+pub fn adopted_run(
+    events: &[Event],
+    criteria: &[String],
+    fresh: bool,
+    by_spec: bool,
+) -> Option<RunStarted> {
+    if fresh {
+        return None;
+    }
+    let stopped = || {
+        crate::ledger::project(current_run(events))
+            .is_ok_and(|run| run.spec_defect_reason().is_some())
+    };
+    latest(events).filter(|run| run.criteria == criteria && !(by_spec && stopped()))
+}
+
 /// The current run's slice of `events`: the contiguous suffix from the LAST
 /// [`TYPE_RUN_STARTED`] onward. When no run has started (a legacy store, or one this
 /// feature has never scoped), the WHOLE slice is returned - so a store predating run
@@ -169,6 +207,12 @@ pub fn current_run(events: &[Event]) -> &[Event] {
 /// The id of the current (latest) run, or `None` when no run has started.
 pub fn current_run_id(events: &[Event]) -> Option<String> {
     latest(events).map(|r| r.run)
+}
+
+/// The spec path the current (latest) run was launched with, its [`RunStarted::spec`] exactly as
+/// recorded, or empty when no run has started or the run carries none.
+pub fn current_run_spec_path(events: &[Event]) -> String {
+    latest(events).map(|r| r.spec).unwrap_or_default()
 }
 
 /// The resolved run-branch base the current (latest) run anchored on, read from its
@@ -534,6 +578,60 @@ mod tests {
         .unwrap()
     }
 
+    /// The terminal-for-adoption rule (spec 112, *Relaunch*): a latest run whose plan-critique
+    /// gate stopped on a spec defect - a unit escalated with a reason, still escalated in the
+    /// fold of the run's slice - is never adopted by a command naming a spec, which begins a new
+    /// run; a command naming none (the conductor's own adopt-or-mint, a step with no spec)
+    /// adopts it as before, and a command naming a spec adopts the latest run once an operator
+    /// has resumed the stopped unit, when its escalation carries no reason, or when a later run
+    /// follows the stopped one. The mint decision reads the run stream whole or its
+    /// [`MINT_DECISION_TYPES`] alone and answers the same.
+    #[test]
+    fn a_run_stopped_on_a_spec_defect_is_never_adopted_by_a_command_naming_a_spec() {
+        let stop = ev(
+            crate::ledger::TYPE_UNIT_ESCALATED,
+            r#"{"id":"plan-critique","reason":"amend the spec"}"#,
+        );
+        let plain = ev(crate::ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u"}"#);
+        let resumed = ev(
+            crate::ledger::TYPE_UNIT_RESUMED,
+            r#"{"unit":"plan-critique","attempts_granted":1}"#,
+        );
+        let started = ev("UnitStarted", r#"{"id":"plan-critique"}"#);
+        let adopted = |events: &[Event], by_spec: bool| {
+            let criteria = vec!["a".to_string()];
+            let typed: Vec<Event> = events
+                .iter()
+                .filter(|e| MINT_DECISION_TYPES.contains(&e.type_.as_str()))
+                .cloned()
+                .collect();
+            let whole = adopted_run(events, &criteria, false, by_spec).map(|run| run.run);
+            assert_eq!(
+                whole,
+                adopted_run(&typed, &criteria, false, by_spec).map(|run| run.run),
+                "the whole stream and its mint-decision types answer the same"
+            );
+            whole
+        };
+        let r1 = || run_started("r1", &["a"]);
+        assert_eq!(
+            [
+                adopted(&[r1(), started, stop.clone()], true),
+                adopted(&[r1(), stop.clone()], false),
+                adopted(&[r1(), plain], true),
+                adopted(&[r1(), stop.clone(), resumed], true),
+                adopted(&[r1(), stop, run_started("r2", &["a"])], true),
+            ],
+            [
+                None,
+                Some("r1".to_string()),
+                Some("r1".to_string()),
+                Some("r1".to_string()),
+                Some("r2".to_string()),
+            ]
+        );
+    }
+
     fn decision(id: &str) -> Event {
         ev(TYPE_DECISION_MADE, &format!(r#"{{"id":"{id}"}}"#))
     }
@@ -542,6 +640,46 @@ mod tests {
     }
     fn lesson(id: &str) -> Event {
         ev(TYPE_LESSON_LEARNED, &format!(r#"{{"id":"{id}"}}"#))
+    }
+
+    /// THE MINT DECISION (spec 112): a command adopts the latest run when that run's criteria
+    /// equal the spec's and `--fresh` was not passed; it begins a new run on `--fresh`, on a
+    /// stream holding no run, and when the latest run's criteria differ - an earlier run with
+    /// equal criteria is never adopted past a later one.
+    #[test]
+    fn a_command_adopts_the_latest_run_only_for_equal_criteria_without_fresh() {
+        let log = vec![
+            run_started("r1", &["a", "b"]),
+            decision("d1"),
+            run_started("r2", &["a"]),
+            ev("UnitStarted", r#"{"id":"u"}"#),
+        ];
+        let adopted = |events: &[Event], criteria: &[&str], fresh: bool| {
+            let criteria: Vec<String> = criteria.iter().map(|c| c.to_string()).collect();
+            adopted_run(events, &criteria, fresh, !criteria.is_empty()).map(|run| run.run)
+        };
+        assert_eq!(
+            [
+                adopted(&log, &["a"], false),
+                adopted(&log, &["a"], true),
+                adopted(&log, &["a", "b"], false),
+                adopted(&log, &["b"], false),
+                adopted(&log[..2], &["a", "b"], false),
+                adopted(&[], &[], false),
+                adopted(&[run_started("r0", &[])], &[], false),
+            ],
+            [
+                Some("r2".to_string()),
+                None,
+                None,
+                None,
+                Some("r1".to_string()),
+                None,
+                Some("r0".to_string()),
+            ],
+            "equal criteria adopt the latest run; --fresh, other criteria, an earlier run's \
+             criteria and an empty stream begin a new one; a spec-less run adopts a spec-less one"
+        );
     }
 
     #[test]
@@ -654,6 +792,37 @@ mod tests {
                 .iter()
                 .any(|e| String::from_utf8_lossy(&e.data).contains("zombie")),
             "prior-run residue is excluded from the current run"
+        );
+    }
+
+    /// The spec path the current run was launched with (spec 112, criterion 5: the plan-critique
+    /// stop names it): the LATEST run's `RunStarted.spec` exactly as recorded - never an earlier
+    /// run's, never stemmed - and empty when no run has started or the run carries no spec.
+    #[test]
+    fn current_run_spec_path_is_the_latest_runs_spec_as_recorded() {
+        let launched = |run: &str, spec: &str| {
+            RunStarted {
+                run: run.to_string(),
+                spec: spec.to_string(),
+                ..Default::default()
+            }
+            .to_event()
+            .unwrap()
+        };
+        let two_runs = vec![
+            launched("r1", "specs/1-old.md"),
+            ev("UnitStarted", r#"{"id":"u"}"#),
+            launched("r2", "./specs/2-new.md"),
+        ];
+        let no_spec = vec![launched("r1", "specs/1-old.md"), run_started("r2", &[])];
+        assert_eq!(
+            (
+                current_run_spec_path(&two_runs),
+                current_run_spec_path(&no_spec),
+                current_run_spec_path(&[ev("UnitStarted", r#"{"id":"u"}"#)]),
+            ),
+            ("./specs/2-new.md".to_string(), String::new(), String::new()),
+            "the latest run's spec as recorded; empty for a run with no spec or no run at all"
         );
     }
 

@@ -10,9 +10,14 @@
     "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
   },
   {
-    "id": "dup-670e6a1d59fa",
+    "id": "dup-b6dc10b9c376",
     "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`."
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, a review reject's failed record, the plan-critique spec-defect stop's lesson, SpecDefect and completion records, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity, a whole-tree audit record id); the shared token shape is a one-line `format!`, and each replay key is the one named key fn its writers and readers share."
+  },
+  {
+    "id": "dup-4b3a37bb0a60",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the shared `Adjudication::has_cause`; each names a different adjudicator cause with a different consequence (`infra-fault` reruns the stage uncharged, `spec-ambiguity` can stop the run at plan-critique)."
   },
   {
     "id": "dup-088ec120e4ac",
@@ -90,9 +95,9 @@
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-227133ad22cd",
+    "id": "dup-5449e35bae05",
     "disposition": "not-a-duplicate",
-    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
+    "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the multi-assert shape is shared."
   },
   {
     "id": "dup-b43ee3b4b5bb",
@@ -335,12 +340,7 @@
     "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
   },
   {
-    "id": "dup-ece6988d7484",
-    "disposition": "not-a-duplicate",
-    "reason": "Two one-line adapters fitting two different static documents (the planning-a-spec skill body and the planning field guide page) to the uniform `fn(&DocsContext) -> String` render signature; no logic is repeated."
-  },
-  {
-    "id": "dup-c5777007a33f",
+    "id": "dup-0c6e804c2770",
     "disposition": "not-a-duplicate",
     "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
   },
@@ -415,9 +415,9 @@
     "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
   },
   {
-    "id": "dup-cd5c22f2a701",
+    "id": "dup-ed7dd2365bce",
     "disposition": "not-a-duplicate",
-    "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
+    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
   {
     "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
@@ -920,9 +920,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-31c9f1cd288f",
+    "id": "dup-95d708ab4d02",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -970,9 +970,14 @@
     "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
   },
   {
-    "id": "dup-5e40086810a8",
+    "id": "dup-340eefdbe122",
     "disposition": "not-a-duplicate",
-    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects) over different inputs."
+    "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
+  },
+  {
+    "id": "dup-da45cd3da239",
+    "disposition": "not-a-duplicate",
+    "reason": "One-line fixtures over different inputs that share only their shape: the conductor suite's and the periphery suite's expected spec-defect halt, each reading the one `spec_defect_halt_text` builder with the spec spelled as that suite launched its run, and the metrics canary's run marker event."
   },
   {
     "id": "dup-e10b6988960c",

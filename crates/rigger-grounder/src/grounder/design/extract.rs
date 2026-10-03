@@ -35,6 +35,8 @@
 
 use std::collections::BTreeSet;
 
+use rigger_domain::spec::{code_spans, fenced_code_lines};
+
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
 use crate::grounder::symbols::events::is_under_tests_dir;
 
@@ -268,10 +270,12 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         ConceptKind::Rationale => return,
     };
     let from = path.to_string();
-    for line in unfenced_lines(contents) {
+    // Fenced code EXAMPLES are skipped, as the one Markdown fence reader reads a fence.
+    let fenced = fenced_code_lines(contents);
+    for (line, _) in contents.lines().zip(fenced).filter(|&(_, code)| !code) {
         // Inline-code CODE-path mentions -> the doc's kind-specific design->code relation ("this
         // doc designs / constrains / governs this code").
-        for span in inline_code_spans(line) {
+        for span in code_spans(line) {
             // Spec 86 criterion 1's CONSTRAINTS WALK (module doc): a tests/-rooted mention is
             // excluded from the design-intent link pass too, by the SAME rule the code-entity
             // pass applies to a whole file under tests/ - never a second, independent check.
@@ -314,52 +318,6 @@ fn rationale_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
             });
         }
     }
-}
-
-/// The lines of a markdown doc OUTSIDE a fenced code block (` ``` ` / `~~~`), and never the fence
-/// markers themselves - so a code EXAMPLE that happens to contain a path is not mistaken for the doc
-/// specifying that code. Deterministic: a pure function of the contents.
-fn unfenced_lines(contents: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for line in contents.lines() {
-        let t = line.trim_start();
-        if t.starts_with("```") || t.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if !in_fence {
-            out.push(line);
-        }
-    }
-    out
-}
-
-/// Every backtick-delimited inline code span on a line, in order (its content, without the
-/// backticks). An unterminated span is ignored. The reliable, unambiguous carrier for a path the
-/// doc mentions inline.
-fn inline_code_spans(line: &str) -> Vec<String> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '`' {
-            match chars[i + 1..].iter().position(|&c| c == '`') {
-                Some(off) => {
-                    let j = i + 1 + off;
-                    let span: String = chars[i + 1..j].iter().collect();
-                    if !span.is_empty() {
-                        out.push(span);
-                    }
-                    i = j + 1;
-                    continue;
-                }
-                None => break,
-            }
-        }
-        i += 1;
-    }
-    out
 }
 
 /// Every markdown link / image target on a line, in order (the `target` of `[text](target)` or
@@ -683,6 +641,26 @@ mod tests {
              Real: `src/real.rs`.\n\n\
              ```\nlet p = \"src/example.rs\";\nuse `src/fenced.rs`;\n```\n",
             &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
+        );
+        /// The doc's fences are read by the one Markdown fence reader, as CommonMark reads them
+        /// (`d112-op-seam-items-from-c4`): a tilde line inside a backtick fence and a shorter
+        /// backtick run inside a longer one are the block's text, so the paths after them stay
+        /// examples and only the prose mention after each block links.
+        a_fence_closes_only_on_a_run_of_its_own_character_at_least_as_long: assert_links(
+            "docs/architecture.md",
+            "# Reference architecture\n\n\
+             ```\n~~~\nuse `src/tilde.rs`;\n```\n\n\
+             ````\n```\nuse `src/short.rs`;\n````\n\n\
+             Real: `src/real.rs`.\n",
+            &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
+        );
+        /// A padded code span specifies the path CommonMark reads in it
+        /// (`d112-op-code-span-padding`): the one span reader strips one leading and one
+        /// trailing space, so the link names the path, never the padded text.
+        a_padded_code_span_specifies_the_path_it_holds: assert_links(
+            "docs/architecture.md",
+            "# Reference architecture\n\nPadded: ` src/padded.rs `.\n",
+            &[("docs/architecture.md", LinkRel::Specifies, "src/padded.rs")],
         );
     }
 

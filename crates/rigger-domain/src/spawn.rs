@@ -298,6 +298,12 @@ pub struct Adjudication {
 /// [`Adjudication::is_infra_fault`] reads.
 pub const CAUSE_INFRA_FAULT: &str = "infra-fault";
 
+/// The plan-critique adjudicator's reject `cause` for a defect in a criterion's own text that no
+/// decomposition can remove (spec 112, criterion 5): the one cause that is a spec defect, which
+/// can stop the run, spelled once for the critique prompt that asks for it and for
+/// [`Adjudication::is_spec_ambiguity`], which reads it.
+pub const CAUSE_SPEC_AMBIGUITY: &str = "spec-ambiguity";
+
 impl Adjudication {
     /// Parse an adjudicator's raw `output` for its grown verdict line (spec 11): the LAST
     /// JSON object line carrying a `verdict`, `upheld`, or `discarded` field yields the upheld
@@ -353,7 +359,19 @@ impl Adjudication {
     /// not judge the author's code, so the conductor reruns the stage uncharged instead of
     /// handing the author a remediation attempt.
     pub fn is_infra_fault(&self) -> bool {
-        self.cause.as_deref() == Some(CAUSE_INFRA_FAULT)
+        self.has_cause(CAUSE_INFRA_FAULT)
+    }
+
+    /// Whether the verdict blames the spec ([`CAUSE_SPEC_AMBIGUITY`]): the plan-critique reject
+    /// names a defect in a criterion's own text that no re-plan can remove.
+    pub fn is_spec_ambiguity(&self) -> bool {
+        self.has_cause(CAUSE_SPEC_AMBIGUITY)
+    }
+
+    /// Whether the verdict declared exactly `cause`: the one cause comparison every named cause
+    /// predicate reads.
+    fn has_cause(&self, cause: &str) -> bool {
+        self.cause.as_deref() == Some(cause)
     }
 }
 
@@ -741,10 +759,20 @@ impl<T: SpawnEventBody> SpawnEvent for T {
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
-/// [`recorded`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
+/// [`requests`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
 /// event is skipped in exactly one place rather than three times over.
 fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
     events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
+}
+
+/// Every [`TYPE_SPAWN_REQUESTED`] event in `events` decoded, in log order, one request per
+/// event - the ONE strict per-event decode: [`recorded`] folds it into its map, and a caller
+/// that counts parks (a re-parked id counting once per park) reads it directly. A malformed
+/// spawn body fails the whole read, never skipped.
+pub fn requests(events: &[Event]) -> Result<Vec<SpawnRequest>, serde_json::Error> {
+    spawn_requested_events(events)
+        .map(SpawnRequest::from_event)
+        .collect()
 }
 
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
@@ -759,12 +787,10 @@ fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
 /// propagates the parse error rather than skipping it - see [`recorded_lenient`] for
 /// the degrade-tolerant sibling a read-only display caller needs instead.
 pub fn recorded(events: &[Event]) -> Result<BTreeMap<String, SpawnRequest>, serde_json::Error> {
-    let mut out = BTreeMap::new();
-    for e in spawn_requested_events(events) {
-        let req = SpawnRequest::from_event(e)?;
-        out.insert(req.id.clone(), req);
-    }
-    Ok(out)
+    Ok(requests(events)?
+        .into_iter()
+        .map(|req| (req.id.clone(), req))
+        .collect())
 }
 
 /// Whether a spawn with `id` has already been parked in `events` - a cheap
@@ -848,17 +874,21 @@ pub struct Step {
     /// pass to have parked nothing ([`step_of_pass`]), since a result can land after the
     /// pass parked its spawn and before the step reads the log back.
     pub done: bool,
-    /// The halt reason when the run STOPPED on the spawn-budget breaker rather than
-    /// converging (Gap 13): e.g. `"budget exhausted: 200/200 spawns"`. `None` on a clean
-    /// fixpoint, and OMITTED from the wire then, so a converged run still prints
-    /// `{"wave":[],"done":true}` unchanged and a halted one adds `"halted":"..."` - the
-    /// `done`/`halted` split the spec (06, Gap 13) calls for. The thin driver treats a
-    /// present `halted` as a LOUD stop (a workflow failure carrying the reason), never a
-    /// clean completion, so a starved run is never reported as success. Populated by
-    /// `rigger step` (`cmd_step`) from the conductor's LIVE breaker state; [`step_result`]
-    /// leaves it `None` because a halt is a runtime condition of the current run process,
-    /// not derivable from the append-only log alone - a resume with a raised budget clears
-    /// it, yet the earlier halt's `BudgetExhausted` event stays in the log.
+    /// The halt reason when the run STOPPED rather than converging, from one of three sources in
+    /// this precedence: the spawn-budget breaker (Gap 13: e.g. `"budget exhausted: 200/200
+    /// spawns"`), else a plan-critique gate's spec-defect stop (spec 112, criterion 5: `"amend
+    /// the spec and relaunch: ..."`), both stamped by `rigger step` (`cmd_step`) from the
+    /// conductor's `RunState::budget_halt` - the breaker's from its live state, the stop's from
+    /// the fold of the run, so every step of a stopped run reports it - else hung liveness (spec
+    /// 10, unit 3), which `cmd_step` fills only when the conductor stamped none. `None` on a clean fixpoint, and OMITTED from the wire
+    /// then, so a converged run still prints `{"wave":[],"done":true}` unchanged and a halted one
+    /// adds `"halted":"..."` - the `done`/`halted` split the spec (06, Gap 13) calls for. The
+    /// thin driver treats a present `halted` as a LOUD stop (a workflow failure carrying the
+    /// reason), never a clean completion, so a starved or stopped run is never reported as
+    /// success. [`step_result`] leaves it `None` because this pure seam folds only the spawn
+    /// stream, and a budget halt is a runtime condition of the current run process - a resume
+    /// with a raised budget clears it, yet the earlier halt's `BudgetExhausted` event stays in
+    /// the log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub halted: Option<String>,
     /// The units that ESCALATED - each exhausted remediation and went terminal WITHOUT
@@ -920,10 +950,11 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
         .map(WaveItem::from)
         .collect();
     let done = recorded.keys().all(|id| answered.contains(id));
-    // A halt is a RUNTIME condition of the live run (the conductor's in-process breaker),
-    // not a fact of the append-only log: a resume with a raised budget clears it while the
-    // earlier `BudgetExhausted` event remains recorded. So this pure log seam never sets it;
-    // `rigger step` stamps `halted` from the conductor's `RunState::budget_halt`.
+    // A halt is the conductor's to stamp: its budget breaker's from its in-process state (a
+    // resume with a raised budget clears it while the earlier `BudgetExhausted` event remains
+    // recorded), else a plan-critique spec-defect stop's from the fold of the run. So this pure
+    // spawn-stream seam never sets it; `rigger step` stamps `halted` from the conductor's
+    // `RunState::budget_halt`, and from hung liveness when that is empty.
     Ok(Step {
         wave,
         done,
@@ -942,8 +973,10 @@ pub fn step_result(events: &[Event]) -> Result<Step, serde_json::Error> {
 
 /// The [`Step`] `rigger step` prints after one conductor pass: [`step_result`]'s pending
 /// frontier over the log read AFTER the pass, with the pass's own live state `rs` stamped on
-/// it - the budget `halted` reason, the `escalated` units and the `attention` entries, each a
-/// fact of this process's run that the log alone cannot give (see those [`Step`] fields).
+/// it - the conductor's `halted` reason (the budget breaker's, else a plan-critique spec-defect
+/// stop's; `rigger step` fills hung liveness after, when this left it empty), the `escalated`
+/// units and the `attention` entries, each a fact of this process's run that the log alone
+/// cannot give (see those [`Step`] fields).
 ///
 /// `done` also needs the pass to have PARKED nothing ([`RunState::parked`]). A courier can
 /// record a result between the pass parking that spawn and the step reading the log back, so
@@ -1080,6 +1113,25 @@ mod tests {
         assert_eq!(approve.discarded, Vec::<String>::new());
         assert_eq!(approve.cause, None);
         assert_eq!(approve.verdict.as_deref(), Some("approve"));
+    }
+
+    /// The plan-critique spec-defect cause (spec 112, criterion 5) is spelled once, and a verdict
+    /// is a spec ambiguity exactly when its parsed cause is that spelling: never for another
+    /// cause, a cause in another case, or a verdict naming none.
+    #[test]
+    fn a_verdict_is_a_spec_ambiguity_exactly_when_its_cause_is_spec_ambiguity() {
+        let is_spec_ambiguity = |line: &str| Adjudication::parse(line).unwrap().is_spec_ambiguity();
+        assert_eq!(
+            (
+                CAUSE_SPEC_AMBIGUITY,
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"spec-ambiguity"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"decomposition-conflict"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"infra-fault"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","cause":"Spec-Ambiguity"}"#),
+                is_spec_ambiguity(r#"{"verdict":"reject","upheld":["a1"]}"#),
+            ),
+            ("spec-ambiguity", true, false, false, false, false)
+        );
     }
 
     #[test]
@@ -1492,6 +1544,55 @@ mod tests {
     }
 
     #[test]
+    fn requests_decodes_one_request_per_spawn_event_in_log_order_and_recorded_keeps_the_last_per_id(
+    ) {
+        // The ONE strict per-event decode: every `SpawnRequested` event in log order, a re-parked
+        // id once per park, a foreign event or a result skipped. `recorded` folds it into its map,
+        // where a re-parked id collapses to the last-written request.
+        let first = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "first");
+        let other = test_request("v", "implement", ROLE_IMPLEMENTER, 0, "other");
+        let reparked = test_request("u", "implement", ROLE_IMPLEMENTER, 0, "reparked");
+        let events = vec![
+            first.to_event().unwrap(),
+            Event::new("UnitStarted", br#"{"id":"u"}"#.to_vec()),
+            other.to_event().unwrap(),
+            SpawnResult::ok(&first.id, "done").to_event().unwrap(),
+            reparked.to_event().unwrap(),
+        ];
+        assert_eq!(
+            requests(&events).unwrap(),
+            vec![first.clone(), other.clone(), reparked.clone()]
+        );
+        assert_eq!(
+            recorded(&events).unwrap(),
+            BTreeMap::from([(reparked.id.clone(), reparked), (other.id.clone(), other)])
+        );
+        assert_eq!(requests(&events[1..2]).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn an_unreadable_spawn_request_fails_requests_and_recorded_alike() {
+        let unreadable = Event::new(
+            TYPE_SPAWN_REQUESTED,
+            br#"{"id":"u/implementer#1"}"#.to_vec(),
+        );
+        let events = vec![
+            test_request("u", "implement", ROLE_IMPLEMENTER, 0, "p")
+                .to_event()
+                .unwrap(),
+            unreadable,
+        ];
+        assert_eq!(
+            requests(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
+        );
+        assert_eq!(
+            recorded(&events).unwrap_err().to_string(),
+            "missing field `unit` at line 1 column 24"
+        );
+    }
+
+    #[test]
     fn step_wave_is_the_full_pending_frontier_never_answered_spawns() {
         // A prior step parked `plan` and it was ANSWERED; this step parks two disjoint
         // units. The wave is every spawn still awaiting a result - the two new ones in
@@ -1868,7 +1969,7 @@ mod tests {
             "wave items must not carry the prompt or persona"
         );
         // A step_result-produced Step is never a halt: the pure log seam does not know the
-        // live breaker state, so the `halted` key is absent from the wire.
+        // live halt state, so the `halted` key is absent from the wire.
         assert!(
             obj.get("halted").is_none(),
             "step_result output must omit the halted field"

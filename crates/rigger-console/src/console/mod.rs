@@ -72,7 +72,9 @@ impl Dock {
 /// (the budget's final-tenth threshold, a frontier stall reported only once)
 /// stay push-side, on `rigger step`'s wire, not here:
 ///
-/// - **escalated** - every unit whose [`Status`] is currently [`Status::Escalated`].
+/// - **escalated** - every unit whose [`Status`] is currently [`Status::Escalated`], listed
+///   under the spec-defect stop's own kind and reason when it stopped the run on one
+///   ([`AttentionEntry::escalation`], spec 112 criterion 5).
 /// - **halted** - the run's spawn budget is currently spent
 ///   ([`blocker::budget_halt`], the same durable fact [`blocker::classify`]'s
 ///   run-level [`blocker::Kind::Budget`] line already surfaces).
@@ -92,13 +94,9 @@ impl Dock {
 pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     let mut needs_you = Vec::new();
 
-    for (id, u) in &run.units {
+    for u in run.units.values() {
         if u.status == Status::Escalated {
-            needs_you.push(AttentionEntry::unit_scoped(
-                ledger::ATTENTION_ESCALATED,
-                id.clone(),
-                "escalated after exhausting remediation",
-            ));
+            needs_you.push(AttentionEntry::escalation(u));
         }
     }
 
@@ -561,6 +559,23 @@ mod tests {
             )
             .lines(),
             vec!["u-esc: escalated after exhausting remediation"]
+        );
+        /// A gate stopped on a spec defect (spec 112, criterion 5) is listed under its own kind,
+        /// its escalation's reason the detail, never as an exhausted-remediation escalation.
+        dock_lists_a_gate_stopped_on_a_spec_defect_under_its_own_kind: assert_eq!(
+            docked_one(
+                &[
+                    ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"plan-critique"}"#),
+                    ev(
+                        ledger::TYPE_UNIT_ESCALATED,
+                        r#"{"id":"plan-critique","reason":"amend the spec and relaunch: x"}"#,
+                    ),
+                ],
+                ledger::ATTENTION_SPEC_DEFECT,
+                "plan-critique",
+            )
+            .lines(),
+            vec!["plan-critique: amend the spec and relaunch: x"]
         );
         /// The dock lists a currently-spent budget, run-scoped (no `unit`), from the SAME
         /// durable `BudgetExhausted` fact `blocker::classify`'s run-level line already reads.

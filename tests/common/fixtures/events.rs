@@ -22,6 +22,15 @@ pub fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
 }
 
+/// The JSON payload of every event of type `type_` in `events`, in order.
+pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value> {
+    events
+        .iter()
+        .filter(|e| e.type_ == type_)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect()
+}
+
 /// `events` stamped with 1-based log positions, as the store stamps them on append, so a
 /// position-sensitive read (a cursor, `?since=`, a position-ordered fold) sees a realistic
 /// monotonic stream.

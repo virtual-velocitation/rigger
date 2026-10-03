@@ -272,27 +272,32 @@ fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
 /// `conductor::compute_attention`'s OWN construction order (which never calls this
 /// function - its own doc comment says so) or, in `tests/cli.rs`'s hung-liveness scenario,
 /// a single-entry array for which any rank function looks identical to a no-op. This is the
-/// crate's public ordering contract, proven directly against the function itself: the five
+/// crate's public ordering contract, proven directly against the function itself: the six
 /// known kinds rank strictly increasing in the canonical spec order, an unknown kind sorts
 /// past every known one (never panics), and - the actual use this contract serves -
 /// sorting a scrambled list by this exact key reproduces the canonical order.
 #[test]
-fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_last() {
+fn attention_kind_rank_orders_the_six_known_kinds_and_sorts_an_unknown_kind_last() {
     use rigger::ledger::{
         attention_kind_rank, ATTENTION_BUDGET_FINAL_TENTH, ATTENTION_ESCALATED, ATTENTION_HALTED,
-        ATTENTION_STALLED_FRONTIER, ATTENTION_WORKER_DEATH_RECURRED,
+        ATTENTION_SPEC_DEFECT, ATTENTION_STALLED_FRONTIER, ATTENTION_WORKER_DEATH_RECURRED,
     };
 
     let escalated = attention_kind_rank(ATTENTION_ESCALATED);
+    let spec_defect = attention_kind_rank(ATTENTION_SPEC_DEFECT);
     let halted = attention_kind_rank(ATTENTION_HALTED);
     let recurred = attention_kind_rank(ATTENTION_WORKER_DEATH_RECURRED);
     let final_tenth = attention_kind_rank(ATTENTION_BUDGET_FINAL_TENTH);
     let stalled = attention_kind_rank(ATTENTION_STALLED_FRONTIER);
     assert!(
-        escalated < halted && halted < recurred && recurred < final_tenth && final_tenth < stalled,
-        "the five known kinds must rank in the canonical spec order (escalated, halted, \
-         worker-death-recurred, budget-final-tenth, stalled-frontier); got {escalated} \
-         {halted} {recurred} {final_tenth} {stalled}"
+        escalated < spec_defect
+            && spec_defect < halted
+            && halted < recurred
+            && recurred < final_tenth
+            && final_tenth < stalled,
+        "the six known kinds must rank in the canonical spec order (escalated, spec-defect, \
+         halted, worker-death-recurred, budget-final-tenth, stalled-frontier); got {escalated} \
+         {spec_defect} {halted} {recurred} {final_tenth} {stalled}"
     );
 
     let unknown = attention_kind_rank("some-future-kind-nobody-emits-yet");
@@ -305,6 +310,7 @@ fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_las
     let mut kinds = vec![
         ATTENTION_STALLED_FRONTIER,
         ATTENTION_HALTED,
+        ATTENTION_SPEC_DEFECT,
         ATTENTION_BUDGET_FINAL_TENTH,
         ATTENTION_ESCALATED,
         ATTENTION_WORKER_DEATH_RECURRED,
@@ -314,6 +320,7 @@ fn attention_kind_rank_orders_the_five_known_kinds_and_sorts_an_unknown_kind_las
         kinds,
         vec![
             ATTENTION_ESCALATED,
+            ATTENTION_SPEC_DEFECT,
             ATTENTION_HALTED,
             ATTENTION_WORKER_DEATH_RECURRED,
             ATTENTION_BUDGET_FINAL_TENTH,
@@ -693,16 +700,16 @@ fn relay_attention_renders_nothing_for_a_clean_step_in_either_shape() {
     }
 }
 
-/// The two response mappings the real progression scenario above cannot reach without a
-/// separate, much heavier scenario (a wedged escalation, a budget-breaker trip) - each
-/// constructed as the exact wire shape `ledger::AttentionEntry` produces for that kind
-/// (unit-scoped `escalated` carries `unit`; run-scoped `halted`/`budget-final-tenth` omit it,
-/// same as the fallback test above), and driven through the real, unmodified `relayAttention`.
-/// `worker-death-recurred` and `stalled-frontier` are proven from the REAL wire above, not
-/// re-derived here - together these five cases cover every kind
-/// `ledger::attention_kind_rank`'s own canonical order enumerates.
+/// The response mappings the real progression scenario above cannot reach without a
+/// separate, much heavier scenario (a wedged escalation, a spec-defect stop, a budget-breaker
+/// trip) - each constructed as the exact wire shape `ledger::AttentionEntry` produces for that
+/// kind (unit-scoped `escalated` and `spec-defect` carry `unit`; run-scoped
+/// `halted`/`budget-final-tenth` omit it, same as the fallback test above), and driven through
+/// the real, unmodified `relayAttention`. `worker-death-recurred` and `stalled-frontier` are
+/// proven from the REAL wire above, not re-derived here - together these six cases cover every
+/// kind `ledger::attention_kind_rank`'s own canonical order enumerates.
 #[test]
-fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_response() {
+fn relay_attention_maps_the_remaining_four_known_kinds_to_their_documented_response() {
     let cases = [
         (
             serde_json::json!({"attention": [
@@ -710,6 +717,13 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
             ]}),
             "attention - escalated: x - exhausted remediation (respond: \
              rigger-handle-an-escalation)",
+        ),
+        (
+            serde_json::json!({"attention": [
+                {"kind": "spec-defect", "unit": "plan-critique", "detail": "amend the spec"}
+            ]}),
+            "attention - spec-defect: plan-critique - amend the spec (respond: amend the spec \
+             and relaunch)",
         ),
         (
             serde_json::json!({"attention": [
@@ -755,7 +769,7 @@ fn relay_attention_maps_the_remaining_three_known_kinds_to_their_documented_resp
 /// and `StoreIntegrity` have no push-side counterpart (the wire's `attention` vocabulary is
 /// closed - `ledger::attention_kind_rank`'s own doc comment - and neither anomaly is
 /// derivable from a single `rigger step` call, only from `rigger watch`'s own local probes:
-/// a dash-liveness socket check, a whole-log order-signature scan), so only the four kinds
+/// a dash-liveness socket check, a whole-log order-signature scan), so only the kinds
 /// with a real pull-side counterpart are pinned here; `halted` and `budget-final-tenth` both
 /// resolve to the SAME skill as `DeadDriver` (the JS module comment: "`budget-final-tenth`
 /// resolves to the resume skill too - a preemptive, run-scoped warning for the SAME halt an
@@ -770,6 +784,7 @@ fn attention_response_mirrors_the_pull_side_signal_response_for_every_shared_ski
 
     for (js_kind, signal) in [
         ("escalated", Signal::Escalated),
+        ("spec-defect", Signal::SpecDefect),
         ("halted", Signal::DeadDriver),
         ("worker-death-recurred", Signal::RejectRecurrence),
         ("budget-final-tenth", Signal::DeadDriver),

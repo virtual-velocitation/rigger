@@ -1108,8 +1108,8 @@ fn docs_drift(root: &Path) -> Vec<std::path::PathBuf> {
         .into_iter()
         .map(|entry| (root.join(skill_source_rel(entry.name)), entry.render(&ctx)))
         .collect();
-    for (rel, render) in HANDBOOK_PAGES {
-        checks.push((root.join(rel), render(&ctx)));
+    for (rel, body) in HANDBOOK_PAGES {
+        checks.push((root.join(rel), body.render(&ctx)));
     }
     let mut drifted = Vec::new();
     for (path, fresh) in checks {
@@ -1251,7 +1251,6 @@ mod tests {
     #[test]
     fn planning_field_guide_page_renders_and_is_linked_from_authoring_loops() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let ctx = docs_context();
 
         // `rigger docs` writes the planning field guide handbook page.
         let dir = tempfile::tempdir().unwrap();
@@ -1259,7 +1258,7 @@ mod tests {
         assert!(written.contains(&dir.path().join(PLANNING_FIELD_GUIDE_REL)));
         let rendered = std::fs::read_to_string(dir.path().join(PLANNING_FIELD_GUIDE_REL))
             .expect("write_docs must create the planning field guide page");
-        assert_eq!(rendered, rigger::docs::render_planning_field_guide(&ctx));
+        assert_eq!(rendered, rigger::docs::PLANNING_FIELD_GUIDE_BODY);
         assert!(rendered.contains("F1 - Duplicated or ambiguously-owned units"));
 
         // `authoring-loops.md` links to it.

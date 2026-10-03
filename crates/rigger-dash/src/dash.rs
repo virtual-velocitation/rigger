@@ -1212,6 +1212,9 @@ pub struct UnitView {
     pub commit: String,
     pub branch: String,
     pub evidence: BTreeMap<String, String>,
+    /// The spec-defect stop this unit carries ([`ledger::Unit::spec_defect_reason`], spec 112
+    /// criterion 5), empty for every other unit: the reason the page's spec-defect block prints.
+    pub spec_defect_reason: String,
 }
 
 /// The metrics projection, with the two derived ratios materialized for the client.
@@ -1526,6 +1529,7 @@ pub fn build_state(
             commit: u.commit.clone(),
             branch: u.branch.clone(),
             evidence: u.evidence.clone(),
+            spec_defect_reason: u.spec_defect_reason().unwrap_or_default().to_string(),
         })
         .collect();
 
@@ -2926,13 +2930,7 @@ pub fn console_snapshot_json(
     base: &str,
 ) -> Result<String, serde_json::Error> {
     let run_id = run::current_run_id(events).unwrap_or_default();
-    let spec = events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == run::TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice::<run::RunStarted>(&e.data).ok())
-        .map(|r| r.spec)
-        .unwrap_or_default();
+    let spec = run::current_run_spec_path(events);
     let effective_base = run::current_run_base(events).unwrap_or_else(|| base.to_string());
 
     let mut console_events: Vec<&Event> = events.iter().filter(|e| is_console_event(e)).collect();
@@ -7832,6 +7830,66 @@ mod tests {
             repoint_seed(&events, &graph, "nope"),
             vec!["nope".to_string()],
             "an unknown seed with no unit content degrades to itself, not a re-point"
+        );
+    }
+
+    /// Spec 112, criterion 5: the dash's unit view carries the spec-defect reason of a gate
+    /// stopped on one - the reason its escalation recorded, while it stays escalated - and an
+    /// empty one for every other unit, an escalated one included.
+    #[test]
+    fn a_unit_view_carries_the_spec_defect_reason_of_a_gate_stopped_on_one() {
+        let reason = "amend the spec and relaunch: plan-critique found a spec defect in x";
+        let escalated = serde_json::json!({"id": "plan-critique", "reason": reason}).to_string();
+        let events = positioned(vec![
+            ev("UnitStarted", r#"{"id":"plan-critique"}"#),
+            ev("UnitStarted", r#"{"id":"u-esc"}"#),
+            ev("UnitEscalated", &escalated),
+            ev("UnitEscalated", r#"{"id":"u-esc"}"#),
+        ]);
+        let state = build_state(
+            &events,
+            &Graph::default(),
+            false,
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        assert_eq!(
+            state
+                .run
+                .units
+                .iter()
+                .map(|u| (u.id.as_str(), u.spec_defect_reason.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("plan-critique", reason), ("u-esc", "")]
+        );
+    }
+
+    /// Spec 112, criterion 5: the legacy page's spec-defect block prints the reason each unit
+    /// view carries in place of its uncovered-criterion text, and keeps that text for a coverage
+    /// gap no unit carries a reason for.
+    #[test]
+    fn the_spec_defect_block_prints_a_stopped_gate_s_reason_before_the_uncovered_text() {
+        let page = live_page();
+        let reasons = "const stops = units.map(u => u.spec_defect_reason).filter(Boolean);";
+        let block = &page[page
+            .find(reasons)
+            .expect("the block collects the units' reasons")..];
+        let block = &block[..block.find("\n\n").unwrap()];
+        let order = [
+            "el(\"uncovered\").innerHTML = stops.length",
+            "stops.map(r => '<div class=\"pill st-bad\">' + esc(r) + '</div>').join(\"\")",
+            "run.spec_defect",
+            "a criterion is uncovered (spec defect flagged)",
+            "no uncovered criteria flagged",
+        ];
+        let at: Vec<Option<usize>> = order.iter().map(|text| block.find(text)).collect();
+        assert!(
+            at.iter().all(Option::is_some) && at.windows(2).all(|w| w[0] < w[1]),
+            "the block prints the reasons first, else today's coverage text: {block}"
         );
     }
 

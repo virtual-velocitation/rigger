@@ -168,8 +168,9 @@ const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wal
 // and a key this schema does not require is a key the courier can drop while retyping (it
 // dropped `marker_path` and `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat
 // and its build location). Other optional fields are omitted when empty and tolerated.
-// `halted` is the spawn-budget HALT reason (Gap 13): present (distinct from a clean `done`)
-// when the breaker stopped the run with work undone, so the driver stops LOUDLY on it.
+// `halted` is the run's HALT reason: present (distinct from a clean `done`) when the run stopped
+// with work undone - the spawn-budget breaker (Gap 13), else a plan-critique spec-defect stop
+// (amend the spec and relaunch), else a hung agent - so the driver stops LOUDLY on it.
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
 // courier reports the message here rather than fabricating a wave.
 // Top level rejects unknown fields (additionalProperties: false): a courier that
@@ -211,11 +212,12 @@ const STEP = {
       },
     },
     done: { type: 'boolean' },
-    // A spawn-budget HALT (Gap 13): `rigger step` sets this to the halt reason (e.g.
-    // "budget exhausted: 200/200 spawns") when the breaker stopped the run with work
-    // undone, distinct from a clean `done` convergence. Omitted on a converged run. The
-    // top level rejects unknown properties, so this MUST be declared or a halted step's
-    // JSON would fail validation and the halt would be lost.
+    // A HALT: `rigger step` sets this to the halt reason when the run stopped with work undone,
+    // distinct from a clean `done` convergence - the spawn-budget breaker's (Gap 13, e.g.
+    // "budget exhausted: 200/200 spawns"), else a plan-critique spec-defect stop's ("amend the
+    // spec and relaunch: ..."), else hung liveness. Omitted on a converged run. The top level
+    // rejects unknown properties, so this MUST be declared or a halted step's JSON would fail
+    // validation and the halt would be lost.
     halted: { type: 'string' },
     // The WEDGED-terminus set (spec 19c, unit 1): `rigger step` lists the units that
     // ESCALATED - each exhausted remediation and went terminal WITHOUT integrating - so a
@@ -284,11 +286,14 @@ const STATUS = {
 // `budget-final-tenth` resolves to the resume skill too - a preemptive, run-scoped warning
 // for the SAME halt an operator would otherwise only learn of via `halted` once it actually
 // trips. `stalled-frontier` names the Design's own literal directive verbatim instead of
-// inventing a sixth skill, exactly as `Signal::FrontierStall` does on the pull side. An
+// inventing a sixth skill, exactly as `Signal::FrontierStall` does on the pull side, and
+// `spec-defect` (a plan-critique gate stopped the run on a spec defect) names its Design's
+// directive the same way, as `Signal::SpecDefect` does - never the escalation skill. An
 // unrecognized kind (never produced today - the wire's vocabulary is closed) falls back to
 // the umbrella watch skill rather than rendering nothing.
 const ATTENTION_RESPONSE = {
   'escalated': 'rigger-handle-an-escalation',
+  'spec-defect': 'amend the spec and relaunch',
   'halted': 'rigger-resume-a-run',
   'worker-death-recurred': 'rigger-diagnose-churn',
   'budget-final-tenth': 'rigger-resume-a-run',
@@ -949,14 +954,14 @@ for (;;) {
     stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
   }
 
-  // 3. A budget (or other rail) HALT is a LOUD stop, never a clean completion (Gap 13).
-  //    `rigger step` reports it as a `halted` reason distinct from `done` convergence: the
-  //    breaker stopped the run with ready work unscheduled (a resume needs a raised budget).
-  //    Drain whatever this (or an earlier) step already parked - never abandon a worker
-  //    mid-session - then surface the halt as a workflow FAILURE carrying the reason, rather
-  //    than letting the `done` fixpoint below read a starved run as success (the exact Gap-13
-  //    defect: a breaker halt printed as a clean completion and the driver reporting a starved
-  //    run as done).
+  // 3. A HALT is a LOUD stop, never a clean completion (Gap 13). `rigger step` reports it as a
+  //    `halted` reason distinct from `done` convergence: the budget breaker stopped the run with
+  //    ready work unscheduled (a resume needs a raised budget), else a plan-critique gate stopped
+  //    it on a spec defect (amend the spec and relaunch), else an agent hung. Drain whatever
+  //    this (or an earlier) step already parked - never abandon a worker mid-session - then
+  //    surface the halt as a workflow FAILURE carrying the reason, rather than letting the
+  //    `done` fixpoint below read a starved run as success (the exact Gap-13 defect: a breaker
+  //    halt printed as a clean completion and the driver reporting a starved run as done).
   if (step.halted) {
     await drainInFlight()
     stop(`the run halted: ${step.halted}`)

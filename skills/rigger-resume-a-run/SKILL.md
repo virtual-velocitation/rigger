@@ -13,6 +13,8 @@ Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger ru
 
 `--fresh` is for a DIFFERENT situation, not this one: a run wedged in a terminal state (for example a plan-critique escalation) on a spec that is otherwise UNCHANGED. It is a one-shot new-run boundary, never the default way to continue interrupted work.
 
+A run its plan-critique gate stopped on a spec defect (its halt opens `amend the spec and relaunch`) is never adopted by a command naming its spec: amend the spec, critique it with `rigger critique <spec>`, then relaunch on it, which begins a new run with no `--fresh`.
+
 ## Anti-move
 
 Never hand-drive `rigger step` yourself in a shell to "help it along" - the driver owns stepping, and a hand step races it, which can double-spawn a unit or wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the adoptable state your relaunch would otherwise have continued from, in exchange for nothing - reserve it for the genuinely wedged-terminal case above.

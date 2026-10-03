@@ -1,5 +1,8 @@
 use super::*;
 
+use rigger::eventstore::TypeSelection;
+use rigger::review;
+
 /// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
 /// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
 /// breadcrumb write in this module - a failed write only risks a later false suppression of an
@@ -195,10 +198,13 @@ fn enforce_definition_pin(
     }
 }
 
-/// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
-/// sweep when the store this step is about to open, the repository `git` resolved for the
-/// same `cwd`, and the scratch root this step is about to sweep disagree on their owning
-/// root - a three-way check, not two.
+/// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any terminal sweep or scratch write
+/// when the store the invoking `command` is about to open, the repository `git` resolved for the
+/// same `cwd`, and the scratch root it is about to use disagree on their owning root - a
+/// three-way check, not two. `rigger step` (which sweeps the scratch root) and `rigger critique`
+/// (which writes a critique's transcript and liveness marker into it and removes them, spec 112)
+/// call it; `command` names the invoking command in the refusal, as
+/// [`resolve_main_worktree_or_refuse`] takes it.
 ///
 /// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
 /// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
@@ -226,10 +232,11 @@ fn enforce_definition_pin(
 ///
 /// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
 /// repo-gated branch in `cmd_step`.
-fn refuse_unless_one_root(
+pub(crate) fn refuse_unless_one_root(
     cwd: &Path,
     repo: &str,
     scratch_root: Option<&str>,
+    command: &str,
 ) -> Result<(), String> {
     if repo.is_empty() {
         return Ok(());
@@ -238,14 +245,14 @@ fn refuse_unless_one_root(
     let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
     if cwd_canon != repo_canon {
         return Err(format!(
-            "rigger step: refusing - the store this step would open and the repository git \
+            "{command}: refusing - the store this command would open and the repository git \
              resolved for this directory disagree on their root: git toplevel (and the scratch \
-             root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
-             opened relative to the current directory {cwd} instead - a DIFFERENT root. This \
-             shape arises when the current directory has no `.git` of its own (e.g. a test \
+             root this command uses, {scratch}) is {repo}, but the store under {RIGGER_DIR} \
+             would be opened relative to the current directory {cwd} instead - a DIFFERENT root. \
+             This shape arises when the current directory has no `.git` of its own (e.g. a test \
              fixture nested under a scratch root): `git rev-parse` then walks UP past it to an \
-             ENCLOSING repository while the store stays right here, so this step's sweep would \
-             act on that enclosing repository's real worktrees using THIS directory's own \
+             ENCLOSING repository while the store stays right here, so this command would act on \
+             that enclosing repository's real worktrees and scratch using THIS directory's own \
              (unrelated) events. Re-run from the repository root.",
             scratch = scratch_root.unwrap_or("(none)"),
             cwd = cwd_canon.display(),
@@ -258,16 +265,16 @@ fn refuse_unless_one_root(
                 .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
             if scratch_repo_canon != repo_canon {
                 return Err(format!(
-                    "rigger step: refusing - the scratch root this step would sweep belongs to \
-                     a DIFFERENT repository than the one this step resolved: git toplevel (and \
-                     the store under {RIGGER_DIR}, opened relative to the current directory \
+                    "{command}: refusing - the scratch root this command would use belongs to \
+                     a DIFFERENT repository than the one this command resolved: git toplevel \
+                     (and the store under {RIGGER_DIR}, opened relative to the current directory \
                      {cwd}) is {repo}, but the scratch root {scratch} resolves to the \
                      repository {scratch_repo} instead - a DIFFERENT root. This shape arises \
                      when `RIGGER_TMPDIR` (or `defaults.workdir`) is pointed at another \
-                     project's own scratch tree: this step's sweep would then act on THAT \
-                     project's real worktrees using this run's events. Point the scratch root \
-                     back under {repo}, or re-run from the repository the scratch root belongs \
-                     to.",
+                     project's own scratch tree: this command would then act on THAT \
+                     project's real worktrees and scratch using this project's events. Point the \
+                     scratch root back under {repo}, or re-run from the repository the scratch \
+                     root belongs to.",
                     cwd = cwd_canon.display(),
                     scratch_repo = scratch_repo_canon.display(),
                 ));
@@ -275,6 +282,17 @@ fn refuse_unless_one_root(
         }
     }
     Ok(())
+}
+
+/// The project scratch root a run entry (`rigger step`, `rigger serve`) and `rigger critique`
+/// work under: `None` in a project with no git repository, where nothing keys a scratch root and
+/// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
+/// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
+/// sweeps, a served run hands its MCP server and a critique writes under, and that
+/// [`refuse_unless_one_root`] checks, can never disagree.
+pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
+    (!repo.is_empty())
+        .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
 }
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
@@ -436,7 +454,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(args.spec.as_deref())?;
+    let (criteria, text) = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
     // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
@@ -445,14 +463,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // changes no answer it was ever going to give, only how early that answer is available. Kept
     // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
     // HALT's own reclaim both still need it (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg);
 
     // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
     // mutation - not merely before the terminal sweep - when the store this step is about to
@@ -473,7 +484,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
     // step that is going to refuse never mutates any repository first - see
     // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
-    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref(), "rigger step")?;
 
     // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
     // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
@@ -545,6 +556,18 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // on-disk workflow.yml + agent-prompt set. Computed once and used for both the `--fresh`
     // pinned boundary and the drift check below.
     let definition = definition_hash(".")?;
+
+    // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
+    // a refused step mints no run and prints no JSON line.
+    RunStartCritique {
+        command: "rigger step",
+        backend: backend.as_ref(),
+        identity: &project_identity(),
+        workflow: &cfg.workflow,
+        root: &review::spec_root(&cwd, &repo),
+        text: &text,
+    }
+    .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)?;
 
     // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
     // current run), so the conductor's own `ensure_started` adopts this just-minted
@@ -815,8 +838,9 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
     // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
     // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    // The conductor pass's own live state - its budget halt, its escalated units, its
-    // attention entries - is stamped on by the same seam (`spawn::step_of_pass`).
+    // The conductor pass's own live state - its halt (the budget breaker's, else a
+    // plan-critique spec-defect stop's), its escalated units, its attention entries - is
+    // stamped on by the same seam (`spawn::step_of_pass`).
     let mut step = spawn::step_of_pass(&events, rs).map_err(|e| e.to_string())?;
     // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
     // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
@@ -842,11 +866,12 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
     // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
     // scratch. Surfaced as a loud halt so the driver stops on a named reason instead of reading
-    // a stalled wave as a clean fixpoint. A budget halt already on the channel takes precedence
-    // for the surfaced REASON (it is the harder global rail), so the hung reason is only stamped
-    // when no budget halt is set. (The teardown's never-delete-live guard reads the same hung set
-    // through `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any
-    // halt - not just when its reason is the one surfaced here.)
+    // a stalled wave as a clean fixpoint. A halt the conductor already put on the channel takes
+    // precedence for the surfaced REASON - the budget breaker's (the harder global rail), else a
+    // plan-critique spec-defect stop's - so the hung reason is only stamped when neither is set.
+    // (The teardown's never-delete-live guard reads the same hung set through
+    // `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any halt -
+    // not just when its reason is the one surfaced here.)
     let hung = rigger::liveness::hung_spawns(&events).map_err(|e| e.to_string())?;
     if step.halted.is_none() && !hung.is_empty() {
         // Recovery: record a real result on the named spawn (last-write-wins supersedes the
@@ -970,18 +995,20 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
 /// see `conductor::compute_attention`'s own doc comment for why that decision cannot live
 /// inside `conductor::run` itself).
 ///
-/// `attention` already carries whatever `compute_attention` built (escalated /
+/// `attention` already carries whatever `compute_attention` built (escalated / spec-defect /
 /// budget-halted / worker-death-recurred / budget-final-tenth / stalled-frontier, in THAT
 /// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
 /// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
 /// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
-/// call takes precedence, mirroring the SAME precedence the `halted` wire field itself
-/// already gives the budget breaker over the hung fallback, just above this function's call
-/// site). A STABLE sort by [`ledger::attention_kind_rank`] afterward only ever needs to
-/// relocate the ONE entry just appended - `compute_attention`'s own entries are already in
-/// canonical order, and a stable sort never disturbs their relative order (e.g. two
-/// `stalled-frontier` units stay lexical) - so the merged array is byte-identical to what
-/// `compute_attention` alone would have produced had it been able to see this crossing.
+/// call takes precedence, mirroring the precedence the `halted` wire field gives a conductor
+/// halt - the budget breaker's, else a plan-critique spec-defect stop's - over the hung
+/// fallback, just above this function's call site; a spec-defect stop carries no `halted`
+/// attention entry, its entry being the gate's own `spec-defect` one). A STABLE sort by
+/// [`ledger::attention_kind_rank`] afterward only ever needs to relocate the ONE entry just
+/// appended - `compute_attention`'s own entries are already in canonical order, and a stable
+/// sort never disturbs their relative order (e.g. two `stalled-frontier` units stay lexical) -
+/// so the merged array is byte-identical to what `compute_attention` alone would have produced
+/// had it been able to see this crossing.
 fn merge_hung_attention(
     mut attention: Vec<ledger::AttentionEntry>,
     newly_hung: bool,
@@ -1363,7 +1390,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
@@ -1424,6 +1451,14 @@ fn run_cli(parsed: &RunArgs) -> Res {
         &criteria,
         false,
         &base_tip,
+        &RunStartCritique {
+            command: "rigger run",
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        },
     )?;
     // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
     // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
@@ -1487,6 +1522,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
 }
 
 /// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
+/// First, before anything is appended, a command that would begin a new run on a spec whose
+/// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
+/// caller hands `critique`, naming its own command).
 /// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
 /// a clean slice even if the latest run already matches (which `ensure_started` would adopt),
 /// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
@@ -1514,7 +1552,9 @@ fn fresh_run_if_requested(
     criteria: &[String],
     fresh_notice_to_stderr: bool,
     base_tip: &str,
+    critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
     let definition = definition_hash(".")?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
     // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
@@ -1552,6 +1592,120 @@ fn fresh_run_if_requested(
         parsed.spec.as_deref().unwrap_or(""),
     )?;
     Ok(())
+}
+
+/// What the spec-critique refusal ([`RunStartCritique::refuse_unless_clean`]) reads beside the
+/// run a command is about to begin or adopt (spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS
+/// CLEAN): every input but the spec, its criteria and `--fresh`, which the run entry holds.
+struct RunStartCritique<'a> {
+    /// The invoking command: the prefix of the refusal and of the no-critic line.
+    command: &'a str,
+    /// The selected backend, which the project store and the critique's own store
+    /// ([`critique_store`]) are both namespaced over.
+    backend: &'a dyn EventStore,
+    /// The project identity both stores are namespaced by.
+    identity: &'a str,
+    /// The loaded workflow, whose critic ([`rigger::wave::critic`]) decides whether the refusal
+    /// applies.
+    workflow: &'a config::Workflow,
+    /// The root the spec path and every `governs` entry are made relative to
+    /// ([`review::spec_root`]).
+    root: &'a Path,
+    /// The exact spec text `load_criteria` read for this command: the critique is keyed on its
+    /// hash.
+    text: &'a str,
+}
+
+impl RunStartCritique<'_> {
+    /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
+    /// clean - the one decision every CLI run start makes before it appends anything. A command
+    /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
+    /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
+    /// naming its spec), proceeds. Under a workflow naming no
+    /// critic a new run proceeds after one line on stderr saying so. Otherwise the new run is
+    /// refused - with the text [`new_run_refusal`] renders - when the spec is outside the
+    /// repository, when its text has no critique, or while the critique holds an open BLOCKING
+    /// finding ([`review::open_findings`]). It writes nothing.
+    fn refuse_unless_clean(&self, spec: Option<&str>, criteria: &[String], fresh: bool) -> Res {
+        let Some(spec) = spec else {
+            return Ok(());
+        };
+        let project = Namespaced::new(self.backend, self.identity);
+        let started = project.read_stream_typed(
+            conductor::STREAM,
+            0,
+            TypeSelection::Only(&runscope::MINT_DECISION_TYPES),
+        )?;
+        if runscope::adopted_run(&started, criteria, fresh, true).is_some() {
+            return Ok(());
+        }
+        let path = review::normalize_spec_path(self.root, spec);
+        let named = path.as_deref().unwrap_or(spec);
+        if rigger::wave::critic(self.workflow).is_none() {
+            eprintln!(
+                "{}: no spec critique for {named}: {}",
+                self.command,
+                rigger::wave::NO_CRITIC_CLAUSE
+            );
+            return Ok(());
+        }
+        let open = match &path {
+            Some(path) => self.open_ids(&project, path)?,
+            None => None,
+        };
+        match open {
+            Some(ids) if ids.is_empty() => Ok(()),
+            open => Err(new_run_refusal(self.command, named, open.as_deref()).into()),
+        }
+    }
+
+    /// The open BLOCKING findings of the critique of this text, `spec` being its repo-relative
+    /// path: read through the critique's own store, the resolutions from the project run stream's
+    /// `DecisionMade` events. `None` when the text has no critique.
+    fn open_ids(
+        &self,
+        project: &dyn EventStore,
+        spec: &str,
+    ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
+        let critiques = critique_store(self.backend, self.identity);
+        let Some(critique) = review::read_critique(&critiques, &review::critique_hash(self.text))?
+        else {
+            return Ok(None);
+        };
+        let decisions = project.read_stream_typed(
+            conductor::STREAM,
+            0,
+            TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
+        )?;
+        Ok(Some(review::open_findings(
+            &critique, &decisions, spec, self.root,
+        )))
+    }
+}
+
+/// The refusal of a new run on `spec` by `command` (spec 112, Notes): why - `open` lists the
+/// critique's open BLOCKING finding ids, `None` when the text has no critique - then the two
+/// commands that clear it, their labels padded to one column.
+fn new_run_refusal(command: &str, spec: &str, open: Option<&[String]>) -> String {
+    let (why, route, resolves) = match open {
+        None => (
+            "not critiqued".to_string(),
+            "or, once critiqued, record a resolution:",
+            "[<ids>]".to_string(),
+        ),
+        Some(ids) => (
+            format!("open BLOCKING findings: {}", ids.join(", ")),
+            "or record a resolution:",
+            serde_json::json!(ids).to_string(),
+        ),
+    };
+    let governs = serde_json::json!([spec]);
+    format!(
+        "{command}: refusing to begin a new run on {spec}: {why}\n  {:<33} rigger critique \
+         {spec}\n  {route:<33} rigger emit DecisionMade '{{\"id\":\"...\",\"governs\":{governs},\
+         \"resolves\":{resolves},\"summary\":\"...\"}}'",
+        "amend the spec and critique it:"
+    )
 }
 
 /// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
@@ -1601,7 +1755,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
-    let criteria = load_criteria(parsed.spec.as_deref())?;
+    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
     // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
@@ -1655,6 +1809,14 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
         &criteria,
         true,
         &base_tip,
+        &RunStartCritique {
+            command,
+            backend: backend.as_ref(),
+            identity: &project_identity(),
+            workflow: &cfg.workflow,
+            root: &review::spec_root(&cwd, &repo),
+            text: &text,
+        },
     )?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -1668,11 +1830,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
     // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
     // than a second `git_repo()` re-read.
-    let scratch_root = if repo.is_empty() {
-        String::new()
-    } else {
-        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-    };
+    let scratch_root = project_scratch_root(&repo, &cfg).unwrap_or_default();
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
     // whole MCP session, so an active harness is never invisible. Held here (not inside the
@@ -1746,18 +1904,7 @@ fn parse_workflow_args(
                     None => return Err("workflow: --base expects a ref".into()),
                 };
             }
-            flag if flag.starts_with("--") => {
-                return Err(format!("workflow: unknown flag {flag:?}").into());
-            }
-            positional => {
-                if spec.is_some() {
-                    return Err(format!(
-                        "workflow: expected at most one spec path, got a second {positional:?}"
-                    )
-                    .into());
-                }
-                spec = Some(positional.to_string());
-            }
+            other => spec_positional(other, &mut spec, "workflow")?,
         }
         i += 1;
     }
@@ -1856,9 +2003,15 @@ pub(crate) fn cmd_workflow(args: &[String]) -> Res {
 /// who launches straight into a run without a separate `rigger validate` pass still sees
 /// the same advisories. Advisory only, exactly like the pre-launch surface: never refuses
 /// the run.
-fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+///
+/// It hands back the criteria beside the exact text its one read read (an empty text, with no
+/// read, when there is no spec path), so a caller that also hashes or prompts on the spec - the
+/// `rigger critique` verb (spec 112) - never reads it a second time.
+pub(crate) fn load_criteria(
+    spec_path: Option<&str>,
+) -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
     let Some(spec_path) = spec_path else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), String::new()));
     };
     let text =
         std::fs::read_to_string(spec_path).map_err(|e| format!("read spec {spec_path}: {e}"))?;
@@ -1872,7 +2025,7 @@ fn load_criteria(spec_path: Option<&str>) -> Result<Vec<String>, Box<dyn std::er
         )
         .into());
     }
-    Ok(criteria)
+    Ok((criteria, text))
 }
 
 /// `rigger dash` - serve or export the embedded observability page (spec 11, unit 2).
@@ -4038,9 +4191,9 @@ mod tests {
 
         // A second spec path is still the same clear error; a valueless --base names the fix.
         let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
-        assert!(
-            err.contains("expected at most one spec path"),
-            "a second positional must be rejected; got: {err:?}"
+        assert_eq!(
+            err, "workflow: unexpected second positional argument \"b.md\"",
+            "a second positional must be rejected through the shared spec rule"
         );
         let err = w(&["--base"]).unwrap_err().to_string();
         assert!(
@@ -4135,9 +4288,9 @@ mod tests {
                 "nothing is newly hung",
             );
         /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
-        /// (mirroring the SAME precedence the `halted` wire field already gives the budget
-        /// breaker over its own hung fallback, just above this function's call site in
-        /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
+        /// (mirroring the precedence the `halted` wire field gives a conductor halt - the budget
+        /// breaker's, else a plan-critique spec-defect stop's - over its hung fallback, just
+        /// above this function's call site in `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
         /// evaluate the reason closure, when one is already present.
         merge_hung_attention_defers_to_an_existing_budget_halt:
             assert_merge_hung_attention_leaves_untouched(

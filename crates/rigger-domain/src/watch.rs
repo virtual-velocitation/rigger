@@ -2,8 +2,9 @@
 //! FIVE SIGNALS `rigger-watch-a-run` names for a manual look - escalated blockers,
 //! heartbeat staleness vs live agent processes, dash liveness, reject-recurrence
 //! trend, and frontier progress - into one line per anomaly, naming signal, subject,
-//! and response, PLUS two checks the automated command runs beyond the skill's
-//! five-point human skim: store integrity, and a red CI check on the run branch's tip.
+//! and response, PLUS three checks the automated command runs beyond the skill's
+//! five-point human skim: a gate stopped on a spec defect, store integrity, and a red CI
+//! check on the run branch's tip.
 //! "Covers every signal the watch skill names" (spec 69, Done-when) is a superset
 //! relation, not equality - both are the automation's own additions, not look-signals a
 //! human is asked to check by hand.
@@ -142,14 +143,19 @@ pub const DEAD_DRIVER_HEARTBEAT_BOUND: Duration = Duration::from_secs(30 * 60);
 /// `--interval <s>` (spec 69 Design: "default 180s").
 pub const DEFAULT_INTERVAL_SECS: u64 = 180;
 
-/// The closed set of anomaly signals the watchdog reports. The first five are named
-/// BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]); the last two,
-/// [`Signal::StoreIntegrity`] and [`Signal::CiRed`], are the automation's own additions
-/// beyond the skill's five-signal human skim (module doc). Declared in the spec's own
-/// listed order so a derived [`Ord`] sorts anomalies in that order.
+/// The closed set of anomaly signals the watchdog reports. The five [`SKILL_SIGNAL_NAMES`]
+/// signals are named BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]);
+/// [`Signal::SpecDefect`], [`Signal::StoreIntegrity`] and [`Signal::CiRed`] are the
+/// automation's own additions beyond the skill's five-signal human skim (module doc).
+/// Declared in the spec's own listed order, a stopped gate directly after the escalated
+/// blockers as the attention wire ranks it, so a derived [`Ord`] sorts anomalies in that order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Signal {
     Escalated,
+    /// A plan-critique gate stopped the run on a spec defect (spec 112, criterion 5): an
+    /// escalated unit whose escalation carries the stop's reason, reported here in place of
+    /// [`Signal::Escalated`].
+    SpecDefect,
     DeadDriver,
     DashNotServing,
     RejectRecurrence,
@@ -170,12 +176,13 @@ pub const SKILL_SIGNAL_NAMES: [&str; 5] = [
 ];
 
 impl Signal {
-    /// The canonical name printed on the anomaly line. The first five are the EXACT
+    /// The canonical name printed on the anomaly line. The skill's five are the EXACT
     /// strings `rigger-watch-a-run` names (see [`SKILL_SIGNAL_NAMES`]); the response
     /// text is what "signal, subject, and response" (spec 69 Design) means.
     pub fn name(&self) -> &'static str {
         match self {
             Signal::Escalated => SKILL_SIGNAL_NAMES[0],
+            Signal::SpecDefect => "spec defect",
             Signal::DeadDriver => SKILL_SIGNAL_NAMES[1],
             Signal::DashNotServing => SKILL_SIGNAL_NAMES[2],
             Signal::RejectRecurrence => SKILL_SIGNAL_NAMES[3],
@@ -189,12 +196,15 @@ impl Signal {
     /// to its response skill ... stall: stop the driver and diagnose before another
     /// round spends"). Four of the five name a response SKILL; the frontier-progress
     /// stall names the spec's own directive text instead (never a fifth invented
-    /// skill - `rigger-watch-a-run`'s own pin test forbids that); store integrity
-    /// names the documented repair reference (spec 71), since it has no skill of its
-    /// own; a red CI check names its directive, read the failed logs and fix at root.
+    /// skill - `rigger-watch-a-run`'s own pin test forbids that); a gate stopped on a
+    /// spec defect names its Design's directive (spec 112, criterion 5), never the
+    /// escalation skill; store integrity names the documented repair reference (spec 71),
+    /// since it has no skill of its own; a red CI check names its directive, read the
+    /// failed logs and fix at root.
     pub fn response(&self) -> &'static str {
         match self {
             Signal::Escalated => "rigger-handle-an-escalation",
+            Signal::SpecDefect => "amend the spec and relaunch",
             Signal::DeadDriver => "rigger-resume-a-run",
             Signal::DashNotServing => "rigger-restore-the-dash",
             Signal::RejectRecurrence => "rigger-diagnose-churn",
@@ -471,14 +481,19 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
     let run = ledger::project(inputs.run_events).unwrap_or_default();
     let mut out = Vec::new();
 
-    // Signal 1: escalated blockers.
+    // Signal 1: escalated blockers - a gate stopped on a spec defect under its own signal,
+    // its escalation's reason the detail (spec 112, criterion 5).
     for (id, u) in &run.units {
         if u.status == ledger::Status::Escalated {
+            let (signal, detail) = match u.spec_defect_reason() {
+                Some(reason) => (Signal::SpecDefect, reason),
+                None => (Signal::Escalated, "escalated - awaiting a human"),
+            };
             out.push(Anomaly {
-                signal: Signal::Escalated,
+                signal,
                 subject: id.clone(),
                 magnitude: 0,
-                detail: "escalated - awaiting a human".to_string(),
+                detail: detail.to_string(),
             });
         }
     }
@@ -852,6 +867,34 @@ mod tests {
         assert!(line.contains("escalated blockers"));
         assert!(line.contains("u-esc"));
         assert!(line.contains("rigger-handle-an-escalation"));
+    }
+
+    /// Spec 112, criterion 5: a gate stopped on a spec defect is reported under its own signal,
+    /// its escalation's reason the detail and the Design's directive the response - never as an
+    /// escalated blocker routed to the escalation skill.
+    #[test]
+    fn a_gate_stopped_on_a_spec_defect_is_reported_under_its_own_signal_with_the_amend_route() {
+        let reason = "amend the spec and relaunch: plan-critique found a spec defect in x";
+        let escalated = serde_json::json!({"id": "plan-critique", "reason": reason}).to_string();
+        let events = positioned(vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"plan-critique"}"#),
+            ev(ledger::TYPE_UNIT_ESCALATED, &escalated),
+        ]);
+        let anomalies = detect(&empty_inputs(&events, &BTreeMap::new()));
+        assert_eq!(
+            anomalies
+                .iter()
+                .map(|a| (a.signal, a.subject.as_str(), a.detail.as_str(), a.line()))
+                .collect::<Vec<_>>(),
+            vec![(
+                Signal::SpecDefect,
+                "plan-critique",
+                reason,
+                format!(
+                    "spec defect: plan-critique - {reason} (respond: amend the spec and relaunch)"
+                )
+            )]
+        );
     }
 
     // --- Signal 4: reject-recurrence, per cause ---

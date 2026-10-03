@@ -37,6 +37,8 @@ mod ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod kurrentdb;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod plan_critique;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod sqlite;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod store;
@@ -50,6 +52,8 @@ pub use fold::*;
 pub use ingest::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use kurrentdb::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use plan_critique::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use sqlite::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -26,6 +26,7 @@
 
 mod common;
 
+use common::cli::assert_stopped_at_the_grounder;
 use common::cli::escalate_solo_unit;
 use common::cli::keyed;
 use common::cli::nanos;
@@ -35,6 +36,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
+use common::cli::stopping_at_the_grounder;
 use common::cli::temp_store_project;
 use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
@@ -4968,15 +4970,13 @@ fn resume_unit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded
     );
 }
 
-/// A git project scaffolded with the escalating one-unit workflow, its grounder one the binary
-/// rejects: a `--fresh` step or run mints its boundary, re-pins the definition and then fails at
-/// the grounder, before it drives anything or serves stdin.
+/// A git project scaffolded with the escalating one-unit workflow, stopping at the grounder
+/// ([`stopping_at_the_grounder`]): a `--fresh` step or run mints its boundary, re-pins the
+/// definition and then fails at the grounder, before it drives anything or serves stdin.
 fn fresh_run_project() -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     write_workflow_fixture(dir.path(), &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
-    let body = REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW
-        .body
-        .replace("grounder: nop", "grounder: totally-bogus-grounder");
+    let body = stopping_at_the_grounder(REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW.body);
     std::fs::write(rigger_file(dir.path(), "workflow.yml"), body).unwrap();
     dir
 }
@@ -4995,11 +4995,7 @@ fn run_log(root: &Path) -> Vec<(u64, String)> {
 fn a_fresh_runs_mint_is_folded(args: &[&str]) {
     let dir = fresh_run_project();
     let root = dir.path();
-    let (out, err, ok) = run_rigger(root, args);
-    assert!(
-        !ok && err.contains("totally-bogus-grounder"),
-        "the run fails at the grounder, after its mint; stdout: {out} stderr: {err}"
-    );
+    assert_stopped_at_the_grounder(&run_rigger(root, args), &format!("rigger {args:?}"));
     let graph_db = rigger_file(root, "graph.db");
     let log = run_log(root);
     assert_eq!(

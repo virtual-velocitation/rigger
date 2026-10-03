@@ -38,7 +38,7 @@ pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
     adjudicator_roster, emitted_verdict_approves, glob_matches, has_verdict_line, review_roster,
-    route_review_tier, verdict_compensates, TierRouting,
+    route_review_tier, verdict_compensates, TierRouting, PLAN_CRITIQUE_RULES,
 };
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
@@ -51,8 +51,8 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 use rigger_domain::agent::PARKED_MARKER;
 pub use rigger_domain::agent::{
-    classify_failure, no_result_error, parked_spawn, strip_failure_marker, AgentDriver,
-    AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
+    classify_failure, no_result_error, parked_spawn, spawn_request, strip_failure_marker,
+    AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
@@ -322,6 +322,34 @@ const STATUS_REVIEW_ROUND_START: &str = "review-round-start";
 /// namespaces never collide in practice).
 fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
+}
+
+/// The replay key of the `UnitFailed` a review reject records for `unit` at its failing
+/// `attempt` (the review stage's and the plan-critique gate's), so a replay re-reaching the
+/// recorded reject appends no duplicate; the plan-critique spec-defect stop
+/// ([`spec_defect_stop`]) reads each reject back by it.
+fn failed_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/failed#{attempt}")
+}
+
+/// The replay key of the lesson a plan-critique `gate`'s spec-defect stop records for its reject
+/// at `attempt` (spec 112, criterion 5): the first of the stop's three records.
+fn spec_defect_lesson_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect-lesson#{attempt}")
+}
+
+/// The replay key of the `SpecDefect` a plan-critique `gate`'s spec-defect stop records for its
+/// reject at `attempt` (spec 112, criterion 5): the second of the stop's three records.
+fn spec_defect_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect#{attempt}")
+}
+
+/// The replay key of the gate's `UnitEscalated` a plan-critique `gate`'s spec-defect stop records
+/// for its reject at `attempt` (spec 112, criterion 5): the last of the stop's three records and
+/// its completion key, which [`spec_defect_stop`] reads to tell a completed stop from one a
+/// crash interrupted.
+fn spec_defect_escalated_key(gate: &str, attempt: u32) -> String {
+    format!("{gate}/spec-defect-escalated#{attempt}")
 }
 
 /// Which gate-keyed record a [`gate_key`] names - each kind keys apart from the others at the
@@ -2187,6 +2215,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // The adversarial plan-critique gate (Unit 1, spec 10) releases the fan-out. A
     // workflow with no gate leaves it released, so the wave loop runs exactly as before.
     let mut fan_out_released = true;
+    let mut gate_stopped = false;
     if has_producer(&stages) {
         // The plan-critique gate (if wired) is driven SYNCHRONOUSLY below, never through a
         // wave, so exclude it from the planning wave's ready set: on a resume where `plan`
@@ -2242,7 +2271,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                     &mut integrated,
                     &mut terminal,
                 ) {
-                    Ok(released) => fan_out_released = released,
+                    Ok(end) => {
+                        fan_out_released = end == GateEnd::Released;
+                        gate_stopped = end == GateEnd::Stopped;
+                    }
                     // A parked reviewer/re-plan spawn (stepwise/replay) ends the step
                     // cleanly; a later step replays the recorded result and re-reaches
                     // the gate.
@@ -2270,6 +2302,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 }
             }
         }
+    }
+    // A plan-critique gate that stopped on a spec defect in this step (spec 112, criterion 5)
+    // ends the step with its halt here, before the coverage check: the held DAG may leave a
+    // criterion uncovered, and the stop's records already carry the amend route.
+    if gate_stopped {
+        return settle_run_state(&ctx, &prior, prior_events, base_spawns);
     }
     ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
 
@@ -2386,22 +2424,37 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
-    let (current_events, _) = crate::run::read::read_current_run(deps.store, STREAM)?;
+    settle_run_state(&ctx, &prior, prior_events, base_spawns)
+}
+
+/// The caller-visible [`RunState`] a `run()` call returns (its normal end, and a plan-critique
+/// gate's spec-defect stop, which returns before the coverage check - spec 112, criterion 5):
+/// this run's slice projected, stamped with the halt reason ([`RunCtx::halt_reason`] over that
+/// fold), whether the pass parked, and the attention entries this call's window crossed against
+/// `prior`, the run state `prior_events` projected at the call's start, `base_spawns` the
+/// distinct spawns they recorded.
+fn settle_run_state(
+    ctx: &RunCtx,
+    prior: &RunState,
+    prior_events: &[Event],
+    base_spawns: u32,
+) -> Result<RunState, Error> {
+    let (current_events, _) = crate::run::read::read_current_run(ctx.deps.store, STREAM)?;
     let current_events = current_events.as_slice();
-    // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1),
-    // then stamp the live HALT reason (Gap 13) from the conductor's IN-PROCESS breaker
-    // state, not from a fold of the log: a halt is a runtime condition of THIS process (a
-    // resume with a raised budget clears it), so `rigger step` reads it here to print a
-    // halt reason distinct from convergence and the thin driver stops loudly on it.
+    // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1), then
+    // stamp the step's whole HALT reason: the budget breaker's from its IN-PROCESS state (Gap
+    // 13: a resume with a raised budget clears it), else the spec-defect stop's from this fold
+    // (spec 112, criterion 5). `rigger step` prints it as `halted` so the thin driver stops
+    // loudly instead of reading convergence.
     let mut rs = ledger::project(current_events).map_err(|e| Error(e.to_string()))?;
-    rs.budget_halt = ctx.halt_reason();
+    rs.budget_halt = ctx.halt_reason(&rs);
     rs.parked = ctx.parked.load(Ordering::SeqCst);
     // Spec 69, criterion 5 (the step wire carries attention): a before/after diff of THIS
-    // call's window, `prior` (this call's own resume seed, already projected above) against
+    // call's window, `prior` (this call's own resume seed, projected at its start) against
     // `rs` - see [`compute_attention`] for why the diff, not a persisting-state read, is
     // what "once per threshold crossing" needs with no new event and no cross-process dedup.
     // `base_spawns` is the already-folded distinct-spawn count from BEFORE this call (seeded
-    // above for the budget breaker itself); the after-count reads the SAME in-process
+    // at its start for the budget breaker itself); the after-count reads the SAME in-process
     // `ctx.spawns` counter `budget_tripped`/`halt_reason` read - the single source of truth
     // for "spawns made", which (unlike `spawn::recorded` over the event log) counts a
     // BLOCKING driver's spawns too: only a stepwise/replay driver ever PARKS a
@@ -2415,10 +2468,11 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .into_iter()
         .map(|w| w.unit)
         .collect();
-    // Signal 2 (BUDGET half) crossing fact: was the durable `BudgetExhausted` audit event
-    // (emitted exactly once per run by `trip_budget_breaker`, keyed on `BUDGET_EXHAUSTED_KEY`
-    // - see its own doc comment) already present as of `prior_events` (this call's OWN start
-    // boundary)? Reusing that existing, already-idempotent event as the crossing fact - rather
+    // Signal 2 (BUDGET half) crossing fact: the breaker halted THIS call, and the durable
+    // `BudgetExhausted` audit event (emitted exactly once per run by `trip_budget_breaker`,
+    // keyed on `BUDGET_EXHAUSTED_KEY` - see its own doc comment) was absent as of
+    // `prior_events` (this call's OWN start boundary). Reusing that existing, already-idempotent
+    // event as the crossing fact - rather
     // than a spawn-count comparison - is deliberate (review u69c5 round 3 self-check, cause
     // genuine-defect, found by probing `compute_attention`'s own doc comment against a
     // dependency-chained scenario): a `before_spawns < budget && after_spawns >= budget` gate
@@ -2430,13 +2484,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // silently losing the entry forever even though that later call is the one that actually
     // halts. The event-presence fact has no such gap: `BudgetExhausted` is appended the FIRST
     // time (and only the first time, by construction) the breaker actually refuses a spawn, so
-    // "absent from `prior_events`, `after.budget_halt` now `Some`" is exactly "this call is
-    // the first genuine halt" - see `compute_attention`'s own doc comment for the full
-    // reasoning and a regression test (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`)
+    // "absent from `prior_events`, the breaker now halted" is exactly "this call is the first
+    // genuine halt" - see `compute_attention`'s own doc comment for the full reasoning and a
+    // regression test (`a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps`)
     // pinning the scenario the spawn-count gate missed.
-    let budget_exhausted_before = prior_events
-        .iter()
-        .any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED);
+    let budget_crossed = ctx.budget_halted.load(Ordering::SeqCst)
+        && !prior_events
+            .iter()
+            .any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED);
     // Signal 2's hung-liveness half is deliberately NOT computed here (review u69c5 round 3,
     // cause genuine-defect - see `compute_attention`'s own doc comment for why: the fault
     // that makes a spawn "hung" is always recorded by an action that PRECEDES this call's own
@@ -2450,12 +2505,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // strictly BETWEEN two `rigger step` invocations; see `hung_cursor_path`'s own doc
     // comment for the full reasoning.
     rs.attention = compute_attention(
-        &prior,
+        prior,
         &rs,
-        cfg.workflow.defaults.budget,
+        ctx.cfg.workflow.defaults.budget,
         base_spawns as usize,
         after_spawns,
-        budget_exhausted_before,
+        budget_crossed,
         &parked_units,
     );
     Ok(rs)
@@ -2519,14 +2574,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// `halted` itself has always been assembled the SAME way, partly in `cmd_step` (its hung
 /// fallback, unchanged by this unit), never solely inside `compute_attention`.
 ///
-/// Deterministically ordered - escalated, halted, worker-death-recurred, budget-final-tenth,
-/// stalled-frontier; lexical by unit id within a kind (`after.units` is a `BTreeMap`,
-/// `parked_units` a `BTreeSet`) - so two folds of the same log agree byte-for-byte on the
-/// wire (main.rs's merge preserves this canonical order too; see its own comment).
+/// Deterministically ordered - stably sorted by [`ledger::attention_kind_rank`] (escalated,
+/// spec-defect, halted, worker-death-recurred, budget-final-tenth, stalled-frontier), lexical by
+/// unit id within a kind (`after.units` is a `BTreeMap`, `parked_units` a `BTreeSet`) - so two
+/// folds of the same log agree byte-for-byte on the wire (main.rs's merge preserves this
+/// canonical order too; see its own comment).
 ///
-/// Signal 2's BUDGET half is gated on `budget_exhausted_before` (whether the durable
-/// `BudgetExhausted` audit event, keyed to append AT MOST ONCE per run by
-/// [`RunCtx::trip_budget_breaker`](RunCtx::trip_budget_breaker), was already present as of
+/// Signal 2's BUDGET half is gated on `budget_crossed` (the breaker halted this call AND the
+/// durable `BudgetExhausted` audit event, keyed to append AT MOST ONCE per run by
+/// [`RunCtx::trip_budget_breaker`](RunCtx::trip_budget_breaker), was absent as of
 /// `prior_events` - see the call site for the full reasoning), NOT on a spawn-count
 /// comparison. An earlier version of this fix (review u69c5 round 3 self-check, cause
 /// genuine-defect) gated it the same way signal 4 gates budget-final-tenth
@@ -2544,33 +2600,31 @@ fn compute_attention(
     budget: u32,
     before_spawns: usize,
     after_spawns: usize,
-    budget_exhausted_before: bool,
+    budget_crossed: bool,
     parked_units: &BTreeSet<String>,
 ) -> Vec<ledger::AttentionEntry> {
     let mut out = Vec::new();
 
     // Signal 1: a unit ESCALATED. Terminal and monotonic (a unit never un-escalates), so a
     // member of `escalated_units()` after this call that was ABSENT before it is exactly a
-    // NEW escalation, never a stale re-report of one this run already surfaced.
+    // NEW escalation, never a stale re-report of one this run already surfaced. A unit that
+    // stopped the run on a spec defect gets the stop's own entry in place of its escalation's
+    // (spec 112, criterion 5).
     let before_escalated: HashSet<String> = prior.escalated_units().into_iter().collect();
     for id in after.escalated_units() {
         if !before_escalated.contains(&id) {
-            out.push(ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_ESCALATED,
-                id,
-                "escalated after exhausting remediation",
-            ));
+            out.push(ledger::AttentionEntry::escalation(&after.units[&id]));
         }
     }
 
     // Signal 2 (BUDGET half only - see the doc comment above for the hung half, computed by
     // `rigger step` itself, and for why this is gated on event presence rather than a
-    // spawn-count comparison): `after.budget_halt` being `Some` means the breaker genuinely
-    // refused a ready spawn THIS call (see `RunCtx::halt_reason`); `!budget_exhausted_before`
-    // means no earlier call in this run has already recorded that fact. Together they are
-    // exactly "the first call whose breaker trip durably happened" - once per run, since
-    // `BudgetExhausted` itself only ever appends once.
-    if !budget_exhausted_before {
+    // spawn-count comparison): `budget_crossed` means the breaker genuinely refused a ready
+    // spawn THIS call and no earlier call in this run has already recorded that fact -
+    // exactly "the first call whose breaker trip durably happened", once per run, since
+    // `BudgetExhausted` itself only ever appends once. The breaker's reason comes first in
+    // `after.budget_halt` ([`RunCtx::halt_reason`]), so the entry carries it.
+    if budget_crossed {
         if let Some(reason) = after.budget_halt.as_deref() {
             out.push(ledger::AttentionEntry::run_scoped(
                 ledger::ATTENTION_HALTED,
@@ -2629,6 +2683,7 @@ fn compute_attention(
         }
     }
 
+    out.sort_by_key(|e| ledger::attention_kind_rank(e.kind));
     out
 }
 
@@ -2636,6 +2691,72 @@ fn compute_attention(
 /// defers the coverage gate until after planning (§3.2).
 fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
     stages.values().any(|st| !st.produces.is_empty())
+}
+
+/// A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE (spec 112, criterion 5): the stop predicate, one
+/// pure function over the current run slice `run`, `s` the attempt the plan-critique gate `gate`'s
+/// next round would run and `plan` the gate's producer. It holds - answering the stopping reject's
+/// adjudication, whose upheld ids the stop names - when the gate's rejects at attempts `s - 2` and
+/// `s - 1` (each the `UnitFailed` under its [`failed_key`]) both carry a review reason whose
+/// parsed verdict is a spec ambiguity ([`spawn::Adjudication::is_spec_ambiguity`]), the re-plan
+/// `spawn_id(plan, replan, s - 1)` between them is recorded, the re-plan at `s` is not, and no
+/// event carries the stop's completion key ([`spec_defect_escalated_key`] at `s - 1`). A re-plan
+/// is recorded by its `SpawnRequested` or `SpawnResult` (the stepwise driver records both) or by
+/// an event it emitted, stamped with its id as [`META_SPAWN`] (a blocking driver records no spawn
+/// event). So a first `spec-ambiguity` reject re-plans as before, and the stop fires on one that
+/// follows a re-plan which did not clear the previous one.
+fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
+    let earlier = s.checked_sub(2)?;
+    let stopping = s - 1;
+    let keyed = |key: String| {
+        run.iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
+    };
+    let spec_ambiguity = |k: u32| {
+        keyed(failed_key(gate, k))
+            .and_then(Event::decode::<Value>)
+            .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
+            .filter(spawn::Adjudication::is_spec_ambiguity)
+    };
+    let re_planned = |attempt: u32| {
+        let id = spawn_id(plan, ROLE_REPLAN, attempt);
+        spawn::is_recorded(run, &id)
+            || matches!(spawn::result_of(run, &id), Ok(Some(_)))
+            || run.iter().any(|e| e.meta.get(META_SPAWN) == Some(&id))
+    };
+    spec_ambiguity(earlier)?;
+    let adjudication = spec_ambiguity(stopping)?;
+    let completed = keyed(spec_defect_escalated_key(gate, stopping)).is_some();
+    (re_planned(stopping) && !re_planned(s) && !completed).then_some(adjudication)
+}
+
+/// How one plan-critique gate call ended: it released the fan-out (an adjudicator approve), held
+/// it (an escalation), or stopped the run on a spec defect (spec 112, criterion 5), whose step
+/// then halts before the coverage check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateEnd {
+    Released,
+    Held,
+    Stopped,
+}
+
+/// The halt a spec-defect stop reports (spec 112, criterion 5): the amend route, the run's spec as
+/// recorded (`the spec` when it recorded none), the stopping reject's upheld finding ids (`none
+/// upheld` when it upheld none), then the relaunch route (*Relaunch*: critique the amended spec,
+/// then start the run again, which begins a new run since a stopped run is never adopted by
+/// spec). The one home of the text: the stop's records, the step's halt and every needs-you
+/// surface read it from the stop's escalation.
+fn spec_defect_halt(spec: &str, upheld: &[String]) -> String {
+    let spec = if spec.is_empty() { "the spec" } else { spec };
+    let upheld = if upheld.is_empty() {
+        "none upheld".to_string()
+    } else {
+        upheld.join(", ")
+    };
+    format!(
+        "amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld}); \
+         critique the amended spec, then start the run again"
+    )
 }
 
 struct RunCtx<'a> {
@@ -3763,25 +3884,28 @@ impl RunCtx<'_> {
         )
     }
 
-    /// The run's live HALT reason when the spawn-budget breaker stopped this process with
-    /// ready work unscheduled (Gap 13), or `None` when the run converged cleanly. Read from
-    /// the IN-PROCESS `budget_halted` flag (set by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)),
-    /// NOT from the durable `BudgetExhausted` event: a halt is a condition of the CURRENT run
-    /// process, so a resume with a raised `defaults.budget` - which admits the spawn and never
-    /// trips the breaker - reports no halt, even though the earlier halt's `BudgetExhausted`
-    /// still sits in the log. `rigger step` copies this onto its printed [`Step`](crate::spawn::Step)
-    /// so the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}`
-    /// as a clean completion.
-    fn halt_reason(&self) -> Option<String> {
+    /// The run's live HALT reason over `run`, the fold of the current run slice, or `None` when
+    /// the run converged cleanly. First the spawn-budget breaker's when it stopped this process
+    /// with ready work unscheduled (Gap 13), read from the IN-PROCESS `budget_halted` flag (set
+    /// by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)), NOT from the durable
+    /// `BudgetExhausted` event: a resume with a raised `defaults.budget` - which admits the
+    /// spawn and never trips the breaker - reports no budget halt, even though the earlier
+    /// halt's `BudgetExhausted` still sits in the log. Else the spec-defect stop's halt text,
+    /// carried by the log as the stopped unit's escalation reason
+    /// ([`RunState::spec_defect_reason`], spec 112 criterion 5), so every step of a stopped run
+    /// reports it and a crash-resumed step derives it once it has completed the stop's records.
+    /// `rigger step` copies this onto its printed [`Step`](crate::spawn::Step) so the thin
+    /// driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}` as a clean
+    /// completion; it fills that field from hung liveness only when this is `None`.
+    fn halt_reason(&self, run: &RunState) -> Option<String> {
         if self.budget_halted.load(Ordering::SeqCst) {
-            Some(format!(
+            return Some(format!(
                 "budget exhausted: {}/{} spawns",
                 self.spawns.load(Ordering::SeqCst),
                 self.cfg.workflow.defaults.budget,
-            ))
-        } else {
-            None
+            ));
         }
+        run.spec_defect_reason().map(str::to_string)
     }
 
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
@@ -3912,7 +4036,8 @@ impl RunCtx<'_> {
                         // whose errors were dropped. Emit a lesson naming the stage
                         // and its error before the collapse, so the log accounts for
                         // each terminal stage. The error never propagated up
-                        // mid-stage, so `emit_lesson` is best-effort and infallible.
+                        // mid-stage, so the lesson is best-effort: its outcome is
+                        // discarded and the stage's own error is what returns.
                         //
                         // adj-u104c5 REQUIRED FIX 2
                         // (sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-
@@ -3925,10 +4050,12 @@ impl RunCtx<'_> {
                         // A no-op for every marker-free error (every other driver, or text
                         // a leaf site already cleaned).
                         let msg = strip_failure_marker(&e);
-                        self.emit_lesson(
+                        let _ = self.emit_lesson(
                             None,
                             &name,
                             &format!("stage {name:?} failed in its wave: {msg}"),
+                            None,
+                            None,
                         );
                         if first_err.is_none() {
                             first_err = Some(Error(msg));
@@ -4867,7 +4994,7 @@ impl RunCtx<'_> {
         } else {
             "it is dirty".to_string()
         };
-        self.emit_lesson(
+        let _ = self.emit_lesson(
             wt,
             unit,
             &format!(
@@ -4876,6 +5003,8 @@ impl RunCtx<'_> {
                  attempt charged.",
                 residue.join(", ")
             ),
+            None,
+            None,
         );
         w.restore_reviewed_sha(round_start_sha)?;
         Ok(())
@@ -5958,13 +6087,15 @@ impl RunCtx<'_> {
                 } else {
                     next.summary()
                 };
-                self.emit_lesson(
+                let _ = self.emit_lesson(
                     wt,
                     &st.name,
                     &format!(
                         "unit {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
+                    None,
+                    None,
                 );
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
@@ -6410,13 +6541,15 @@ impl RunCtx<'_> {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
         }
-        self.emit_lesson(
+        let _ = self.emit_lesson(
             None,
             &st.name,
             &format!(
                 "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration",
                 st.name
             ),
+            None,
+            None,
         );
         self.emit_meta(
             ledger::TYPE_UNIT_ESCALATED,
@@ -6863,7 +6996,7 @@ impl RunCtx<'_> {
                 ),
             };
             self.emit_keyed_meta(
-                &format!("{}/failed#{failed_attempt}", st.name),
+                &failed_key(&st.name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(&st.name, attempts, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
@@ -6878,13 +7011,15 @@ impl RunCtx<'_> {
                 } else {
                     format!("review rejected: {}", reason.trim())
                 };
-                self.emit_lesson(
+                let _ = self.emit_lesson(
                     None,
                     &st.name,
                     &format!(
                         "review stage {:?} escalated after {attempts} attempts; {why}",
                         st.name
                     ),
+                    None,
+                    None,
                 );
                 self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
                 return Ok(false);
@@ -7539,8 +7674,11 @@ impl RunCtx<'_> {
     /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the proposed unit DAG,
     /// the deterministic rule-6 blast-radius analysis, and the three decomposition review
     /// targets NAMED in the prompt (handbook rules 6-8: shared blast radius, mitigation
-    /// ownership, open dispositions), plus the unit size cap ([`unit_size_cap`]) as a
-    /// blocking rule. On a re-plan it leads with the prior rejection so
+    /// ownership, open dispositions - [`PLAN_CRITIQUE_RULES`], the text the spec critique
+    /// prompt reads too), plus the unit size cap ([`unit_size_cap`]) as a blocking rule
+    /// pushed after them, and closes with the verdict paragraph, whose cause contract tells a
+    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
+    /// criterion 5) from one a re-plan can fix. On a re-plan it leads with the prior rejection so
     /// the reviewer judges the revised DAG against what was wrong before. The same prompt
     /// feeds the adversary (which appends the review_protocol and emits findings) and the
     /// adjudicator (whose stdout verdict gates the fan-out).
@@ -7561,30 +7699,17 @@ impl RunCtx<'_> {
             "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
              decomposition the planner produced - BEFORE any implementer runs, and judge \
              it against the CROSS-UNIT decomposition rules (docs/handbook/authoring-loops.md \
-             rules 7-8) that per-unit review cannot see:\n\
-             - Rule 7 (mitigation ownership): every demanded mitigation must be owned by \
-             exactly one unit, with the exclusion named on its neighbors; an unassigned or \
-             ambiguously-owned mitigation - two units that will fight over the same concern \
-             through the shared context graph - is a reject.\n\
-             - Rule 8 (open dispositions): a unit must not leave a disposition open for a \
-             reviewer to re-litigate; an undecided disposition is a reject.\n",
+             rules 7-8) that per-unit review cannot see:\n",
         );
+        // The Rule 7 and Rule 8 bullets and the shared-blast-radius note: the one text the spec
+        // critique prompt reads too (spec 112).
+        b.push_str(PLAN_CRITIQUE_RULES);
         b.push_str(&format!(
             "- Unit size (blocking): {} A unit over the cap is a reject with \
              \"cause\":\"decomposition-conflict\", which sends the DAG back to the planner to \
              split it into ordered units.\n\n",
             unit_size_cap()
         ));
-        b.push_str(
-            "NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a \
-             defect. `partition: by-blast-radius` runs them in SEPARATE sequential batches \
-             (each branches off the prior batch's integrated tree), and per-unit worktree \
-             isolation keeps every reviewer on its own diff - so overlap integrates cleanly \
-             and reviews independently. Do NOT reject merely because two units touch the \
-             same file. Reject a shared-file split ONLY when it is a genuine OWNERSHIP or \
-             COHERENCE defect (rule 7) - two units that cannot own their concern cleanly - \
-             not for mechanical overlap the partitioner already serializes.\n\n",
-        );
         b.push_str("Proposed units:\n");
         for (name, files) in radii {
             let st = &stages[name];
@@ -7624,13 +7749,26 @@ impl RunCtx<'_> {
                 ));
             }
         }
-        b.push_str(
-            "\nRender your final verdict as a JSON line: {\"verdict\":\"approve\"} to \
-             release the fan-out, or {\"verdict\":\"reject\"} to send the decomposition \
+        // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
+        // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
+        // a defect in a criterion's own text from one a re-plan can fix.
+        b.push_str(&format!(
+            "\nRender your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to \
+             release the fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition \
              back to the planner. Reject ONLY for a rule 7 (ownership) or rule 8 \
-             (open disposition) defect, or a unit over the size cap - never for mechanical \
-             blast-radius overlap alone.\n",
-        );
+             (open disposition) defect, a unit over the size cap, or a defect in a \
+             criterion's own text that no decomposition can remove - never for mechanical \
+             blast-radius overlap alone. A reject's cause follows this gate's contract, \
+             which governs it over any generic cause wording in your persona: \
+             \"cause\":\"{}\" only when the upheld defect is in a criterion's \
+             own text and no decomposition can remove it (two criteria that contradict \
+             under every landing order, a criterion no plan can satisfy, a demanded \
+             mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
+             defect a re-plan can fix (twin units, a missing exclusion between units, a unit \
+             over the size cap, a unit owning no criterion, a split the planner chose). When \
+             unsure, \"cause\":\"decomposition-conflict\".\n",
+            spawn::CAUSE_SPEC_AMBIGUITY
+        ));
         b
     }
 
@@ -7753,9 +7891,10 @@ impl RunCtx<'_> {
     /// adjudicator review the PROPOSED unit DAG BEFORE any implementer runs. It runs
     /// SYNCHRONOUSLY inside the producer prelude (after the planner wave + harvest), not as
     /// a main-loop stage, so its reject can loop the PLANNER - a coupling the per-stage DAG
-    /// scheduler does not express - while the fan-out stays gated on its release. Returns
-    /// whether the gate RELEASED the fan-out (an adjudicator approve): the caller runs the
-    /// implement waves only when it did. The reviewers run in a throwaway read-only
+    /// scheduler does not express - while the fan-out stays gated on its release. Returns how
+    /// the gate ended ([`GateEnd`]): the caller runs the implement waves only when it released
+    /// the fan-out (an adjudicator approve), and halts the step before the coverage check when
+    /// it stopped on a spec defect. The reviewers run in a throwaway read-only
     /// worktree (like a standalone review stage) so a stray Bash/Edit never touches the
     /// main checkout; it is torn down on every exit path.
     fn run_plan_critique_gate(
@@ -7766,7 +7905,7 @@ impl RunCtx<'_> {
         proposed: &mut HashSet<String>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
-    ) -> Result<bool, Error> {
+    ) -> Result<GateEnd, Error> {
         let gate_st = stages[gate_name].clone();
         // Seed the review worktree at the folded attempt so a resumed step recomputes the
         // same deterministic path (mirrors `run_fan_out_stage`).
@@ -7800,6 +7939,15 @@ impl RunCtx<'_> {
     /// repo-less run). The attempt counter is seeded from the prior log so the escalation
     /// bound ACCUMULATES across steps and a replay parks at the next unrecorded frontier
     /// (mirrors `run_fan_out_review_loop`).
+    ///
+    /// Round `k` critiques at attempt `k`; its reject records `UnitFailed` under
+    /// [`failed_key`] at `k` and returns to the round head at attempt `k + 1`. The round head
+    /// decides, in order (spec 112, criterion 5): the spec-defect stop
+    /// ([`stopped_on_spec_defect`](Self::stopped_on_spec_defect)); else, for a reject this call
+    /// recorded, the remediation decision - escalate, or re-plan at the new attempt and
+    /// harvest; then the critique. On entry the attempt is the seeded one, so a step re-entering
+    /// after a crash mid-stop completes the stop without spawning, and a round a later step
+    /// enters re-plans nothing.
     #[allow(clippy::too_many_arguments)]
     fn plan_critique_loop(
         &self,
@@ -7810,7 +7958,7 @@ impl RunCtx<'_> {
         proposed: &mut HashSet<String>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
-    ) -> Result<bool, Error> {
+    ) -> Result<GateEnd, Error> {
         let gate_name = gate_st.name.clone();
         let plan_st = stages[plan_name].clone();
         // The gate is a real DAG unit: record its start once (replay-keyed) so the ledger
@@ -7846,7 +7994,46 @@ impl RunCtx<'_> {
         let mut prior_reason = self
             .logged_prior_failure(&gate_name, attempts)
             .review_reason;
+        // The remediation decision of a reject THIS call recorded, which the round head takes;
+        // a round entered from the log carries none, so it re-plans nothing.
+        let mut rejected: Option<safety::Decision> = None;
         loop {
+            // The round head: the spec-defect stop first (spec 112, criterion 5)...
+            if self.stopped_on_spec_defect(&gate_name, plan_name, attempts)? {
+                // Terminal but NOT integrated, like the escalation below: the fan-out stays
+                // gated and the step halts with the amend route.
+                terminal.insert(gate_name.clone());
+                return Ok(GateEnd::Stopped);
+            }
+            // ...else the remediation of the reject this call recorded...
+            if let Some(decision) = rejected.take() {
+                if decision == safety::Decision::Escalate {
+                    let why = if prior_reason.trim().is_empty() {
+                        "the adjudicator did not approve the decomposition".to_string()
+                    } else {
+                        format!("plan-critique rejected: {}", prior_reason.trim())
+                    };
+                    let _ = self.emit_lesson(
+                        None,
+                        &gate_name,
+                        &format!(
+                            "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
+                        ),
+                        None,
+                        None,
+                    );
+                    self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
+                    // Terminal but NOT integrated: the fan-out stays gated, so nothing
+                    // implements over a decomposition three reviews could not fix.
+                    terminal.insert(gate_name.clone());
+                    return Ok(GateEnd::Held);
+                }
+                // Retry: feed the rejection back to the planner (bounded by remediation
+                // depth) and re-harvest its revised DAG for this round's critique.
+                self.re_plan(plan_name, &plan_st, attempts, &prior_reason)?;
+                self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            }
+            // ...then the critique.
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
             // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
             // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
@@ -7934,11 +8121,11 @@ impl RunCtx<'_> {
                 )?;
                 integrated.insert(gate_name.clone());
                 terminal.insert(gate_name.clone());
-                return Ok(true);
+                return Ok(GateEnd::Released);
             }
 
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
-            // replay re-reaching it appends no duplicate) and either escalate or re-plan.
+            // replay re-reaching it appends no duplicate); the round head decides what follows.
             let failed_attempt = attempts;
             let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
@@ -7947,38 +8134,63 @@ impl RunCtx<'_> {
                 ..Default::default()
             };
             self.emit_keyed(
-                &format!("{gate_name}/failed#{failed_attempt}"),
+                &failed_key(&gate_name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
                 // own - every reject here is the adjudicator's, and its reasoning rides
                 // along (gap 61).
                 failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
             )?;
-            if rem.decision == safety::Decision::Escalate {
-                let why = if reason.trim().is_empty() {
-                    "the adjudicator did not approve the decomposition".to_string()
-                } else {
-                    format!("plan-critique rejected: {}", reason.trim())
-                };
-                self.emit_lesson(
-                    None,
-                    &gate_name,
-                    &format!(
-                        "plan-critique {gate_name:?} escalated after {attempts} attempts; {why}"
-                    ),
-                );
-                self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": gate_name}))?;
-                // Terminal but NOT integrated: the fan-out stays gated, so nothing
-                // implements over a decomposition three reviews could not fix.
-                terminal.insert(gate_name.clone());
-                return Ok(false);
-            }
-            // Retry: feed the rejection back to the planner (bounded by remediation depth)
-            // and re-harvest its revised DAG for the next critique iteration.
-            self.re_plan(plan_name, &plan_st, attempts, &reason)?;
-            self.harvest_proposed(stages, proposed, integrated, terminal)?;
+            rejected = Some(rem.decision);
             prior_reason = reason;
         }
+    }
+
+    /// The round head's spec-defect stop (spec 112, criterion 5): when [`spec_defect_stop`]
+    /// holds over the current run for the plan-critique gate `gate` (producer `plan`) at attempt
+    /// `s`, record the stop and answer `true`; else record nothing and answer `false`. The stop
+    /// records three events in order, each under its own replay key so a step re-reaching it
+    /// appends only what is missing: a lesson about the run's spec naming the stopping reject's
+    /// upheld ids, the `SpecDefect` carrying the halt text (its fold sets `RunState::spec_defect`),
+    /// then the gate's `UnitEscalated` under the completion key, its payload `{id, reason}` with
+    /// `reason` the halt text: the log-carried fact the step's halt
+    /// ([`halt_reason`](Self::halt_reason)) and every needs-you surface read the stop from. It
+    /// re-plans nothing.
+    fn stopped_on_spec_defect(&self, gate: &str, plan: &str, s: u32) -> Result<bool, Error> {
+        let run = self.read_current_run()?;
+        let Some(stopping) = spec_defect_stop(&run, gate, plan, s) else {
+            return Ok(false);
+        };
+        let k = s - 1;
+        let spec = crate::run::current_run_spec_path(&run);
+        let halt = spec_defect_halt(&spec, &stopping.upheld);
+        let about: Vec<String> = if spec.is_empty() {
+            Vec::new()
+        } else {
+            vec![spec]
+        };
+        self.emit_lesson(
+            None,
+            gate,
+            &format!(
+                "plan-critique {gate:?} stopped the run: its {} reject at attempt {k} followed a \
+                 re-plan that did not clear the previous one; {halt}",
+                spawn::CAUSE_SPEC_AMBIGUITY
+            ),
+            Some(&spec_defect_lesson_key(gate, k)),
+            Some(&about),
+        )?;
+        self.emit_keyed(
+            &spec_defect_key(gate, k),
+            TYPE_SPEC_DEFECT,
+            json!({"reason": halt}),
+        )?;
+        self.emit_keyed(
+            &spec_defect_escalated_key(gate, k),
+            ledger::TYPE_UNIT_ESCALATED,
+            json!({"id": gate, "reason": halt}),
+        )?;
+        Ok(true)
     }
 
     /// The resolved build environment for this run (spec 65's ONE build-environment
@@ -8924,13 +9136,15 @@ impl RunCtx<'_> {
                         // A lesson records WHY for the next run's grounding. It is
                         // advisory (unlike the DeferredGateFailed below, which gates
                         // done), so it is emitted only on the fresh run.
-                        self.emit_lesson(
+                        let _ = self.emit_lesson(
                             None,
                             gid,
                             &format!(
                                 "deferred gate {gid:?} failed at the phase boundary: {}",
                                 res.evidence
                             ),
+                            None,
+                            None,
                         );
                     }
                     (res.pass, res.evidence)
@@ -10958,21 +11172,39 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
+    /// Record a `LessonLearned` about `unit_name`, answering its append's outcome. `about` names
+    /// what the lesson is about when given (the spec-defect stop names the spec, spec 112
+    /// criterion 5); without it the lesson is about the files `wt` touched. `key`, when given,
+    /// records it under that replay key, so a step re-reaching the same lesson appends nothing.
+    /// Every caller but the spec-defect stop records its lesson best-effort and discards the
+    /// outcome; the stop propagates it, since its later records must never stand over a lesson
+    /// that was not written.
+    fn emit_lesson(
+        &self,
+        wt: Option<&Worktree>,
+        unit_name: &str,
+        summary: &str,
+        key: Option<&str>,
+        about: Option<&[String]>,
+    ) -> Result<(), Error> {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
         // worktree before gating (§3.2, FIX 2), so a plain `git status` is clean by
         // the time a unit escalates - we use `changed_since_base` (the committed diff
         // unioned with any residual dirty files) so the lesson still names the real
         // artifact, not an empty set.
-        let about: Vec<String> = wt
-            .and_then(|w| w.changed_since_base().ok())
-            .unwrap_or_default();
+        let about: Vec<String> = match about {
+            Some(about) => about.to_vec(),
+            None => wt
+                .and_then(|w| w.changed_since_base().ok())
+                .unwrap_or_default(),
+        };
         let uid = uuid::Uuid::new_v4().to_string();
         let id = format!("lesson-{unit_name}-{}", &uid[..8]);
-        let _ = self.emit(
-            contextgraph::TYPE_LESSON_LEARNED,
-            json!({"id": id, "summary": summary, "about": about}),
-        );
+        let payload = json!({"id": id, "summary": summary, "about": about});
+        match key {
+            Some(key) => self.emit_keyed(key, contextgraph::TYPE_LESSON_LEARNED, payload),
+            None => self.emit(contextgraph::TYPE_LESSON_LEARNED, payload),
+        }
     }
 
     /// Handle [`worktree::LandOutcome::Blocked`] (spec 103, criterion 8: A REFUSED LANDING
@@ -11022,7 +11254,7 @@ impl RunCtx<'_> {
              the unit's own branch lands unchanged",
             named.join(", ")
         );
-        self.emit_lesson(Some(wt), unit, &summary);
+        let _ = self.emit_lesson(Some(wt), unit, &summary, None, None);
         Error(format!(
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
             paths.join(", ")
@@ -13110,13 +13342,7 @@ struct StartedCriterionProbe {
 /// unit test), so every comparison against it degrades to "always equal" there rather
 /// than refusing every match.
 fn current_run_spec(events: &[Event]) -> String {
-    events
-        .iter()
-        .rev()
-        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
-        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
-        .map(|rs| ledger::spec_stem(&rs.spec))
-        .unwrap_or_default()
+    ledger::spec_stem(&crate::run::current_run_spec_path(events))
 }
 
 /// The MOST RECENT prior unit, OF THE SAME SPEC, that served `criterion_id` and either
@@ -13897,6 +14123,11 @@ mod tests {
     use crate::test_support::trimmed_stdout;
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
+    };
+    use crate::test_support::{
+        critique_reject, keyed_index, keyed_payload, payloads_of_type, run_log,
+        spec_defect_halt_text, stop_records, the_stop_records, DAG_CRITIQUE_VERDICT_PARAGRAPH,
+        STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -42677,6 +42908,25 @@ mod tests {
         }
     }
 
+    /// Spec 112, criterion 1: the DAG critique reads its rules from the one const the spec
+    /// critique prompt reads ([`rigger_domain::review::PLAN_CRITIQUE_RULES`]), pushed right
+    /// after its DAG opener and right before its unit-size line.
+    #[test]
+    fn the_dag_critique_prompt_pushes_the_shared_plan_critique_rules_between_opener_and_size() {
+        let driver = one_unit_critique();
+        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+        let opener = "that per-unit review cannot see:\n";
+        let rules_at = prompt.find(opener).expect("the DAG opener") + opener.len();
+        let size_at = prompt
+            .find("- Unit size (blocking): ")
+            .expect("the unit-size line");
+        assert_eq!(
+            &prompt[rules_at..size_at],
+            rigger_domain::review::PLAN_CRITIQUE_RULES,
+            "the opener, then the shared rules byte for byte, then the unit-size line:\n{prompt}"
+        );
+    }
+
     /// One unit size cap, measuring review scope and never code shape, reaches both the
     /// planner and the plan critique: the plan protocol splits a criterion whose unit would
     /// exceed it into ordered units, and the critique rejects a unit over it with the
@@ -43070,6 +43320,15 @@ mod tests {
     /// project whose one file names [`WIDGET_CRITERION`] - two such steps over ONE store model
     /// the stepwise resume the production `rigger step` path runs on.
     fn critique_step(st: &Store, driver: &dyn AgentDriver) -> RunState {
+        critique_step_under(&critique_cfg(), st, driver).unwrap()
+    }
+
+    /// [`critique_step`] for the workflow `cfg` over any `store`: the step's own result.
+    fn critique_step_under(
+        cfg: &Config,
+        store: &dyn EventStore,
+        driver: &dyn AgentDriver,
+    ) -> Result<RunState, Error> {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("feature.rs"),
@@ -43081,9 +43340,9 @@ mod tests {
         };
         let deps = Deps {
             grounder: Some(&grep),
-            ..stub_deps(st, driver, vec![WIDGET_CRITERION.to_string()])
+            ..stub_deps(store, driver, vec![WIDGET_CRITERION.to_string()])
         };
-        run_isolated(&critique_cfg(), &deps).unwrap()
+        run_isolated(cfg, &deps)
     }
 
     #[test]
@@ -43225,6 +43484,656 @@ mod tests {
             Some(retry_round),
             "the round re-entered in a later process must open with the logged reject, exactly \
              as the in-process retry round does"
+        );
+    }
+
+    // --- Spec 112, criterion 5: A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE ---
+
+    /// The spec the criterion-5 runs are launched with: minted through `start_fresh`, the way
+    /// a CLI run entry mints one, then adopted by `conductor::run`.
+    const STOP_SPEC: &str = "specs/widget.md";
+
+    /// The halt the stopping run in [`stopped_run`] reports: its spec and the findings its
+    /// second `spec-ambiguity` reject upheld.
+    fn stop_halt() -> String {
+        spec_defect_halt_text(STOP_SPEC, "adv-2, adv-3")
+    }
+
+    /// The lesson the stop in [`stopped_run`] records: its account of the stop, then its halt.
+    fn stop_lesson() -> String {
+        format!(
+            "plan-critique \"plan-critique\" stopped the run: its spec-ambiguity reject at \
+             attempt 1 followed a re-plan that did not clear the previous one; {}",
+            stop_halt()
+        )
+    }
+
+    const APPROVE: &str = r#"{"verdict":"approve"}"#;
+
+    /// A plan-critique driver whose planner proposes [`widget_split`] on every spawn and whose
+    /// adjudicator answers round `k` with `rounds[k]` (an approve past the last one).
+    fn critique_rounds(rounds: &[String]) -> Stub {
+        Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+                ("judge".to_string(), APPROVE.to_string()),
+            ]),
+            output_by_spawn_id: rounds
+                .iter()
+                .enumerate()
+                .map(|(k, out)| {
+                    (
+                        spawn_id("plan-critique", ROLE_ADJUDICATOR, k as u32),
+                        out.clone(),
+                    )
+                })
+                .collect(),
+            ..Stub::new()
+        }
+    }
+
+    /// The spawn ids of the plan-critique rounds `0..rounds`, each after the re-plan that
+    /// precedes it: the planner's first spawn, then per round its adversary and adjudicator.
+    fn critique_round_spawns(rounds: u32) -> Vec<String> {
+        let mut ids = vec![spawn_id("plan", ROLE_IMPLEMENTER, 0)];
+        for k in 0..rounds {
+            if k > 0 {
+                ids.push(spawn_id("plan", ROLE_REPLAN, k));
+            }
+            ids.push(spawn_id("plan-critique", ROLE_ADVERSARY, k));
+            ids.push(spawn_id("plan-critique", ROLE_ADJUDICATOR, k));
+        }
+        ids
+    }
+
+    /// A store holding one run launched on [`STOP_SPEC`] over `criteria`, minted through
+    /// `start_fresh` the way a CLI run entry mints one.
+    fn launched_on_stop_spec(criteria: &[String]) -> Store {
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::start_fresh(&st, criteria, "", "", "", STOP_SPEC).unwrap();
+        st
+    }
+
+    /// A plan-critique driver whose adjudicator rejects rounds 0 and 1 with `spec-ambiguity`,
+    /// the second upholding the findings [`stop_halt`] names.
+    fn rejecting_twice_for_spec_ambiguity() -> Stub {
+        critique_rounds(&[
+            critique_reject("spec-ambiguity", &["adv-1"]),
+            critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
+        ])
+    }
+
+    /// One step over a store whose run was launched on [`STOP_SPEC`], under a driver whose
+    /// adjudicator rejects rounds 0 and 1 with `spec-ambiguity` - the second after the re-plan
+    /// the first one drove: the store and the driver after the stopping step, with its state.
+    fn stopped_run() -> (Store, Stub, RunState) {
+        stopped_run_under(&critique_cfg())
+    }
+
+    /// [`stopped_run`] under the workflow `cfg`.
+    fn stopped_run_under(cfg: &Config) -> (Store, Stub, RunState) {
+        let st = launched_on_stop_spec(&[WIDGET_CRITERION.to_string()]);
+        let driver = rejecting_twice_for_spec_ambiguity();
+        let rs = critique_step_under(cfg, &st, &driver).unwrap();
+        (st, driver, rs)
+    }
+
+    /// At `max_retries: 2` the stopping reject also exhausts the gate's remediation bound
+    /// (`remediate(1, 2)` escalates). The round head decides the stop before the remediation
+    /// decision, so the stop's records stand, its escalation is the gate's only one, and no
+    /// remediation-exhausted lesson is written.
+    #[test]
+    fn the_stop_is_decided_before_an_exhausted_remediation_bound_escalates() {
+        let mut cfg = critique_cfg();
+        cfg.workflow.defaults.max_retries = 2;
+        let (st, driver, rs) = stopped_run_under(&cfg);
+        let log = run_log(&st);
+        assert_eq!(
+            (
+                driver.spawn_ids(),
+                stop_records(&log),
+                rs.budget_halt.as_deref(),
+                payloads_of_type(&log, ledger::TYPE_UNIT_ESCALATED),
+                payloads_of_type(&log, contextgraph::TYPE_LESSON_LEARNED)
+                    .iter()
+                    .map(|lesson| lesson["summary"].clone())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                critique_round_spawns(2),
+                the_stop_records(),
+                Some(stop_halt().as_str()),
+                vec![json!({"id": "plan-critique", "reason": stop_halt()})],
+                vec![json!(stop_lesson())],
+            ),
+            "the stop wins the round head: its three records once each, its halt, the gate's one \
+             escalation, and no escalated-after lesson"
+        );
+    }
+
+    /// The Reverted corner: an operator resumes the stopped gate (`rigger resume-unit`), and the
+    /// next round's `spec-ambiguity` reject re-plans as a first one - the stop's completion key
+    /// closes the stopped pair, and the round the resume opens re-plans nothing - so the gate
+    /// critiques the re-planned DAG, approves it and releases the fan-out, while the stop's
+    /// records stand once each.
+    #[test]
+    fn a_resumed_stopped_gate_re_plans_its_next_spec_ambiguity_reject_as_a_first_one() {
+        let (st, _, _) = stopped_run();
+        grant_resume(&st, "plan-critique", 2);
+        let resumed = critique_rounds(&[
+            APPROVE.to_string(),
+            APPROVE.to_string(),
+            critique_reject("spec-ambiguity", &["adv-5"]),
+        ]);
+        let rs = critique_step(&st, &resumed);
+        let mut critique = resumed.spawn_ids();
+        // The released fan-out implements its two units in one wave, in no fixed order.
+        let mut fan_out = critique.split_off(critique.len().min(5));
+        fan_out.sort();
+        assert_eq!(
+            (
+                critique,
+                fan_out,
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+                stop_records(&run_log(&st)),
+            ),
+            (
+                vec![
+                    spawn_id("plan-critique", ROLE_ADVERSARY, 2),
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 2),
+                    spawn_id("plan", ROLE_REPLAN, 3),
+                    spawn_id("plan-critique", ROLE_ADVERSARY, 3),
+                    spawn_id("plan-critique", ROLE_ADJUDICATOR, 3),
+                ],
+                vec![
+                    spawn_id("u-a", ROLE_IMPLEMENTER, 0),
+                    spawn_id("u-b", ROLE_IMPLEMENTER, 0),
+                ],
+                ledger::Status::Integrated,
+                None,
+                the_stop_records(),
+            ),
+            "the resumed round's spec-ambiguity reject re-plans, the next round approves and \
+             releases the fan-out, and nothing stops again"
+        );
+    }
+
+    #[test]
+    fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_stops_the_run() {
+        let (st, driver, rs) = stopped_run();
+        assert_eq!(
+            driver.spawn_ids(),
+            critique_round_spawns(2),
+            "the stopping reject re-plans nothing and nothing implements"
+        );
+        assert_eq!(
+            stop_records(&run_log(&st)),
+            the_stop_records(),
+            "the lesson, the SpecDefect and the escalation, in that order, each under its key"
+        );
+        let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
+        assert_eq!(
+            (&lesson["summary"], &lesson["about"]),
+            (&json!(stop_lesson()), &json!([STOP_SPEC])),
+            "the lesson names the spec, the upheld findings and the amend route"
+        );
+        assert_eq!(
+            (
+                keyed_payload(&run_log(&st), STOP_SPEC_DEFECT_KEY),
+                keyed_payload(&run_log(&st), STOP_ESCALATED_KEY),
+            ),
+            (
+                json!({"reason": stop_halt()}),
+                json!({"id": "plan-critique", "reason": stop_halt()})
+            ),
+            "the SpecDefect and the gate's own escalation both carry the halt text"
+        );
+        let gate = &rs.units["plan-critique"];
+        assert_eq!(
+            (
+                gate.status,
+                gate.attempts,
+                rs.spec_defect,
+                gate.escalation_reason.clone()
+            ),
+            (ledger::Status::Escalated, 2, true, stop_halt()),
+            "the gate is escalated at its two rejects carrying the halt, and the run folds the \
+             spec defect"
+        );
+        assert_eq!(
+            rs.attention
+                .iter()
+                .map(|a| (a.kind, a.unit.as_str(), a.detail.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (ledger::ATTENTION_SPEC_DEFECT, "plan-critique", stop_halt()),
+                (
+                    ledger::ATTENTION_WORKER_DEATH_RECURRED,
+                    "plan-critique",
+                    "2 attempts".to_string()
+                ),
+            ],
+            "the stop's attention entry is its own kind carrying the halt, in place of the \
+             gate's escalation entry, and never a halted entry"
+        );
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            spawn::step_of_pass(&events, rs).unwrap().halted.as_deref(),
+            Some(stop_halt().as_str()),
+            "the step halts with the amend route"
+        );
+    }
+
+    /// One step whose gate rejects with `rejects`, one per round, and approves the round after
+    /// them: each reject re-plans before the next round critiques, the last round approves and
+    /// nothing stops.
+    fn assert_re_plans_after_every_reject(rejects: &[String], why: &str) {
+        let st = Store::open(":memory:").unwrap();
+        let driver = critique_rounds(rejects);
+        let rs = critique_step(&st, &driver);
+        let rounds = critique_round_spawns(rejects.len() as u32 + 1);
+        assert_eq!(driver.spawn_ids()[..rounds.len()], rounds[..], "{why}");
+        assert_eq!(
+            (
+                rs.units["plan-critique"].status,
+                rs.budget_halt,
+                stop_records(&run_log(&st))
+            ),
+            (ledger::Status::Integrated, None, Vec::new()),
+            "{why}: the round after the rejects approves and nothing stops"
+        );
+    }
+
+    #[test]
+    fn a_first_spec_ambiguity_reject_re_plans_as_today() {
+        assert_re_plans_after_every_reject(
+            &[critique_reject("spec-ambiguity", &["adv-1"])],
+            "the first spec-ambiguity reject re-plans",
+        );
+    }
+
+    #[test]
+    fn a_spec_ambiguity_reject_after_a_decomposition_conflict_re_plans_again() {
+        assert_re_plans_after_every_reject(
+            &[
+                critique_reject("decomposition-conflict", &["adv-1"]),
+                critique_reject("spec-ambiguity", &["adv-2"]),
+            ],
+            "a spec-ambiguity reject the previous reject did not share re-plans again",
+        );
+    }
+
+    #[test]
+    fn a_stop_with_no_upheld_finding_and_no_spec_says_so() {
+        // No `start_fresh`: the conductor mints the run itself, with no spec path.
+        let st = Store::open(":memory:").unwrap();
+        let driver = critique_rounds(&[
+            critique_reject("spec-ambiguity", &[]),
+            critique_reject("spec-ambiguity", &[]),
+        ]);
+        let rs = critique_step(&st, &driver);
+        let halt = spec_defect_halt_text("the spec", "none upheld");
+        let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
+        assert_eq!(
+            (rs.budget_halt.as_deref(), &lesson["about"]),
+            (Some(halt.as_str()), &json!([])),
+            "an empty spec names `the spec` and is about nothing; no upheld finding is said"
+        );
+    }
+
+    #[test]
+    fn a_stopped_gate_halts_the_step_before_the_coverage_check() {
+        // No fan-out template, so no baseline covers the gadget criterion: the held DAG the
+        // planner proposed leaves it uncovered, which a run past the stop would refuse.
+        let gadget = "the gadget is wired";
+        let cfg = workflow_cfg(
+            &["planner", "worker", "adversary", "judge"],
+            &[],
+            vec![plan_stage(), critique_stage("adversary")],
+        );
+        let criteria = vec![WIDGET_CRITERION.to_string(), gadget.to_string()];
+        let st = launched_on_stop_spec(&criteria);
+        let driver = rejecting_twice_for_spec_ambiguity();
+        let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria))
+            .expect("a stopped gate returns its halted state, never the coverage error");
+        assert_eq!(
+            (
+                rs.budget_halt.as_deref(),
+                payloads_of_type(&run_log(&st), TYPE_SPEC_DEFECT)
+            ),
+            (
+                Some(stop_halt().as_str()),
+                vec![json!({"reason": stop_halt()})]
+            ),
+            "the step halts on the stop; the coverage check never runs"
+        );
+    }
+
+    /// The stop's halt is log-carried (*The stop reason*): a second step, in a fresh conductor
+    /// pass over the stopped run, finds the gate terminal and runs the tail past it - spawning
+    /// and appending nothing - yet still halts with the amend route its fold carries, and stamps
+    /// no attention entry, since nothing crossed.
+    #[test]
+    fn a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt_appending_nothing() {
+        let (st, _, _) = stopped_run();
+        let before = st.read_stream(STREAM, 0, Direction::Forward).unwrap().len();
+        let later = Stub::new();
+        let rs = critique_step(&st, &later);
+        let after = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let (status, attention) = (rs.units["plan-critique"].status, rs.attention.clone());
+        let halted = spawn::step_of_pass(&after, rs).unwrap().halted;
+        assert_eq!(
+            (later.spawn_ids(), after.len(), status, attention, halted),
+            (
+                Vec::<String>::new(),
+                before,
+                ledger::Status::Escalated,
+                Vec::new(),
+                Some(stop_halt())
+            ),
+            "the gate is terminal: nothing spawns or appends, no entry is stamped, and the step \
+             halts with the amend route"
+        );
+    }
+
+    #[test]
+    fn a_step_re_entering_a_crashed_stop_completes_it_without_spawning() {
+        let (st, _, _) = stopped_run();
+        let log = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        // A crash right after the stopping reject's UnitFailed, and one after the SpecDefect.
+        for crashed_before in [STOP_LESSON_KEY, STOP_ESCALATED_KEY] {
+            let at = keyed_index(&log, crashed_before);
+            let resumed = Store::open(":memory:").unwrap();
+            for e in &log[..at] {
+                resumed
+                    .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(e))
+                    .unwrap();
+            }
+            let driver = Stub::new();
+            let rs = critique_step(&resumed, &driver);
+            assert_eq!(
+                (
+                    driver.spawn_ids(),
+                    stop_records(&run_log(&resumed)),
+                    rs.budget_halt.as_deref()
+                ),
+                (
+                    Vec::<String>::new(),
+                    the_stop_records(),
+                    Some(stop_halt().as_str())
+                ),
+                "re-entered before {crashed_before}: the stop completes, each record once, \
+                 without spawning"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stop_whose_lesson_append_fails_records_nothing_after_it_and_the_next_step_completes_it() {
+        let st = launched_on_stop_spec(&[WIDGET_CRITERION.to_string()]);
+        // Fails only the stop's lesson: its summary is the one event carrying this text.
+        let failing = FailingStore {
+            inner: &st,
+            fail_containing: "stopped the run: its spec-ambiguity reject",
+        };
+        let Err(err) = critique_step_under(
+            &critique_cfg(),
+            &failing,
+            &rejecting_twice_for_spec_ambiguity(),
+        ) else {
+            panic!("a stop whose lesson append failed must fail its step");
+        };
+        assert_eq!(
+            (err.0.as_str(), stop_records(&run_log(&st))),
+            (
+                "event store: simulated store failure appending an event containing \
+                 \"stopped the run: its spec-ambiguity reject\"",
+                Vec::new()
+            ),
+            "the failed lesson fails the stop before its SpecDefect and completion key"
+        );
+        let healthy = Stub::new();
+        let rs = critique_step(&st, &healthy);
+        assert_eq!(
+            (
+                healthy.spawn_ids(),
+                stop_records(&run_log(&st)),
+                rs.budget_halt.as_deref()
+            ),
+            (
+                Vec::<String>::new(),
+                the_stop_records(),
+                Some(stop_halt().as_str())
+            ),
+            "the next healthy step completes the stop, each record once, without spawning"
+        );
+    }
+
+    /// The gate's `UnitFailed` for its round `k`, under the replay key the gate records it with,
+    /// carrying `review_reason`.
+    fn gate_failed(k: u32, review_reason: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({
+                "id": "plan-critique",
+                "attempts": k + 1,
+                "cause": "reject",
+                "review_reason": review_reason,
+            }))
+            .unwrap(),
+        )
+        .with_meta(META_REPLAY_KEY, format!("plan-critique/failed#{k}"))
+    }
+
+    /// The re-plan spawn at `attempt`.
+    fn re_plan_id(attempt: u32) -> String {
+        spawn_id("plan", ROLE_REPLAN, attempt)
+    }
+
+    /// The re-plan at `attempt` recorded as the stepwise driver parks it.
+    fn re_plan_requested(attempt: u32) -> Event {
+        crate::spawn::test_request("plan", "plan", ROLE_REPLAN, attempt, "re-plan")
+            .to_event()
+            .unwrap()
+    }
+
+    /// The predicate over `run` for the gate `plan-critique` of producer `plan` at `s`: the
+    /// stopping reject's upheld ids when it holds.
+    fn stops_at(run: &[Event], s: u32) -> Option<Vec<String>> {
+        spec_defect_stop(run, "plan-critique", "plan", s).map(|a| a.upheld)
+    }
+
+    /// Two `spec-ambiguity` rejects at attempts 0 and 1 with the re-plan at 1 between them -
+    /// the slice the stop holds over at attempt 2.
+    fn two_spec_ambiguity_rejects() -> Vec<Event> {
+        vec![
+            gate_failed(0, &critique_reject("spec-ambiguity", &["adv-1"])),
+            re_plan_requested(1),
+            gate_failed(1, &critique_reject("spec-ambiguity", &["adv-2", "adv-3"])),
+        ]
+    }
+
+    #[test]
+    fn the_stop_holds_on_two_spec_ambiguity_rejects_around_a_recorded_re_plan() {
+        let run = two_spec_ambiguity_rejects();
+        let stopping = Some(vec!["adv-2".to_string(), "adv-3".to_string()]);
+        let answered = vec![
+            run[0].clone(),
+            spawn::SpawnResult::ok(re_plan_id(1), "re-planned")
+                .to_event()
+                .unwrap(),
+            run[2].clone(),
+        ];
+        let emitted = vec![
+            run[0].clone(),
+            Event::new(TYPE_UNIT_PROPOSED, b"{}".to_vec()).with_meta(META_SPAWN, re_plan_id(1)),
+            run[2].clone(),
+        ];
+        let mut other_stop_done = run.clone();
+        other_stop_done.push(
+            Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
+                .with_meta(META_REPLAY_KEY, "plan-critique/spec-defect-escalated#0"),
+        );
+        assert_eq!(
+            (
+                stops_at(&run, 2),
+                stops_at(&answered, 2),
+                stops_at(&emitted, 2),
+                stops_at(&other_stop_done, 2),
+            ),
+            (
+                stopping.clone(),
+                stopping.clone(),
+                stopping.clone(),
+                stopping
+            ),
+            "a re-plan is recorded by its request, its result or an event it emitted; another \
+             attempt's completion key does not complete this stop"
+        );
+    }
+
+    #[test]
+    fn the_stop_does_not_hold_short_of_its_whole_shape() {
+        let run = two_spec_ambiguity_rejects();
+        let with = |extra: Event| {
+            let mut run = run.clone();
+            run.push(extra);
+            run
+        };
+        let replace = |i: usize, e: Event| {
+            let mut run = run.clone();
+            run[i] = e;
+            run
+        };
+        let other_gate = |e: &Event| {
+            let key = e.meta[META_REPLAY_KEY].replace("plan-critique/", "other-gate/");
+            e.clone().with_meta(META_REPLAY_KEY, key)
+        };
+        let cases: Vec<(&str, Vec<Event>, u32)> = vec![
+            ("no reject yet", run.clone(), 0),
+            ("one reject", run.clone(), 1),
+            ("no reject at attempt 2", run.clone(), 3),
+            (
+                "the earlier reject is a decomposition conflict",
+                replace(
+                    0,
+                    gate_failed(0, &critique_reject("decomposition-conflict", &[])),
+                ),
+                2,
+            ),
+            (
+                "the later reject is a decomposition conflict",
+                replace(
+                    2,
+                    gate_failed(1, &critique_reject("decomposition-conflict", &[])),
+                ),
+                2,
+            ),
+            (
+                "the earlier reject carries no review reason",
+                replace(0, gate_failed(0, "")),
+                2,
+            ),
+            (
+                "the later reject's verdict names no cause",
+                replace(
+                    2,
+                    gate_failed(1, r#"{"verdict":"reject","upheld":["adv-2"]}"#),
+                ),
+                2,
+            ),
+            (
+                "the re-plan between them left no record (a blocking driver, nothing emitted)",
+                vec![run[0].clone(), run[2].clone()],
+                2,
+            ),
+            (
+                "the re-plan the stopping reject would drive is recorded",
+                with(re_plan_requested(2)),
+                2,
+            ),
+            (
+                "the stop already completed",
+                with(
+                    Event::new(ledger::TYPE_UNIT_ESCALATED, b"{}".to_vec())
+                        .with_meta(META_REPLAY_KEY, STOP_ESCALATED_KEY),
+                ),
+                2,
+            ),
+            (
+                "the rejects are another gate's",
+                vec![other_gate(&run[0]), run[1].clone(), other_gate(&run[2])],
+                2,
+            ),
+        ];
+        for (why, run, s) in cases {
+            assert_eq!(stops_at(&run, s), None, "{why}");
+        }
+    }
+
+    #[test]
+    fn the_stop_holds_at_any_attempt_its_two_rejects_precede() {
+        let run = vec![
+            gate_failed(1, &critique_reject("spec-ambiguity", &["adv-1"])),
+            re_plan_requested(2),
+            gate_failed(2, &critique_reject("spec-ambiguity", &["adv-4"])),
+        ];
+        assert_eq!(stops_at(&run, 3), Some(vec!["adv-4".to_string()]));
+    }
+
+    #[test]
+    fn the_spec_defect_halt_names_the_spec_and_the_upheld_findings() {
+        assert_eq!(
+            (
+                spec_defect_halt("specs/a.md", &["f1".to_string(), "f2".to_string()]),
+                spec_defect_halt("", &[]),
+            ),
+            (
+                "amend the spec and relaunch: plan-critique found a spec defect in specs/a.md \
+                 (f1, f2); critique the amended spec, then start the run again"
+                    .to_string(),
+                "amend the spec and relaunch: plan-critique found a spec defect in the spec \
+                 (none upheld); critique the amended spec, then start the run again"
+                    .to_string(),
+            )
+        );
+    }
+
+    /// The halt's precedence: the budget breaker's reason first, else the spec-defect halt the
+    /// fold of the run carries (an escalated unit's reason), else none.
+    #[test]
+    fn the_budget_halt_takes_precedence_over_the_spec_defect_stop() {
+        let (st, driver, stopped) = stopped_run();
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.budget = 4;
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let none = ctx.halt_reason(&RunState::default());
+        let spec_defect = ctx.halt_reason(&stopped);
+        ctx.budget_halted.store(true, Ordering::SeqCst);
+        assert_eq!(
+            (none, spec_defect, ctx.halt_reason(&stopped)),
+            (
+                None,
+                Some(stop_halt()),
+                Some("budget exhausted: 0/4 spawns".to_string())
+            ),
+            "budget first, then the spec defect the fold carries"
+        );
+    }
+
+    /// The verdict paragraph of the DAG critique prompt carries the cause contract that tells
+    /// a spec defect from a decomposition the planner can fix (spec 112, criterion 5).
+    #[test]
+    fn the_dag_critique_verdict_paragraph_carries_the_spec_defect_cause_contract() {
+        let driver = one_unit_critique();
+        let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
+        assert!(
+            prompt.contains(DAG_CRITIQUE_VERDICT_PARAGRAPH),
+            "the verdict paragraph carries the cause contract:\n{prompt}"
         );
     }
 

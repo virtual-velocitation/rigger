@@ -19,18 +19,18 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/canary_store.rs",
-        "start_line": 822,
-        "end_line": 824
+        "start_line": 817,
+        "end_line": 819
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 157,
-        "end_line": 159
+        "start_line": 159,
+        "end_line": 161
       }
     ]
   },
   {
-    "id": "dup-670e6a1d59fa",
+    "id": "dup-b6dc10b9c376",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -39,18 +39,38 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 376,
-        "end_line": 378
+        "start_line": 331,
+        "end_line": 333
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 983,
-        "end_line": 985
+        "start_line": 337,
+        "end_line": 339
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12234,
-        "end_line": 12236
+        "start_line": 343,
+        "end_line": 345
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 351,
+        "end_line": 353
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 404,
+        "end_line": 406
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 1011,
+        "end_line": 1013
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 12466,
+        "end_line": 12468
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -59,8 +79,8 @@
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1096,
-        "end_line": 1104
+        "start_line": 1097,
+        "end_line": 1105
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -85,17 +105,22 @@
     ]
   },
   {
-    "id": "dup-5e40086810a8",
+    "id": "dup-340eefdbe122",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 393,
-        "end_line": 395
+        "start_line": 421,
+        "end_line": 423
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 406,
-        "end_line": 408
+        "start_line": 434,
+        "end_line": 436
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "start_line": 339,
+        "end_line": 344
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -113,9 +138,19 @@
         "end_line": 75
       },
       {
+        "file": "tests/common/fixtures/plan_critique.rs",
+        "start_line": 29,
+        "end_line": 34
+      },
+      {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5222,
-        "end_line": 5227
+        "start_line": 5218,
+        "end_line": 5223
+      },
+      {
+        "file": "tests/new_run_critique_refusal_periphery.rs",
+        "start_line": 138,
+        "end_line": 140
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -129,8 +164,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 437,
-        "end_line": 439
+        "start_line": 465,
+        "end_line": 467
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -140,22 +175,22 @@
     ]
   },
   {
-    "id": "dup-31c9f1cd288f",
+    "id": "dup-95d708ab4d02",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 552,
-        "end_line": 554
+        "start_line": 580,
+        "end_line": 582
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 563,
-        "end_line": 565
+        "start_line": 591,
+        "end_line": 593
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12120,
-        "end_line": 12127
+        "start_line": 12352,
+        "end_line": 12359
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
@@ -166,6 +201,11 @@
         "file": "crates/rigger-domain/src/contextgraph.rs",
         "start_line": 642,
         "end_line": 644
+      },
+      {
+        "file": "crates/rigger-domain/src/review.rs",
+        "start_line": 387,
+        "end_line": 389
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -219,13 +259,13 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 4505,
-        "end_line": 4507
+        "start_line": 4536,
+        "end_line": 4538
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5011,
-        "end_line": 5017
+        "start_line": 5042,
+        "end_line": 5048
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -259,8 +299,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 3020,
-        "end_line": 3035
+        "start_line": 3141,
+        "end_line": 3156
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
@@ -274,8 +314,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 3222,
-        "end_line": 3224
+        "start_line": 3343,
+        "end_line": 3345
       },
       {
         "file": "crates/rigger-conductor/src/replay_keys.rs",
@@ -294,8 +334,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 3427,
-        "end_line": 3429
+        "start_line": 3548,
+        "end_line": 3550
       },
       {
         "file": "crates/rigger-dash/src/mcpserver.rs",
@@ -314,8 +354,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 3684,
-        "end_line": 3686
+        "start_line": 3805,
+        "end_line": 3807
       },
       {
         "file": "crates/rigger-domain/src/contextgraph/query.rs",
@@ -329,18 +369,18 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 4909,
-        "end_line": 4927
+        "start_line": 5038,
+        "end_line": 5056
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 28155,
-        "end_line": 28214
+        "start_line": 28386,
+        "end_line": 28445
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 301,
-        "end_line": 303
+        "start_line": 335,
+        "end_line": 337
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
@@ -394,18 +434,18 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 10256,
-        "end_line": 10270
+        "start_line": 10470,
+        "end_line": 10484
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 10302,
-        "end_line": 10317
+        "start_line": 10516,
+        "end_line": 10531
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 10327,
-        "end_line": 10342
+        "start_line": 10541,
+        "end_line": 10556
       }
     ]
   },
@@ -414,8 +454,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12031,
-        "end_line": 12036
+        "start_line": 12263,
+        "end_line": 12268
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -429,8 +469,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 13061,
-        "end_line": 13063
+        "start_line": 13293,
+        "end_line": 13295
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -444,8 +484,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15562,
-        "end_line": 15567
+        "start_line": 15793,
+        "end_line": 15798
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -459,23 +499,23 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15601,
-        "end_line": 15603
+        "start_line": 15832,
+        "end_line": 15834
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15606,
-        "end_line": 15608
+        "start_line": 15837,
+        "end_line": 15839
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15612,
-        "end_line": 15614
+        "start_line": 15843,
+        "end_line": 15845
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15618,
-        "end_line": 15620
+        "start_line": 15849,
+        "end_line": 15851
       }
     ]
   },
@@ -484,43 +524,43 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15630,
-        "end_line": 15632
+        "start_line": 15861,
+        "end_line": 15863
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36429,
-        "end_line": 36431
+        "start_line": 36660,
+        "end_line": 36662
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36432,
-        "end_line": 36434
+        "start_line": 36663,
+        "end_line": 36665
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36435,
-        "end_line": 36437
+        "start_line": 36666,
+        "end_line": 36668
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36438,
-        "end_line": 36440
+        "start_line": 36669,
+        "end_line": 36671
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36441,
-        "end_line": 36443
+        "start_line": 36672,
+        "end_line": 36674
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36444,
-        "end_line": 36446
+        "start_line": 36675,
+        "end_line": 36677
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 36566,
-        "end_line": 36568
+        "start_line": 36797,
+        "end_line": 36799
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -544,8 +584,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 453,
-        "end_line": 455
+        "start_line": 462,
+        "end_line": 464
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -559,8 +599,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15636,
-        "end_line": 15642
+        "start_line": 15867,
+        "end_line": 15873
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -574,33 +614,33 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15755,
-        "end_line": 15755
+        "start_line": 15986,
+        "end_line": 15986
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15760,
-        "end_line": 15760
+        "start_line": 15991,
+        "end_line": 15991
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 26742,
-        "end_line": 26742
+        "start_line": 26973,
+        "end_line": 26973
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 39385,
-        "end_line": 39385
+        "start_line": 39616,
+        "end_line": 39616
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 39399,
-        "end_line": 39399
+        "start_line": 39630,
+        "end_line": 39630
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 40137,
-        "end_line": 40137
+        "start_line": 40368,
+        "end_line": 40368
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -639,58 +679,58 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5345,
-        "end_line": 5345
+        "start_line": 5376,
+        "end_line": 5376
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7725,
-        "end_line": 7725
+        "start_line": 7767,
+        "end_line": 7767
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9856,
-        "end_line": 9856
+        "start_line": 9937,
+        "end_line": 9937
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11541,
-        "end_line": 11541
+        "start_line": 11624,
+        "end_line": 11624
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11575,
-        "end_line": 11575
+        "start_line": 11658,
+        "end_line": 11658
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3116,
-        "end_line": 3116
+        "start_line": 3269,
+        "end_line": 3269
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3149,
-        "end_line": 3149
+        "start_line": 3302,
+        "end_line": 3302
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3193,
-        "end_line": 3193
+        "start_line": 3346,
+        "end_line": 3346
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3262,
-        "end_line": 3262
+        "start_line": 3415,
+        "end_line": 3415
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1449,
-        "end_line": 1449
+        "start_line": 1448,
+        "end_line": 1448
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1728,
-        "end_line": 1728
+        "start_line": 1727,
+        "end_line": 1727
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -729,38 +769,38 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1462,
-        "end_line": 1462
+        "start_line": 1463,
+        "end_line": 1463
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5358,
-        "end_line": 5358
+        "start_line": 5359,
+        "end_line": 5359
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13060,
-        "end_line": 13060
+        "start_line": 13061,
+        "end_line": 13061
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13801,
-        "end_line": 13801
+        "start_line": 13802,
+        "end_line": 13802
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18277,
-        "end_line": 18277
+        "start_line": 18762,
+        "end_line": 18762
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23505,
-        "end_line": 23505
+        "start_line": 23990,
+        "end_line": 23990
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26589,
-        "end_line": 26589
+        "start_line": 27071,
+        "end_line": 27071
       },
       {
         "file": "tests/common/cli.rs",
@@ -774,8 +814,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 181,
-        "end_line": 181
+        "start_line": 253,
+        "end_line": 253
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -829,8 +869,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 248,
-        "end_line": 248
+        "start_line": 338,
+        "end_line": 338
       },
       {
         "file": "tests/common/served.rs",
@@ -999,8 +1039,8 @@
       },
       {
         "file": "tests/step_attention_periphery.rs",
-        "start_line": 530,
-        "end_line": 530
+        "start_line": 537,
+        "end_line": 537
       },
       {
         "file": "tests/store_flag_precedence.rs",
@@ -1025,12 +1065,12 @@
     ]
   },
   {
-    "id": "dup-cbefe0eb4e56",
+    "id": "dup-767eccd922ac",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 18292,
-        "end_line": 18292
+        "start_line": 18523,
+        "end_line": 18523
       },
       {
         "file": "crates/rigger-config-files/src/config_store.rs",
@@ -1114,13 +1154,13 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 3932,
-        "end_line": 3932
+        "start_line": 3930,
+        "end_line": 3930
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 3983,
-        "end_line": 3983
+        "start_line": 3981,
+        "end_line": 3981
       },
       {
         "file": "crates/rigger-domain/src/config.rs",
@@ -1134,28 +1174,28 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 675,
-        "end_line": 675
+        "start_line": 850,
+        "end_line": 850
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 679,
-        "end_line": 679
+        "start_line": 854,
+        "end_line": 854
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 749,
-        "end_line": 749
+        "start_line": 924,
+        "end_line": 924
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 759,
-        "end_line": 759
+        "start_line": 934,
+        "end_line": 934
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 783,
-        "end_line": 783
+        "start_line": 958,
+        "end_line": 958
       },
       {
         "file": "crates/rigger-domain/src/instructions.rs",
@@ -1393,6 +1433,11 @@
         "end_line": 6727
       },
       {
+        "file": "src/cli/critique.rs",
+        "start_line": 168,
+        "end_line": 168
+      },
+      {
         "file": "src/cli/hygiene.rs",
         "start_line": 628,
         "end_line": 628
@@ -1409,148 +1454,133 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 595,
-        "end_line": 595
+        "start_line": 626,
+        "end_line": 626
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 1072,
-        "end_line": 1072
+        "start_line": 1103,
+        "end_line": 1103
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 1140,
-        "end_line": 1140
+        "start_line": 1171,
+        "end_line": 1171
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 1982,
-        "end_line": 1982
+        "start_line": 2013,
+        "end_line": 2013
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3242,
-        "end_line": 3242
+        "start_line": 3273,
+        "end_line": 3273
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 4659,
-        "end_line": 4659
+        "start_line": 4690,
+        "end_line": 4690
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5465,
-        "end_line": 5465
+        "start_line": 5496,
+        "end_line": 5496
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5466,
-        "end_line": 5466
+        "start_line": 5497,
+        "end_line": 5497
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6572,
-        "end_line": 6572
+        "start_line": 6614,
+        "end_line": 6614
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6576,
-        "end_line": 6576
+        "start_line": 6618,
+        "end_line": 6618
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6602,
-        "end_line": 6602
+        "start_line": 6644,
+        "end_line": 6644
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6603,
-        "end_line": 6603
+        "start_line": 6645,
+        "end_line": 6645
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6755,
-        "end_line": 6755
+        "start_line": 6797,
+        "end_line": 6797
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6790,
-        "end_line": 6790
+        "start_line": 6832,
+        "end_line": 6832
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6825,
-        "end_line": 6825
+        "start_line": 6867,
+        "end_line": 6867
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6836,
-        "end_line": 6836
+        "start_line": 6878,
+        "end_line": 6878
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6921,
-        "end_line": 6921
+        "start_line": 6963,
+        "end_line": 6963
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6988,
-        "end_line": 6988
+        "start_line": 7030,
+        "end_line": 7030
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7056,
-        "end_line": 7056
+        "start_line": 7098,
+        "end_line": 7098
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7135,
-        "end_line": 7135
+        "start_line": 7177,
+        "end_line": 7177
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7245,
-        "end_line": 7245
+        "start_line": 7287,
+        "end_line": 7287
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7324,
-        "end_line": 7324
+        "start_line": 7366,
+        "end_line": 7366
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7751,
-        "end_line": 7751
+        "start_line": 7793,
+        "end_line": 7793
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7790,
-        "end_line": 7790
+        "start_line": 7832,
+        "end_line": 7832
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7836,
-        "end_line": 7836
+        "start_line": 7878,
+        "end_line": 7878
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7847,
-        "end_line": 7847
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "start_line": 8433,
-        "end_line": 8433
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "start_line": 8435,
-        "end_line": 8435
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "start_line": 8478,
-        "end_line": 8478
+        "start_line": 7889,
+        "end_line": 7889
       },
       {
         "file": "src/cli/mod.rs",
@@ -1559,28 +1589,43 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8549,
-        "end_line": 8549
+        "start_line": 8515,
+        "end_line": 8515
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8591,
-        "end_line": 8591
+        "start_line": 8558,
+        "end_line": 8558
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 8697,
-        "end_line": 8697
+        "start_line": 8593,
+        "end_line": 8593
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9145,
-        "end_line": 9145
+        "start_line": 8629,
+        "end_line": 8629
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10409,
-        "end_line": 10409
+        "start_line": 8671,
+        "end_line": 8671
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "start_line": 8777,
+        "end_line": 8777
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "start_line": 9225,
+        "end_line": 9225
+      },
+      {
+        "file": "src/cli/mod.rs",
+        "start_line": 10492,
+        "end_line": 10492
       },
       {
         "file": "src/cli/setup.rs",
@@ -1789,8 +1834,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2992,
-        "end_line": 2992
+        "start_line": 2995,
+        "end_line": 2995
       },
       {
         "file": "src/cli/validate.rs",
@@ -1799,8 +1844,13 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1289,
-        "end_line": 1289
+        "start_line": 1288,
+        "end_line": 1288
+      },
+      {
+        "file": "src/cli/validate.rs",
+        "start_line": 1298,
+        "end_line": 1298
       },
       {
         "file": "src/cli/validate.rs",
@@ -1819,23 +1869,18 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1302,
-        "end_line": 1302
+        "start_line": 2106,
+        "end_line": 2106
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 2107,
-        "end_line": 2107
-      },
-      {
-        "file": "src/cli/validate.rs",
-        "start_line": 2161,
-        "end_line": 2161
+        "start_line": 2160,
+        "end_line": 2160
       },
       {
         "file": "src/main.rs",
-        "start_line": 179,
-        "end_line": 179
+        "start_line": 181,
+        "end_line": 181
       },
       {
         "file": "tests/architecture_current_surface.rs",
@@ -1894,43 +1939,38 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 101,
-        "end_line": 101
+        "start_line": 102,
+        "end_line": 102
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 105,
-        "end_line": 105
+        "start_line": 106,
+        "end_line": 106
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 166,
-        "end_line": 166
+        "start_line": 167,
+        "end_line": 167
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 627,
-        "end_line": 627
+        "start_line": 628,
+        "end_line": 628
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 878,
-        "end_line": 878
+        "start_line": 879,
+        "end_line": 879
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1035,
-        "end_line": 1035
+        "start_line": 1036,
+        "end_line": 1036
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1056,
-        "end_line": 1056
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 1161,
-        "end_line": 1161
+        "start_line": 1057,
+        "end_line": 1057
       },
       {
         "file": "tests/cli.rs",
@@ -1939,28 +1979,28 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1214,
-        "end_line": 1214
+        "start_line": 1163,
+        "end_line": 1163
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1226,
-        "end_line": 1226
+        "start_line": 1215,
+        "end_line": 1215
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1318,
-        "end_line": 1318
+        "start_line": 1227,
+        "end_line": 1227
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1328,
-        "end_line": 1328
+        "start_line": 1319,
+        "end_line": 1319
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1393,
-        "end_line": 1393
+        "start_line": 1329,
+        "end_line": 1329
       },
       {
         "file": "tests/cli.rs",
@@ -1969,53 +2009,53 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1406,
-        "end_line": 1406
+        "start_line": 1395,
+        "end_line": 1395
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1427,
-        "end_line": 1427
+        "start_line": 1407,
+        "end_line": 1407
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1481,
-        "end_line": 1481
+        "start_line": 1428,
+        "end_line": 1428
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1521,
-        "end_line": 1521
+        "start_line": 1482,
+        "end_line": 1482
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1541,
-        "end_line": 1541
+        "start_line": 1522,
+        "end_line": 1522
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1556,
-        "end_line": 1556
+        "start_line": 1542,
+        "end_line": 1542
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1687,
-        "end_line": 1687
+        "start_line": 1557,
+        "end_line": 1557
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2427,
-        "end_line": 2427
+        "start_line": 1688,
+        "end_line": 1688
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2468,
-        "end_line": 2468
+        "start_line": 2428,
+        "end_line": 2428
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2500,
-        "end_line": 2500
+        "start_line": 2469,
+        "end_line": 2469
       },
       {
         "file": "tests/cli.rs",
@@ -2024,8 +2064,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2551,
-        "end_line": 2551
+        "start_line": 2502,
+        "end_line": 2502
       },
       {
         "file": "tests/cli.rs",
@@ -2034,153 +2074,153 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2575,
-        "end_line": 2575
+        "start_line": 2553,
+        "end_line": 2553
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2655,
-        "end_line": 2655
+        "start_line": 2576,
+        "end_line": 2576
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2670,
-        "end_line": 2670
+        "start_line": 2656,
+        "end_line": 2656
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2720,
-        "end_line": 2720
+        "start_line": 2671,
+        "end_line": 2671
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2745,
-        "end_line": 2745
+        "start_line": 2721,
+        "end_line": 2721
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3207,
-        "end_line": 3207
+        "start_line": 2746,
+        "end_line": 2746
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3211,
-        "end_line": 3211
+        "start_line": 3208,
+        "end_line": 3208
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3383,
-        "end_line": 3383
+        "start_line": 3212,
+        "end_line": 3212
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3672,
-        "end_line": 3672
+        "start_line": 3384,
+        "end_line": 3384
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3710,
-        "end_line": 3710
+        "start_line": 3673,
+        "end_line": 3673
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3905,
-        "end_line": 3905
+        "start_line": 3711,
+        "end_line": 3711
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3953,
-        "end_line": 3953
+        "start_line": 3906,
+        "end_line": 3906
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4140,
-        "end_line": 4140
+        "start_line": 3954,
+        "end_line": 3954
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4146,
-        "end_line": 4146
+        "start_line": 4141,
+        "end_line": 4141
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4154,
-        "end_line": 4154
+        "start_line": 4147,
+        "end_line": 4147
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4624,
-        "end_line": 4624
+        "start_line": 4155,
+        "end_line": 4155
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4726,
-        "end_line": 4726
+        "start_line": 4625,
+        "end_line": 4625
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5421,
-        "end_line": 5421
+        "start_line": 4727,
+        "end_line": 4727
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5621,
-        "end_line": 5621
+        "start_line": 5422,
+        "end_line": 5422
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5788,
-        "end_line": 5788
+        "start_line": 5622,
+        "end_line": 5622
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6015,
-        "end_line": 6015
+        "start_line": 5789,
+        "end_line": 5789
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6165,
-        "end_line": 6165
+        "start_line": 6016,
+        "end_line": 6016
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6353,
-        "end_line": 6353
+        "start_line": 6166,
+        "end_line": 6166
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6498,
-        "end_line": 6498
+        "start_line": 6354,
+        "end_line": 6354
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6707,
-        "end_line": 6707
+        "start_line": 6499,
+        "end_line": 6499
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6906,
-        "end_line": 6906
+        "start_line": 6708,
+        "end_line": 6708
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6994,
-        "end_line": 6994
+        "start_line": 6907,
+        "end_line": 6907
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7115,
-        "end_line": 7115
+        "start_line": 6995,
+        "end_line": 6995
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7308,
-        "end_line": 7308
+        "start_line": 7116,
+        "end_line": 7116
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7789,
-        "end_line": 7789
+        "start_line": 7309,
+        "end_line": 7309
       },
       {
         "file": "tests/cli.rs",
@@ -2189,8 +2229,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8094,
-        "end_line": 8094
+        "start_line": 7791,
+        "end_line": 7791
       },
       {
         "file": "tests/cli.rs",
@@ -2199,8 +2239,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8326,
-        "end_line": 8326
+        "start_line": 8096,
+        "end_line": 8096
       },
       {
         "file": "tests/cli.rs",
@@ -2209,83 +2249,83 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9032,
-        "end_line": 9032
+        "start_line": 8328,
+        "end_line": 8328
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9195,
-        "end_line": 9195
+        "start_line": 9033,
+        "end_line": 9033
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9370,
-        "end_line": 9370
+        "start_line": 9196,
+        "end_line": 9196
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9499,
-        "end_line": 9499
+        "start_line": 9371,
+        "end_line": 9371
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9546,
-        "end_line": 9546
+        "start_line": 9500,
+        "end_line": 9500
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9660,
-        "end_line": 9660
+        "start_line": 9547,
+        "end_line": 9547
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9932,
-        "end_line": 9932
+        "start_line": 9661,
+        "end_line": 9661
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10031,
-        "end_line": 10031
+        "start_line": 9933,
+        "end_line": 9933
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10120,
-        "end_line": 10120
+        "start_line": 10032,
+        "end_line": 10032
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10160,
-        "end_line": 10160
+        "start_line": 10121,
+        "end_line": 10121
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10855,
-        "end_line": 10855
+        "start_line": 10161,
+        "end_line": 10161
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11224,
-        "end_line": 11224
+        "start_line": 10856,
+        "end_line": 10856
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11224,
-        "end_line": 11224
+        "start_line": 11225,
+        "end_line": 11225
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11313,
-        "end_line": 11313
+        "start_line": 11225,
+        "end_line": 11225
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11313,
-        "end_line": 11313
+        "start_line": 11314,
+        "end_line": 11314
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11315,
-        "end_line": 11315
+        "start_line": 11314,
+        "end_line": 11314
       },
       {
         "file": "tests/cli.rs",
@@ -2294,43 +2334,43 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11521,
-        "end_line": 11521
+        "start_line": 11317,
+        "end_line": 11317
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11521,
-        "end_line": 11521
+        "start_line": 11522,
+        "end_line": 11522
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11568,
-        "end_line": 11568
+        "start_line": 11522,
+        "end_line": 11522
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11568,
-        "end_line": 11568
+        "start_line": 11569,
+        "end_line": 11569
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11581,
-        "end_line": 11581
+        "start_line": 11569,
+        "end_line": 11569
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11587,
-        "end_line": 11587
+        "start_line": 11582,
+        "end_line": 11582
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11589,
-        "end_line": 11589
+        "start_line": 11588,
+        "end_line": 11588
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11686,
-        "end_line": 11686
+        "start_line": 11590,
+        "end_line": 11590
       },
       {
         "file": "tests/cli.rs",
@@ -2339,18 +2379,18 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11696,
-        "end_line": 11696
+        "start_line": 11688,
+        "end_line": 11688
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11703,
-        "end_line": 11703
+        "start_line": 11697,
+        "end_line": 11697
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11707,
-        "end_line": 11707
+        "start_line": 11704,
+        "end_line": 11704
       },
       {
         "file": "tests/cli.rs",
@@ -2359,88 +2399,88 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11724,
-        "end_line": 11724
+        "start_line": 11709,
+        "end_line": 11709
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12049,
-        "end_line": 12049
+        "start_line": 11725,
+        "end_line": 11725
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12198,
-        "end_line": 12198
+        "start_line": 12050,
+        "end_line": 12050
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12234,
-        "end_line": 12234
+        "start_line": 12199,
+        "end_line": 12199
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12336,
-        "end_line": 12336
+        "start_line": 12235,
+        "end_line": 12235
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12480,
-        "end_line": 12480
+        "start_line": 12337,
+        "end_line": 12337
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12482,
-        "end_line": 12482
+        "start_line": 12481,
+        "end_line": 12481
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12484,
-        "end_line": 12484
+        "start_line": 12483,
+        "end_line": 12483
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12486,
-        "end_line": 12486
+        "start_line": 12485,
+        "end_line": 12485
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12514,
-        "end_line": 12514
+        "start_line": 12487,
+        "end_line": 12487
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12568,
-        "end_line": 12568
+        "start_line": 12515,
+        "end_line": 12515
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12593,
-        "end_line": 12593
+        "start_line": 12569,
+        "end_line": 12569
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13327,
-        "end_line": 13327
+        "start_line": 12594,
+        "end_line": 12594
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13424,
-        "end_line": 13424
+        "start_line": 13328,
+        "end_line": 13328
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13428,
-        "end_line": 13428
+        "start_line": 13425,
+        "end_line": 13425
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13460,
-        "end_line": 13460
+        "start_line": 13429,
+        "end_line": 13429
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13492,
-        "end_line": 13492
+        "start_line": 13461,
+        "end_line": 13461
       },
       {
         "file": "tests/cli.rs",
@@ -2449,38 +2489,38 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13540,
-        "end_line": 13540
+        "start_line": 13494,
+        "end_line": 13494
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13721,
-        "end_line": 13721
+        "start_line": 13541,
+        "end_line": 13541
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13725,
-        "end_line": 13725
+        "start_line": 13722,
+        "end_line": 13722
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13729,
-        "end_line": 13729
+        "start_line": 13726,
+        "end_line": 13726
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13738,
-        "end_line": 13738
+        "start_line": 13730,
+        "end_line": 13730
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13740,
-        "end_line": 13740
+        "start_line": 13739,
+        "end_line": 13739
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13744,
-        "end_line": 13744
+        "start_line": 13741,
+        "end_line": 13741
       },
       {
         "file": "tests/cli.rs",
@@ -2489,8 +2529,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13747,
-        "end_line": 13747
+        "start_line": 13746,
+        "end_line": 13746
       },
       {
         "file": "tests/cli.rs",
@@ -2504,23 +2544,23 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13786,
-        "end_line": 13786
+        "start_line": 13750,
+        "end_line": 13750
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13802,
-        "end_line": 13802
+        "start_line": 13787,
+        "end_line": 13787
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13810,
-        "end_line": 13810
+        "start_line": 13803,
+        "end_line": 13803
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13833,
-        "end_line": 13833
+        "start_line": 13811,
+        "end_line": 13811
       },
       {
         "file": "tests/cli.rs",
@@ -2539,508 +2579,513 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13968,
-        "end_line": 13968
+        "start_line": 13837,
+        "end_line": 13837
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13971,
-        "end_line": 13971
+        "start_line": 13969,
+        "end_line": 13969
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13984,
-        "end_line": 13984
+        "start_line": 13972,
+        "end_line": 13972
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14073,
-        "end_line": 14073
+        "start_line": 13985,
+        "end_line": 13985
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14122,
-        "end_line": 14122
+        "start_line": 14074,
+        "end_line": 14074
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14127,
-        "end_line": 14127
+        "start_line": 14123,
+        "end_line": 14123
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14141,
-        "end_line": 14141
+        "start_line": 14128,
+        "end_line": 14128
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14369,
-        "end_line": 14369
+        "start_line": 14142,
+        "end_line": 14142
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14972,
-        "end_line": 14972
+        "start_line": 14370,
+        "end_line": 14370
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15101,
-        "end_line": 15101
+        "start_line": 14973,
+        "end_line": 14973
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15103,
-        "end_line": 15103
+        "start_line": 15102,
+        "end_line": 15102
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15252,
-        "end_line": 15252
+        "start_line": 15104,
+        "end_line": 15104
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15609,
-        "end_line": 15609
+        "start_line": 15253,
+        "end_line": 15253
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15653,
-        "end_line": 15653
+        "start_line": 15610,
+        "end_line": 15610
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16090,
-        "end_line": 16090
+        "start_line": 15654,
+        "end_line": 15654
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16105,
-        "end_line": 16105
+        "start_line": 16091,
+        "end_line": 16091
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16165,
-        "end_line": 16165
+        "start_line": 16106,
+        "end_line": 16106
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16508,
-        "end_line": 16508
+        "start_line": 16166,
+        "end_line": 16166
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17197,
-        "end_line": 17197
+        "start_line": 16509,
+        "end_line": 16509
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17199,
-        "end_line": 17199
+        "start_line": 17217,
+        "end_line": 17217
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17655,
-        "end_line": 17655
+        "start_line": 17219,
+        "end_line": 17219
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17713,
-        "end_line": 17713
+        "start_line": 18140,
+        "end_line": 18140
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17721,
-        "end_line": 17721
+        "start_line": 18198,
+        "end_line": 18198
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17943,
-        "end_line": 17943
+        "start_line": 18206,
+        "end_line": 18206
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17945,
-        "end_line": 17945
+        "start_line": 18428,
+        "end_line": 18428
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18016,
-        "end_line": 18016
+        "start_line": 18430,
+        "end_line": 18430
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18023,
-        "end_line": 18023
+        "start_line": 18501,
+        "end_line": 18501
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18863,
-        "end_line": 18863
+        "start_line": 18508,
+        "end_line": 18508
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19584,
-        "end_line": 19584
+        "start_line": 19348,
+        "end_line": 19348
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19918,
-        "end_line": 19918
+        "start_line": 20069,
+        "end_line": 20069
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19953,
-        "end_line": 19953
+        "start_line": 20403,
+        "end_line": 20403
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20028,
-        "end_line": 20028
+        "start_line": 20438,
+        "end_line": 20438
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20109,
-        "end_line": 20109
+        "start_line": 20513,
+        "end_line": 20513
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20123,
-        "end_line": 20123
+        "start_line": 20594,
+        "end_line": 20594
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20184,
-        "end_line": 20184
+        "start_line": 20608,
+        "end_line": 20608
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20268,
-        "end_line": 20268
+        "start_line": 20669,
+        "end_line": 20669
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20653,
-        "end_line": 20653
+        "start_line": 20753,
+        "end_line": 20753
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20665,
-        "end_line": 20665
+        "start_line": 21138,
+        "end_line": 21138
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20692,
-        "end_line": 20692
+        "start_line": 21150,
+        "end_line": 21150
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20720,
-        "end_line": 20720
+        "start_line": 21177,
+        "end_line": 21177
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20731,
-        "end_line": 20731
+        "start_line": 21205,
+        "end_line": 21205
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20768,
-        "end_line": 20768
+        "start_line": 21216,
+        "end_line": 21216
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20857,
-        "end_line": 20857
+        "start_line": 21253,
+        "end_line": 21253
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20926,
-        "end_line": 20926
+        "start_line": 21342,
+        "end_line": 21342
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21546,
-        "end_line": 21546
+        "start_line": 21411,
+        "end_line": 21411
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21933,
-        "end_line": 21933
+        "start_line": 22031,
+        "end_line": 22031
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21955,
-        "end_line": 21955
+        "start_line": 22418,
+        "end_line": 22418
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22038,
-        "end_line": 22038
+        "start_line": 22440,
+        "end_line": 22440
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22238,
-        "end_line": 22238
+        "start_line": 22523,
+        "end_line": 22523
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22421,
-        "end_line": 22421
+        "start_line": 22723,
+        "end_line": 22723
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22525,
-        "end_line": 22525
+        "start_line": 22906,
+        "end_line": 22906
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22651,
-        "end_line": 22651
+        "start_line": 23010,
+        "end_line": 23010
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23329,
-        "end_line": 23329
+        "start_line": 23136,
+        "end_line": 23136
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23333,
-        "end_line": 23333
+        "start_line": 23814,
+        "end_line": 23814
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23337,
-        "end_line": 23337
+        "start_line": 23818,
+        "end_line": 23818
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23342,
-        "end_line": 23342
+        "start_line": 23822,
+        "end_line": 23822
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23368,
-        "end_line": 23368
+        "start_line": 23827,
+        "end_line": 23827
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23375,
-        "end_line": 23375
+        "start_line": 23853,
+        "end_line": 23853
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23417,
-        "end_line": 23417
+        "start_line": 23860,
+        "end_line": 23860
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23444,
-        "end_line": 23444
+        "start_line": 23902,
+        "end_line": 23902
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23474,
-        "end_line": 23474
+        "start_line": 23929,
+        "end_line": 23929
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23480,
-        "end_line": 23480
+        "start_line": 23959,
+        "end_line": 23959
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23584,
-        "end_line": 23584
+        "start_line": 23965,
+        "end_line": 23965
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23585,
-        "end_line": 23585
+        "start_line": 24069,
+        "end_line": 24069
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23660,
-        "end_line": 23660
+        "start_line": 24070,
+        "end_line": 24070
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23689,
-        "end_line": 23689
+        "start_line": 24145,
+        "end_line": 24145
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23696,
-        "end_line": 23696
+        "start_line": 24174,
+        "end_line": 24174
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23756,
-        "end_line": 23756
+        "start_line": 24181,
+        "end_line": 24181
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23759,
-        "end_line": 23759
+        "start_line": 24241,
+        "end_line": 24241
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23812,
-        "end_line": 23812
+        "start_line": 24244,
+        "end_line": 24244
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23834,
-        "end_line": 23834
+        "start_line": 24297,
+        "end_line": 24297
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23839,
-        "end_line": 23839
+        "start_line": 24319,
+        "end_line": 24319
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23877,
-        "end_line": 23877
+        "start_line": 24324,
+        "end_line": 24324
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23888,
-        "end_line": 23888
+        "start_line": 24362,
+        "end_line": 24362
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24368,
-        "end_line": 24368
+        "start_line": 24373,
+        "end_line": 24373
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24521,
-        "end_line": 24521
+        "start_line": 24853,
+        "end_line": 24853
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25415,
-        "end_line": 25415
+        "start_line": 25006,
+        "end_line": 25006
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25440,
-        "end_line": 25440
+        "start_line": 25897,
+        "end_line": 25897
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25535,
-        "end_line": 25535
+        "start_line": 25922,
+        "end_line": 25922
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25771,
-        "end_line": 25771
+        "start_line": 26017,
+        "end_line": 26017
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26227,
-        "end_line": 26227
+        "start_line": 26253,
+        "end_line": 26253
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26233,
-        "end_line": 26233
+        "start_line": 26709,
+        "end_line": 26709
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26252,
-        "end_line": 26252
+        "start_line": 26715,
+        "end_line": 26715
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26278,
-        "end_line": 26278
+        "start_line": 26734,
+        "end_line": 26734
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26314,
-        "end_line": 26314
+        "start_line": 26760,
+        "end_line": 26760
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26353,
-        "end_line": 26353
+        "start_line": 26796,
+        "end_line": 26796
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26545,
-        "end_line": 26545
+        "start_line": 26835,
+        "end_line": 26835
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26578,
-        "end_line": 26578
+        "start_line": 27027,
+        "end_line": 27027
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26730,
-        "end_line": 26730
+        "start_line": 27060,
+        "end_line": 27060
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26903,
-        "end_line": 26903
+        "start_line": 27212,
+        "end_line": 27212
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26958,
-        "end_line": 26958
+        "start_line": 27385,
+        "end_line": 27385
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26989,
-        "end_line": 26989
+        "start_line": 27440,
+        "end_line": 27440
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26993,
-        "end_line": 26993
+        "start_line": 27471,
+        "end_line": 27471
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27475,
+        "end_line": 27475
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 159,
-        "end_line": 159
+        "start_line": 231,
+        "end_line": 231
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 170,
-        "end_line": 170
+        "start_line": 242,
+        "end_line": 242
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 191,
-        "end_line": 191
+        "start_line": 263,
+        "end_line": 263
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 208,
-        "end_line": 208
+        "start_line": 280,
+        "end_line": 280
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 472,
-        "end_line": 472
+        "start_line": 554,
+        "end_line": 554
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 473,
-        "end_line": 473
+        "start_line": 555,
+        "end_line": 555
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 537,
-        "end_line": 537
+        "start_line": 668,
+        "end_line": 668
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 634,
-        "end_line": 634
+        "start_line": 765,
+        "end_line": 765
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3079,28 +3124,28 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3033,
-        "end_line": 3033
+        "start_line": 3035,
+        "end_line": 3035
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3167,
-        "end_line": 3167
+        "start_line": 3169,
+        "end_line": 3169
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4257,
-        "end_line": 4257
+        "start_line": 4259,
+        "end_line": 4259
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5137,
-        "end_line": 5137
+        "start_line": 5133,
+        "end_line": 5133
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 5557,
-        "end_line": 5557
+        "start_line": 5553,
+        "end_line": 5553
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
@@ -3673,6 +3718,21 @@
         "end_line": 233
       },
       {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 353,
+        "end_line": 353
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 599,
+        "end_line": 599
+      },
+      {
+        "file": "tests/spec_critique_periphery.rs",
+        "start_line": 1285,
+        "end_line": 1285
+      },
+      {
         "file": "tests/statusline_command_periphery.rs",
         "start_line": 118,
         "end_line": 118
@@ -3904,8 +3964,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 30938,
-        "end_line": 30953
+        "start_line": 31169,
+        "end_line": 31184
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -3919,13 +3979,13 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 34496,
-        "end_line": 34504
+        "start_line": 34727,
+        "end_line": 34735
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 34534,
-        "end_line": 34542
+        "start_line": 34765,
+        "end_line": 34773
       }
     ]
   },
@@ -3934,13 +3994,13 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 34527,
-        "end_line": 34533
+        "start_line": 34758,
+        "end_line": 34764
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 34564,
-        "end_line": 34571
+        "start_line": 34795,
+        "end_line": 34802
       }
     ]
   },
@@ -3949,23 +4009,23 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37762,
-        "end_line": 37803
+        "start_line": 37993,
+        "end_line": 38034
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 38308,
-        "end_line": 38350
+        "start_line": 38539,
+        "end_line": 38581
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 38767,
-        "end_line": 38804
+        "start_line": 38998,
+        "end_line": 39035
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 38913,
-        "end_line": 38958
+        "start_line": 39144,
+        "end_line": 39189
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -3979,13 +4039,33 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 42218,
-        "end_line": 42228
+        "start_line": 42449,
+        "end_line": 42459
       },
       {
         "file": "tests/replan_episode_identity.rs",
         "start_line": 274,
         "end_line": 284
+      }
+    ]
+  },
+  {
+    "id": "dup-da45cd3da239",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 43498,
+        "end_line": 43500
+      },
+      {
+        "file": "crates/rigger-domain/src/metrics.rs",
+        "start_line": 2733,
+        "end_line": 2735
+      },
+      {
+        "file": "tests/plan_critique_spec_defect_stop_periphery.rs",
+        "start_line": 66,
+        "end_line": 68
       }
     ]
   },
@@ -4029,8 +4109,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 6303,
-        "end_line": 6309
+        "start_line": 6345,
+        "end_line": 6351
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4069,13 +4149,13 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 986,
-        "end_line": 988
+        "start_line": 1275,
+        "end_line": 1277
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1310,
-        "end_line": 1312
+        "start_line": 1309,
+        "end_line": 1311
       }
     ]
   },
@@ -4129,13 +4209,13 @@
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 924,
-        "end_line": 931
+        "start_line": 1021,
+        "end_line": 1028
       },
       {
         "file": "crates/rigger-domain/src/ledger.rs",
-        "start_line": 934,
-        "end_line": 949
+        "start_line": 1031,
+        "end_line": 1046
       },
       {
         "file": "crates/rigger-domain/src/progress.rs",
@@ -4180,7 +4260,7 @@
     ]
   },
   {
-    "id": "dup-227133ad22cd",
+    "id": "dup-5449e35bae05",
     "sites": [
       {
         "file": "crates/rigger-console/src/console/map.rs",
@@ -4189,8 +4269,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 1913,
-        "end_line": 1934
+        "start_line": 2202,
+        "end_line": 2230
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
@@ -4249,28 +4329,28 @@
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8445,
-        "end_line": 8445
+        "start_line": 8503,
+        "end_line": 8503
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8453,
-        "end_line": 8453
+        "start_line": 8511,
+        "end_line": 8511
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8460,
-        "end_line": 8460
+        "start_line": 8518,
+        "end_line": 8518
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8484,
-        "end_line": 8484
+        "start_line": 8542,
+        "end_line": 8542
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 8526,
-        "end_line": 8526
+        "start_line": 8584,
+        "end_line": 8584
       },
       {
         "file": "crates/rigger-process/src/holders.rs",
@@ -4309,73 +4389,73 @@
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3254,
-        "end_line": 3254
+        "start_line": 3407,
+        "end_line": 3407
       },
       {
         "file": "src/cli/run.rs",
-        "start_line": 3358,
-        "end_line": 3358
+        "start_line": 3511,
+        "end_line": 3511
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20211,
-        "end_line": 20211
+        "start_line": 20696,
+        "end_line": 20696
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24587,
-        "end_line": 24587
+        "start_line": 25069,
+        "end_line": 25069
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24695,
-        "end_line": 24695
+        "start_line": 25177,
+        "end_line": 25177
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24732,
-        "end_line": 24732
+        "start_line": 25214,
+        "end_line": 25214
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24783,
-        "end_line": 24783
+        "start_line": 25265,
+        "end_line": 25265
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24806,
-        "end_line": 24806
+        "start_line": 25288,
+        "end_line": 25288
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24831,
-        "end_line": 24831
+        "start_line": 25313,
+        "end_line": 25313
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24895,
-        "end_line": 24895
+        "start_line": 25377,
+        "end_line": 25377
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24921,
-        "end_line": 24921
+        "start_line": 25403,
+        "end_line": 25403
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25019,
-        "end_line": 25019
+        "start_line": 25501,
+        "end_line": 25501
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25057,
-        "end_line": 25057
+        "start_line": 25539,
+        "end_line": 25539
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25076,
-        "end_line": 25076
+        "start_line": 25558,
+        "end_line": 25558
       },
       {
         "file": "tests/common/fixtures/host.rs",
@@ -4504,8 +4584,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4057,
-        "end_line": 4062
+        "start_line": 4055,
+        "end_line": 4060
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4524,13 +4604,13 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4815,
-        "end_line": 4850
+        "start_line": 4813,
+        "end_line": 4848
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 4861,
-        "end_line": 4898
+        "start_line": 4859,
+        "end_line": 4896
       },
       {
         "file": "tests/console_palette_periphery.rs",
@@ -4554,8 +4634,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9031,
-        "end_line": 9033
+        "start_line": 9089,
+        "end_line": 9091
       },
       {
         "file": "tests/common/fixtures/graph.rs",
@@ -4569,8 +4649,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9034,
-        "end_line": 9036
+        "start_line": 9092,
+        "end_line": 9094
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -4584,13 +4664,13 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9642,
-        "end_line": 9666
+        "start_line": 9700,
+        "end_line": 9724
       },
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9904,
-        "end_line": 9924
+        "start_line": 9962,
+        "end_line": 9982
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -4604,8 +4684,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 9950,
-        "end_line": 10000
+        "start_line": 10008,
+        "end_line": 10058
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -4619,8 +4699,8 @@
     "sites": [
       {
         "file": "crates/rigger-dash/src/dash.rs",
-        "start_line": 10279,
-        "end_line": 10321
+        "start_line": 10337,
+        "end_line": 10379
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -4649,8 +4729,8 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 170,
-        "end_line": 172
+        "start_line": 208,
+        "end_line": 210
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -4660,12 +4740,27 @@
     ]
   },
   {
+    "id": "dup-ed7dd2365bce",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/agent.rs",
+        "start_line": 158,
+        "end_line": 179
+      },
+      {
+        "file": "tests/common/mod.rs",
+        "start_line": 464,
+        "end_line": 478
+      }
+    ]
+  },
+  {
     "id": "dup-2a5626cb9627",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
-        "start_line": 235,
-        "end_line": 250
+        "start_line": 269,
+        "end_line": 284
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
@@ -4789,8 +4884,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3282,
-        "end_line": 3287
+        "start_line": 3313,
+        "end_line": 3318
       }
     ]
   },
@@ -4845,42 +4940,27 @@
     ]
   },
   {
-    "id": "dup-ece6988d7484",
+    "id": "dup-0c6e804c2770",
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 460,
-        "end_line": 462
+        "start_line": 916,
+        "end_line": 944
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 631,
-        "end_line": 633
-      }
-    ]
-  },
-  {
-    "id": "dup-c5777007a33f",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 741,
-        "end_line": 769
+        "start_line": 949,
+        "end_line": 976
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 774,
-        "end_line": 801
-      },
-      {
-        "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 806,
-        "end_line": 840
-      },
-      {
-        "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 969,
+        "start_line": 981,
         "end_line": 1019
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "start_line": 1148,
+        "end_line": 1198
       }
     ]
   },
@@ -4889,13 +4969,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 847,
-        "end_line": 882
+        "start_line": 1026,
+        "end_line": 1061
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "start_line": 1028,
-        "end_line": 1077
+        "start_line": 1207,
+        "end_line": 1256
       }
     ]
   },
@@ -4909,8 +4989,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 566,
-        "end_line": 569
+        "start_line": 584,
+        "end_line": 587
       }
     ]
   },
@@ -5009,8 +5089,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 652,
-        "end_line": 654
+        "start_line": 661,
+        "end_line": 663
       }
     ]
   },
@@ -5079,8 +5159,8 @@
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 572,
-        "end_line": 574
+        "start_line": 590,
+        "end_line": 592
       }
     ]
   },
@@ -5124,18 +5204,18 @@
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 537,
-        "end_line": 539
+        "start_line": 635,
+        "end_line": 637
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 540,
-        "end_line": 542
+        "start_line": 638,
+        "end_line": 640
       },
       {
         "file": "crates/rigger-domain/src/run.rs",
-        "start_line": 543,
-        "end_line": 545
+        "start_line": 641,
+        "end_line": 643
       }
     ]
   },
@@ -5170,12 +5250,27 @@
     ]
   },
   {
+    "id": "dup-4b3a37bb0a60",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "start_line": 361,
+        "end_line": 363
+      },
+      {
+        "file": "crates/rigger-domain/src/spawn.rs",
+        "start_line": 367,
+        "end_line": 369
+      }
+    ]
+  },
+  {
     "id": "dup-2b572fcabbd4",
     "sites": [
       {
         "file": "crates/rigger-domain/src/spawn.rs",
-        "start_line": 557,
-        "end_line": 563
+        "start_line": 575,
+        "end_line": 581
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -5189,13 +5284,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 541,
-        "end_line": 548
+        "start_line": 546,
+        "end_line": 553
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 433,
-        "end_line": 436
+        "start_line": 391,
+        "end_line": 394
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5209,13 +5304,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 652,
-        "end_line": 654
+        "start_line": 657,
+        "end_line": 659
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 662,
-        "end_line": 664
+        "start_line": 667,
+        "end_line": 669
       }
     ]
   },
@@ -5224,13 +5319,13 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 1854,
-        "end_line": 1866
+        "start_line": 2143,
+        "end_line": 2155
       },
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2064,
-        "end_line": 2073
+        "start_line": 2360,
+        "end_line": 2369
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -5244,8 +5339,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2203,
-        "end_line": 2205
+        "start_line": 2522,
+        "end_line": 2524
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
@@ -5259,8 +5354,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/watch.rs",
-        "start_line": 657,
-        "end_line": 659
+        "start_line": 672,
+        "end_line": 674
       },
       {
         "file": "crates/rigger-driver/src/driver/workflow.rs",
@@ -5274,13 +5369,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1375,
-        "end_line": 1382
+        "start_line": 1376,
+        "end_line": 1383
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1416,
-        "end_line": 1423
+        "start_line": 1417,
+        "end_line": 1424
       }
     ]
   },
@@ -5289,28 +5384,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1409,
-        "end_line": 1415
+        "start_line": 1410,
+        "end_line": 1416
       },
       {
         "file": "crates/rigger-driver/src/driver/claude_code.rs",
-        "start_line": 1443,
-        "end_line": 1449
-      }
-    ]
-  },
-  {
-    "id": "dup-cd5c22f2a701",
-    "sites": [
-      {
-        "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 265,
-        "end_line": 286
-      },
-      {
-        "file": "tests/common/mod.rs",
-        "start_line": 464,
-        "end_line": 478
+        "start_line": 1444,
+        "end_line": 1450
       }
     ]
   },
@@ -5319,8 +5399,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 391,
-        "end_line": 398
+        "start_line": 358,
+        "end_line": 365
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5339,8 +5419,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 404,
-        "end_line": 411
+        "start_line": 371,
+        "end_line": 378
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
@@ -5359,8 +5439,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 547,
-        "end_line": 555
+        "start_line": 514,
+        "end_line": 522
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",
@@ -5374,8 +5454,8 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 1271,
-        "end_line": 1280
+        "start_line": 1238,
+        "end_line": 1247
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5389,13 +5469,13 @@
     "sites": [
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 2024,
-        "end_line": 2072
+        "start_line": 1991,
+        "end_line": 2039
       },
       {
         "file": "crates/rigger-driver/src/driver/replay.rs",
-        "start_line": 2148,
-        "end_line": 2197
+        "start_line": 2115,
+        "end_line": 2164
       }
     ]
   },
@@ -5514,8 +5594,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 429,
-        "end_line": 429
+        "start_line": 417,
+        "end_line": 417
       },
       {
         "file": "crates/rigger-store-sqlite/src/sqlite.rs",
@@ -5524,48 +5604,48 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5120,
-        "end_line": 5120
+        "start_line": 5151,
+        "end_line": 5151
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12032,
-        "end_line": 12032
+        "start_line": 12115,
+        "end_line": 12115
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 640,
-        "end_line": 640
+        "start_line": 641,
+        "end_line": 641
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 743,
-        "end_line": 743
+        "start_line": 744,
+        "end_line": 744
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 846,
-        "end_line": 846
+        "start_line": 847,
+        "end_line": 847
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 889,
-        "end_line": 889
+        "start_line": 890,
+        "end_line": 890
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9668,
-        "end_line": 9668
+        "start_line": 9669,
+        "end_line": 9669
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 243,
-        "end_line": 243
+        "start_line": 325,
+        "end_line": 325
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 645,
-        "end_line": 645
+        "start_line": 776,
+        "end_line": 776
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -5579,88 +5659,88 @@
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 98,
-        "end_line": 98
+        "start_line": 100,
+        "end_line": 100
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 466,
-        "end_line": 466
+        "start_line": 468,
+        "end_line": 468
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2250,
-        "end_line": 2250
+        "start_line": 2252,
+        "end_line": 2252
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2811,
-        "end_line": 2811
+        "start_line": 2813,
+        "end_line": 2813
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2909,
-        "end_line": 2909
+        "start_line": 2911,
+        "end_line": 2911
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 2925,
-        "end_line": 2925
+        "start_line": 2927,
+        "end_line": 2927
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3053,
-        "end_line": 3053
+        "start_line": 3055,
+        "end_line": 3055
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3173,
-        "end_line": 3173
+        "start_line": 3175,
+        "end_line": 3175
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3918,
-        "end_line": 3918
+        "start_line": 3920,
+        "end_line": 3920
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4043,
-        "end_line": 4043
+        "start_line": 4045,
+        "end_line": 4045
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4103,
-        "end_line": 4103
+        "start_line": 4105,
+        "end_line": 4105
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4319,
-        "end_line": 4319
+        "start_line": 4321,
+        "end_line": 4321
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4612,
-        "end_line": 4612
+        "start_line": 4614,
+        "end_line": 4614
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 4872,
-        "end_line": 4872
+        "start_line": 4874,
+        "end_line": 4874
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6009,
-        "end_line": 6009
+        "start_line": 6005,
+        "end_line": 6005
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6354,
-        "end_line": 6354
+        "start_line": 6350,
+        "end_line": 6350
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 6670,
-        "end_line": 6670
+        "start_line": 6666,
+        "end_line": 6666
       },
       {
         "file": "tests/graph_additive_indexes_persist.rs",
@@ -6259,8 +6339,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1774,
-        "end_line": 1781
+        "start_line": 1773,
+        "end_line": 1780
       }
     ]
   },
@@ -6379,13 +6459,13 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 600,
-        "end_line": 614
+        "start_line": 628,
+        "end_line": 642
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
-        "start_line": 669,
-        "end_line": 684
+        "start_line": 697,
+        "end_line": 712
       }
     ]
   },
@@ -6474,8 +6554,8 @@
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1950,
-        "end_line": 1952
+        "start_line": 1949,
+        "end_line": 1951
       }
     ]
   },
@@ -6499,13 +6579,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 825,
-        "end_line": 827
+        "start_line": 856,
+        "end_line": 858
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5048,
-        "end_line": 5050
+        "start_line": 5079,
+        "end_line": 5081
       }
     ]
   },
@@ -6514,8 +6594,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 1259,
-        "end_line": 1261
+        "start_line": 1290,
+        "end_line": 1292
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -6529,8 +6609,8 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 3654,
-        "end_line": 3673
+        "start_line": 3685,
+        "end_line": 3704
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -6544,18 +6624,18 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 5158,
-        "end_line": 5165
+        "start_line": 5189,
+        "end_line": 5196
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4350,
-        "end_line": 4373
+        "start_line": 4351,
+        "end_line": 4374
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4381,
-        "end_line": 4394
+        "start_line": 4382,
+        "end_line": 4395
       }
     ]
   },
@@ -6564,13 +6644,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7560,
-        "end_line": 7615
+        "start_line": 7602,
+        "end_line": 7657
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 7618,
-        "end_line": 7657
+        "start_line": 7660,
+        "end_line": 7699
       }
     ]
   },
@@ -6579,13 +6659,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 9876,
-        "end_line": 9887
+        "start_line": 9957,
+        "end_line": 9968
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11191,
-        "end_line": 11194
+        "start_line": 11274,
+        "end_line": 11277
       }
     ]
   },
@@ -6594,13 +6674,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 10197,
-        "end_line": 10206
+        "start_line": 10280,
+        "end_line": 10289
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3410,
-        "end_line": 3419
+        "start_line": 3411,
+        "end_line": 3420
       }
     ]
   },
@@ -6609,13 +6689,13 @@
     "sites": [
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11459,
-        "end_line": 11468
+        "start_line": 11542,
+        "end_line": 11551
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 11506,
-        "end_line": 11525
+        "start_line": 11589,
+        "end_line": 11608
       }
     ]
   },
@@ -6629,8 +6709,8 @@
       },
       {
         "file": "src/main.rs",
-        "start_line": 378,
-        "end_line": 380
+        "start_line": 386,
+        "end_line": 388
       }
     ]
   },
@@ -6654,13 +6734,13 @@
     "sites": [
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1477,
-        "end_line": 1498
+        "start_line": 1476,
+        "end_line": 1497
       },
       {
         "file": "src/cli/validate.rs",
-        "start_line": 1501,
-        "end_line": 1522
+        "start_line": 1500,
+        "end_line": 1521
       }
     ]
   },
@@ -6739,33 +6819,33 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9608,
-        "end_line": 9645
+        "start_line": 9609,
+        "end_line": 9646
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9900,
-        "end_line": 9914
+        "start_line": 9901,
+        "end_line": 9915
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19432,
-        "end_line": 19490
+        "start_line": 19917,
+        "end_line": 19975
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19698,
-        "end_line": 19738
+        "start_line": 20183,
+        "end_line": 20223
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19808,
-        "end_line": 19840
+        "start_line": 20293,
+        "end_line": 20325
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19884,
-        "end_line": 19905
+        "start_line": 20369,
+        "end_line": 20390
       },
       {
         "file": "tests/escalation_resume_periphery.rs",
@@ -6804,113 +6884,113 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 1242,
-        "end_line": 1259
+        "start_line": 1243,
+        "end_line": 1260
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1370,
-        "end_line": 1381
+        "start_line": 1371,
+        "end_line": 1382
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1613,
-        "end_line": 1630
+        "start_line": 1614,
+        "end_line": 1631
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2542,
-        "end_line": 2554
+        "start_line": 2543,
+        "end_line": 2555
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3320,
-        "end_line": 3347
+        "start_line": 3321,
+        "end_line": 3348
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5270,
-        "end_line": 5291
+        "start_line": 5271,
+        "end_line": 5292
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5294,
-        "end_line": 5308
+        "start_line": 5295,
+        "end_line": 5309
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10475,
-        "end_line": 10485
+        "start_line": 10476,
+        "end_line": 10486
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13413,
-        "end_line": 13444
+        "start_line": 13414,
+        "end_line": 13445
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13889,
-        "end_line": 13909
+        "start_line": 13890,
+        "end_line": 13910
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14442,
-        "end_line": 14451
+        "start_line": 14443,
+        "end_line": 14452
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14607,
-        "end_line": 14636
+        "start_line": 14608,
+        "end_line": 14637
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14665,
-        "end_line": 14679
+        "start_line": 14666,
+        "end_line": 14680
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14817,
-        "end_line": 14852
+        "start_line": 14818,
+        "end_line": 14853
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16461,
-        "end_line": 16473
+        "start_line": 16462,
+        "end_line": 16474
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16583,
-        "end_line": 16594
+        "start_line": 16584,
+        "end_line": 16595
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23917,
-        "end_line": 23927
+        "start_line": 24402,
+        "end_line": 24412
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23930,
-        "end_line": 23947
+        "start_line": 24415,
+        "end_line": 24432
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23950,
-        "end_line": 23972
+        "start_line": 24435,
+        "end_line": 24457
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24338,
-        "end_line": 24347
+        "start_line": 24823,
+        "end_line": 24832
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25476,
-        "end_line": 25508
+        "start_line": 25958,
+        "end_line": 25990
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26983,
-        "end_line": 27003
+        "start_line": 27465,
+        "end_line": 27485
       },
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -6969,13 +7049,13 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 1697,
-        "end_line": 1699
+        "start_line": 1698,
+        "end_line": 1700
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1718,
-        "end_line": 1720
+        "start_line": 1719,
+        "end_line": 1721
       }
     ]
   },
@@ -6984,8 +7064,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 4101,
-        "end_line": 4157
+        "start_line": 4102,
+        "end_line": 4158
       },
       {
         "file": "tests/worker_persona_label_periphery.rs",
@@ -6999,13 +7079,13 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 7634,
-        "end_line": 7667
+        "start_line": 7635,
+        "end_line": 7668
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8207,
-        "end_line": 8250
+        "start_line": 8208,
+        "end_line": 8251
       },
       {
         "file": "tests/step_attention_periphery.rs",
@@ -7019,8 +7099,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 8742,
-        "end_line": 8745
+        "start_line": 8743,
+        "end_line": 8746
       },
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -7034,13 +7114,13 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11922,
-        "end_line": 11924
+        "start_line": 11923,
+        "end_line": 11925
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18343,
-        "end_line": 18345
+        "start_line": 18828,
+        "end_line": 18830
       }
     ]
   },
@@ -7049,13 +7129,13 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 16882,
-        "end_line": 16912
+        "start_line": 16883,
+        "end_line": 16913
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26777,
-        "end_line": 26824
+        "start_line": 27259,
+        "end_line": 27306
       }
     ]
   },
@@ -7064,13 +7144,13 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 18766,
-        "end_line": 18771
+        "start_line": 19251,
+        "end_line": 19256
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18791,
-        "end_line": 18808
+        "start_line": 19276,
+        "end_line": 19293
       }
     ]
   },
@@ -7164,8 +7244,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 483,
-        "end_line": 490
+        "start_line": 614,
+        "end_line": 621
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7179,13 +7259,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 519,
-        "end_line": 539
+        "start_line": 650,
+        "end_line": 670
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 543,
-        "end_line": 559
+        "start_line": 674,
+        "end_line": 690
       },
       {
         "file": "tests/store_secrets.rs",
@@ -7199,13 +7279,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 142,
-        "end_line": 149
+        "start_line": 151,
+        "end_line": 158
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 171,
-        "end_line": 178
+        "start_line": 180,
+        "end_line": 187
       }
     ]
   },
@@ -7214,13 +7294,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 168,
-        "end_line": 170
+        "start_line": 177,
+        "end_line": 179
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 196,
-        "end_line": 198
+        "start_line": 205,
+        "end_line": 207
       }
     ]
   },
@@ -7229,13 +7309,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 179,
-        "end_line": 186
+        "start_line": 188,
+        "end_line": 195
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 253,
-        "end_line": 260
+        "start_line": 262,
+        "end_line": 269
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -7249,13 +7329,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 549,
-        "end_line": 557
+        "start_line": 558,
+        "end_line": 566
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 616,
-        "end_line": 624
+        "start_line": 625,
+        "end_line": 633
       }
     ]
   },
@@ -7389,8 +7469,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 658,
-        "end_line": 664
+        "start_line": 660,
+        "end_line": 666
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -7404,8 +7484,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3464,
-        "end_line": 3469
+        "start_line": 3466,
+        "end_line": 3471
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -7419,8 +7499,8 @@
     "sites": [
       {
         "file": "tests/compaction_generations_periphery.rs",
-        "start_line": 3899,
-        "end_line": 3905
+        "start_line": 3901,
+        "end_line": 3907
       },
       {
         "file": "tests/one_shot_reads_periphery.rs",
