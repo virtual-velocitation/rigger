@@ -2352,6 +2352,29 @@ mod tests {
                 The config carries `either this or that` as a literal token, unrelated prose.\n"),
             "quoted code must never false-positive; got: ",
         );
+        /// The one fence reader reads fences as CommonMark does (`d112-op-seam-items-from-c4`):
+        /// a tilde fence is a fenced block, and inside a four-backtick fence neither a tilde
+        /// run nor a shorter backtick run closes it, so the smell after both stays code.
+        disposition_check_ignores_tilde_fences_and_runs_that_do_not_close_their_fence: assert_silent(
+            disposition_advisories("## Design\n\n\
+                ~~~\nworth considering as literal example text\n~~~\n\n\
+                ````md\n```\n~~~\ncould instead as literal example text\n````\n"),
+            "fenced code must never false-positive; got: ",
+        );
+    }
+
+    /// The one Markdown fence reader, pinned line by line (`d112-op-seam-items-from-c4`): a run
+    /// of three or more backticks or tildes opens a block, only a run of the same character at
+    /// least as long with nothing after it closes it, both fence lines are inside, an unclosed
+    /// block runs to the end, and a backtick run whose rest holds a backtick opens nothing.
+    #[test]
+    fn fenced_code_lines_reads_fences_as_commonmark_does() {
+        let text = "a\n````md\n```\n~~~\nx\n````\nb\n~~~\n```\n~~~\n``` `x` ```\n  ```\ny";
+        assert_eq!(
+            fenced_code_lines(text),
+            [false, true, true, true, true, true, false, true, true, true, false, true, true],
+            "fences of {text:?}"
+        );
     }
 
     crate::test_cases! {

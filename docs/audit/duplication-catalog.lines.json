@@ -5319,8 +5319,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/spec.rs",
-        "start_line": 2474,
-        "end_line": 2476
+        "start_line": 2497,
+        "end_line": 2499
       },
       {
         "file": "crates/rigger-driver/src/liveness.rs",

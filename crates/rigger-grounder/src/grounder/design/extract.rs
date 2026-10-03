@@ -659,6 +659,18 @@ mod tests {
              ```\nlet p = \"src/example.rs\";\nuse `src/fenced.rs`;\n```\n",
             &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
         );
+        /// The doc's fences are read by the one Markdown fence reader, as CommonMark reads them
+        /// (`d112-op-seam-items-from-c4`): a tilde line inside a backtick fence and a shorter
+        /// backtick run inside a longer one are the block's text, so the paths after them stay
+        /// examples and only the prose mention after each block links.
+        a_fence_closes_only_on_a_run_of_its_own_character_at_least_as_long: assert_links(
+            "docs/architecture.md",
+            "# Reference architecture\n\n\
+             ```\n~~~\nuse `src/tilde.rs`;\n```\n\n\
+             ````\n```\nuse `src/short.rs`;\n````\n\n\
+             Real: `src/real.rs`.\n",
+            &[("docs/architecture.md", LinkRel::Specifies, "src/real.rs")],
+        );
         /// A padded code span specifies the path CommonMark reads in it
         /// (`d112-op-code-span-padding`): the one span reader strips one leading and one
         /// trailing space, so the link names the path, never the padded text.
