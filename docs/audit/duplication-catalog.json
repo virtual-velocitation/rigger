@@ -122,7 +122,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c125d5c0c392",
+    "id": "dup-8f6a4198293f",
     "classification": "near",
     "sites": [
       {
@@ -161,12 +161,17 @@
         "content_hash": "5d23ae9ae3e76aee"
       },
       {
+        "file": "tests/new_run_critique_refusal_periphery.rs",
+        "name": "no_critic_line",
+        "content_hash": "5d23ae9ae3e76aee"
+      },
+      {
         "file": "tests/no_os_kill_audit.rs",
         "name": "join",
         "content_hash": "5d23ae9ae3e76aee"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/no_os_kill_audit.rs)",
+    "proposed_home": "a new shared module (sites span 8 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/review.rs, crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs, crates/rigger-store-sqlite/src/spawn_store.rs, tests/compaction_generations_periphery.rs, tests/new_run_critique_refusal_periphery.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

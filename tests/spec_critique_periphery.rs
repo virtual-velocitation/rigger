@@ -14,9 +14,9 @@ mod common;
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, emit, read_run_events, rigger_file, run_rigger, run_rigger_envs,
-    run_rigger_ok, run_stream_identity, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_scaffold,
+    assert_selected_server, emit, read_run_events, rigger_file, run_payloads, run_rigger,
+    run_rigger_envs, run_rigger_ok, run_stream_identity, seed_run_events, seed_store, temp_project,
+    temp_repoless_project, write_spec_project,
 };
 use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
@@ -87,13 +87,13 @@ fn reject_copies(hash: &str, attempt: u32, spec: &str) -> Vec<Value> {
 
 /// A project at `root` carrying `workflow` with its three personas and the demo spec.
 fn scaffold(root: &Path, workflow: &str) {
-    write_scaffold(
+    write_spec_project(
         root,
         &[("planner", PLANNER), ("critic", CRITIC), ("judge", JUDGE)],
         workflow,
+        SPEC_REL,
+        SPEC,
     );
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(root.join(SPEC_REL), SPEC).unwrap();
 }
 
 /// `rigger critique <spec>` in `root` with `path` as its PATH and `scratch` as its scratch root.
@@ -127,11 +127,7 @@ fn spawn_events(events: &[Event]) -> Vec<(String, String)> {
 
 /// The payloads of the project run stream's `ReviewFinding` events, oldest first.
 fn review_findings(root: &Path) -> Vec<Value> {
-    read_run_events(root)
-        .iter()
-        .filter(|e| e.type_ == "ReviewFinding")
-        .map(|e| serde_json::from_slice(&e.data).unwrap())
-        .collect()
+    run_payloads(root, "ReviewFinding")
 }
 
 /// Every event in the project's `events.db`, every stream and namespace included.

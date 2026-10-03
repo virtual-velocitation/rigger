@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::playbooks::fnv1a_64;
 use crate::spawn::{
@@ -655,6 +656,50 @@ pub fn normalize_spec_path(root: &Path, path: &str) -> Option<String> {
     Some(relative.join("/"))
 }
 
+/// The string entries of a JSON array, none when `value` is no array.
+fn string_entries(value: &Value) -> impl Iterator<Item = &str> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+}
+
+/// The open BLOCKING findings of `critique` (spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS
+/// CLEAN): the ids of its BLOCKING findings, in finding order, minus every id named in the
+/// `resolves` of a `DecisionMade` among `decisions` that the store recorded after the critique's
+/// result (a greater position) and whose `governs` names `spec` - the spec path already made
+/// repo-relative - once each entry is normalized against `root` like the spec path
+/// ([`normalize_spec_path`]). An id the critique does not hold is ignored, and supersession is not
+/// read: a recorded resolution stands until the text changes.
+pub fn open_findings(
+    critique: &Critique,
+    decisions: &[Event],
+    spec: &str,
+    root: &Path,
+) -> Vec<String> {
+    let resolved: Vec<String> = decisions
+        .iter()
+        .filter(|event| event.type_ == TYPE_DECISION_MADE && event.position > critique.position)
+        .filter_map(Event::decode::<Value>)
+        .filter(|decision| {
+            string_entries(&decision["governs"])
+                .any(|governed| normalize_spec_path(root, governed).as_deref() == Some(spec))
+        })
+        .flat_map(|decision| {
+            string_entries(&decision["resolves"])
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    critique
+        .findings
+        .iter()
+        .filter(|finding| finding.blocking && !resolved.contains(&finding.id))
+        .map(|finding| finding.id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,6 +1167,101 @@ mod tests {
         ] {
             assert_eq!(norm(outside), None, "{outside:?} is outside {root:?}");
         }
+    }
+
+    /// A critique of [`HASH`] whose result sits at log position 10, holding `findings` as
+    /// `(id, blocking)` in finding order.
+    fn critique_at_ten(findings: &[(&str, bool)]) -> Critique {
+        Critique {
+            position: 10,
+            attempt: 0,
+            verdict: "reject".to_string(),
+            findings: findings
+                .iter()
+                .map(|(id, blocking)| finding(id, *blocking, ["C", "criterion 1", "r", "f"]))
+                .collect(),
+        }
+    }
+
+    /// A `DecisionMade` at log position `position` governing `governs` and resolving `resolves`.
+    fn resolution(position: u64, governs: &[&str], resolves: &[&str]) -> Event {
+        ev_at(
+            position,
+            crate::contextgraph::TYPE_DECISION_MADE,
+            json!({"id": format!("res-{position}"), "summary": "closed", "governs": governs,
+                   "resolves": resolves}),
+        )
+    }
+
+    /// Spec 112, A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS CLEAN: the open findings are the
+    /// critique's BLOCKING ids, in finding order, minus each id a `DecisionMade` recorded after
+    /// the critique's result names in `resolves` while its `governs` names the spec under any
+    /// spelling that normalizes to it; nothing else closes one.
+    #[test]
+    fn the_open_findings_are_the_blocking_ids_no_later_resolution_of_the_spec_names() {
+        let root = Path::new("/work/repo");
+        let spec = "specs/a.md";
+        let critique = critique_at_ten(&[
+            ("b1", true),
+            ("n2", false),
+            ("b3", true),
+            ("b4", true),
+            ("b5", true),
+        ]);
+        let open = |decisions: &[Event]| open_findings(&critique, decisions, spec, root);
+        assert_eq!(
+            open(&[]),
+            ["b1", "b3", "b4", "b5"],
+            "unresolved: every BLOCKING id in finding order, never a NON-BLOCKING one"
+        );
+        assert_eq!(
+            open(&[
+                resolution(11, &["./specs/a.md"], &["b1"]),
+                resolution(
+                    12,
+                    &["specs/other.md", "/work/repo/specs/a.md"],
+                    &["b3", "n2", "ghost"]
+                ),
+            ]),
+            ["b4", "b5"],
+            "a later resolution governing the spec, relative or absolute, closes the ids it \
+             names; a NON-BLOCKING or unknown id it names changes nothing"
+        );
+        assert_eq!(
+            open(&[
+                resolution(10, &[spec], &["b1"]),
+                resolution(9, &[spec], &["b3"]),
+                resolution(13, &["specs/other.md"], &["b4"]),
+                resolution(14, &["/elsewhere/specs/a.md", "../specs/a.md"], &["b4"]),
+                ev_at(
+                    15,
+                    crate::contextgraph::TYPE_LESSON_LEARNED,
+                    json!({"id": "l", "governs": [spec], "resolves": ["b5"]})
+                ),
+                ev_at(
+                    16,
+                    crate::contextgraph::TYPE_DECISION_MADE,
+                    json!({"id": "s", "governs": spec, "resolves": ["b5"]})
+                ),
+            ]),
+            ["b1", "b3", "b4", "b5"],
+            "a resolution at or before the critique's result, one governing another spec or a \
+             path outside the root, another event type and a governs that is no list close nothing"
+        );
+        assert_eq!(
+            open_findings(&critique_at_ten(&[("n1", false)]), &[], spec, root),
+            Vec::<String>::new(),
+            "a critique with no BLOCKING finding has none open"
+        );
+        let approving = Critique {
+            verdict: VERDICT_APPROVE.to_string(),
+            ..critique_at_ten(&[("b1", true), ("n2", false)])
+        };
+        assert_eq!(
+            open_findings(&approving, &[], spec, root),
+            ["b1"],
+            "an approve beside a BLOCKING line still counts as blocking: the verdict is never read"
+        );
     }
 
     #[test]

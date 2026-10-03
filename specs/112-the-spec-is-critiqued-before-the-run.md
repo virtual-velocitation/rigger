@@ -331,26 +331,50 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   summary names the upheld finding ids of that attempt's adjudication (none upheld is said as
   such), through `emit_lesson`, which gains an optional replay key and an explicit about list
   (this branch passes both; every other caller is unchanged); the existing `SpecDefect` event
-  (`TYPE_SPEC_DEFECT`, key `<gate>/spec-defect#<s-1>`), its reason the halt text, whose fold
-  `RunState.spec_defect` is the stop's durable run-state form; then `UnitEscalated` for the gate
-  (key `<gate>/spec-defect-escalated#<s-1>`, the completion key), its payload `{id}` as on every
-  escalation. These three records are the escalation criterion 5 names: the lesson and
-  `SpecDefect` name the spec and the upheld ids. It does not call `re_plan`, and the existing
-  escalate branch does not run. `<spec>` is the current run's `RunStarted.spec` as recorded; a run
-  launched with another spelling of the path names that spelling (accepted), and an empty one
-  gives an empty about list and a halt text naming `the spec`. A workflow stage that does not wait
-  on the gate may have built code before a reject; the stop fires regardless.
-- *The stop reason.* The stop sets an in-process spec-defect reason; `RunCtx::halt_reason` returns
-  the budget reason when both are set, else `amend the spec and relaunch: plan-critique found a
-  spec defect in <spec> (<ids>)`, which rides the step's existing `halted` field; `cmd_step` fills
-  that field from hung liveness only when it is empty, so its precedence is budget, then spec
-  defect, then hung liveness. A step whose gate stopped in this process returns its halted state
-  before `check_coverage_or_flag`. `compute_attention` stamps its `halted` entry for the budget
-  reason only; the stop's attention entry is the gate's existing escalated entry, and a hung spawn
-  in the stopping step still stamps its own `halted` entry through `merge_hung_attention`
-  (accepted). Later steps find the gate terminal and behave as after any plan-critique escalation
-  today (the gate in `escalated`, or the coverage error when the held DAG leaves a criterion
-  uncovered); the lesson and `SpecDefect` carry the amend route.
+  (`TYPE_SPEC_DEFECT`, key `<gate>/spec-defect#<s-1>`), its reason the halt text, whose fold sets
+  `RunState.spec_defect`; then `UnitEscalated` for the gate (key
+  `<gate>/spec-defect-escalated#<s-1>`, the completion key), its payload `{id, reason}` with
+  `reason` the halt text, while every other escalation keeps its payload `{id}`. The ledger fold
+  carries `reason` onto the escalated unit as `Unit::escalation_reason`, which each `UnitEscalated`
+  overwrites; `reason` is serde-defaulted on read, so a record without it folds an empty reason and
+  reads exactly as today. These three records are the escalation criterion 5 names, and each names
+  the spec and the upheld ids. It does not call `re_plan`, and the existing escalate branch does
+  not run. `<spec>` is the current run's `RunStarted.spec` as recorded; a run launched with another
+  spelling of the path names that spelling (accepted), and an empty one gives an empty about list
+  and a halt text naming `the spec`. A workflow stage that does not wait on the gate may have built
+  code before a reject; the stop fires regardless.
+- *The stop reason.* The halt text is
+  `amend the spec and relaunch: plan-critique found a spec defect in <spec> (<ids>)`, the `reason`
+  *The stop* records, and the spec-defect halt is log-carried, never process state: on every step
+  of a stopped run `RunCtx::halt_reason` returns the budget reason when the breaker tripped, else
+  an escalated unit's non-empty `Unit::escalation_reason` from the fold of the current run slice.
+  That reason rides the step's existing `halted` field; `cmd_step` fills that field from hung
+  liveness only when it is empty, so its precedence is budget, then spec defect, then hung
+  liveness. A step whose gate stopped in this process returns its halted state before
+  `check_coverage_or_flag`. `compute_attention` stamps its `halted` entry for the budget reason
+  only, and a hung spawn in the stopping step still stamps its own `halted` entry through
+  `merge_hung_attention` (accepted). The stop is its own attention cause, one member added to the
+  vocabulary spec 69's Design states for the step wire (*The step wire carries attention; the
+  driver relays it*), and each surface below derives it from one fact, an escalated unit's
+  non-empty `Unit::escalation_reason` (*The stop*), never from a second source: `compute_attention`
+  stamps for such a unit, on its escalation crossing, a `spec-defect` entry whose detail is that
+  reason in place of its `escalated` entry; `console::dock`, which `rigger status` prints and the
+  dash's console core folds, lists the same kind and detail in place of
+  `escalated after exhausting remediation`; `rigger watch`'s `detect` reports it under its own
+  `Signal::SpecDefect`, whose `response()` is `amend the spec and relaunch` and whose detail is
+  that reason, never under `Signal::Escalated` and its `rigger-handle-an-escalation`; and the
+  legacy dash page's spec-defect block (`dash.html`) prints that reason, carried on the dash's
+  `UnitView`, in place of its uncovered-criterion text. So a stopped gate carries one entry per
+  cause on every one of these surfaces, and an escalation or a coverage gap with no reason reads
+  exactly as today. Every reader of the attention vocabulary learns the member in the same change:
+  `ledger::ATTENTION_SPEC_DEFECT` holds the kind, ranked directly after `escalated` by
+  `ledger::attention_kind_rank`, and `ATTENTION_RESPONSE` (`workflows/rigger.js`) maps it to the
+  Design's directive verbatim, `amend the spec and relaunch`, as it maps `stalled-frontier`, never
+  to the escalation skill `rigger-handle-an-escalation`. Later steps find the gate terminal and run
+  the tail as after any plan-critique escalation today: the coverage error ends the step when the
+  held DAG leaves a criterion uncovered, else the deferred gates run and the step halts with the
+  halt text, so the driver, which checks `halted` before its fixpoint stop, never reaches its
+  exhausted-remediation message or its `rigger resume-unit` route for a stop.
 - *Relaunch* is the operator's: amend the spec, then, under a workflow with a critic,
   `rigger critique <spec>`, then a new run (criteria edited mint one; a Design-only amendment
   needs `--fresh`), which criterion 2 gates.
@@ -464,20 +488,26 @@ and 5 at any point, 6 last):
   text saying none were upheld; a slice holding fewer than two gate rejects never satisfies the
   predicate; a run whose `RunStarted.spec` is empty stops with an empty about list and a halt text
   naming the spec. Repeated: a third `spec-ambiguity` reject after the stop cannot occur, because
-  the stopped gate is terminal and spawns nothing; a later step finds it terminal and appends
-  nothing, and a replayed step re-reaching the stop appends nothing (each record under its own
-  key). Reverted: a gate
-  reopened by `rigger resume-unit` runs its next round, and its next `spec-ambiguity` reject is
-  treated as a first one (the stop made no re-plan), so the remediation bound decides as today.
+  the stopped gate is terminal and spawns nothing; a later step finds it terminal and repeats the
+  tail *The stop reason* decides, so on the deferred branch each later step halts with the same
+  text and, once the deferred gates' once-per-run verdicts are recorded, appends nothing, while on
+  the coverage branch each later step appends the coverage gate's `SpecDefect` as today; and a
+  replayed step re-reaching the stop appends nothing (each record under its own key). Reverted: a
+  gate reopened by `rigger resume-unit` runs its next round, and its next `spec-ambiguity` reject
+  is treated as a first one (the stop made no re-plan), so the remediation bound decides as today;
+  the response the driver relays for a stop is the operator's relaunch (*Relaunch*), never
+  `rigger resume-unit`.
   DROPPED: a re-plan that emitted nothing under a blocking driver reads as absent, so the next
   `spec-ambiguity` reject re-plans again instead of stopping and the remediation bound decides
   (accepted). Concurrent: the step lock serializes steps and the gate runs
   synchronously in the producer prelude. Crash-resume: the stop is re-derived from the log - a step
   re-entering after a crash between the stopping reject's `UnitFailed` and the stop's
-  `UnitEscalated` finds the predicate true at the round head with `s` the seeded attempt,
-  completes the keyed records (those already recorded append nothing) and halts without spawning.
-  Cold start: log only; the halt is in-process for the step that stops. Existing data: the
-  predicate reads the current run slice only, so `spec-ambiguity` rejects of an earlier run in the
+  `UnitEscalated` finds the predicate true at the round head with `s` the seeded attempt, completes
+  the keyed records (those already recorded append nothing) and halts without spawning, its halt
+  derived from those completed records; its `UnitEscalated` is written once, under the completion
+  key, with its reason re-derived from the log. Cold start: log only; a fresh process derives the
+  halt from the log and holds no stop state of its own. Existing data: the predicate reads the
+  current run slice only, so `spec-ambiguity` rejects of an earlier run in the
   store are never read across the run boundary; a recorded run that re-planned after its second
   `spec-ambiguity` reject holds that re-plan (`rigger replay` seeds its `SpawnResult`), so the
   predicate is false and replay follows history; an adopted run mid-gate follows the new rule from
