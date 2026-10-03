@@ -2741,8 +2741,11 @@ enum GateEnd {
 }
 
 /// The halt a spec-defect stop reports (spec 112, criterion 5): the amend route, the run's spec as
-/// recorded (`the spec` when it recorded none) and the stopping reject's upheld finding ids (`none
-/// upheld` when it upheld none).
+/// recorded (`the spec` when it recorded none), the stopping reject's upheld finding ids (`none
+/// upheld` when it upheld none), then the relaunch route (*Relaunch*: critique the amended spec,
+/// then start the run again, which begins a new run since a stopped run is never adopted by
+/// spec). The one home of the text: the stop's records, the step's halt and every needs-you
+/// surface read it from the stop's escalation.
 fn spec_defect_halt(spec: &str, upheld: &[String]) -> String {
     let spec = if spec.is_empty() { "the spec" } else { spec };
     let upheld = if upheld.is_empty() {
@@ -2750,7 +2753,10 @@ fn spec_defect_halt(spec: &str, upheld: &[String]) -> String {
     } else {
         upheld.join(", ")
     };
-    format!("amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld})")
+    format!(
+        "amend the spec and relaunch: plan-critique found a spec defect in {spec} ({upheld}); \
+         critique the amended spec, then start the run again"
+    )
 }
 
 struct RunCtx<'a> {

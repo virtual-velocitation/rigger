@@ -340,7 +340,7 @@
     "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
   },
   {
-    "id": "dup-c5777007a33f",
+    "id": "dup-0c6e804c2770",
     "disposition": "not-a-duplicate",
     "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
   },

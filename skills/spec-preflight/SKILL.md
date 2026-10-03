@@ -113,7 +113,9 @@ Refusal rule: do not launch, relaunch, or amend-and-continue with an open BLOCKI
 
 When a review or plan-critique reject names a defect in the spec itself:
 
-1. Amend Design and Global constraints only; a criterion edit orphans the live run.
+1. Amend Design and Global constraints only; a criterion edit orphans the live run, and a
+   plan-critique stop is closed by critiquing the amended spec (`rigger critique <spec>`), then
+   relaunching on it, which begins a new run.
 2. Land the amendment between steps, never while a step is mid-flight.
 3. `rigger emit DecisionMade` with the spec path in `governs`, so in-flight agents see it through
    the graph.

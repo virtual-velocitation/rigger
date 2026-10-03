@@ -1620,7 +1620,8 @@ impl RunStartCritique<'_> {
     /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
     /// clean - the one decision every CLI run start makes before it appends anything. A command
     /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
-    /// stream's `RunStarted` events, `criteria` and `fresh`), proceeds. Under a workflow naming no
+    /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
+    /// naming its spec), proceeds. Under a workflow naming no
     /// critic a new run proceeds after one line on stderr saying so. Otherwise the new run is
     /// refused - with the text [`new_run_refusal`] renders - when the spec is outside the
     /// repository, when its text has no critique, or while the critique holds an open BLOCKING
@@ -1633,9 +1634,9 @@ impl RunStartCritique<'_> {
         let started = project.read_stream_typed(
             conductor::STREAM,
             0,
-            TypeSelection::Only(&[runscope::TYPE_RUN_STARTED]),
+            TypeSelection::Only(&runscope::MINT_DECISION_TYPES),
         )?;
-        if runscope::adopted_run(&started, criteria, fresh).is_some() {
+        if runscope::adopted_run(&started, criteria, fresh, true).is_some() {
             return Ok(());
         }
         let path = review::normalize_spec_path(self.root, spec);

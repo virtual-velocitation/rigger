@@ -5168,7 +5168,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c5777007a33f",
+    "id": "dup-0c6e804c2770",
     "classification": "near",
     "sites": [
       {
@@ -5184,7 +5184,7 @@
       {
         "file": "crates/rigger-domain/src/docs.rs",
         "name": "render_resume_a_run_skill",
-        "content_hash": "eea0469949ed9598"
+        "content_hash": "d78a0a8a3d3260e1"
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",

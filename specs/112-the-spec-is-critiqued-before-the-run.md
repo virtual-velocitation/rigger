@@ -163,8 +163,10 @@ spec: the next call spawns and prints none of the earlier findings.
 
 **A NEW RUN IS REFUSED UNTIL ITS CRITIQUE IS CLEAN, decided here.**
 - *A new run* is what the mint decision says: one pure function over the run stream's
-  `RunStarted` events, the criteria and `--fresh`, true when `--fresh` was passed, when the stream
-  holds no `RunStarted`, or when the latest `RunStarted`'s criteria differ from the spec's;
+  `RunStarted`, `UnitEscalated` and `UnitResumed` events (`run::MINT_DECISION_TYPES`), the
+  criteria, `--fresh` and whether the command names a spec, true when `--fresh` was passed, when
+  the stream holds no `RunStarted`, when the latest `RunStarted`'s criteria differ from the spec's,
+  or, for a command naming a spec, when the latest run stopped on a spec defect (*Relaunch*);
   `ensure_started_pinned` (`crates/rigger-store-sqlite/src/run_store.rs`) and the refusal both
   call it, and criterion 2's unit extracts it. A step that ADOPTS the latest run (criteria equal,
   with or without `--rebase-definition`) is a resumed run and is never refused by this rule. A run
@@ -344,10 +346,11 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   and a halt text naming `the spec`. A workflow stage that does not wait on the gate may have built
   code before a reject; the stop fires regardless.
 - *The stop reason.* The halt text is
-  `amend the spec and relaunch: plan-critique found a spec defect in <spec> (<ids>)`, the `reason`
-  *The stop* records, and the spec-defect halt is log-carried, never process state: on every step
-  of a stopped run `RunCtx::halt_reason` returns the budget reason when the breaker tripped, else
-  an escalated unit's non-empty `Unit::escalation_reason` from the fold of the current run slice.
+  `amend the spec and relaunch: plan-critique found a spec defect in <spec> (<ids>); critique the amended spec, then start the run again`,
+  criterion 5's phrase followed by the route *Relaunch* states; it is the `reason` *The stop*
+  records, and the spec-defect halt is log-carried, never process state: on every step of a
+  stopped run `RunCtx::halt_reason` returns the budget reason when the breaker tripped, else an
+  escalated unit's non-empty `Unit::escalation_reason` from the fold of the current run slice.
   That reason rides the step's existing `halted` field; `cmd_step` fills that field from hung
   liveness only when it is empty, so its precedence is budget, then spec defect, then hung
   liveness. A step whose gate stopped in this process returns its halted state before
@@ -376,8 +379,17 @@ runs. `<gate>` is the gate stage and `<plan>` its producer.
   halt text, so the driver, which checks `halted` before its fixpoint stop, never reaches its
   exhausted-remediation message or its `rigger resume-unit` route for a stop.
 - *Relaunch* is the operator's: amend the spec, then, under a workflow with a critic,
-  `rigger critique <spec>`, then a new run (criteria edited mint one; a Design-only amendment
-  needs `--fresh`), which criterion 2 gates.
+  `rigger critique <spec>`, then start the run again on it. A run stopped on a spec defect (an
+  escalated unit whose `Unit::escalation_reason` is non-empty in the fold of its slice) is terminal
+  for adoption by spec: every run entry invoked with a spec (`rigger step --spec`, `rigger run`,
+  `rigger serve`, `rigger workflow`, and the `/rigger` driver, which couriers
+  `rigger step --spec`) begins a new run instead of adopting it, through criterion 2's mint
+  decision, and criterion 2's refusal gates that run, so the relaunch needs no `--fresh` whether
+  the amendment edits a criterion or only Design, and never reopens the stopped gate on
+  uncritiqued text. A command naming no spec adopts the stopped run as any run with equal
+  criteria - the conductor's own adopt-or-mint, which adopts the run its entry ensured, and a
+  step with no spec, which reports the halt - and `rigger resume-unit` on the stopped gate makes
+  the run adoptable by spec again, its unit no longer escalated.
 
 **CRITERIA 1 AND 5 SPLIT AT THE CRITIQUE PROMPT.** Criterion 1 owns moving the Rule 7 and Rule 8
 bullets and the NOTE into `PLAN_CRITIQUE_RULES` with `build_dag_critique_prompt` reading it;
@@ -675,7 +687,9 @@ Refusal rule: do not launch, relaunch, or amend-and-continue with an open BLOCKI
 
 When a review or plan-critique reject names a defect in the spec itself:
 
-1. Amend Design and Global constraints only; a criterion edit orphans the live run.
+1. Amend Design and Global constraints only; a criterion edit orphans the live run, and a
+   plan-critique stop is closed by critiquing the amended spec (`rigger critique <spec>`), then
+   relaunching on it, which begins a new run.
 2. Land the amendment between steps, never while a step is mid-flight.
 3. `rigger emit DecisionMade` with the spec path in `governs`, so in-flight agents see it through
    the graph.

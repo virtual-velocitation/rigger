@@ -581,7 +581,9 @@ Refusal rule: do not launch, relaunch, or amend-and-continue with an open BLOCKI
 
 When a review or plan-critique reject names a defect in the spec itself:
 
-1. Amend Design and Global constraints only; a criterion edit orphans the live run.
+1. Amend Design and Global constraints only; a criterion edit orphans the live run, and a
+   plan-critique stop is closed by critiquing the amended spec (`rigger critique <spec>`), then
+   relaunching on it, which begins a new run.
 2. Land the amendment between steps, never while a step is mid-flight.
 3. `rigger emit DecisionMade` with the spec path in `governs`, so in-flight agents see it through
    the graph.
@@ -1000,6 +1002,10 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              state (for example a plan-critique escalation) on a spec that is otherwise \
              UNCHANGED. It is a one-shot new-run boundary, never the default way to continue \
              interrupted work.\n",
+            "A run its plan-critique gate stopped on a spec defect (its halt opens `amend the \
+             spec and relaunch`) is never adopted by a command naming its spec: amend the spec, \
+             critique it with `rigger critique <spec>`, then relaunch on it, which begins a new \
+             run with no `--fresh`.\n",
         ],
         "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
          driver owns stepping, and a hand step races it, which can double-spawn a unit or \

@@ -123,8 +123,9 @@ pub fn ensure_started_pinned(
     spec_path: &str,
 ) -> Result<RunStart, Error> {
     let events = read_run(store, STREAM)?;
-    // THE MINT DECISION (spec 112): adopt the latest run when its criteria match, else mint.
-    if let Some(run) = adopted_run(&events, criteria, false) {
+    // THE MINT DECISION (spec 112): adopt the latest run when its criteria match and, for a run
+    // entry naming a spec (it passes the spec path), it did not stop on a spec defect; else mint.
+    if let Some(run) = adopted_run(&events, criteria, false, !spec_path.is_empty()) {
         let pinned = effective_definition(current_run(&events));
         // Free when pinning is disabled (`definition` empty), the run is unpinned
         // (`pinned` empty - a legacy start), or the pin agrees with what is on disk.

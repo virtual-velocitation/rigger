@@ -149,17 +149,42 @@ fn latest(events: &[Event]) -> Option<RunStarted> {
         .and_then(Event::decode::<RunStarted>)
 }
 
+/// The run-stream event types [`adopted_run`] reads: the run starts, and the escalations and
+/// resumes whose fold tells whether the latest run stopped on a spec defect. A caller hands it the
+/// whole run stream or these types alone, and both answer the same.
+pub const MINT_DECISION_TYPES: [&str; 3] = [
+    TYPE_RUN_STARTED,
+    crate::ledger::TYPE_UNIT_ESCALATED,
+    crate::ledger::TYPE_UNIT_RESUMED,
+];
+
 /// THE MINT DECISION (spec 112): the run a command adopts, or `None` when it begins a new run.
 /// A command begins a new run when `--fresh` was passed (`fresh`), when `events` (the run
-/// stream, or its `RunStarted` events alone) holds no run, or when the latest run's criteria
-/// differ from `criteria`; otherwise it adopts that latest run - a resume, with or without
-/// `--rebase-definition`. The one decision: the store's adopt-or-mint
-/// (`run_store::ensure_started_pinned`) and the CLI's spec-critique refusal both ask it.
-pub fn adopted_run(events: &[Event], criteria: &[String], fresh: bool) -> Option<RunStarted> {
+/// stream, or its [`MINT_DECISION_TYPES`] events alone) holds no run, when the latest run's
+/// criteria differ from `criteria`, or when the command names a spec (`by_spec`: a run entry
+/// invoked with `--spec`) and the latest run stopped on a spec defect - a unit still escalated
+/// with a reason in the fold of its slice ([`crate::ledger::RunState::spec_defect_reason`]):
+/// such a run is terminal for adoption by spec, so a relaunch on the amended spec begins a new
+/// run, which the critique refusal gates. Otherwise it adopts that latest run - a resume, with
+/// or without `--rebase-definition`; a command naming no spec (the conductor's own adopt-or-mint,
+/// which adopts the run its entry ensured, or a step with no spec) adopts a stopped run like any
+/// other, and a slice the fold cannot decode is adopted, left to the conductor's fold of it to
+/// fail loudly. The one decision: the store's adopt-or-mint (`run_store::ensure_started_pinned`)
+/// and the CLI's spec-critique refusal both ask it.
+pub fn adopted_run(
+    events: &[Event],
+    criteria: &[String],
+    fresh: bool,
+    by_spec: bool,
+) -> Option<RunStarted> {
     if fresh {
         return None;
     }
-    latest(events).filter(|run| run.criteria == criteria)
+    let stopped = || {
+        crate::ledger::project(current_run(events))
+            .is_ok_and(|run| run.spec_defect_reason().is_some())
+    };
+    latest(events).filter(|run| run.criteria == criteria && !(by_spec && stopped()))
 }
 
 /// The current run's slice of `events`: the contiguous suffix from the LAST
