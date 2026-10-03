@@ -17755,6 +17755,35 @@ rigger::test_cases! {
     #[should_panic(expected = "an absolute or home path")]
     home_path_check_fails_on_a_backtick_then_an_absolute_path:
         probe_no_absolute_or_home_path("Read spec`/repo/specs/112.md` first.\n");
+    /// The check fails on a `/` right after a `>` inside a token: a redirect to an absolute
+    /// path (`d112-op-home-path-allowlist`).
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_stderr_redirect_to_an_absolute_path:
+        probe_no_absolute_or_home_path("rigger critique spec.md 2>/dev/null\n");
+    /// The check fails on a `/` right after a token-opening `>`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_redirect_opening_a_token:
+        probe_no_absolute_or_home_path("rigger critique spec.md >/tmp/x\n");
+    /// The check fails on a `/` right after a `,` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_comma_then_an_absolute_path:
+        probe_no_absolute_or_home_path("rigger critique --paths=a.md,/srv/b.md\n");
+    /// The check fails on a `/` right after a token-opening `|`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_pipe_then_an_absolute_path:
+        probe_no_absolute_or_home_path("rigger critique spec.md |/usr/bin/tee\n");
+    /// The check fails on a `/` right after a `;` inside a token.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_semicolon_then_an_absolute_path:
+        probe_no_absolute_or_home_path("x;/srv/bin/run\n");
+    /// The check fails on a `/` right after a token-opening `@`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_an_at_sign_then_an_absolute_path:
+        probe_no_absolute_or_home_path("curl -d @/srv/p.json\n");
+    /// The check fails on a `/` right after a token-opening `{`.
+    #[should_panic(expected = "an absolute or home path")]
+    home_path_check_fails_on_a_brace_then_an_absolute_path:
+        probe_no_absolute_or_home_path("cp {/srv/b.md} .\n");
     /// The check fails on the project root named inside a token after a character that opens
     /// no path, which only the name rule catches.
     #[should_panic(expected = "line 1 names \"/a-project-root-no-probe-names\":\n")]
