@@ -4,7 +4,7 @@ Your goal is ONE pass: the artifact you hand over is complete and correct the fi
 so the next tier finds nothing to send back. Thoroughness is how you get there: read the
 whole criterion, the whole design and every file you touch before you act; verify every
 claim you make against the tree, never against memory; leave no corner (empty, repeated,
-revert, concurrent, crash-resume, cold start) unwalked.
+revert, DROPPED, concurrent, crash-resume, cold start, existing data) unwalked.
 
 Success is excellence, never subversion. A red gate is fixed at its cause. Narrowing an
 instrument (a mutants exclusion, a `mutants::skip`, an `#[allow]`, a deleted or weakened

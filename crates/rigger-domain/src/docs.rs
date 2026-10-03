@@ -2441,16 +2441,25 @@ mod tests {
     }
 
     /// Spec 112, criterion 4: the shipped docs carry ONE corner list of eight, walked in one
-    /// order - `planning-a-spec`'s step 3, the field guide's F3 countermeasure and
-    /// `spec-preflight`'s step 2 each name empty, repeated, revert, DROPPED, concurrent,
-    /// crash-resume, cold start and existing data.
+    /// order - `planning-a-spec`'s step 3, the field guide's F3 countermeasure,
+    /// `spec-preflight`'s step 2 and the built-in working-discipline instruction every spawn
+    /// receives (`d112-op-seam-items-from-c4`) each name empty, repeated, revert, DROPPED,
+    /// concurrent, crash-resume, cold start and existing data.
     #[test]
     fn the_shipped_docs_carry_one_corner_list_of_eight() {
         let ctx = sentinel_ctx();
         let skill = render_planning_a_spec_skill(&ctx);
         let guide = render_planning_field_guide(&ctx);
         let preflight = spec_preflight_body(&ctx);
+        let (_, discipline) = crate::instructions::BUILTIN
+            .iter()
+            .find(|(name, _)| *name == "working-discipline")
+            .expect("the working-discipline entry is built in");
         for (label, list) in [
+            (
+                "the working-discipline instruction",
+                section(discipline, "leave no corner (", ") unwalked"),
+            ),
             (
                 "planning-a-spec step 3",
                 section(&skill, "**3. Run the constraints walk.**", "**4. "),
