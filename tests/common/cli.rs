@@ -195,24 +195,33 @@ pub fn printed_decision(spec: &str, resolves: &str) -> String {
     )
 }
 
+/// The route label the refusal of a new run prints before `rigger critique <spec>` (spec 112,
+/// Notes).
+pub const CRITIQUE_ROUTE: &str = "amend the spec and critique it:";
+
+/// The route label the refusal of a new run on a critiqued spec prints before the resolution it
+/// offers (spec 112, Notes).
+pub const RESOLUTION_ROUTE: &str = "or record a resolution:";
+
 /// The text the refusal of a new run on `spec` by `command` ends stderr with (spec 112, Notes):
-/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique.
+/// `open` the open BLOCKING finding ids, `None` when the spec's text has no critique. The route
+/// labels are padded to one column.
 pub fn refused_new_run(command: &str, spec: &str, open: Option<&[String]>) -> String {
     let (why, route, resolves) = match open {
         None => (
             "not critiqued".to_string(),
-            "or, once critiqued, record a resolution:",
+            "or, once critiqued, record a resolution:".to_string(),
             "[<ids>]".to_string(),
         ),
         Some(ids) => (
             format!("open BLOCKING findings: {}", ids.join(", ")),
-            "or record a resolution:          ",
+            format!("{RESOLUTION_ROUTE:<33}"),
             serde_json::json!(ids).to_string(),
         ),
     };
     format!(
-        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  amend the spec and \
-         critique it:   rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
+        "rigger: {command}: refusing to begin a new run on {spec}: {why}\n  {CRITIQUE_ROUTE}   \
+         rigger critique {spec}\n  {route} rigger emit DecisionMade '{}'\n",
         printed_decision(spec, &resolves)
     )
 }

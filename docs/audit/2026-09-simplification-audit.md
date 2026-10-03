@@ -1843,7 +1843,7 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/cli.rs:27071-27071` `Command::new`
 - `tests/common/cli.rs:18-18` `Command::new`
 - `tests/common/cli.rs:54-54` `Command::new`
-- `tests/common/cli.rs:244-244` `Command::new`
+- `tests/common/cli.rs:253-253` `Command::new`
 - `tests/common/fixtures/conductor.rs:283-283` `Command::new`
 - `tests/common/fixtures/conductor.rs:366-366` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -2857,14 +2857,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:27440-27440` `".rigger"`
 - `tests/cli.rs:27471-27471` `"scaffolded .rigger/instructions/README.md"`
 - `tests/cli.rs:27475-27475` `".rigger/instructions/README.md"`
-- `tests/common/cli.rs:222-222` `".rigger"`
-- `tests/common/cli.rs:233-233` `".rigger"`
-- `tests/common/cli.rs:254-254` `".rigger"`
-- `tests/common/cli.rs:271-271` `".rigger"`
-- `tests/common/cli.rs:545-545` `".rigger"`
-- `tests/common/cli.rs:546-546` `"create .rigger/agents"`
-- `tests/common/cli.rs:659-659` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:756-756` `".rigger"`
+- `tests/common/cli.rs:231-231` `".rigger"`
+- `tests/common/cli.rs:242-242` `".rigger"`
+- `tests/common/cli.rs:263-263` `".rigger"`
+- `tests/common/cli.rs:280-280` `".rigger"`
+- `tests/common/cli.rs:554-554` `".rigger"`
+- `tests/common/cli.rs:555-555` `"create .rigger/agents"`
+- `tests/common/cli.rs:668-668` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:765-765` `".rigger"`
 - `tests/common/fixtures/config.rs:101-101` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
@@ -3999,8 +3999,8 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/cli.rs:847-847` `Connection::open`
 - `tests/cli.rs:890-890` `Connection::open`
 - `tests/cli.rs:9669-9669` `Connection::open`
-- `tests/common/cli.rs:316-316` `Connection::open`
-- `tests/common/cli.rs:767-767` `Connection::open`
+- `tests/common/cli.rs:325-325` `Connection::open`
+- `tests/common/cli.rs:776-776` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/compaction_generations_periphery.rs:100-100` `Connection::open`
@@ -4746,7 +4746,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:605-612` `write_workflow`
+- `tests/common/cli.rs:614-621` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4755,8 +4755,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:641-661` `assert_selected_server`
-- `tests/common/cli.rs:665-681` `assert_selected_sqlite`
+- `tests/common/cli.rs:650-670` `assert_selected_server`
+- `tests/common/cli.rs:674-690` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)

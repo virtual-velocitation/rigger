@@ -17,7 +17,7 @@ use common::cli::{
     assert_stopped_at_the_grounder, critique_finding_id, emit, printed_decision, read_run_events,
     record_clean_critique, record_critique, refused_new_run, run_payloads, run_rigger,
     run_rigger_envs, seed_run_events, stopping_at_the_grounder, temp_repoless_project,
-    write_scaffold, write_spec_project,
+    write_scaffold, write_spec_project, CRITIQUE_ROUTE, RESOLUTION_ROUTE,
 };
 use common::fixtures::{git_ok, git_out, temp_git_project_with_commit};
 use common::repo::{stub_path, write_critique_stub};
@@ -509,7 +509,7 @@ fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
     }
 
     let (_out, err, _ok) = step(root, &dotted, &[]);
-    let critique = printed_command(&err, "amend the spec and critique it:");
+    let critique = printed_command(&err, CRITIQUE_ROUTE);
     assert_eq!(
         critique,
         ["critique", SPEC_REL],
@@ -527,7 +527,7 @@ fn an_operator_clears_a_refusal_by_running_the_commands_it_prints_as_printed() {
     let open = reject_ids();
     assert_step_refused(root, (&dotted, &[]), SPEC_REL, Some(&open), 0);
     let (_out, err, _ok) = step(root, &absolute, &[]);
-    let resolution = printed_command(&err, "or record a resolution:");
+    let resolution = printed_command(&err, RESOLUTION_ROUTE);
     let decision = printed_decision(SPEC_REL, &json!(open).to_string());
     assert_eq!(
         resolution,
