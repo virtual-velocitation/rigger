@@ -147,7 +147,10 @@ because this repository's workflow declares no `requires` (Deferrals). Pins on t
 `.rigger/agents/` prose (the persona pins criterion 8 moves and
 `every_persona_carries_its_principle_gate_checklist_line`) are outside that claim, because no
 persona pin reads `.rigger/workflow.yml`; a persona edit is the operator's own text change and its
-pin moves with it.
+pin moves with it. Deleting the pins on this repository's inline `test` and `audit` gate commands
+is this spec's decision and not the narrowing of an instrument the working discipline forbids,
+because the Goal forbids a test that reads this repository's gate commands; a reviewer does not
+hold criterion 2's unit to keeping them.
 
 **THE GATE SCRATCH ROOT IS HANDED GENERICALLY, decided here.** Every gate that runs for a unit is
 handed `RIGGER_GATE_SCRATCH` (`GATE_SCRATCH_ENV`, beside `STORE_FENCE_ENV` in
@@ -563,8 +566,9 @@ lifecycle" subsection; criterion 5 rewrites the "The check-in mutation sweep" su
 Rust set ships the script unwired, how to wire it and how a consumer replaces a script an earlier
 binary scaffolded, and rewrites step 2 of the new-project checklist. That subsection's first
 paragraph becomes the Notes text, which drops the sentence on this repository's own workflow and
-its issue number: the handbook documents rigger for a consumer and says nothing of this
-repository's own workflow.
+its issue number: that subsection documents rigger for a consumer and says nothing of this
+repository's own workflow. The "The workflow" section's example of this repository's own workflow
+and its lead sentence stay as written.
 
 **CRITERIA 1 AND 2 SPLIT AT `.github/workflows/rust.yml`.** Criterion 1 owns the `cargo-mutants`
 install and that step's comment; criterion 2 owns the `build-test` job's lanes comment
@@ -821,7 +825,11 @@ mutation-testing prose names the mutation gate), persona seeds, comments and the
 a gate in code never reaches prose, and THE CORE NAMES NO GATE is rule 4, which bans the one gate
 the core knew and its tool by token and so reaches prose only on a line holding one of its tokens.
 No built-in instruction file or persona seed holds one, and a comment that does is rewritten (THE
-CORE NAMES NO GATE).
+CORE NAMES NO GATE). The workflow-definition indexer's review fallback is unchanged: `reviewers_of`
+(`crates/rigger-grounder/src/grounder/workflowdef.rs`) falls back to `defaults.review` only for a
+stage with gates, so the graph of a project matching no set carries no `REVIEWS` edge for its
+ungated stages while the run reviews them through `Workflow::effective_review_panel`; making the
+indexer read that one panel rule is an operator change outside this spec.
 
 ## Notes (non-criteria)
 
@@ -1049,7 +1057,8 @@ Deferrals and leftovers:
   asserted that the command is exactly the container-snippet source followed by
   `cargo test --workspace`, with the snippet present in this repository, that it runs
   `cargo test --workspace` in a worktree holding no snippet, and that a snippet failing to source
-  fails it before `cargo` runs. An operator change outside this spec moves those commands into
+  fails it before `cargo` runs. An operator change outside this spec, landing on the run branch
+  after this spec's last unit integrates and in the same pull request, moves those commands into
   scripts under `.rigger/gates/` and re-pins each behaviour with a fixture test that runs the script
   as `the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_without_one` runs
   `content.sh`.
