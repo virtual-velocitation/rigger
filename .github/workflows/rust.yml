@@ -45,9 +45,9 @@ jobs:
     # reaches the root package alone, so no member crate's own tests would run and none of its
     # clippy targets would be linted here - the blind spot of a multi-crate workspace whose root
     # is itself a package. The per-unit gates in .rigger/workflow.yml name the workspace for the
-    # same reason, so CI runs the battery a unit runs. The no-default and core lanes run through
-    # .rigger/gates/lanes.sh, the script the check-in stage's `lanes` gate runs too, which names
-    # the workspace (and, on the core lane, every member with a `core` feature) itself.
+    # same reason, so CI runs the battery a unit runs. CI runs the no-default and core lanes
+    # through .rigger/gates/lanes.sh, which names the workspace (and, on the core lane, every
+    # member with a `core` feature) itself.
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8

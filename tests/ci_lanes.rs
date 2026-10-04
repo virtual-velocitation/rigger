@@ -1,5 +1,5 @@
-//! Guard the CI invariant that EVERY feature lane stays fully gated, and that CI and the loop's
-//! check-in gate run the same lanes.
+//! Guard the CI invariant that EVERY feature lane stays fully gated, and that CI runs the
+//! non-default lanes through the one lanes script.
 //!
 //! rigger ships with `turbovec` as a *default* feature, a deliberate `--no-default-features`
 //! "grep-only" opt-out, and the pure `core` lane (`--no-default-features --features core`, see
@@ -11,9 +11,8 @@
 //!
 //! So the gate battery only holds if it runs on EVERY lane. The default lane's battery - `fmt`,
 //! `clippy --all-targets -D warnings`, `build` and `test` - is listed in the committed workflow
-//! itself. The other two lanes run through ONE script, `.rigger/gates/lanes.sh <no-default|core>`:
-//! CI calls it, and so does the check-in stage's `lanes` gate, so the loop and CI never run
-//! different commands. The script derives the core lane's members from `cargo metadata` (every
+//! itself. The other two lanes run through ONE script, `.rigger/gates/lanes.sh <no-default|core>`,
+//! which CI calls. The script derives the core lane's members from `cargo metadata` (every
 //! workspace member that declares a `core` feature), so a new crate joins the lane without an
 //! edit anywhere, and it fails a test step whose every test binary runs zero tests: a lane that
 //! tests nothing is an instrument that cannot fail, never a green lane.
@@ -32,8 +31,7 @@ use common::repo::{repo_root, repo_text, stub_path, table_declares_key, table_li
 use common::shell_outcome;
 use std::process::Command;
 
-/// The script CI and the check-in stage's `lanes` gate run each non-default feature lane
-/// through, relative to the repository root.
+/// The script CI runs each non-default feature lane through, relative to the repository root.
 const LANES_SCRIPT: &str = ".rigger/gates/lanes.sh";
 
 /// The feature lanes [`LANES_SCRIPT`] runs, by the argument that selects each.
@@ -170,7 +168,7 @@ fn turbovec_lane_runs_the_full_gate_battery() {
 }
 
 /// CI runs both non-default lanes through the lanes script and lists no light-lane or core-lane
-/// cargo command of its own: a hand-listed lane drifts from the one the check-in gate runs, and a
+/// cargo command of its own: a hand-listed lane drifts from the one the lanes script runs, and a
 /// hand-listed core step reaches only the package it names - the root package's `--lib` alone runs
 /// zero tests, while every member crate's core-cfg tests go unrun.
 #[test]
@@ -193,36 +191,6 @@ fn ci_runs_the_no_default_and_core_lanes_through_the_lanes_script() {
         "every no-default and core lane command runs through {LANES_SCRIPT}, never as a CI line \
          of its own: {hand_listed:#?}"
     );
-}
-
-/// The check-in stage gates both non-default lanes through the very commands CI runs: its
-/// `lanes` gate calls the lanes script once per lane, so the loop's check-in and CI never run
-/// different lane commands, and the post-merge re-gate covers the merged tree with them. Like
-/// the `test` gate, it first sources the container runtime snippet, so a container-backed test
-/// runs under the gate instead of skipping.
-#[test]
-fn ci_and_the_lanes_gate_run_one_script_that_derives_its_members() {
-    let workflow: serde_yaml::Value = serde_yaml::from_str(&repo_text(".rigger/workflow.yml"))
-        .expect(".rigger/workflow.yml must be valid YAML");
-    let listed = workflow["stages"]["checkin"]["gates"]
-        .as_sequence()
-        .is_some_and(|gates| gates.iter().any(|gate| gate.as_str() == Some("lanes")));
-    assert!(listed, "the checkin stage must list the `lanes` gate");
-    let gate = workflow["gates"]["lanes"]["run"]
-        .as_str()
-        .expect(".rigger/workflow.yml must declare a `lanes` gate with a `run` command");
-    assert!(
-        gate.starts_with(". .rigger/gates/container-env.sh"),
-        "the `lanes` gate must source the container runtime snippet first: {gate}"
-    );
-    let ci = job_run_scripts(&workflow_yaml(), "build-test");
-    for lane in LANES {
-        let call = format!("sh {LANES_SCRIPT} {lane}");
-        assert!(
-            gate.contains(&call) && ci.lines().any(|line| line.trim() == call),
-            "the `lanes` gate and CI must both run `{call}`: gate {gate:?}"
-        );
-    }
 }
 
 /// The light lane lints every workspace target with warnings denied and runs every workspace

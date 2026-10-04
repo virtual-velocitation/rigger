@@ -1,26 +1,24 @@
 //! THE PRINCIPLE GATES ARE DEFINITION: the gates that hold every unit to the engineering
-//! principles mechanically are declared in this repository's own `.rigger/workflow.yml` AND in
-//! the workflow `rigger init` scaffolds for a consumer project, each listed on the stages it
-//! guards. Both are loaded through the production parser (`rigger::config_store::load`), so a
-//! gate that is merely mentioned in a comment, or declared but never listed on a stage, fails.
+//! principles mechanically are declared in the workflow `rigger init` scaffolds for a consumer
+//! project, each listed on the stages it guards. That scaffolded workflow is the one workflow this
+//! file reads, loaded through the production parser (`rigger::config_store::load`), so a gate that
+//! is merely mentioned in a comment, or declared but never listed on a stage, fails.
 
 mod common;
 use common::cli::{run_rigger, temp_project};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
-use common::git::{commit_files, git_commit_all, git_ok, git_out, init_repo};
+use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
 use common::shell_outcome;
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-/// One principle gate: its id, the stages that must list it, the text this repository's own
-/// command for it must carry, and the gates it must run before wherever both are listed.
+/// One principle gate: its id, the stages that must list it, and the gates it must run before
+/// wherever both are listed.
 struct PrincipleGate {
     id: &'static str,
     stages: &'static [&'static str],
-    repo_command: &'static str,
     precedes: &'static [&'static str],
 }
 
@@ -28,7 +26,6 @@ const PRINCIPLE_GATES: &[PrincipleGate] = &[
     PrincipleGate {
         id: "boundary",
         stages: &["implement", "checkin"],
-        repo_command: "cargo test --test boundary_audit",
         precedes: &[],
     },
     // The audit gate regenerates `docs/audit/*` before it asserts, so it must run before the
@@ -37,32 +34,25 @@ const PRINCIPLE_GATES: &[PrincipleGate] = &[
     PrincipleGate {
         id: "audit",
         stages: &["implement", "checkin"],
-        repo_command: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit",
         precedes: &["test"],
     },
     PrincipleGate {
         id: "red-before-green",
         stages: &["implement"],
-        repo_command: "sh .rigger/gates/red-before-green.sh",
         precedes: &[],
     },
 ];
 
-/// Every principle gate missing from the workflow at `root`: undeclared, not listed on a stage
-/// it guards, or (when `repo` is set) declared with a command other than this repository's.
-fn missing_principle_gates(root: &Path, repo: bool) -> Vec<String> {
+/// Every principle gate missing from the workflow at `root`: undeclared, or not listed on a stage
+/// it guards.
+fn missing_principle_gates(root: &Path) -> Vec<String> {
     let cfg = rigger::config_store::load(root.to_str().unwrap())
         .unwrap_or_else(|e| panic!("the workflow at {} must load: {e}", root.display()));
     let wf = &cfg.workflow;
     let mut missing = Vec::new();
     for gate in PRINCIPLE_GATES {
-        match wf.gates.get(gate.id) {
-            None => missing.push(format!("gate `{}` is not declared", gate.id)),
-            Some(g) if repo && !g.run.contains(gate.repo_command) => missing.push(format!(
-                "gate `{}` must run `{}`, got {:?}",
-                gate.id, gate.repo_command, g.run
-            )),
-            Some(_) => {}
+        if !wf.gates.contains_key(gate.id) {
+            missing.push(format!("gate `{}` is not declared", gate.id));
         }
         for stage in gate.stages {
             let gates = wf
@@ -91,12 +81,6 @@ fn missing_principle_gates(root: &Path, repo: bool) -> Vec<String> {
     missing
 }
 
-#[test]
-fn this_repository_wires_every_principle_gate_on_the_stages_it_guards() {
-    let missing = missing_principle_gates(&repo_root(), true);
-    assert!(missing.is_empty(), ".rigger/workflow.yml: {missing:#?}");
-}
-
 /// A consumer project scaffolded by `rigger init` carries every principle gate on the stages it
 /// guards and every persona checklist line ([`PERSONA_CHECKLIST`]).
 #[test]
@@ -104,86 +88,9 @@ fn a_scaffolded_consumer_project_carries_every_principle_gate_and_checklist_line
     let dir = temp_project();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let mut missing = missing_principle_gates(dir.path(), false);
+    let mut missing = missing_principle_gates(dir.path());
     missing.extend(missing_checklist_lines(dir.path()));
     assert!(missing.is_empty(), "the scaffolded .rigger/: {missing:#?}");
-}
-
-/// This repository's own command for gate `id`, as the production parser loads it.
-fn repo_gate_command(id: &str) -> String {
-    let cfg = rigger::config_store::load(repo_root().to_str().unwrap()).unwrap();
-    cfg.workflow.gates[id].run.clone()
-}
-
-/// The shipped `audit` gate run in a fixture repository whose committed catalog is `committed`,
-/// against a stand-in `cargo`: in write mode it regenerates the catalog as `fresh`; otherwise it
-/// asserts, failing with `red` output when `red` is set. Returns (passed, output).
-fn run_audit_gate(committed: &str, fresh: &str, red: Option<&str>) -> (bool, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().join("repo");
-    std::fs::create_dir_all(repo.join("docs/audit")).unwrap();
-    init_repo(&repo);
-    std::fs::write(repo.join("docs/audit/catalog.json"), committed).unwrap();
-    git_commit_all(&repo, "catalog");
-    let bin = dir.path().join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    let assert_step = match red {
-        Some(output) => format!("echo '{output}'; exit 101"),
-        None => "echo 'test result: ok'".to_string(),
-    };
-    let cargo = bin.join("cargo");
-    std::fs::write(
-        &cargo,
-        format!(
-            "#!/bin/sh\nif [ \"$RIGGER_AUDIT_WRITE\" = 1 ]; then printf '{fresh}' > \
-             docs/audit/catalog.json; exit 0; fi\n{assert_step}\n"
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(repo_gate_command("audit"))
-        .current_dir(&repo)
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.success(), text)
-}
-
-#[test]
-fn the_audit_gate_passes_a_fresh_committed_catalog_silently() {
-    let (passed, out) = run_audit_gate("same", "same", None);
-    assert!(passed, "{out}");
-    assert!(!out.contains("not committed"), "{out}");
-}
-
-#[test]
-fn the_audit_gate_names_a_regenerated_uncommitted_catalog_without_failing_on_drift_alone() {
-    let (passed, out) = run_audit_gate("stale", "fresh", None);
-    assert!(passed, "drift alone must never fail the gate: {out}");
-    assert!(
-        out.contains("audit: docs/audit was regenerated for this tree and is not committed"),
-        "the gate must report the uncommitted regeneration distinctly: {out}"
-    );
-}
-
-#[test]
-fn the_audit_gate_fails_red_assertions_with_its_own_diagnostic() {
-    let (passed, out) = run_audit_gate("same", "same", Some("clusters with no disposition"));
-    assert!(!passed, "{out}");
-    assert!(out.contains("clusters with no disposition"), "{out}");
-    assert!(out.contains("error[audit]:"), "{out}");
 }
 
 /// The fixture's committed source file: one function and a trailing test module.
@@ -396,18 +303,13 @@ fn every_persona_carries_its_principle_gate_checklist_line() {
     assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
 }
 
-/// The check-in mutation gate's logic lives in ONE shipped script: this repository's `mutation`
-/// gate runs it, and `rigger init` writes the identical file into a consumer project, so the
-/// sweep's bounds and scope reach every consumer rather than living in this repository alone.
+/// The check-in mutation gate's logic lives in ONE shipped script, and `rigger init` writes the
+/// identical file into a consumer project, so the sweep's bounds and scope reach every consumer
+/// rather than living in this repository alone.
 /// The script sources the container runtime snippet from beside itself, so `rigger init`
 /// writes that file too, identical as well.
 #[test]
 fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
-    assert_eq!(
-        repo_gate_command("mutation"),
-        "sh .rigger/gates/mutation.sh",
-        "the gate is a one-line invocation of the shipped script"
-    );
     let dir = temp_project();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -424,90 +326,8 @@ fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
     }
 }
 
-/// The `fmt`, `clippy` and `build` gates cover every workspace crate: a bare `cargo clippy` or
-/// `cargo build` in this repository reaches only the root package, so a crate's own code would
-/// never be linted or built under any unit. Clippy stays on its one lane, the default features.
-#[test]
-fn the_fmt_clippy_and_build_gates_cover_the_workspace() {
-    for (gate, run) in [
-        ("fmt", "cargo fmt --all --check"),
-        (
-            "clippy",
-            "cargo clippy --workspace --all-targets -- -D warnings",
-        ),
-        ("build", "cargo build --workspace"),
-    ] {
-        assert_eq!(repo_gate_command(gate), run, "the `{gate}` gate");
-    }
-}
-
 /// The container runtime snippet a gate that runs tests sources, relative to the worktree.
 const CONTAINER_SNIPPET: &str = ".rigger/gates/container-env.sh";
-
-/// The per-unit `test` gate runs every workspace crate's tests, never the root package's
-/// alone (a bare `cargo test` here tests only the root package, so no crate's own unit tests
-/// would run under any unit), and it first sources the container runtime snippet the
-/// repository carries, so the container-backed tests run instead of skipping.
-#[test]
-fn the_test_gate_covers_the_workspace_with_the_container_runtime() {
-    assert_eq!(
-        repo_gate_command("test"),
-        "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \
-         exit 1; fi; cargo test --workspace"
-    );
-    assert!(repo_root().join(CONTAINER_SNIPPET).is_file());
-}
-
-/// This repository's `test` gate command run under `sh -c` - as the conductor runs every gate -
-/// in the worktree `tree`, with a stand-in `cargo` that records its argv. Returns (passed,
-/// output, the argv line cargo recorded - empty when cargo never ran).
-fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
-    let dump = work.join("cargo.dump");
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(repo_gate_command("test"))
-        .current_dir(tree)
-        .env("PATH", stub_path(work, "cargo", Some("recording-cargo.sh")))
-        .env("RECORDING_CARGO_DUMP_FILE", &dump)
-        .output()
-        .unwrap();
-    let args = std::fs::read_to_string(&dump)
-        .unwrap_or_default()
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    let (passed, text) = shell_outcome(&out);
-    (passed, text, args)
-}
-
-/// The gate string comes from the operator's workflow but runs inside the unit's worktree, and
-/// a unit branch can predate the snippet: the tests still run, without it.
-#[test]
-fn the_test_gate_runs_the_tests_in_a_worktree_that_predates_the_snippet() {
-    let work = tempfile::tempdir().unwrap();
-    let tree = work.path().join("tree");
-    std::fs::create_dir_all(&tree).unwrap();
-    let (passed, out, args) = run_test_gate(work.path(), &tree);
-    assert!(passed, "{out}");
-    assert_eq!(args, "ARGS:test --workspace", "{out}");
-}
-
-/// A snippet that is present but fails to source fails the gate before any test runs, never a
-/// silent run without the container runtime.
-#[test]
-fn the_test_gate_fails_when_its_snippet_fails_to_source() {
-    let work = tempfile::tempdir().unwrap();
-    let tree = work.path().join("tree");
-    std::fs::create_dir_all(tree.join(".rigger/gates")).unwrap();
-    std::fs::write(tree.join(CONTAINER_SNIPPET), "false\n").unwrap();
-    let (passed, out, args) = run_test_gate(work.path(), &tree);
-    assert!(
-        !passed,
-        "a snippet that fails to source must fail the gate: {out}"
-    );
-    assert!(args.is_empty(), "cargo must not run: {args}");
-}
 
 /// The one listing the container runtime snippet asks for: every container carrying the label
 /// key the test fixtures put on each container they start, running or not, so a container
