@@ -16401,6 +16401,102 @@ mod tests {
         );
     }
 
+    /// The gate ids a passing [`RecordingRunner`] records, in run order, for a run of the
+    /// check-in fixture over `criteria`: a fan-out `implement` template listing only the gate
+    /// `unit-check` and a `checkin` stage (`needs: [implement]`) listing only the gate `sweep`.
+    fn checkin_fixture_gate_calls(criteria: &[&str]) -> Vec<String> {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow
+            .gates
+            .insert("unit-check".into(), gate_def("true"));
+        cfg.workflow.gates.insert("sweep".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec!["unit-check".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec!["sweep".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            gates: &runner,
+            ..stub_deps(
+                &st,
+                &driver,
+                criteria.iter().map(|c| c.to_string()).collect(),
+            )
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["checkin"].status,
+            ledger::Status::Integrated,
+            "the fixture's check-in stage must run and integrate"
+        );
+        runner.calls.into_inner().unwrap()
+    }
+
+    #[test]
+    fn checkin_gates_run_only_at_checkin_once_per_spec_on_a_fixture() {
+        // Spec 113, TESTS PIN FIXTURES AND THE SCAFFOLD: the check-in-once behaviour is pinned
+        // on a fixture workflow, never this repository's own. The gate only the check-in stage
+        // lists (`sweep`) never runs before the last run of the gate only the fan-out implement
+        // template lists (`unit-check`), and it runs as many times for three criteria as for
+        // two - once per spec, never once per criterion unit.
+        let two = checkin_fixture_gate_calls(&["the first slice lands", "the second slice lands"]);
+        let three = checkin_fixture_gate_calls(&[
+            "the first slice lands",
+            "the second slice lands",
+            "the third slice lands",
+        ]);
+        let count = |calls: &[String], id: &str| calls.iter().filter(|c| *c == id).count();
+        for (calls, units) in [(&two, 2), (&three, 3)] {
+            assert_eq!(
+                count(calls, "unit-check"),
+                units,
+                "the implement gate runs once per criterion unit: {calls:?}"
+            );
+            assert_eq!(
+                count(calls, "sweep"),
+                1,
+                "the check-in gate runs exactly once per spec: {calls:?}"
+            );
+            assert_eq!(
+                calls.len(),
+                units + 1,
+                "no gate other than the two fixture gates runs: {calls:?}"
+            );
+            let last_unit_check = calls.iter().rposition(|c| c == "unit-check").unwrap();
+            let first_sweep = calls.iter().position(|c| c == "sweep").unwrap();
+            assert!(
+                first_sweep > last_unit_check,
+                "no check-in gate run precedes the last implement gate run: {calls:?}"
+            );
+        }
+        assert_eq!(
+            count(&three, "sweep"),
+            count(&two, "sweep"),
+            "a three-criterion spec runs the check-in gate as many times as a two-criterion one"
+        );
+    }
+
     #[test]
     fn producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec() {
         // A `produces: dag` planner stage must be wired: its prompt carries the spec's
