@@ -303,8 +303,12 @@ renders `gates: {}`, so both of that set's lists must be `[]`, since a list nami
 the empty mapping does not declare. `rigger init` refuses, naming the set key and the error, and
 writes nothing - no directory, no file, not the workflow - when a set's `set.yml` or `gates` text
 fails to parse or its `implement` or `checkin` list names a gate id its `gates` text does not
-declare: `init_project` parses every embedded set before its first write, since detection and the
-no-set line read every set's `detect`. The Rust set's gate ids and stage lists have one pin, the
+declare: `init_project` parses every set it is handed before its first write, since detection and
+the no-set line read every set's `detect`. `init_project` takes the template sets as an argument,
+`init_project(root, sets)`, handed the embedded `TEMPLATE_SETS` at its two production callers,
+`cmd_init` and `cmd_setup`, and by every existing test caller, all in `src/cli/setup.rs`'s test
+module, so that refusal is reachable by a test handing it a synthetic set
+(`init_project_refuses_an_unparseable_set_naming_its_key_and_writes_nothing`). The Rust set's gate ids and stage lists have one pin, the
 init test `a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_line` in
 `tests/principle_gates_wiring.rs` (Notes); `src/cli/setup.rs`'s scaffold test,
 `scaffold_parses_into_a_valid_config`, names no gate id and asserts that every embedded set parses
@@ -367,7 +371,16 @@ such a path is a defect of a shipped set that this repository's tests catch, nev
 the build script: `scaffold_parses_into_a_valid_config` runs `init_project`, for each embedded set
 with a `detect` marker, on a fresh project holding only that set's first marker, and asserts it
 reports that set's key as `gate_set` and `new_set_files` equal to that set's listed paths exactly,
-so a set listing a path `init_project` writes on a fresh project fails it naming the path.
+so a set listing a path `init_project` writes on a fresh project fails it naming the path. That
+written-when-absent guarantee covers `init_project`'s own writes only: a path a later `rigger setup`
+install owns - `install_workflow`'s `.claude/workflows/rigger.js` and its provenance file beside it,
+`install_skills`' `.claude/skills/<name>/SKILL.md`, `install_precommit_hook`'s `pre-commit` in the
+git hooks directory, `provision_shim`'s three files under `.rigger/shim/` and
+`install_operator_mcp`'s `.mcp.json` (the lookup hook and the status line merge into the
+`.claude/settings.json` `init_project` already writes) - is handled by that install over a set file
+there as over any file already present, so the later install's file is the one a project keeps:
+such a set is a defect of a shipped set, by decision, and no second list or added test exists for
+it.
 `ScaffoldReport` replaces `new_gate_files` with `new_set_files`
 (the paths written) and gains `gate_set` (the matched key). `scaffold_summary_lines` prints
 `scaffolded <path>` per written file, names the set on the workflow line when one applied, and
@@ -744,12 +757,15 @@ rows name it only beside the audit's own source. A pair absent here shares no ot
   embedded sets, and `build.rs` re-runs when any path `generate_template_sets` returned changes,
   `scaffold/` included, so an added set is embedded and a `scaffold/` emptied of sets fails the
   build; an embedded set that fails `parse_template_set` refuses every init, naming its key and
-  writing nothing, and fails this repository's scaffold test before it can ship. Existing data: a
+  writing nothing, and fails this repository's scaffold test before it can ship; a synthetic
+unparseable set handed to `init_project` over an empty root refuses naming its key and leaves no
+`.rigger` entry, since `init_project` takes the sets as an argument (Design). Existing data: a
   project with a workflow keeps it, gets no gate added and no no-set line, and gets the matched
   set's absent files, an earlier binary's `mutation.sh` kept as every present file is; a set file
   at a path `init_project` writes itself is never written, since the set's files are written last
   and its own write wins, and a shipped set listing such a path fails
-  `scaffold_parses_into_a_valid_config` naming the path (Design); this
+  `scaffold_parses_into_a_valid_config` naming the path, while a set file at a path a later
+  `rigger setup` install owns is handled by that install as any present file, by decision (Design); this
   repository already holds every Rust-set file, so `rigger setup` here writes none; this
   repository's adjudicator persona carries the new adjudicator entry beside its own `boundary` line,
   so the kept repository check holds once the entry changes (Design).
@@ -981,7 +997,7 @@ OTHER TEST DISPOSITIONS:
 | `run_gates_derives_and_injects_the_review_worktrees_store_fence` | `crates/rigger-conductor/src/conductor.rs` | gains an assertion that the one `gate_scratches` entry its standalone review stage's gate pass (`run_fan_out_review_loop`) records is empty | 3 |
 | `a_deferred_gate_runs_once_at_the_phase_boundary_not_inline` | `crates/rigger-conductor/src/conductor.rs` | gains an assertion that the `gate_scratches` entry at the deferred gate's position in `calls` (`run_deferred_gates`) is empty | 3 |
 | `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest` | `crates/rigger-worktree-git/src/worktree.rs` | renamed `unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest`, on `UNIT_GATE_SCRATCH_PREFIX` | 3 |
-| the `MUTANTS` environment and `cargo-mutants-checkin` directories | `tests/checkin_mutation_diff_base_periphery.rs` | `RIGGER_GATE_SCRATCH` and `rigger-gate-checkin`, set by `run_gate_with` on every run to a path inside the test's temporary directory and never inherited, plus a run with `RIGGER_GATE_SCRATCH` removed from the child's environment, which fails naming `RIGGER_GATE_SCRATCH` and leaves no `unit.diff` in the fixture repository | 3 |
+| the `MUTANTS` environment and `cargo-mutants-checkin` directories | `tests/checkin_mutation_diff_base_periphery.rs` | `RIGGER_GATE_SCRATCH` and `rigger-gate-checkin`, set by `run_gate_with` on every run to a path inside the test's temporary directory and never inherited, plus a run with `RIGGER_GATE_SCRATCH` removed from the child's environment, which fails naming `RIGGER_GATE_SCRATCH` and leaves no `unit.diff` in the fixture repository; the file's module doc is reworded to name the shipped script `.rigger/gates/mutation.sh` and no project's workflow and no issue number | 3 |
 | `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` | `src/cli/mod.rs` | gains a live and a dead unit's `rigger-gate-<slug>`: the dead one reclaimed and counted, the live one spared | 4 |
 | `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` | `src/cli/mod.rs` | gains a dead unit's `rigger-gate-<slug>`, reported among the caches with its size, and a live unit's, omitted | 4 |
 | `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share`, for `scratch_totals` | `src/cli/mod.rs` | gains a live and a dead `rigger-gate-<slug>`, both in the per-unit caches total | 4 |
@@ -992,6 +1008,7 @@ OTHER TEST DISPOSITIONS:
 | (new) `a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names` | `crates/rigger-conductor/src/conductor.rs` | a speculating unit whose lane 0 implementer crashes and whose lane 1 wins, merging into a run branch another unit moved so its post-merge re-gate misses the content-addressed replay and runs its gate, which creates `$RIGGER_GATE_SCRATCH` and `$CARGO_TARGET_DIR`: once the unit integrates, the `rigger-gate-<slug>` sibling of `unit_worktree_dir`'s path, the root only that re-gate is handed, does not exist, and the `cargo-target-<slug>` sibling the same gate created still does, since the post-merge reclaim leaves the cache to the worktree's removal; and a replayed pass reclaims too: a step resumed over a seeded log holding the unit's `integrate-landed` row and a passing verdict under its `GateKey::PostMergeVerdict` key, as `a_resumed_landed_but_ungated_unit_regates_the_landed_tree` seeds its landed row, with that `rigger-gate-<slug>` sibling present on disk, replays the verdict with no gate run recorded and leaves the sibling absent | 4 |
 | `scaffold_parses_into_a_valid_config` | `src/cli/setup.rs` | names no gate id: every embedded set parses through `parse_template_set`, every rendering (each set's and the no-set one) loads and validates, no rendered gate command is a placeholder, every id a stage list names is declared, and `init_project` on a fresh project holding only the first `detect` marker of each embedded set that has one reports that set's key as `gate_set` and `new_set_files` equal to its listed paths exactly; its gate-count, `checkin` gate-list and `mutation` gate assertions are dropped, and its agent, stage-shape, review, grounder and budget assertions hold on every rendering | 5 |
 | (new) `parse_template_set_refuses_naming_the_set_key` | `src/cli/setup.rs` | a synthetic set whose `set.yml` fails to parse, one whose `gates` text fails to parse and one whose `checkin` lists an undeclared gate id each refuse naming the set key | 5 |
+| (new) `init_project_refuses_an_unparseable_set_naming_its_key_and_writes_nothing` | `src/cli/setup.rs` | `init_project` handed one synthetic set whose `set.yml` fails to parse, over an empty project root, returns an error naming the set key, and the root holds no `.rigger` entry afterwards | 5 |
 | (new) `scaffold_workflow_renders_a_comment_only_gates_text_as_an_empty_mapping` | `src/cli/setup.rs` | a synthetic set whose `gates` text holds only a comment and whose lists are `[]` parses, renders `gates: {}` and loads | 5 |
 | (new) `init_project_matching_no_set_writes_a_gateless_workflow_and_the_no_set_line` | `src/cli/setup.rs` | `init_project` beside no marker reports no `gate_set`, writes a workflow that loads with no gate and `[]` on `implement` and `checkin`, and `scaffold_summary_lines` holds the no-set line | 5 |
 | (new) `tests/template_sets_build.rs` | `tests/` | refuses an absolute path, a `..` segment, a missing file and a path listed twice in one set's `files`, naming the set and the path, a set directory missing `set.yml` or missing `files`, naming the set, and a root with no `scaffold/` and a `scaffold/` holding no set directory, naming `scaffold/`; skips a file directly under `scaffold/`; returns `scaffold/`, both files of every set and every listed file as watch paths | 5 |
