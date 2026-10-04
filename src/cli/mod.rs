@@ -1565,6 +1565,24 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     Ok((StoreLocation { dir }, sel))
 }
 
+/// The context graph a read-only graph verb (`rigger graph --around`/`--show`) answers from: the
+/// `graph.db` of the store [`require_store_dir`] resolves, under that store's identity. A read run
+/// from a linked worktree so answers from the owning repository's graph, and one run under the
+/// gate store fence from the fence - never from a `graph.db` opened in the working directory,
+/// which a worktree does not carry and which would answer every lookup empty. A project with no
+/// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
+/// its not-found note instead of refusing; every other resolution failure propagates.
+fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
+    let loc = match require_store_dir() {
+        Ok((loc, _selection)) => loc,
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => StoreLocation {
+            dir: std::env::current_dir()?.join(RIGGER_DIR),
+        },
+        Err(e) => return Err(e),
+    };
+    open_graph_to_read(&loc.file("graph.db"), &loc.identity())
+}
+
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
 /// directory, as the `&str` the sqlite `Store` / `Projector` opens.
 fn store_file(dir: &Path, name: &str) -> String {
