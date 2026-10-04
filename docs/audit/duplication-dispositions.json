@@ -800,7 +800,7 @@
     "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
   },
   {
-    "id": "dup-82f5fd8ce76a",
+    "id": "dup-b2e626ed7495",
     "disposition": "not-a-duplicate",
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
