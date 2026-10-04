@@ -1401,8 +1401,6 @@ lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
 # unit has integrated - never per implementer round. For a Rust project, run the\n  \
 # sweep `rigger init` wrote beside this file: `run: \"sh .rigger/gates/mutation.sh\"`\n  \
 # (diff-scoped, in its own memory-bounded scope; its header explains each clause).\n  \
-# Declaring a gate under this exact id requires `cargo-mutants` on PATH (rigger\n  \
-# validate checks at run start).\n  \
 mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 # The boundary gate: Clean Architecture made mechanical. Replace with your\n  \
 # project's own check that dependencies point inward and adapters are constructed\n  \

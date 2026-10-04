@@ -3,6 +3,7 @@
 //! bidirectional ratchet so a graduated gate can never silently auto-pass bad
 //! work. `Runner` is the port; `ExecRunner` is the adapter.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use crate::budget::BuildBudget;
@@ -226,11 +227,27 @@ pub struct WrapperUnavailable {
     pub binary: String,
 }
 
-/// Pure: whether `bin` names an executable regular file inside any directory of `path_var`
-/// (a PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
-/// checked in listed order.
+/// Pure: whether `bin` names an executable regular file inside any absolute directory of
+/// `path_var` - the wrapper probe, answered by the one lookup [`find_executable`] performs.
 fn path_has_executable(path_var: &std::ffi::OsStr, bin: &str) -> bool {
-    std::env::split_paths(path_var).any(|dir| is_executable_file(&dir.join(bin)))
+    find_executable(path_var, bin).is_some()
+}
+
+/// Pure: the first executable regular file named `bin` inside a directory of `path_var` (a
+/// PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
+/// checked in listed order. An empty or relative component is skipped, so every path
+/// answered is absolute. `bin` is a file name: one holding `/` names no file in a directory
+/// and finds nothing, and an empty one joins to the directory itself, which is no regular
+/// file. Symlinks are followed (through [`is_executable_file`]'s `std::fs::metadata`), and a
+/// found symlink is answered at its own path.
+fn find_executable(path_var: &std::ffi::OsStr, bin: &str) -> Option<std::path::PathBuf> {
+    if bin.contains('/') {
+        return None;
+    }
+    std::env::split_paths(path_var)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(bin))
+        .find(|candidate| is_executable_file(candidate))
 }
 
 #[cfg(unix)]
@@ -410,59 +427,76 @@ pub fn resolve_build_layer(
     )
 }
 
-/// The fixed binary [`mutation_gate_binary_available`] probes PATH for whenever a workflow
-/// declares the [`MUTATION_GATE_ID`] gate (spec 91). Unlike `build.wrapper`, this name is not
-/// configurable - the `checkin` stage's mutation sweep always shells out to `cargo mutants`,
-/// so there is exactly one binary to resolve, never a list or an operator-named override.
-const MUTATION_BINARY: &str = "cargo-mutants";
+/// One requirement a gate declares, resolved: the `requires` entry as written (`name`) and the
+/// absolute path of the executable it resolved to (`at`) - spec 113, A GATE DECLARES WHAT IT
+/// REQUIRES.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedRequirement {
+    pub name: String,
+    pub at: std::path::PathBuf,
+}
 
-/// The reserved `gates:` key a workflow spells to opt into the check-in-stage mutation sweep
-/// (spec 91, THE SCHEMA RETIREMENT): declaring a gate under this exact id is what
-/// [`crate::config::Config::validate`] now reads to decide whether [`MUTATION_BINARY`] must be
-/// on PATH - the sole trigger, replacing the retired `build.mutation: on` switch spec 73
-/// authored. Not a fixed enum entry the schema special-cases otherwise: any gate command may
-/// still be authored under this id, exactly like every other named gate in the library.
-pub const MUTATION_GATE_ID: &str = "mutation";
+/// One declared gate's resolved requirements, in the order its `requires` lists them. A gate
+/// requiring nothing holds an empty list; an unresolved entry is never held, because the
+/// resolver answers it as [`RequirementUnavailable`] instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GateRequirements {
+    pub gate: String,
+    pub requires: Vec<ResolvedRequirement>,
+}
 
-/// A workflow that DECLARES the [`MUTATION_GATE_ID`] gate whose required [`MUTATION_BINARY`]
-/// is not resolvable on PATH (spec 91, ENABLED-BUT-ABSENT FAILS AT RUN START - moved here from
-/// the retired `build.mutation: on` switch spec 73 authored, which
-/// [`crate::config::Config::validate`] no longer accepts in any form): mirrors
-/// [`WrapperUnavailable`]'s configured-explicit-failure shape (spec 65 unit 2) - the operator
-/// wired the gate explicitly, so proceeding would silently skip a check they asked for.
+/// A declared gate whose `requires` entry is not an executable on PATH: the operator wired the
+/// gate, so its missing tool refuses the load rather than failing the gate mid-run.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "the workflow declares a {MUTATION_GATE_ID:?} gate but {binary:?} is not on PATH (spec 91: \
-     the checkin stage's mutation gate requires it; config key: gates.mutation)"
+    "gate {gate:?} requires {requirement:?}, which is not an executable on PATH (config key: \
+     gates.{gate}.requires)"
 )]
-pub struct MutationBinaryUnavailable {
-    pub binary: String,
+pub struct RequirementUnavailable {
+    pub gate: String,
+    pub requirement: String,
 }
 
-/// Whether [`MUTATION_BINARY`] is resolvable on `path_var` (pure core, PATH as a value -
-/// mirrors [`resolve_wrapper_name_from`]'s own testability shape). Unlike the retired
-/// `build.mutation` switch this replaces, there is no on/off string to parse here - the
-/// CALLER ([`mutation_gate_binary_on_path`], and [`crate::config::Config::validate`] through
-/// it) decides WHETHER to probe at all, keyed on whether the workflow declares
-/// [`MUTATION_GATE_ID`]; this is only the probe itself.
-pub fn mutation_gate_binary_available(
+/// The one requirement resolver (pure core, PATH as a value): every entry of every declared
+/// gate, in gate-id order and then list order, as written - a name listed twice resolves
+/// twice - each looked up through [`find_executable`]. The first entry that resolves to
+/// nothing is the `Err`, so the success value holds resolved entries only.
+pub fn resolve_requirements(
+    gates: &BTreeMap<String, rigger_domain::config::Gate>,
     path_var: &std::ffi::OsStr,
-) -> Result<(), MutationBinaryUnavailable> {
-    if path_has_executable(path_var, MUTATION_BINARY) {
-        Ok(())
-    } else {
-        Err(MutationBinaryUnavailable {
-            binary: MUTATION_BINARY.to_string(),
+) -> Result<Vec<GateRequirements>, RequirementUnavailable> {
+    gates
+        .iter()
+        .map(|(gate, def)| {
+            let requires = def
+                .requires
+                .iter()
+                .map(|name| {
+                    find_executable(path_var, name)
+                        .map(|at| ResolvedRequirement {
+                            name: name.clone(),
+                            at,
+                        })
+                        .ok_or_else(|| RequirementUnavailable {
+                            gate: gate.clone(),
+                            requirement: name.clone(),
+                        })
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(GateRequirements {
+                gate: gate.clone(),
+                requires,
+            })
         })
-    }
+        .collect()
 }
 
-/// The ambient-PATH-reading edge [`mutation_gate_binary_available`]'s production callers use -
-/// mirrors [`resolve_build_layer`]'s own ambient-PATH read. [`crate::config::Config::validate`]
-/// (the run-start loud-failure check, gated on the workflow declaring [`MUTATION_GATE_ID`]) is
-/// the one caller - never re-deriving the PATH probe independently.
-pub fn mutation_gate_binary_on_path() -> Result<(), MutationBinaryUnavailable> {
-    mutation_gate_binary_available(&std::env::var_os("PATH").unwrap_or_default())
+/// The ambient-PATH edge of [`resolve_requirements`]: reads the real `PATH` once, here.
+/// `Config::validate` calls it last, once per validating load.
+pub fn resolve_requirements_on_path(
+    gates: &BTreeMap<String, rigger_domain::config::Gate>,
+) -> Result<Vec<GateRequirements>, RequirementUnavailable> {
+    resolve_requirements(gates, &std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// The env var [`ExecRunner::run`] pins to fence a gate's store resolution (spec 70
@@ -1697,10 +1731,17 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    #[test]
-    fn resolve_requirements_refuses_a_name_on_no_path_directory() {
+    /// The shared case body: `name` resolves missing on a `PATH` of one empty directory.
+    fn assert_requirement_missing_on_an_empty_dir(name: &str, why: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert_requirement_missing(dir.path(), "absent-tool", "nothing on PATH holds it");
+        assert_requirement_missing(dir.path(), name, why);
+    }
+
+    crate::test_cases! {
+        resolve_requirements_refuses_a_name_on_no_path_directory:
+            assert_requirement_missing_on_an_empty_dir("absent-tool", "nothing on PATH holds it");
+        resolve_requirements_refuses_an_empty_name:
+            assert_requirement_missing_on_an_empty_dir("", "an empty name names no file");
     }
 
     #[test]
@@ -1712,12 +1753,6 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "tool",
             "a stray non-executable file of the same name is never the tool",
         );
-    }
-
-    #[test]
-    fn resolve_requirements_refuses_an_empty_name() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_requirement_missing(dir.path(), "", "an empty name names no file");
     }
 
     #[test]

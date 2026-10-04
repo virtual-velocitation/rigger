@@ -19,7 +19,7 @@ core = ["rigger-domain/core", "rigger-gates-shell/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
-# `Config::validate`'s build-wrapper and mutation-binary probes (a same-ring edge).
+# `Config::validate`'s build-wrapper probe and gate requirement resolver (a same-ring edge).
 rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The playbook pool renders each playbook's YAML frontmatter.

@@ -1,6 +1,7 @@
 //! The disk-touching half of [`crate::config`] (spec 93, criterion 1): loading agent
 //! definitions and the workflow from `.rigger/`, and [`Config::validate`] (which also
-//! probes the build-wrapper/mutation-gate binary on `PATH` via [`crate::gate`]). See
+//! probes the build-wrapper binary and resolves every declared gate's `requires` on `PATH`
+//! via [`crate::gate`]). See
 //! `config.rs`'s own doc for the split rationale (mirrors [`crate::spawn`]/
 //! [`crate::spawn_store`]) - the plain value types and the pure parsing/lint functions
 //! stay there, always compiled, because [`Config`] and friends are part of the declared
@@ -18,6 +19,7 @@ use crate::config::{
     err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
     resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow, RIGGER_DIR,
 };
+use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
 // moved test module (spec 93, criterion 1 - see this file's own doc) does: Duration for a
@@ -49,8 +51,23 @@ fn reject_retired_key(value: &str, key: &str, line: &str, why: &str) -> Result<(
 
 /// Load reads agent definitions from <dir>/.rigger/agents/*.md and the workflow
 /// from <dir>/.rigger/workflow.yml, then validates referential and structural
-/// integrity.
+/// integrity - [`load_with_gate_requirements`]'s config, for every caller that needs no
+/// gate requirement report.
 pub fn load(dir: &str) -> Result<Config, Error> {
+    Ok(load_with_gate_requirements(dir)?.config)
+}
+
+/// A validated configuration beside the gate requirements its validation resolved: the one
+/// resolution a load makes, so a reader of the list never resolves a second time.
+#[derive(Debug)]
+pub struct LoadedConfig {
+    pub config: Config,
+    pub gate_requirements: Vec<GateRequirements>,
+}
+
+/// The validating load (see [`load`]) that also returns what [`Config::validate`] resolved for
+/// every declared gate's `requires` - `rigger validate` reports from it.
+pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
     let base = Path::new(dir).join(RIGGER_DIR);
     let mut agents = load_agents(&base.join("agents"))?;
     let workflow = load_workflow(&base.join("workflow.yml"))?;
@@ -61,8 +78,11 @@ pub fn load(dir: &str) -> Result<Config, Error> {
         workflow,
         instructions,
     };
-    cfg.validate()?;
-    Ok(cfg)
+    let gate_requirements = cfg.validate()?;
+    Ok(LoadedConfig {
+        config: cfg,
+        gate_requirements,
+    })
 }
 
 /// Read the operator instruction layer: every `<dir>/.rigger/instructions/*.md` in filename
@@ -233,10 +253,10 @@ pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
 /// genuinely unreadable one.
 ///
 /// Requires neither a loadable `.rigger/agents/` fleet nor a passing [`Config::validate`] -
-/// unlike [`load`], which fails outright whenever either is unsatisfied (e.g. this project's
-/// own committed `gates.mutation` when `cargo-mutants` is off PATH, or simply no `agents/`
-/// dir at all). A caller reading only a `defaults.*` field must never inherit that
-/// unrelated failure by routing through the full loader and `.unwrap_or_default()`-ing past
+/// unlike [`load`], which fails outright whenever either is unsatisfied (e.g. a declared
+/// gate whose `requires` names an executable off PATH, or simply no `agents/` dir at all),
+/// so this read never checks a gate requirement. A caller reading only a `defaults.*` field
+/// must never inherit that unrelated failure by routing through the full loader and `.unwrap_or_default()`-ing past
 /// it - doing so silently zeroes the field it actually wanted alongside the one that failed
 /// (spec 83's own round-2 reject: `rigger status`/`rigger watch` silently lost a configured
 /// `defaults.workdir` this way whenever `Config::validate` failed for an unrelated reason).
@@ -253,8 +273,9 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 }
 
 impl Config {
-    /// Validate checks that every reference resolves and the stage graph is acyclic.
-    pub fn validate(&self) -> Result<(), Error> {
+    /// Validate checks that every reference resolves and the stage graph is acyclic, then,
+    /// last, resolves every declared gate's `requires` on `PATH` and answers that resolution.
+    pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
         // (non-auto, non-off) `build.wrapper` absent from PATH, OR whose cache dir cannot
@@ -273,32 +294,15 @@ impl Config {
         // the operator believes does something.
         reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
         // `build.mutation` schema retirement (spec 91): the per-round mutation-efficacy
-        // switch spec 73 introduced is superseded by the `checkin` stage's own `mutation`
-        // gate, which runs the sweep ONCE at check-in through the ordinary gate pipeline
-        // rather than a build-config toggle re-probed every implementer round. ANY explicit
-        // value - `on`, `off`, anything - is a run-start config error naming this spec.
-        // Absent (the common case, and every workflow committed before either switch existed)
-        // is unaffected.
+        // switch spec 73 introduced. ANY explicit value - `on`, `off`, anything - is a
+        // run-start config error naming this spec. Absent (the common case, and every
+        // workflow committed before either switch existed) is unaffected.
         reject_retired_key(
             &wf.build.mutation,
             "build.mutation",
             "the `mutation:` line under `build:`",
-            "spec 91: mutation testing now runs once, at a workflow's own `checkin` stage via a \
-             `mutation` gate, never per implementer round - see \
-             specs/91-mutation-runs-once-at-the-check-in-seam.md",
+            "spec 91 retired it: nothing reads it",
         )?;
-        // The mutation gate's enabled-but-absent refusal (spec 91, MOVED from the retired
-        // `build.mutation` switch above, GATES-LIST-DRIVEN): a workflow that DECLARES a gate
-        // named `mutation` requires `cargo-mutants` resolvable on PATH at run start - the
-        // operator wired the gate explicitly (whether or not any stage lists it yet), so
-        // proceeding silently would let it fail loudly only mid-run, deep in a unit's
-        // `checkin` stage. The SAME resolution `rigger validate`'s reporting surface would
-        // read too - never a second, independently re-derived check.
-        if wf.gates.contains_key(crate::gate::MUTATION_GATE_ID) {
-            if let Err(e) = crate::gate::mutation_gate_binary_on_path() {
-                return Err(err(e.to_string()));
-            }
-        }
         // The default review panel (applied to every unit) must reference real agents,
         // including its light-tier roster, and its depth policy must be structurally
         // sound (a configured light tier names an adjudicator).
@@ -346,7 +350,10 @@ impl Config {
         // output_regex) at load rather than at the first classification, through the
         // SAME conversion the conductor uses.
         wf.failure_taxonomy()?;
-        Ok(())
+        // Last, after every other refusal (spec 113): every declared gate's `requires`,
+        // whether or not a stage lists the gate - a declared gate is a gate the operator
+        // wired, so its missing tool refuses here rather than failing the gate mid-run.
+        crate::gate::resolve_requirements_on_path(&wf.gates).map_err(|e| err(e.to_string()))
     }
 }
 

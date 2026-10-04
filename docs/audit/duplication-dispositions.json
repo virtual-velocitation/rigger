@@ -1023,5 +1023,10 @@
     "id": "dup-d0dab916f0d7",
     "disposition": "not-a-duplicate",
     "reason": "Two one-line `format!` builders of different values: the workflow file's path under the rigger directory, and the unit size cap's sentence the plan protocol and the DAG critique share; they share only the one-interpolation token shape."
+  },
+  {
+    "id": "dup-64eda8b7ffd5",
+    "disposition": "not-a-duplicate",
+    "reason": "Each is a test-module fixture constructor of a different two-field type (`instructions::Instruction`'s name and body vs `gate::RequirementUnavailable`'s gate and requirement); the shared token shape is one struct literal, and no logic is repeated."
   }
 ]

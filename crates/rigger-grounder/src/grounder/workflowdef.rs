@@ -249,6 +249,7 @@ mod tests {
                 run: "cargo fmt --check".to_string(),
                 kind: "core".to_string(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         gates.insert(
@@ -257,6 +258,7 @@ mod tests {
                 run: "cargo mutants".to_string(),
                 kind: "core".to_string(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
 

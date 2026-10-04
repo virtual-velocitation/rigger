@@ -12221,11 +12221,7 @@ const SWEEP_TOOL: &str = "rigger-fixture-sweep-tool";
 /// Replace a scaffolded project's workflow with a fixture declaring only `gates` (the body of
 /// its `gates:` block) - the test's own gates, never the scaffold's, and no stage.
 fn write_gates_only_workflow(root: &Path, gates: &str) {
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        format!("gates:\n{gates}"),
-    )
-    .unwrap();
+    common::workflow_probe::write_workflow(&root.join(".rigger"), &format!("gates:\n{gates}"));
 }
 
 /// A scaffolded project whose workflow declares the gate `build`, requiring nothing, and the

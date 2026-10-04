@@ -299,6 +299,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
             ),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.gates.insert(
@@ -310,6 +311,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
             ),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     // Two INDEPENDENT stages (`needs` empty on both): `ready_stages` puts both in
