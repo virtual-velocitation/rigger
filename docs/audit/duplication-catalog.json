@@ -498,7 +498,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d0dab916f0d7",
+    "id": "dup-bbd44f5fffcd",
     "classification": "exact",
     "sites": [
       {
@@ -510,9 +510,14 @@
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
         "name": "workflow_doc",
         "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "sweep_tool_refusal",
+        "content_hash": "c28c81e0bdeb1759"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, tests/cli.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -1141,7 +1146,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8b2a57682115",
+    "id": "dup-6ba760e30654",
     "classification": "semantic",
     "sites": [
       {
@@ -2503,6 +2508,11 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "410e6f407f72c03f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "f71df05adff30fbc"
       },
       {
         "file": "tests/cli.rs",
@@ -4041,7 +4051,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 579 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 580 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
