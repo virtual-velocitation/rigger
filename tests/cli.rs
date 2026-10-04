@@ -7,7 +7,6 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
-use rigger::conductor::normalize_ws;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
