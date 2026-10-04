@@ -2673,6 +2673,22 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "checkin_fixture_gate_calls",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5f46c5d3b0f96624"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "checkin_gates_run_only_at_checkin_once_per_spec_on_a_fixture",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b261d59c53b98fcf"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec",
     "is_test": true,
     "proposed_module": "conductor::tests",
