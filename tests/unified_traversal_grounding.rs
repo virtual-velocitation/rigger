@@ -889,6 +889,57 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
     }
 }
 
+/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: the reviewer discipline
+/// every review tier receives forbids a mutation sweep by naming the generic mechanism, never the
+/// one gate the core once knew or its tool. The conductor's in-process
+/// `every_reviewer_prompt_forbids_a_mutation_sweep` pins the assembled strings; this pins the exact
+/// bytes the lens, the adversary AND the adjudicator each receive through the `AgentDriver` port
+/// during a live fan-out `run`, so a review call site that dropped the discipline, or a core string
+/// that named the gate or its tool again, reddens here.
+#[test]
+fn every_review_spawn_is_forbidden_a_mutation_sweep_without_naming_the_gate_or_its_tool() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let finding = json!({
+        "id": "f_sweep",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let prompts = run_and_capture_review_prompts(&graph, finding);
+    let roles: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        roles,
+        vec!["lens", "adversary", "adj"],
+        "the three review tiers spawn once each, in order"
+    );
+    for (role, prompt) in &prompts {
+        assert_eq!(
+            prompt
+                .matches(
+                    "Never run a mutation sweep, directly or through a verify helper: mutation \
+                     testing belongs to the gate that sweeps, never to a review."
+                )
+                .count(),
+            1,
+            "the {role:?} review prompt carries the sweep discipline exactly once; prompt \
+             was:\n{prompt}"
+        );
+        for banned in [
+            "cargo-mutants",
+            "cargo mutants",
+            "gate:mutation",
+            "\"mutation\"",
+            "check-in gate",
+        ] {
+            assert!(
+                !prompt.contains(banned),
+                "the {role:?} review prompt names {banned:?}; prompt was:\n{prompt}"
+            );
+        }
+    }
+}
+
 /// The prompt a run spawns over a graph whose one touched file `core.rs` carries 40 extracted
 /// definitions - more than the code-neighborhood cap keeps verbatim, so its remainder elides. Only
 /// the FIRST event of the file's extraction batch carries `fresh` (29a's supersede-on-re-extract
