@@ -55,21 +55,22 @@ whose names reference their trait's methods, so the three store methods and the 
 their traits and every other function with its first production caller: `read_archived` and the
 descriptor list under `read_history`, `archive_run`, its `RunArchived` constructor,
 `ArchiveOutcome::record` and `archive_pending` under `run_archiving`, `archive_skip` under
-`archive_skip_at`, `run_archiving` under `archive_then_run`, which the three drivers call, and
-`render` under `archive_then_run`'s cadence write. `archive` is declared in
-`crates/rigger-domain/src/lib.rs` under `#[cfg(any(feature = "store", not(feature = "core")))]`, as
-`playbooks` and `review` are, and the git adapter's module under the gate its crate's `worktree`
-module carries. From criterion 3 on, "the seeding helper" in criterion 2's text reads as
-`archive_run`, over criterion 3's failing store double for the span archived and not yet deleted,
-and criterion 2 is judged on that reading on every later tree. A production path archives only from
-criterion 3 on, after criterion 2 moved `rigger replay` and `rigger stats --all` onto
-`read_history`, so no tree archives a span its readers cannot read.
+`archive_skip_at`, `archive::aside_move` under the adapter's existing-ref write, `run_archiving`
+under `archive_then_run`, which the three drivers call, and `render` under `archive_then_run`'s
+cadence write. `archive` is declared in `crates/rigger-domain/src/lib.rs` under `#[cfg(any(feature =
+"store", not(feature = "core")))]`, as `playbooks` and `review` are, and the git adapter's module
+under the gate its crate's `worktree` module carries. From criterion 3 on, "the seeding helper" in
+criterion 2's text reads as `archive_run`, over criterion 3's failing store double for the span
+archived and not yet deleted, and criterion 2 is judged on that reading on every later tree. A
+production path archives only from criterion 3 on, after criterion 2 moved `rigger replay` and
+`rigger stats --all` onto `read_history`, so no tree archives a span its readers cannot read.
 
 **THE INVARIANT, amended here so no unit has to.** Section 2.1 of
 `docs/architecture-addendum-context-management.md` gains: git retains a finished run's EPISODES; and
 its sentence on `reset --runs` now says the verb archives earlier spans before its prune. Criterion
 2's unit edits those passages and the others DOCUMENT EDITS gives it. `RunArchived` is KNOWLEDGE:
-criterion 2 adds its `TYPE_` constant to `retention::KNOWLEDGE_TYPES`, which spec 107's source scan
+criterion 2 adds its `TYPE_` constant, `archive::TYPE_RUN_ARCHIVED` (`archive` compiling under
+`ingest`'s gate, as `retention` does), to `retention::KNOWLEDGE_TYPES`, which spec 107's source scan
 then requires, with its payload type and the parse `read_history` calls, while its one event
 constructor (the payload, `META_GROUP` and the replay key) lands under `archive_run` in criterion 3
 and the seeding helper builds its event inline; `rigger emit` refuses it as it refuses
@@ -180,39 +181,42 @@ repository, a case `rigger reset --runs`, `rigger validate`, the two readers, `r
 function answers whether a store directory can archive, `archive_skip_at(store_dir: &Path,
 store_is_sqlite: bool)` in `src/cli/run.rs`, criterion 3's beside `run_archiving`: it derives that
 repository fact from `store_dir` and calls `archive::archive_skip`, and `run_archiving` and
-`cmd_validate` both call it. `RunArchive` is declared in the domain beside `EventStore`; its one
-adapter, in `crates/rigger-worktree-git`, whose constructor lands with its first production caller,
-criterion 2's commands, runs exactly these: `git hash-object -w --stdin` and `git update-ref
---stdin` for the write, both with `-c core.fsync=loose-object,reference` so the blob and the ref are
-on disk before the read-back (an older git behaves as it does), `git for-each-ref` for
-`RunArchive::list(pattern)` (the write's lookup of its ref and validate's listing of the namespace),
-`git cat-file --batch` for `RunArchive::read(blob)` and `git cat-file --batch-check` for
-`RunArchive::holds` (declared with the port by criterion 2, which owns the port whole, and called
-only by criterion 8's advisory), the last two with `GIT_NO_LAZY_FETCH=1`, so held means held in this
-repository's object database and a partial clone starts no fetch. `read` is served by spec 107's one
-`git cat-file --batch` reader, `worktree::BlobBatch` beside `worktree::hash_blob`, one process held
-for the adapter's life from its first `read` and ended by closing its input and waiting, so
-`read_history` over any number of spans starts one, and answers three ways: the bytes, NOT HELD (git
-prints `<id> missing`) or an error, an object that is not a blob included; `list` matching nothing
-answers no refs, `holds` of no ids answers none and starts no process, and the write starts at most
-three git processes per span. So over a store holding no `RunArchived`, which archiving never
-appends inside no git repository or on KurrentDB, `rigger replay` and `rigger stats --all` start no
-process of the adapter's (`hash-object`, `update-ref`, `for-each-ref`, `cat-file`), while
-`tree_root`'s one `rev-parse` and the git calls `rigger replay` makes today stand. Git compresses
-the blob, so no compression crate is added. Git is the retention system: the ref is local until the
-operator pushes it, and no blob rigger wrote ever loses its last ref by rigger's hand. The rebuild
-(spec 107's `rebuild_owed_graph`) reads no archive, since an episodic event changes neither the live
-projection nor the fold state (spec 107's classes criterion), the `applied` rows of archived
-positions are outside spec 101's comparison surface, and an archive delete landing between the
-rebuild's position read (`read_live_positions`) and its selection read (`read_live_selection`)
-removes only positions whose fold changes no fact, so the rebuild needs no lock beyond
-`graph.db.lock`. BACKEND SCOPE: the sqlite store deletes; the KurrentDB adapter answers each of the
-three archive port methods (`delete_archived` and the two reads below) with the port's existing
-backend error (`Error::Backend`) naming the method, with no new error variant; production never
-reaches them, since the decision skips a store that is not sqlite first, and `read_history` calls
-none of them, so on KurrentDB `rigger replay` and `rigger stats --all` answer as today (criterion
-2). Every `EventStore` implementation (both adapters, `Namespaced`, `FoldingStore`, the test
-doubles) gains the three methods in criterion 1's unit.
+`cmd_validate` both call it. `RunArchive` is declared in the domain beside `EventStore`, its write
+returning, as criterion 2 declares it whole, the blob id and the optional blob it moved aside,
+always none from the `create` arm, so criterion 4 changes no signature; its one adapter, in
+`crates/rigger-worktree-git`, whose constructor lands with its first production caller, criterion
+2's commands, runs exactly these: `git hash-object -w --stdin` and `git update-ref --stdin` for the
+write, both with `-c core.fsync=loose-object,reference` so the blob and the ref are on disk before
+the read-back (an older git behaves as it does), `git for-each-ref` for `RunArchive::list(pattern)`
+(the write's lookup of its ref and validate's listing of the namespace), `git cat-file --batch` for
+`RunArchive::read(blob)` and `git cat-file --batch-check` for `RunArchive::holds` (declared with the
+port by criterion 2, which owns the port whole, and called only by criterion 8's advisory), the last
+two with `GIT_NO_LAZY_FETCH=1`, `read`'s set by spec 107's `worktree::BlobBatch` and `holds`' by
+this adapter, whose built command TEST HOMES row 2 reads for it as it reads the fsync arguments, so
+held means held in this repository's object database and a partial clone starts no fetch. `read` is
+served by spec 107's one `git cat-file --batch` reader, `worktree::BlobBatch` beside
+`worktree::hash_blob`, one process held for the adapter's life from its first `read` and ended by
+closing its input and waiting, so `read_history` over any number of spans starts one, and answers
+three ways: the bytes, NOT HELD (git prints `<id> missing`) or an error, an object that is not a
+blob included; `list` matching nothing answers no refs, `holds` of no ids answers none and starts no
+process, and the write starts at most three git processes per span. So over a store holding no
+`RunArchived`, which archiving never appends inside no git repository or on KurrentDB, `rigger
+replay` and `rigger stats --all` start no process of the adapter's (`hash-object`, `update-ref`,
+`for-each-ref`, `cat-file`), while `tree_root`'s one `rev-parse` and the git calls `rigger replay`
+makes today stand. Git compresses the blob, so no compression crate is added. Git is the retention
+system: the ref is local until the operator pushes it, and no blob rigger wrote ever loses its last
+ref by rigger's hand. The rebuild (spec 107's `rebuild_owed_graph`) reads no archive, since an
+episodic event changes neither the live projection nor the fold state (spec 107's classes
+criterion), the `applied` rows of archived positions are outside spec 101's comparison surface, and
+an archive delete landing between the rebuild's position read (`read_live_positions`) and its
+selection read (`read_live_selection`) removes only positions whose fold changes no fact, so the
+rebuild needs no lock beyond `graph.db.lock`. BACKEND SCOPE: the sqlite store deletes; the KurrentDB
+adapter answers each of the three archive port methods (`delete_archived` and the two reads below)
+with the port's existing backend error (`Error::Backend`) naming the method, with no new error
+variant; production never reaches them, since the decision skips a store that is not sqlite first,
+and `read_history` calls none of them, so on KurrentDB `rigger replay` and `rigger stats --all`
+answer as today (criterion 2). Every `EventStore` implementation (both adapters, `Namespaced`,
+`FoldingStore`, the test doubles) gains the three methods in criterion 1's unit.
 
 **FINDING A PENDING SPAN READS THE INDEX, NOT THE BACKLOG.** A span is a range of log POSITIONS:
 from its `RunStarted`'s position up to the next `RunStarted`'s (the prelude: from the stream's start
@@ -230,14 +234,16 @@ only, by three reads: B = `first_of_types(0, [RunStarted])` (none: nothing is pe
 [RunStarted])` (none: E lies in the current run and nothing is pending). Otherwise E's span is
 pending and ends at N: it is the prelude when E lies below B, and otherwise the run whose
 `RunStarted` is the last at or below E, which `first_of_types(.., [RunStarted])` steps to forward,
-resuming from the previous span's end and never from B again. So a row is archived only when it lies
-below the current boundary in position order: a current-run row a stale writer reissued at a low
-revision (`Error::OutOfOrder`) lies above the boundary and in no earlier span. It reads the first
-`RunStarted` (`read_span_typed` at B) for the store digest, reads E's span alone through
-`read_span_typed` with `TypeSelection::Except` of `retention::PERCEPTION_TYPES`, builds that span's
-descriptor from the `RunStarted` row that read returns (the prelude's from none), archives it or
-records the failure, and asks again with E taken from N. A trigger with nothing pending costs at
-most three port reads, each index-only, and a backlog is held one span at a time.
+each step asking from one past the `RunStarted` position it last answered, the span's `RunStarted`
+being the last answer at or below E, resuming from the previous span's end and never from B again.
+So a row is archived only when it lies below the current boundary in position order: a current-run
+row a stale writer reissued at a low revision (`Error::OutOfOrder`) lies above the boundary and in
+no earlier span. It reads the first `RunStarted` (`read_span_typed` at B) for the store digest,
+reads E's span alone through `read_span_typed` with `TypeSelection::Except` of
+`retention::PERCEPTION_TYPES`, builds that span's descriptor from the `RunStarted` row that read
+returns (the prelude's from none), archives it or records the failure, and asks again with E taken
+from N. A trigger with nothing pending costs at most three port reads, each index-only, and a
+backlog is held one span at a time.
 
 **AN INTERRUPTED ARCHIVE COMPLETES.** The serialization is a pure function of the rows, so the next
 archive of an interrupted span re-serializes its live episodic events to the same blob. The
@@ -247,21 +253,25 @@ issues one `git update-ref --stdin` transaction by its state: a missing ref gets
 stands; a ref naming another blob `<old>` (a diverged copy, CONSTRAINTS WALK) gets `update
 refs/rigger/aside/<old> <old>` then `update <ref> <blob> <old>`, which keeps `<old>` reachable, is a
 no-op on an aside ref already naming it, and applies neither line when the ref moved meanwhile (git
-exits 128, naming the ref's value and `<old>`). The archive then proceeds as for any span
-(read-back, `RunArchived`, delete), the moved-aside record of its return value naming the ref, the
-blob moved aside, its aside ref and the blob written. A `RunArchived` carries `META_GROUP`
-(`archive/run/<position>` or `archive/prelude`) and a replay key naming its blob (Notes), so the
-group lookup answers the span's latest `RunArchived` and its blob without reading the stream: one
-whose replay key (`<group>@<blob>#<events>`, returned by the lookup, which never reads the payload)
-names the blob id is not appended again (criterion 4's skip), and one naming another blob is
-followed by a new one, which readers and validate take as the span's. Only `read_history` and
-validate read a `RunArchived`'s payload. A `RunArchived` belongs, as an archive record, to the span
-its group names, and as a live knowledge row to the span its own position lies in. The delete is one
-transaction and no row enters a span below the current boundary (sqlite gives each append a position
-above every one it has used, `AUTOINCREMENT`, and spec 107's migration rewrites rows in place into
-knowledge), so while the class table stands (Global constraints) a span's episodic rows are all live
-or all gone. A class table changed without the spec that constraint requires loses nothing: the
-earlier blob is kept under its aside ref and the move is printed. The prelude resumes as a run does.
+exits 128, naming the ref's value and `<old>`). The aside ref's name and those two lines are ONE
+pure function, `archive::aside_move(ref, blob, old)` in `crates/rigger-domain/src/archive.rs`,
+criterion 4's, first called by that write; `archive_run`'s moved-aside record names its aside ref
+through it and criterion 8's advisory prints its lines, building neither. The archive then proceeds
+as for any span (read-back, `RunArchived`, delete), the moved-aside record of its return value
+naming the ref, the blob moved aside, its aside ref and the blob written. A `RunArchived` carries
+`META_GROUP` (`archive/run/<position>` or `archive/prelude`) and a replay key naming its blob
+(Notes), so the group lookup answers the span's latest `RunArchived` and its blob without reading
+the stream: one whose replay key (`<group>@<blob>#<events>`, returned by the lookup, which never
+reads the payload) names the blob id is not appended again (criterion 4's skip), and one naming
+another blob is followed by a new one, which readers and validate take as the span's. Only
+`read_history` and validate read a `RunArchived`'s payload. A `RunArchived` belongs, as an archive
+record, to the span its group names, and as a live knowledge row to the span its own position lies
+in. The delete is one transaction and no row enters a span below the current boundary (sqlite gives
+each append a position above every one it has used, `AUTOINCREMENT`, and spec 107's migration
+rewrites rows in place into knowledge), so while the class table stands (Global constraints) a
+span's episodic rows are all live or all gone. A class table changed without the spec that
+constraint requires loses nothing: the earlier blob is kept under its aside ref and the move is
+printed. The prelude resumes as a run does.
 
 **THE ARCHIVE IS READ ON DEMAND.** `archive::read_archived(blob)` reads the blob through
 `RunArchive::read`, parses the rows and yields the events in position order; NOT HELD is the LOST
@@ -344,34 +354,34 @@ calls the decision, returning a permanent skip before any lock is touched, so a 
 outranks the held-lock skip; (2) uses the lock handed, else takes one without waiting in
 `store_dir`, a busy take answering the transient skip; (3) hands `archive_pending` the git adapter
 at `tree_root(store_dir)` and the store wired through `ingest::folding_into` over the graph its
-caller opened with `open_graph`, so each `RunArchived` is folded and writes its `applied` row. A
-fold that is lost is the folding store's reported loss, on that store's own stream under every
-caller, and leaves the graph owing its rebuild as any lost fold does (spec 101); the delete
-proceeds, the prune and compaction of `rigger reset --runs` then run over the marked file as today,
-and the next `rigger setup` rebuilds it. The step lock alone serializes archivers; without it two
-could each find no `RunArchived` for a span and each append one. THE DRIVERS: `rigger step`
-(`cmd_step`), `rigger run` under both its drivers (`run_cli` for `--driver cli`, `run_workflow` for
-`--driver workflow`) and `rigger serve` (`cmd_serve`, through `run_workflow`) reach `conductor::run`
-through ONE function of `src/cli/run.rs`, criterion 3's, `archive_then_run(cfg: &Config, deps:
-&Deps, store_dir: &Path, held: Option<&HeldLock>, graph: &dyn Projection, store_is_sqlite: bool) ->
-Result<RunState, conductor::Error>`, calling `run_archiving` over `deps.store`, then
-`conductor::run`; criterion 5 adds inside it the driver cadence's write through `stderr_line`.
-`cmd_step` hands it the step lock it holds and the others none, each the cwd-relative `.rigger` its
-store is opened from (`RIGGER_DIR`); under `run_workflow` it runs on the conductor's thread, inside
-the spawned closure; `rigger workflow` (`cmd_workflow`) launches a script that spawns `rigger serve`
-and calls neither. `crates/rigger-conductor` is untouched by this spec. A run superseded by a
-`RunStarted` minted inside `conductor::run` is archived at the next pass, and one superseded by a
-`--fresh` or re-pin boundary `cmd_step` mints before `archive_then_run` is archived by that step.
-The replay's isolated re-drive (`cmd_replay`) calls `conductor::run` over an isolated store and
-never archives; the canary (`canary_store::run_canary`) calls no `conductor::run`. `rigger reset
---runs` (`reset_runs`) runs the steps RESET ORDER (Notes) gives, in its order. The probe lends its
-step lock by reference (`Option<&HeldLock>`, from the `LiveWriterProbe` it already holds the guard
-in) to `run_archiving` and to the reclamation function, so the lock is alive at both calls; from
-criterion 6 on nothing drops the probe by hand, so its lock is released when `reset_runs` returns,
-every step after the probe runs under it, and a `rigger step` started meanwhile answers
-`STEP_BUSY_TOKEN` and its courier retries. The drivers' `RIGGER_DIR` and reset's
-`StoreLocation::dir` name the same `step.lock` for one store today, the `.rigger` holding its
-`events.db` (`acquire_step_lock`). The reclamation function, `runs_reclamation(store: &Store,
+caller opened with `open_graph` and `stderr_line`, as every production writer wires it, so each
+`RunArchived` is folded and writes its `applied` row. A fold that is lost is the folding store's
+reported loss, on that store's own stream under every caller, and leaves the graph owing its rebuild
+as any lost fold does (spec 101); the delete proceeds, the prune and compaction of `rigger reset
+--runs` then run over the marked file as today, and the next `rigger setup` rebuilds it. The step
+lock alone serializes archivers; without it two could each find no `RunArchived` for a span and each
+append one. THE DRIVERS: `rigger step` (`cmd_step`), `rigger run` under both its drivers (`run_cli`
+for `--driver cli`, `run_workflow` for `--driver workflow`) and `rigger serve` (`cmd_serve`, through
+`run_workflow`) reach `conductor::run` through ONE function of `src/cli/run.rs`, criterion 3's,
+`archive_then_run(cfg: &Config, deps: &Deps, store_dir: &Path, held: Option<&HeldLock>, graph: &dyn
+Projection, store_is_sqlite: bool) -> Result<RunState, conductor::Error>`, calling `run_archiving`
+over `deps.store`, then `conductor::run`; criterion 5 adds inside it the driver cadence's write
+through `stderr_line`. `cmd_step` hands it the step lock it holds and the others none, each the
+cwd-relative `.rigger` its store is opened from (`RIGGER_DIR`); under `run_workflow` it runs on the
+conductor's thread, inside the spawned closure; `rigger workflow` (`cmd_workflow`) launches a script
+that spawns `rigger serve` and calls neither. `crates/rigger-conductor` is untouched by this spec. A
+run superseded by a `RunStarted` minted inside `conductor::run` is archived at the next pass, and
+one superseded by a `--fresh` or re-pin boundary `cmd_step` mints before `archive_then_run` is
+archived by that step. The replay's isolated re-drive (`cmd_replay`) calls `conductor::run` over an
+isolated store and never archives; the canary (`canary_store::run_canary`) calls no
+`conductor::run`. `rigger reset --runs` (`reset_runs`) runs the steps RESET ORDER (Notes) gives, in
+its order. The probe lends its step lock by reference (`Option<&HeldLock>`, from the
+`LiveWriterProbe` it already holds the guard in) to `run_archiving` and to the reclamation function,
+so the lock is alive at both calls; from criterion 6 on nothing drops the probe by hand, so its lock
+is released when `reset_runs` returns, every step after the probe runs under it, and a `rigger step`
+started meanwhile answers `STEP_BUSY_TOKEN` and its courier retries. The drivers' `RIGGER_DIR` and
+reset's `StoreLocation::dir` name the same `step.lock` for one store today, the `.rigger` holding
+its `events.db` (`acquire_step_lock`). The reclamation function, `runs_reclamation(store: &Store,
 before: Option<u64>, probe: &LiveWriterProbe) -> String` in `src/cli/hygiene.rs`, criterion 7's,
 calls `Store::reclaim_space` with the before-size only when the probe's
 `LiveWriterFacts::driver_dead` answers true, the probe then holding the step lock, since an appender
@@ -427,12 +437,12 @@ beside validate's other advisories. A span whose blob git holds prints one advis
 (its run id and position, or `prelude`), the full ref, the recorded blob id and the restore command:
 `git update-ref <ref> <blob> ''` for a missing ref, whose empty old value makes git refuse when the
 ref exists meanwhile, and for a ref naming another blob `<old>` the two instructions the
-`RunArchive` write issues, `printf 'update refs/rigger/aside/<old> <old>\nupdate <ref> <blob>
-<old>\n' | git update-ref --stdin`. Obeying either reaches a ref naming the recorded blob, which is
-silent, and leaves no blob unreachable; a ref moved meanwhile makes git refuse and write nothing.
-The spans whose blob this repository does not hold are named together on ONE line, their count,
-positions and full refs, saying this repository does not hold their blobs and naming the namespace a
-remote may hold them under with the fetch refspec that restores them,
+`RunArchive` write issues, `archive::aside_move`'s lines, `printf 'update refs/rigger/aside/<old>
+<old>\nupdate <ref> <blob> <old>\n' | git update-ref --stdin`. Obeying either reaches a ref naming
+the recorded blob, which is silent, and leaves no blob unreachable; a ref moved meanwhile makes git
+refuse and write nothing. The spans whose blob this repository does not hold are named together on
+ONE line, their count, positions and full refs, saying this repository does not hold their blobs and
+naming the namespace a remote may hold them under with the fetch refspec that restores them,
 `refs/rigger/archive/<store>/*:refs/rigger/archive/<store>/*`, a line that repeats while they stay
 missing. The advisory never fails validate: `cmd_validate` first calls `archive_skip_at` with the
 `.rigger` directory it reads the store from and whether its selection is sqlite, and the advisory
@@ -483,10 +493,11 @@ entry. `<position>` is the global position (`Position`, a `u64`) of the span's `
 in decimal zero-padded to 20 digits, the width of the largest `u64`, in the ref, the group and the
 replay key alike.
 
-The archive blob holds one JSON object per archived row, in position order, keys in this order:
-`position`, `stream`, `type`, `id`, `data`, `meta`, `valid_from`, `recorded_at`, `revision`. `data`
-is the row's bytes as a JSON string when they are UTF-8, else lowercase hex under `data_hex`; `meta`
-is its JSON object; times are integer nanoseconds since the epoch.
+The archive blob holds one JSON object per archived row, one per line, each ended by one LF, in
+position order, keys in this order: `position`, `stream`, `type`, `id`, `data`, `meta`,
+`valid_from`, `recorded_at`, `revision`. `data` is the row's bytes as a JSON string when they are
+UTF-8, else lowercase hex under `data_hex`, exactly one of the two per row; `meta` is its JSON
+object; times are integer nanoseconds since the epoch.
 
 TEST HOMES. Where each criterion's assertions live, by what each crate can see:
 `crates/rigger-domain` has no dev-dependency and gains none, so its archive tests use doubles of
@@ -503,9 +514,9 @@ runs the same runner (`RIGGER_PIDNS: off` skips only the namespace), so its work
 | Criterion | Test files |
 |---|---|
 | 1 | `assert_archive_contract` in `contract.rs`, a second contract entry point the `sqlite.rs` and `namespace.rs` suites run (the three methods over port-written rows); `sqlite.rs`'s own tests (the reissued-row anchoring in raw SQL, beside `a_typed_read_hands_back_a_reissued_row_where_the_log_recorded_it`); `kurrentdb.rs`'s `passes_the_contract` (the three `Error::Backend` answers) |
-| 2 | `crates/rigger-domain/src/archive.rs` (`read_history`, `read_archived` and the descriptor list over doubles and literal bytes); the adapter's tests in `crates/rigger-worktree-git` (`create`, `list`, `read`'s three answers, `holds`, the fsync setting in the arguments its two write commands are built with); `tests/hermetic_test_git_audit.rs` (the runner's `GIT_CEILING_DIRECTORIES` export at its `TMPDIR`); `tests/episode_archive.rs`, new, and `tests/cli.rs` (both commands over stores the seeding helper in `tests/common/` archives, and outside any git repository over a store holding no `RunArchived`) |
+| 2 | `crates/rigger-domain/src/archive.rs` (`read_history`, `read_archived` and the descriptor list over doubles and literal bytes); the adapter's tests in `crates/rigger-worktree-git` (`create`, `list`, `read`'s three answers, `holds`, the fsync setting in the arguments its two write commands are built with and `GIT_NO_LAZY_FETCH=1` in the environment `holds`' command is built with); `tests/hermetic_test_git_audit.rs` (the runner's `GIT_CEILING_DIRECTORIES` export at its `TMPDIR`); `tests/episode_archive.rs`, new, and `tests/cli.rs` (both commands over stores the seeding helper in `tests/common/` archives, and outside any git repository over a store holding no `RunArchived`) |
 | 3 | `archive.rs` (`ArchiveOutcome::record` over hand-built values; on a recording double: a current-run row at a reissued low revision not at the stream's tail left live, a store where no run has started archiving nothing, the current run's events left live; doubles: a span with no episode, a read-back not held, answering other bytes or failing, the moved-aside part none, the outcome, the stop rule, the three reads and the `Any` append on a recording double, the decision's four combinations); `tests/episode_archive.rs` (the store double over the real sqlite store failing `delete_archived` on command, landed here and reused by criterion 4, producing criterion 2's span archived and not yet deleted from this tree on; a run and the prelude archived, two stores in one repository, an id that is not a UUID, every pending span, the round trip); `tests/simplification_audit.rs` (beside `the_process_spawn_port_is_the_only_production_command_new_caller`, over the same `find_ident_path_call_sites`: the production `conductor::run` call sites under `src/cli/` are `archive_then_run`'s and `cmd_replay`'s); `src/cli/run.rs` (`run_archiving` over a recording store double and a not-sqlite input taking no lock and calling no port method); `tests/cli.rs` through `rigger step` (outside a repository, only that nothing is archived, both through `run_archiving`'s one early return; a failed span: a regular file at `.git/refs/rigger/archive` in the fixture repository, so the archive's ref write fails) |
-| 4 | `tests/episode_archive.rs` (criterion 3's store double failing on command over a fixture git repository); the adapter's tests (the write's two existing-ref states) |
+| 4 | `archive.rs` (`archive::aside_move` over literal inputs); `tests/episode_archive.rs` (criterion 3's store double failing on command over a fixture git repository); the adapter's tests (the write's two existing-ref states) |
 | 5 | `archive.rs`, with no double and over hand-built outcomes; `tests/cli.rs` through `rigger step`'s standard error (its failed span as criterion 3's) |
 | 6 | `tests/cli.rs` (the lost fold: a trigger in the fixture's `graph.db` refusing an `applied` insert above the store's last position before the reset, on a store with no landed unit to close; the failed span as criterion 3's) |
 | 7 | `src/cli/hygiene.rs` (`runs_reclamation` over a sqlite `Store`: a probe with live or dead facts, no before-size, a before-size below the size after; the one rendering function over a hand-built failed `Reclamation`); `tests/cli.rs` |
@@ -513,7 +524,11 @@ runs the same runner (`RIGGER_PIDNS: off` skips only the namespace), so its work
 
 TEST DISPOSITIONS. Each existing test this spec breaks, the criterion whose change breaks it first
 and what it pins afterwards. No other existing test asserts that the run stream keeps an earlier
-run's episodic row after a driver step or a reset.
+run's episodic row after a driver step or a reset, and none whose fixture is its own git repository
+holding an earlier finished span pins the current run's event count, type sequence or positions
+across a step: the one such step
+(`a_step_adopting_the_specs_run_proceeds_while_one_beginning_a_new_run_refuses`) counts only
+`RunStarted`, which stays.
 
 | Test | First broken by | Disposition |
 |---|---|---|
@@ -530,8 +545,9 @@ skill, so each criterion commits its re-render with its edit.
 
 | Passage | Rewritten by | Pinned by |
 |---|---|---|
-| `docs/architecture-addendum-context-management.md` section 2.1 and its append-only log box; every passage of `docs/architecture.md` calling the log append-only (its memory-first bullet, the log node of its diagram, the `eventstore` row and R2); `docs/architecture-addendum-mission-control.md`'s "append-only and complete" (they state the target, UNIT ORDER) | 2 | none |
-| `README.md`: "You never edit or delete an event" | 3 | none |
+| the `EventStore` trait's doc comment (`crates/rigger-domain/src/eventstore.rs`, "the append-only, bi-temporal log port") and the module headers of `crates/rigger-store-sqlite/src/eventstore/mod.rs` and `src/eventstore/mod.rs` ("The append-only, bi-temporal event store: an immutable log") | 1 | none |
+| `docs/architecture-addendum-context-management.md` section 2.1 and its append-only log box; every passage of `docs/architecture.md` calling the log append-only (its memory-first bullet, the log node of its diagram, the `eventstore` row and R2); `docs/architecture-addendum-mission-control.md`'s "append-only and complete"; `docs/architecture-addendum-pit-of-success.md`'s "an append-only stream that persists across attempts and runs" (they state the target, UNIT ORDER) | 2 | none |
+| `README.md`: "written to an append-only event log. You never edit or delete an event" | 3 | none |
 | the `rigger-reset-store` skill (`crates/rigger-domain/src/docs.rs`): "only one of them holds anything durable", "every decision, finding, gate verdict ... ever recorded" and the anti-move "The event log is append-only truth" | 3 | the render test |
 | the `--fresh` notice "(the prior run stays in the log)" that `cmd_step` and `fresh_run_if_requested` print (`src/cli/run.rs`), the `--fresh` usage text in `src/main.rs` ("the prior run stays in the log as history and context") and `start_fresh`'s doc comment (`crates/rigger-store-sqlite/src/run_store.rs`) | 3 | none: `tests/cli.rs` pins only "began a new run" |
 | `reset_runs`' printed report line ("this prune deletes no event from the log ...") and its doc comment (`src/cli/hygiene.rs`) | 6 | `reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote` |
@@ -601,7 +617,8 @@ race between the probe's read and the close is today's.
   position in raw SQL in the tests of `sqlite.rs` and each method answering `Error::Backend` naming
   it in the tests of `kurrentdb.rs`. This criterion OWNS the three `EventStore` methods on every
   implementation (both adapters, `Namespaced`, `FoldingStore`, the test doubles) and
-  `assert_archive_contract`; their production callers are criteria 3 and 8's, NOT this one's.
+  `assert_archive_contract`, and the passages DOCUMENT EDITS gives it; their production callers are
+  criteria 3 and 8's, NOT this one's.
 - [ ] a test proves THE ARCHIVE READS BACK: `rigger replay <run>` and `rigger stats --all` print, over a store whose earlier spans are archived, the bytes of standard output they print over that store before archiving,
   over stores the `tests/common/` seeding helper archives, with the archive event standing in the
   current run, the descriptor list opening with the prelude and naming every run in position order,
@@ -665,15 +682,15 @@ race between the probe's read and the close is today's.
 - [ ] a test proves AN INTERRUPTED ARCHIVE COMPLETES: an archive stopped after its ref was written, and one stopped after its `RunArchived` was recorded, are each completed by the next archive of the span after a read-back of the blob,
   the read-back compared with the re-serialized bytes, with no second ref, no second archive event
   and every episodic event of the span gone, a span whose ref names another blob archived after that
-  blob is kept under `refs/rigger/aside/<blob>` with its return value's moved-aside record naming
+  blob is kept under `refs/rigger/aside/<old>` with its return value's moved-aside record naming
   the ref, both blobs and the aside ref, and an aside ref already naming that blob left as it is, a
   span whose earlier blob is moved aside and whose append then fails leaving that blob under its
   aside ref and the span's episodic events live, driven through a store double that fails on command
   over a fixture git repository in the files TEST HOMES gives it. This criterion OWNS the resume,
-  the skip of a `RunArchived` already naming the blob, the write's two existing-ref states and the
-  filling of the moved-aside record `archive_run`'s return value declares; the first pass, the
-  return value's shape and its mapping into the outcome are criterion 3's and every line criterion
-  5's, NOT this one's.
+  the skip of a `RunArchived` already naming the blob, the write's two existing-ref states,
+  `archive::aside_move` and the filling of the moved-aside record `archive_run`'s return value
+  declares; the first pass, the return value's shape and its mapping into the outcome are criterion
+  3's and every line criterion 5's, NOT this one's.
 - [ ] a test proves EVERY OUTCOME RENDERS ONCE PER CADENCE: each `ArchiveOutcome` renders to the lines RENDER (Notes) gives it in each cadence,
   over hand-built outcomes in the tests of `crates/rigger-domain/src/archive.rs`, with a failed span
   and a blob moved aside each named once in both cadences, a failure naming no span printed in both,
@@ -692,11 +709,12 @@ race between the probe's read and the close is today's.
   run over it as today and the next `rigger setup` rebuilding it, a probe holding no lock printing
   the held-lock skip while a step runs and archiving once the step has ended, a failed span named
   and the remaining steps run, and a project outside a git repository named once, with no totals
-  line beside either skip, every line on standard output, in `tests/cli.rs`. This criterion OWNS the
-  place of every step RESET ORDER gives criterion 6, handing the outcome to the reset cadence on
-  standard output, and the passages and test moves DOCUMENT EDITS and TEST DISPOSITIONS give it; the
-  totals' values and `run_archiving` are criterion 3's, the render criterion 5's, the reclamation
-  criterion 7's and the skill's archive-ref advisory text criterion 8's, NOT this one's.
+  line beside either skip, every archive outcome line on standard output, in `tests/cli.rs`. This
+  criterion OWNS the place of every step RESET ORDER gives criterion 6, handing the outcome to the
+  reset cadence on standard output, and the passages and test moves DOCUMENT EDITS and TEST
+  DISPOSITIONS give it; the totals' values and `run_archiving` are criterion 3's, the render
+  criterion 5's, the reclamation criterion 7's and the skill's archive-ref advisory text criterion
+  8's, NOT this one's.
 - [ ] a test proves `rigger reset --runs` RECLAIMS: after its archive and its graph prune, it reclaims the store's free pages and prints what the `--runs` mode gave back, the size it measured before the archive less the size after,
   with the file smaller on disk and, while a live writer holds, reclamation skipped with a line
   saying why, the archive and its delete standing, through the binary in `tests/cli.rs` and over
@@ -721,7 +739,7 @@ race between the probe's read and the close is today's.
   `RunArchive::list` once and `RunArchive::holds` at most once whatever the span count. This
   criterion OWNS the advisory function, its wiring in `cmd_validate` with its call of
   `archive_skip_at`, its error line, its not-held line and the passages DOCUMENT EDITS gives it;
-  `RunArchive::holds` is criterion 2's, the decision and `archive_skip_at` criterion 3's, naming a
-  lost span at read time is criterion 2's and the index-lag and bloat advisories are spec 107's, NOT
-  this one's.
+  `RunArchive::holds` is criterion 2's, the decision and `archive_skip_at` criterion 3's,
+  `archive::aside_move` criterion 4's, naming a lost span at read time is criterion 2's and the
+  index-lag and bloat advisories are spec 107's, NOT this one's.
 - [ ] every lane green: fmt, and clippy and tests on the default lane and on the `no-default` and `core` lanes `.rigger/gates/lanes.sh` runs. This criterion OWNS only the lanes over the integrated result.
