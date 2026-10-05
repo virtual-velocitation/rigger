@@ -12263,13 +12263,13 @@ pub fn review_protocol(actor: &str) -> String {
 /// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
 /// exists to catch, name in a lesson, and restore. A REVIEW NEVER MUTATES: its last sentence
-/// keeps cargo-mutants out of every review, since the check-in gate owns mutation testing and
-/// a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
+/// keeps mutation sweeps out of every review, since the gate that sweeps owns mutation testing
+/// and a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
 /// and adversary tiers, which also record findings through it) and [`RunCtx::
 /// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run cargo-mutants, directly or through a verify helper: mutation testing belongs to the check-in gate, never to a review.";
+const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
@@ -30937,7 +30937,7 @@ mod tests {
     /// STANDALONE three-tier review stage's OWN call site (`is_fan_out`: no `agent`, a
     /// populated `agents` lens list). It calls the identical `run_adversary`/
     /// `run_adjudicator` helpers, but is a second, independent wiring the mutation
-    /// accounting cannot see (cargo-mutants mutates function bodies, not which caller
+    /// accounting cannot see (the mutation tool mutates function bodies, not which caller
     /// passes which argument) - a swapped or dropped roster argument at THIS call site
     /// would pass every other gate silently. This test drives it end to end and reads the
     /// REAL `SpawnOpts.reviews` the driver received, mirroring the review_unit-path
