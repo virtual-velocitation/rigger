@@ -306,6 +306,21 @@ rigger::test_cases! {
             MEMBER_LIB,
             "member code without a test",
         )], 0);
+    /// A member's own test commit, then the member source it drives: a test under any `tests`
+    /// directory counts, whatever the layout.
+    red_before_green_passes_a_member_test_commit_before_the_member_source_commit:
+        red_before_green_passes(LIB, &[
+            ("tools/x/tests/g.rs", TEST_FILE, "member red"),
+            ("tools/x/src/lib.rs", MEMBER_LIB, "member green"),
+        ]);
+    /// A test-less commit to a directory whose name only ends in `src`: source is a whole `src/`
+    /// path component, so the branch touches no source.
+    red_before_green_passes_a_commit_to_a_directory_whose_name_only_ends_in_src:
+        red_before_green_passes(LIB, &[(
+            "tools/xsrc/lib.rs",
+            MEMBER_LIB,
+            "not a source component",
+        )]);
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,
