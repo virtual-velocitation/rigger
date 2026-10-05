@@ -36,7 +36,7 @@ use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
     reclaim_worktree_on_branch, review_fence_sibling, scratch_root, sweep_terminal,
-    unit_cache_sibling, unit_sibling, Worktree, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_sibling, Worktree, UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The teardown a [`reaps_before_removing`] case drives.
@@ -122,34 +122,33 @@ rigger::test_cases! {
          removed - a bare remove_dir_all here leaks it as an orphan holding a deleted cwd \
          (spec 79 Goal: 'even the exemplar leaks here')",
     );
-    /// SDET periphery (spec 91, THE GATE ENVIRONMENT): the identical structural gap as
+    /// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE): the identical
+    /// structural gap as
     /// `worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it`
-    /// above, for the NEW THIRD sibling `reclaim_cache_sibling` widened to reclaim - the
-    /// `checkin` stage's `mutation` gate's own per-unit `cargo-mutants-<slug>` root.
+    /// above, for the THIRD sibling `reclaim_cache_sibling` reclaims - the unit's gate scratch
+    /// root `rigger-gate-<slug>`, handed to every gate that runs for the unit.
     ///
-    /// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `src/worktree.rs`'s own
-    /// `worktree_remove_also_reclaims_the_sibling_mutants_root` test (spec 91) proves the dir is
+    /// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `worktree.rs`'s own
+    /// `worktree_remove_also_reclaims_the_sibling_gate_scratch_root` test proves the dir is
     /// gone after `remove()` - but it never plants a LIVE process inside it first, so it cannot
     /// see the exact defect class this file exists to close (see this file's own module doc):
     /// a process rooted in the sibling can survive a bare `remove_dir_all`, outliving the
-    /// removed dir with a now-deleted cwd. This is the realistic shape for THIS sibling
-    /// specifically: `cargo mutants` forks one `cargo test` (and its own child test binary) per
-    /// mutant into `$MUTANTS`, and spec 91's own Goal cites a real one that survived its
-    /// launcher's death for 6.6 hours - if a unit's worktree is torn down (escalation,
-    /// supersede, crash resume) while a sweep's process tree is still rooted in this exact
-    /// directory, only a real reap-before-remove closes the same class of orphan the sibling
-    /// build-cache case already guards.
-    worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_reclaiming_it: reaps_before_removing(
+    /// removed dir with a now-deleted cwd. This is the realistic shape for THIS sibling: a gate
+    /// tool may fork a build and test binary per pass under the root, and if a unit's worktree
+    /// is torn down (escalation, supersede, crash resume) while such a process tree is still
+    /// rooted there, only a real reap-before-remove closes the same class of orphan the
+    /// sibling build-cache case already guards.
+    worktree_remove_reaps_a_process_rooted_in_its_sibling_gate_scratch_root_before_reclaiming_it: reaps_before_removing(
         Teardown::UnitRemove,
-        "mutantsreaptest",
+        "gatescratchreaptest",
         |wt| {
-            unit_sibling(wt, UNIT_MUTANTS_PREFIX)
-                .expect("a rigger-wt-* worktree dir has a mutants-root sibling")
+            unit_sibling(wt, UNIT_GATE_SCRATCH_PREFIX)
+                .expect("a rigger-wt-* worktree dir has a gate-scratch-root sibling")
         },
-        "a process rooted in the per-unit cargo-mutants-<slug> root that Worktree::remove \
+        "a process rooted in the per-unit rigger-gate-<slug> root that Worktree::remove \
          reclaims as reclaim_cache_sibling must be reaped (SIGTERM then SIGKILL) BEFORE that \
-         dir is removed - a bare remove_dir_all here leaks a mutation-sweep child as an \
-         orphan holding a deleted cwd, the same class spec 79 closed for the build cache",
+         dir is removed - a bare remove_dir_all here leaks a gate's child as an orphan \
+         holding a deleted cwd, the same class spec 79 closed for the build cache",
     );
     // spec 79 Goal: "`Worktree::discard` leaks a review-fence sibling process; live-confirmed
     // during the spec-78 run". A standalone review stage's fenced gate run leaves a real
@@ -515,4 +514,89 @@ fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized
          refusal must never block the removal itself, matching every other reap call site's \
          best-effort contract"
     );
+}
+
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE): the conductor's
+/// post-merge reclaim calls the public `reclaim_gate_scratch_sibling` on the path of a unit
+/// worktree that may ALREADY be gone (a speculating unit's lane 0 removed before the re-gate
+/// ran), so no `Worktree::remove` reaches the root the re-gate was handed. Driven straight
+/// through the public API with no worktree at that path: a live process rooted in the
+/// `rigger-gate-<slug>` root is reaped (SIGTERM then SIGKILL) before the root is removed, while
+/// a process rooted in the unit's `cargo-target-<slug>` cache sibling survives and that cache
+/// stays on disk - the post-merge reclaim takes the gate scratch root only.
+#[test]
+fn reclaim_gate_scratch_sibling_reaps_and_removes_only_the_gate_root_of_an_already_removed_worktree(
+) {
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let worktree_dir = scratch_path.join(format!("{UNIT_WORKTREE_PREFIX}postmerge"));
+    let gate_root = scratch_path.join(format!("{UNIT_GATE_SCRATCH_PREFIX}postmerge"));
+    let cache = Path::new(
+        &unit_cache_sibling(worktree_dir.to_str().unwrap())
+            .expect("a rigger-wt-* path has a cache sibling"),
+    )
+    .to_path_buf();
+    std::fs::create_dir_all(&gate_root).unwrap();
+    std::fs::write(gate_root.join("rerun.list"), b"left by the re-gate\n").unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(cache.join("lib.rlib"), [0u8; 16]).unwrap();
+    assert!(
+        !worktree_dir.exists(),
+        "precondition: no worktree at the path"
+    );
+
+    assert_teardown_reaps_what_is_rooted_inside(
+        &gate_root,
+        Some(&cache),
+        || {
+            rigger::worktree::reclaim_gate_scratch_sibling(
+                worktree_dir.to_str().unwrap(),
+                scratch_path.to_str().unwrap(),
+            )
+        },
+        "reclaim_gate_scratch_sibling",
+    );
+    assert!(
+        !gate_root.exists(),
+        "the gate scratch root is removed once its rooted process is reaped"
+    );
+    assert_eq!(
+        std::fs::read(cache.join("lib.rlib")).unwrap(),
+        vec![0u8; 16],
+        "the unit's build cache is never touched by the gate scratch reclaim"
+    );
+
+    // A second call on the now-absent root is a no-op, never a panic.
+    rigger::worktree::reclaim_gate_scratch_sibling(
+        worktree_dir.to_str().unwrap(),
+        scratch_path.to_str().unwrap(),
+    );
+    assert!(!gate_root.exists());
+}
+
+/// SDET periphery (spec 113): `reclaim_gate_scratch_sibling` derives its root only from a unit
+/// worktree path. Handed any other dir, it removes nothing - not even a `rigger-gate-<name>`
+/// that happens to sit beside it under the same scratch root.
+#[test]
+fn reclaim_gate_scratch_sibling_removes_nothing_beside_a_dir_that_is_not_a_unit_worktree() {
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    for (dir, lookalike) in [
+        ("plain", "rigger-gate-plain"),
+        ("rigger-review-plain", "rigger-gate-plain"),
+        ("x-rigger-wt-plain", "rigger-gate-plain"),
+    ] {
+        let root = scratch_path.join(lookalike);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("rerun.list"), b"kept\n").unwrap();
+        rigger::worktree::reclaim_gate_scratch_sibling(
+            scratch_path.join(dir).to_str().unwrap(),
+            scratch_path.to_str().unwrap(),
+        );
+        assert_eq!(
+            std::fs::read(root.join("rerun.list")).unwrap(),
+            b"kept\n".to_vec(),
+            "a dir named {dir} is not a unit worktree, so {lookalike} beside it is kept"
+        );
+    }
 }

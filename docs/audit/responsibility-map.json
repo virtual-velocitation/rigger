@@ -1121,6 +1121,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "postmerge_unit_dir",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "f74857d8bf96c9e6"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_gates",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -1133,7 +1141,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4cc15163b900ab73"
+    "content_hash": "340ab5dc3e87eefb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1189,7 +1197,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "d970eb46dbdc2a25"
+    "content_hash": "61d0ba9585ba6ffe"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6521,6 +6529,38 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "spawn",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "fe66d1c26fcee828"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f2e9c31687776b02"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "spawn",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7cb078eafa878166"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f8c28a22653ab740"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_postmerge_err_reaps_its_branch",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -8173,7 +8213,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "33eadfdca27debed"
+    "content_hash": "d13f80cc01793cf1"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8181,7 +8221,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "21778c90443c2813"
+    "content_hash": "9f1d41eb1f698688"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8205,7 +8245,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"find_\" (lookup helper); grouped under `main::support`.",
-    "content_hash": "77cedde1bba8b67c"
+    "content_hash": "ee3977982847f618"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8261,7 +8301,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"scratch\" (project setup); grouped under `main::setup`.",
-    "content_hash": "2b3c5c23fc027c4f"
+    "content_hash": "04f8124db99ba5d6"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8269,7 +8309,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "fa9fd25d83494d52"
+    "content_hash": "c8129838a6983ef0"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8813,7 +8853,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ab5932062f87ddc0"
+    "content_hash": "365f6a67820c532b"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8861,7 +8901,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4445e033d6cfc25e"
+    "content_hash": "a500cc878da1ea51"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8901,7 +8941,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "61a6af0ef07a0f88"
+    "content_hash": "6e0ca935931c4d08"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9053,7 +9093,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "42e8f4f0b2e5540b"
+    "content_hash": "5c11bbd30e8bc579"
   },
   {
     "file": "src/cli/mod.rs",

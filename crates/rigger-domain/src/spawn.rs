@@ -54,12 +54,6 @@ pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
     Some(format!("{parent}/{prefix}{slug}"))
 }
 
-/// Filesystem prefix of a unit's per-unit mutants-root dir (`cargo-mutants-<slug>`), a
-/// SIBLING of its worktree under the scratch root (spec 91, THE GATE ENVIRONMENT) - the
-/// exact same sibling shape as [`UNIT_CACHE_PREFIX`]'s `cargo-target-<slug>`. See
-/// [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives here rather than in `worktree`.
-pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
-
 /// Filesystem prefix of a unit's gate scratch root (`rigger-gate-<slug>`), a SIBLING of its
 /// worktree under the scratch root (spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY):
 /// every gate that runs for the unit is handed it as `RIGGER_GATE_SCRATCH`, a directory the
@@ -67,6 +61,16 @@ pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
 /// it does. See [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives here rather than in
 /// `worktree`.
 pub const UNIT_GATE_SCRATCH_PREFIX: &str = "rigger-gate-";
+
+/// The unit slug of a scratch-root entry that is one of a unit's per-unit caches - its build
+/// cache (`cargo-target-<slug>`) or its gate scratch root (`rigger-gate-<slug>`) - or `None`
+/// for any other name. The slug may be empty (a bare `cargo-target-`). Every scratch walk
+/// classifies by this one predicate (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), so
+/// a unit's gate scratch root is reported, measured and reclaimed exactly as its cache is.
+pub fn unit_scratch_slug(name: &str) -> Option<&str> {
+    name.strip_prefix(UNIT_CACHE_PREFIX)
+        .or_else(|| name.strip_prefix(UNIT_GATE_SCRATCH_PREFIX))
+}
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
@@ -1023,6 +1027,23 @@ mod tests {
     use super::*;
     use crate::eventstore::Event;
     use crate::ledger::{AttentionEntry, RequiredItem};
+
+    /// Every scratch walk classifies a per-unit cache by one predicate (spec 113, THE GATE
+    /// SCRATCH ROOT HAS ONE LIFECYCLE): the text after a `cargo-target-` or `rigger-gate-`
+    /// prefix, empty included, and nothing for any other name.
+    #[test]
+    fn unit_scratch_slug_names_the_unit_of_a_cache_or_gate_scratch_root_and_nothing_else() {
+        assert_eq!(unit_scratch_slug("cargo-target-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("rigger-gate-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("cargo-target-"), Some(""));
+        assert_eq!(unit_scratch_slug("rigger-gate-"), Some(""));
+        assert_eq!(unit_scratch_slug("cargo-target"), None);
+        assert_eq!(unit_scratch_slug("rigger-gate"), None);
+        assert_eq!(unit_scratch_slug("rigger-wt-unit-7"), None);
+        assert_eq!(unit_scratch_slug("cargo-mutants-unit-7"), None);
+        assert_eq!(unit_scratch_slug("x-rigger-gate-unit-7"), None);
+        assert_eq!(unit_scratch_slug(""), None);
+    }
 
     /// A reject's verdict line names the items it requires fixed - each one's finding, the
     /// file it is in, whether it is a correctness defect, and the shape of a defect that

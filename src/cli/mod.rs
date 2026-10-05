@@ -3440,8 +3440,8 @@ fn live_slugs(
 /// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
 /// that NO live unit of the current run owns - the ownership backstop that makes the
 /// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
-/// `rigger-wt-<slug>` worktree and a `cargo-target-<slug>` per-unit build cache (Gap 19)
-/// whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
+/// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
+/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
 /// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
 /// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
 /// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
@@ -3526,11 +3526,12 @@ fn reclaim_orphan_scratch(
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
-        } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-            // A per-unit / ad-hoc `cargo-target-<slug>` cache. Mirror the worktree liveness
-            // check on the reconstructed `rigger-wt-<slug>` name so a cache stays in lockstep
-            // with its unit's liveness (a live unit's cache is in use, not residue). A bare
-            // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
+        } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache, or a unit's gate scratch root
+            // (`rigger-gate-<slug>`, spec 113). Mirror the worktree liveness check on the
+            // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
+            // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
+            // `-<slug>` tail) never matches and is spared.
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
                 reap_then_remove_dir(&path, root_path);
@@ -3583,8 +3584,9 @@ fn scan_residue(
                 // A build cache directly under the scratch root - a shared/leftover target
                 // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
                 report.caches.push((name, dir_size_bytes(&entry.path())));
-            } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19). It is reclaimed with
+            } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113). It is reclaimed with
                 // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
                 // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
                 // longer live - a leftover a crash stranded between removing the worktree and
@@ -3676,14 +3678,15 @@ fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
             let name = entry.file_name();
             if ft.is_dir() {
                 let n = name.to_string_lossy();
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) is pruned like the
-                // shared `cargo-target`: it never holds a real `events.db`, and descending a
-                // leaked multi-gigabyte cache would defeat this walk's cheap-beside-a-target
-                // guarantee (adv-u3gap19-shadow-walk-descends-per-unit-caches).
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113) is pruned like the shared `cargo-target`: it
+                // never holds a real `events.db`, and descending a leaked multi-gigabyte cache
+                // would defeat this walk's cheap-beside-a-target guarantee
+                // (adv-u3gap19-shadow-walk-descends-per-unit-caches).
                 let pruned = matches!(
                     n.as_ref(),
                     "target" | "cargo-target" | "node_modules" | ".git"
-                ) || n.starts_with(rigger::worktree::UNIT_CACHE_PREFIX);
+                ) || rigger::worktree::unit_scratch_slug(&n).is_some();
                 if !pruned {
                     stack.push(entry.path());
                 }
@@ -3980,7 +3983,7 @@ const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
-/// `cargo-target-<slug>` per-unit build caches, and the bare `cargo-target`/`target`
+/// `cargo-target-<slug>` per-unit build caches and `rigger-gate-<slug>` gate scratch roots, and the bare `cargo-target`/`target`
 /// SHARED build cache. No liveness decision is made here at all - just a name-prefix sum -
 /// so [`worktree_belongs_to_live`] is never re-derived a second time; the DEAD half of each
 /// category comes from calling [`scan_residue`] itself (see [`scratch_footprint`]), the one
@@ -4001,7 +4004,7 @@ fn scratch_totals(scratch_root: &Path) -> (u64, u64, u64) {
                 wt_total += bytes;
             } else if name == "target" || name == "cargo-target" {
                 build_cache_total += bytes;
-            } else if name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX) {
+            } else if rigger::worktree::unit_scratch_slug(&name).is_some() {
                 cache_total += bytes;
             }
         }
@@ -4039,12 +4042,13 @@ fn scratch_footprint(
     );
     let wt_dead: u64 = residue.worktrees.iter().map(|(_, bytes)| bytes).sum();
     // `residue.caches` conflates the shared cache (bare `cargo-target`/`target`) with
-    // per-unit caches (`cargo-target-<slug>`); only the latter belongs to THIS category -
-    // the shared cache's dead share is decided unconditionally above, not read from here.
+    // per-unit caches (`cargo-target-<slug>`, `rigger-gate-<slug>`); only the latter belong to
+    // THIS category - the shared cache's dead share is decided unconditionally above, not read
+    // from here.
     let dead_caches: Vec<&(String, u64)> = residue
         .caches
         .iter()
-        .filter(|(name, _)| name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX))
+        .filter(|(name, _)| rigger::worktree::unit_scratch_slug(name).is_some())
         .collect();
     (
         FootprintCategory {
@@ -6631,6 +6635,15 @@ mod tests {
                 .join("events.db"),
             b"not-a-store-either",
         );
+        // A unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache too,
+        // holding the build copies a gate's tool makes there: pruned the same way.
+        write_file(
+            &root
+                .join("rigger-gate-unit-9")
+                .join("cargo-mutants-copy")
+                .join("events.db"),
+            b"not-a-store-at-all",
+        );
         let mut found: Vec<String> = find_shadow_stores(root)
             .iter()
             .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
@@ -6788,6 +6801,16 @@ mod tests {
             &scratch.join("cargo-target-unit-6").join("i.rlib"),
             &[0u8; 128],
         );
+        // The same two units' gate scratch roots (`rigger-gate-<slug>`, spec 113): the dead
+        // one reported among the caches with its size, the live one omitted.
+        write_file(
+            &scratch.join("rigger-gate-unit-99-ghost").join("rerun.list"),
+            &[0u8; 256],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-6").join("rerun.list"),
+            &[0u8; 64],
+        );
         // A shadow store inside the dead worktree.
         write_file(
             &scratch
@@ -6821,8 +6844,9 @@ mod tests {
             vec![
                 ("cargo-target".to_string(), 2048),
                 ("cargo-target-unit-99-ghost".to_string(), 512),
+                ("rigger-gate-unit-99-ghost".to_string(), 256),
             ],
-            "the shared orphan cache and the DEAD unit's per-unit cache are residue; the LIVE unit's per-unit cache is omitted"
+            "the shared orphan cache and the DEAD unit's per-unit cache and gate scratch root are residue; the LIVE unit's are omitted"
         );
         assert_eq!(
             report.shadow_stores,
@@ -6928,6 +6952,16 @@ mod tests {
             &scratch.join("cargo-target-unit-dead").join("d.rlib"),
             &[0u8; 7],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) counts in the
+        // per-unit caches category beside its cache sibling.
+        write_file(
+            &scratch.join("rigger-gate-unit-live").join("rerun.list"),
+            &[0u8; 20],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-dead").join("rerun.list"),
+            &[0u8; 100],
+        );
         write_file(
             &scratch.join("cargo-target").join("shared.rlib"),
             &[0u8; 900],
@@ -6941,10 +6975,28 @@ mod tests {
         assert_eq!(worktrees.dead_bytes, 40, "only the dead unit's worktree");
         assert_eq!(
             unit_caches.total_bytes,
-            3 + 7,
-            "live + dead per-unit cache bytes"
+            3 + 7 + 20 + 100,
+            "live + dead per-unit cache and gate scratch root bytes"
         );
-        assert_eq!(unit_caches.dead_bytes, 7, "only the dead unit's cache");
+        assert_eq!(
+            unit_caches.dead_bytes,
+            7 + 100,
+            "only the dead unit's cache and gate scratch root"
+        );
+        let mut reclaimable: Vec<PathBuf> = unit_caches
+            .reclaimable
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        reclaimable.sort();
+        assert_eq!(
+            reclaimable,
+            vec![
+                scratch.join("cargo-target-unit-dead"),
+                scratch.join("rigger-gate-unit-dead"),
+            ],
+            "the reclaimable list holds the dead unit's cache and gate scratch root, never the live one's"
+        );
         assert_eq!(build_cache.total_bytes, 900);
         assert_eq!(
             build_cache.dead_bytes, 900,
@@ -7421,6 +7473,21 @@ mod tests {
             &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
             &[0u8; 8],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
+        // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
+        // reclaimed. A `cargo-mutants-<slug>` an earlier binary left matches no arm and stays.
+        write_file(
+            &scratch.join("rigger-gate-live-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("rigger-gate-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-mutants-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
         // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
         // owner) - the unbounded per-agent build-cache leak spec 34 names.
         write_file(
@@ -7460,8 +7527,20 @@ mod tests {
             &std::collections::HashSet::new(),
         );
         assert_eq!(
-            removed, 4,
-            "exactly the four non-live-owned entries are reclaimed"
+            removed, 5,
+            "exactly the five non-live-owned entries are reclaimed"
+        );
+        assert!(
+            scratch.join("rigger-gate-live-unit").exists(),
+            "the LIVE unit's gate scratch root is spared"
+        );
+        assert!(
+            !scratch.join("rigger-gate-dead-unit").exists(),
+            "the DEAD unit's gate scratch root is reclaimed"
+        );
+        assert!(
+            scratch.join("cargo-mutants-dead-unit").exists(),
+            "a cargo-mutants-<slug> an earlier binary left matches no arm and is never reclaimed"
         );
 
         // Live-owned scratch: spared.
