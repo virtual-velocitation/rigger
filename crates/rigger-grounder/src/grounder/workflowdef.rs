@@ -18,6 +18,7 @@ use crate::contextgraph::{
     REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
 use crate::eventstore::Event;
+use rigger_domain::wave::reviews_through_panel;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -57,10 +58,11 @@ type LinkTuple = (String, &'static str, String);
 /// (the stage runs under this implementer). `agent --REVIEWS--> stage` comes from whichever
 /// source the stage actually declares: a standalone stage's own `adversary:` / `adjudicator:`
 /// fields when set (`plan-critique`'s shape), plus any `review:` override's roster; and ONLY when
-/// neither of those names anyone AND the stage runs at least one gate (the signal its units go
-/// through review) does it fall back to [`Workflow::effective_review_panel`] - the workflow's
-/// `defaults.review`, unless the stage overrides it - so a gate-less, review-less stage like
-/// `plan` never wrongly inherits the workflow-wide panel.
+/// neither of those names anyone AND the run reviews the stage's units through the panel
+/// ([`reviews_through_panel`], gated or not) does it fall back to
+/// [`Workflow::effective_review_panel`] - the workflow's `defaults.review`, unless the stage
+/// overrides it - so the producer `plan`, whose units the run never reviews, never wrongly
+/// inherits the workflow-wide panel.
 ///
 /// Every declared gate (`workflow.gates`, whether or not any stage runs it) and every agent role
 /// named anywhere above becomes its own concept too, so "gates... become graph entities" holds
@@ -133,7 +135,8 @@ fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
 
 /// The reviewer agent ids a stage's `REVIEWS` / `REVIEWS_LIGHT` edges are drawn from, split by
 /// which relation each belongs on - see [`extract`]'s own doc for the source-selection rule (a
-/// stage's own direct fields/review panel, else - when gated - the workflow's `defaults.review`).
+/// stage's own direct fields/review panel, else - when the run reviews the stage's units through
+/// the panel - the workflow's `defaults.review`).
 /// `.0` feeds the plain [`REL_REVIEWS`] edge: a stage's own direct `adversary:`/`adjudicator:`
 /// fields (which carry no tiers concept of their own) plus the resolved panel's FULL-only roster
 /// ([`ReviewPanel::full_roster`]). `.1` feeds the distinctly-tagged [`REL_REVIEWS_LIGHT`] edge: the SAME
@@ -150,7 +153,7 @@ fn reviewers_of(workflow: &Workflow, stage: &Stage) -> (Vec<String>, Vec<String>
     push_reviewers(&mut full, &stage.adversary, &stage.adjudicator);
     full.extend(stage.review.full_roster());
     light.extend(light_reviewers_of(&stage.review));
-    if full.is_empty() && light.is_empty() && !stage.gates.is_empty() {
+    if full.is_empty() && light.is_empty() && reviews_through_panel(stage) {
         let panel = workflow.effective_review_panel(stage);
         full.extend(panel.full_roster());
         light.extend(light_reviewers_of(panel));
@@ -385,7 +388,8 @@ mod tests {
     }
 
     #[test]
-    fn reviews_edges_prefer_a_stages_own_fields_and_fall_back_to_defaults_review_only_when_gated() {
+    fn reviews_edges_prefer_a_stages_own_fields_and_fall_back_to_defaults_review_only_where_the_run_reviews(
+    ) {
         let (_concepts, links) = extract(&fixture());
         let has = |from: &str, to: &str| {
             links
@@ -401,22 +405,22 @@ mod tests {
             has("agent:adjudicator", "stage:plan-critique"),
             "got {links:?}"
         );
-        // implement/checkin declare no adversary/adjudicator/review of their own but DO run
-        // gates, so they inherit the workflow's defaults.review panel (lenses + adversary +
-        // adjudicator).
+        // implement/checkin declare no adversary/adjudicator/review of their own and the run
+        // reviews their units, so they inherit the workflow's defaults.review panel (lenses +
+        // adversary + adjudicator).
         for stage in ["stage:implement", "stage:checkin"] {
             assert!(has("agent:architecture-reviewer", stage), "got {links:?}");
             assert!(has("agent:sdet", stage), "got {links:?}");
             assert!(has("agent:adversary", stage), "got {links:?}");
             assert!(has("agent:adjudicator", stage), "got {links:?}");
         }
-        // plan runs no gates and declares no review of its own: it must NOT wrongly inherit
-        // defaults.review - the false-positive this guard exists to prevent.
+        // plan is the producer and declares no review of its own: the run never reviews its
+        // units, so it must NOT wrongly inherit defaults.review.
         assert!(
             !links
                 .iter()
                 .any(|(_, r, t)| *r == REL_REVIEWS && t == "stage:plan"),
-            "a gate-less, review-less stage must get no REVIEWS edge at all, got {links:?}"
+            "the review-less producer stage must get no REVIEWS edge at all, got {links:?}"
         );
     }
 

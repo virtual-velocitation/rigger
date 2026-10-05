@@ -28,8 +28,8 @@
 //! 4. That the review-panel fallback rule, now extracted to `config::Workflow::effective_review_panel`
 //!    (`pub(crate)`, shared by a live run's `conductor::RunCtx::effective_review_panel` and this
 //!    indexer's `workflowdef::reviewers_of`), produces the CORRECT `REVIEWS` edges - and only those
-//!    edges - end to end off a real YAML file, including the negative case (a gate-less,
-//!    review-less stage gets no edge at all).
+//!    edges - end to end off a real YAML file, including the negative case (the review-less
+//!    producer stage, whose units the run never reviews, gets no edge at all).
 //! 5. That a plain top-level JS/`.mjs` constant - the exact `docs/audit/2026-09-graph-vs-grep.md`
 //!    questions 5 and 8 gap - surfaces as a `kind constant` entity through `rigger graph --show`
 //!    AND appears as a node under `rigger graph --around <file>` (the neighborhood surface a reader
@@ -80,7 +80,7 @@ use common::cli::temp_project;
 
 /// Write a `.rigger/workflow.yml` mirroring the Design text's own example (`stage:implement`,
 /// `gate:mutation`, `agent:rust-engineer`) closely enough to exercise every relation source this
-/// criterion owns: `plan` (agent only, no gates - proves NO wrongful REVIEWS fallback),
+/// criterion owns: `plan` (the producer, no gates - proves NO wrongful REVIEWS fallback),
 /// `plan-critique` (no agent, direct `adversary`/`adjudicator` - REVIEWS from those two ALONE),
 /// `implement` (agent + a gate, no direct review fields - REVIEWS falls back to
 /// `defaults.review`), and `checkin` (needs implement, its own two gates).
@@ -264,9 +264,9 @@ fn graph_show_and_around_expose_stage_gate_and_agent_entities_with_needs_and_run
 /// REVIEWS fallback rule, off a REAL `.rigger/workflow.yml`, end to end through the CLI: a stage
 /// naming its OWN `adversary`/`adjudicator` (`plan-critique`) gets REVIEWS from exactly those two,
 /// NEVER the workflow-wide panel; a gated stage naming NEITHER (`implement`, `checkin`) falls back
-/// to `defaults.review` (its lenses AND its adversary/adjudicator); and a gate-less, review-less
-/// stage (`plan`) gets NO REVIEWS edge at all - the false-positive `workflowdef::reviewers_of`'s
-/// own doc names as the reason for the `&& !stage.gates.is_empty()` guard. This exercises
+/// to `defaults.review` (its lenses AND its adversary/adjudicator); and the review-less producer
+/// stage (`plan`) gets NO REVIEWS edge at all, since the run never reviews its units
+/// (`wave::reviews_through_panel`, the rule `workflowdef::reviewers_of` reads). This exercises
 /// `config::Workflow::effective_review_panel` - extracted specifically so the live run and this
 /// indexer never disagree - through the indexer's real caller, not a hand-built `Workflow`.
 #[cfg(feature = "symbols")]
@@ -326,9 +326,9 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
         );
     }
 
-    // plan: no review fields AND no gates - must get NO REVIEWS edge at all (the false-positive
-    // this guard exists to prevent: a stage with nothing to review must not silently inherit the
-    // workflow panel just because SOME other stage happens to).
+    // plan: the producer, with no review fields - must get NO REVIEWS edge at all (the run never
+    // reviews a producer's units, so it must not silently inherit the workflow panel just because
+    // SOME other stage happens to).
     let (plan, err3, ok3) = run_rigger(root, &["graph", "--around", "stage:plan", "--depth", "1"]);
     assert!(
         ok3,
@@ -340,7 +340,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
     );
     assert!(
         !plan.contains("-REVIEWS-> stage:plan"),
-        "a gate-less, review-less stage must get NO REVIEWS edge at all (not even from \
+        "the review-less producer stage must get NO REVIEWS edge at all (not even from \
          defaults.review); got:\n{plan}"
     );
 }
