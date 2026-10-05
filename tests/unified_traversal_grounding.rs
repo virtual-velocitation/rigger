@@ -930,12 +930,33 @@ fn every_review_spawn_is_forbidden_a_mutation_sweep_without_naming_the_gate_or_i
         );
         for line in prompt.lines() {
             assert_eq!(
-                gate_token_in(line),
+                prompt_line_gate_name(line),
                 None,
                 "the {role:?} review prompt names a gate or its tool on {line:?}; prompt \
                  was:\n{prompt}"
             );
         }
+    }
+}
+
+/// The banned gate token or form a review prompt's `line` holds. A prompt is the content of a
+/// string, so every line of it is held to the rule for a line that begins inside a literal.
+fn prompt_line_gate_name(line: &str) -> Option<&'static str> {
+    gate_token_in(line)
+}
+
+/// A prompt line that leads with the gate id as a YAML key names the gate, exactly as a core
+/// line beginning inside a string literal does.
+#[test]
+fn a_prompt_line_leading_with_the_gate_yaml_key_is_reported() {
+    for (line, named) in [
+        ("mutation: on", Some("mutation:")),
+        ("  mutation: on", Some("mutation:")),
+        ("sweep mutation: no", None),
+        ("a mutation sweep", None),
+        ("$MUTANTS", Some("MUTANTS")),
+    ] {
+        assert_eq!(prompt_line_gate_name(line), named, "{line:?}");
     }
 }
 
