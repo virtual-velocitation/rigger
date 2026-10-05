@@ -1894,7 +1894,7 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:59-59` `Command::new`
 - `tests/principle_gates_wiring.rs:112-112` `Command::new`
-- `tests/principle_gates_wiring.rs:382-382` `Command::new`
+- `tests/principle_gates_wiring.rs:397-397` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/reset_build_cache_periphery.rs:242-242` `Command::new`
 - `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
@@ -2859,9 +2859,9 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:65-65` `".rigger/gates/mutation.sh"`
 - `tests/principle_gates_wiring.rs:66-66` `".rigger/gates/container-env.sh"`
 - `tests/principle_gates_wiring.rs:123-123` `".rigger/gates/red-before-green.sh"`
-- `tests/principle_gates_wiring.rs:335-335` `".rigger/agents"`
-- `tests/principle_gates_wiring.rs:345-345` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:349-349` `".rigger/gates/container-env.sh"`
+- `tests/principle_gates_wiring.rs:350-350` `".rigger/agents"`
+- `tests/principle_gates_wiring.rs:360-360` `".rigger/agents: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:364-364` `".rigger/gates/container-env.sh"`
 - `tests/projections_stay_local.rs:91-91` `"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \
          store's .rigger/graph.db (`Projector::open(&self.file(\"graph.db\") ...)`); the \
          canonical local construction is gone"`

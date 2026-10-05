@@ -999,8 +999,8 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 382,
-        "end_line": 382
+        "start_line": 397,
+        "end_line": 397
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -3479,18 +3479,18 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 335,
-        "end_line": 335
+        "start_line": 350,
+        "end_line": 350
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 345,
-        "end_line": 345
+        "start_line": 360,
+        "end_line": 360
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 349,
-        "end_line": 349
+        "start_line": 364,
+        "end_line": 364
       },
       {
         "file": "tests/projections_stay_local.rs",
