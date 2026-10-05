@@ -25,12 +25,12 @@ pub mod workflow_probe;
 #[allow(unused_imports)]
 pub use fixtures::wait_until;
 
-/// A finished shell's success and its output, stdout then stderr.
 /// Asserts the reported `line` names every one of `parts` together (`why` naming the line).
 pub fn assert_names(line: &str, parts: &[&str], why: &str) {
     assert!(parts.iter().all(|p| line.contains(p)), "{why}: {line}");
 }
 
+/// A finished shell's success and its output, stdout then stderr.
 pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
     let text = format!(
         "{}{}",

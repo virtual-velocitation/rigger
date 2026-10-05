@@ -4,7 +4,7 @@
 //! a workflow, and on a rerun - and that `rigger validate` accepts both fresh scaffolds.
 
 mod common;
-use common::cli::{cargo_project, run_rigger, run_rigger_ok, temp_project};
+use common::cli::{cargo_project, run_rigger, run_rigger_envs, run_rigger_ok, temp_project};
 use common::repo::repo_root;
 use std::path::Path;
 
@@ -226,7 +226,8 @@ fn init_keeps_an_existing_workflow_and_still_writes_the_rust_sets_files() {
 #[test]
 fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
     let dir = cargo_project();
-    let out = run_rigger_ok(dir.path(), &["setup"]);
+    let (out, err, ok) = run_rigger_envs(dir.path(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup failed:\nstdout:\n{out}\nstderr:\n{err}");
     let mut expected = vec![RUST_WORKFLOW_LINE];
     expected.extend(RUST_SET_FILE_LINES);
     assert_eq!(set_lines(&out), expected, "stdout:\n{out}");
