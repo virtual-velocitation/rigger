@@ -7002,13 +7002,9 @@ mod tests {
             &[0u8; 5],
         );
 
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
-        write_file(&mutation_root.join("spawn-2").join("x"), &[0u8; 8]);
-
         let categories = footprint_report(
             &rigger_dir,
             &scratch,
-            Some(&mutation_root),
             &slugs([]),
             &slugs(["unit-dead"]),
             None,
@@ -7029,9 +7025,9 @@ mod tests {
         assert_eq!(by_name("per-unit caches").total_bytes, 0);
         assert_eq!(
             by_name("registered scratch roots").total_bytes,
-            12 + 8,
-            "the well-formed agent-scratch container + the mutation-scratch root - the \
-             ad-hoc dir's bytes are excluded"
+            12,
+            "the well-formed agent-scratch container alone - the ad-hoc dir's bytes are \
+             excluded"
         );
         assert_eq!(
             by_name("unowned agent scratch").total_bytes,
@@ -7042,35 +7038,13 @@ mod tests {
     }
 
     #[test]
-    fn footprint_report_folds_a_none_mutation_root_to_a_zero_contribution() {
-        let root = tempfile::tempdir().unwrap();
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &root.path().join("scratch"),
-            None,
-            &slugs([]),
-            &slugs([]),
-            None,
-            &slugs([]),
-        );
-        let scratch_roots = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(scratch_roots.total_bytes, 0);
-        assert_eq!(scratch_roots.dead_bytes, 0);
-    }
-
-    #[test]
     fn footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn() {
         // adj-u77c6-verdict-reject-unflaggable-highest-stakes-category: the ONE category
         // the spec 77 Problem statement names as the worst observed leak must be able to
         // flag a dead-share breach like every other reclaimable category - mirrors
         // `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold`
-        // for THIS category, over the real `agent-scratch/<run-id>/<spawn-id>` and
-        // `<cache_home>/rigger-mutants/<spawn-id>` nesting
-        // ([`crate::driver::replay::spawn_scratch_path`] /
-        // [`crate::driver::replay::mutation_scratch_path`]'s own doc comments), not a
+        // for THIS category, over the real `agent-scratch/<run-id>/<spawn-id>` nesting
+        // ([`crate::driver::replay::spawn_scratch_path`]'s own doc comment), not a
         // synthetic flat fixture.
         let root = tempfile::tempdir().unwrap();
         let scratch = root.path().join("scratch");
@@ -7104,18 +7078,10 @@ mod tests {
             &[0u8; 90],
         );
 
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
-        // The LIVE spawn's own mutation-scratch leaf - spared.
-        write_file(&mutation_root.join(&live_leaf).join("z"), &[0u8; 5]);
-        // The DEAD spawn's orphaned mutation-scratch tree - the 47G leak class spec 77's
-        // own Problem statement names.
-        write_file(&mutation_root.join(&dead_leaf).join("w"), &[0u8; 45]);
-
         let live_leaf_names = slugs([live_leaf.as_str()]);
         let categories = footprint_report(
             &root.path().join(".rigger"),
             &scratch,
-            Some(&mutation_root),
             &slugs([]),
             &slugs([]),
             Some(run_leaf.as_str()),
@@ -7125,15 +7091,10 @@ mod tests {
             .iter()
             .find(|c| c.name == "registered scratch roots")
             .unwrap();
+        assert_eq!(cat.total_bytes, 10 + 90, "every byte, live and dead");
         assert_eq!(
-            cat.total_bytes,
-            10 + 90 + 5 + 45,
-            "every byte, live and dead"
-        );
-        assert_eq!(
-            cat.dead_bytes,
-            90 + 45,
-            "only the dead spawn's leaves in BOTH roots - the live spawn's are spared"
+            cat.dead_bytes, 90,
+            "only the dead spawn's leaf - the live spawn's is spared"
         );
         assert_eq!(cat.reclaim_hint, Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED));
 
@@ -7194,7 +7155,6 @@ mod tests {
         let categories = footprint_report(
             &root.path().join(".rigger"),
             &scratch,
-            None,
             &slugs([]),
             &slugs([]),
             Some(current_run_leaf.as_str()),
@@ -7304,7 +7264,6 @@ mod tests {
         let categories = footprint_report(
             &root.path().join(".rigger"),
             &scratch,
-            None,
             &slugs([]),
             &slugs([]),
             Some(run_leaf.as_str()),
@@ -7367,7 +7326,6 @@ mod tests {
     fn footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims() {
         let root = tempfile::tempdir().unwrap();
         let scratch = root.path().join("scratch");
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
         write_file(&scratch.join("cargo-target-gone").join("a"), &[0u8; 10]);
         let leaf = scratch
             .join("agent-scratch")
@@ -7378,12 +7336,10 @@ mod tests {
             &scratch.join("agent-scratch").join("adhoc").join("c"),
             &[0u8; 10],
         );
-        write_file(&mutation_root.join("spawn-gone").join("d"), &[0u8; 10]);
         let none = std::collections::HashSet::new();
         let categories = footprint_report(
             &root.path().join(".rigger"),
             &scratch,
-            Some(&mutation_root),
             &none,
             &none,
             None,
