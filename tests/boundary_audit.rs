@@ -957,3 +957,80 @@ fn mutants_is_banned_only_as_a_whole_word() {
         assert_eq!(holds_whole_word(line, GATE_WORD), held, "{line:?}");
     }
 }
+
+/// Rule 4 over the REAL core tree, copied byte for byte under a fresh root with four injections:
+/// a YAML gate key on a line of the real conductor source that begins inside its first
+/// escaped-newline string continuation, the same key leading the line that opens that literal and
+/// on the line just after it closes (both outside it, so never reported), and a tool token appended to the last non-`.rs` file the
+/// `crates/` walk lists. Exactly the two banned lines are reported, at their file and line, so the
+/// real-tree check above is not vacuous (the walk reads every real file of any extension at its
+/// real path) and the lexer keeps its line count aligned across the real source's literals,
+/// comments and lifetimes. The injection points are found from the text alone (a line ending in
+/// a backslash continues a string), never from the lexer under test.
+#[test]
+fn the_real_core_tree_with_injected_gate_names_reports_exactly_the_banned_lines() {
+    let real = repo_root();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let mut listed = BTreeMap::new();
+    for top in ["src", "crates"] {
+        let mut files = Vec::new();
+        collect_files(&real.join(top), &mut files);
+        let rels: Vec<String> = files
+            .iter()
+            .map(|path| path.strip_prefix(&real).unwrap().display().to_string())
+            .collect();
+        for rel in &rels {
+            let to = root.join(rel);
+            fs::create_dir_all(to.parent().unwrap()).unwrap();
+            fs::copy(real.join(rel), &to).unwrap();
+        }
+        listed.insert(top, rels);
+    }
+
+    let conductor = "crates/rigger-conductor/src/conductor.rs";
+    let text = fs::read_to_string(root.join(conductor)).unwrap();
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let continues = |at: usize| {
+        let line = lines[at].trim_end();
+        line.ends_with('\\') && !line.trim_start().starts_with("//")
+    };
+    let opening = (0..lines.len())
+        .find(|&at| continues(at))
+        .expect("the real conductor source holds an escaped-newline string continuation");
+    let inside = opening + 1;
+    let closing = (inside..lines.len()).find(|&at| !continues(at)).unwrap();
+    assert!(
+        lines[closing].contains('"'),
+        "line {} of {conductor} closes the literal: {:?}",
+        closing + 1,
+        lines[closing]
+    );
+    let opened_by_the_key = format!("mutation: {}", lines[opening].trim_start());
+    lines[opening] = &opened_by_the_key;
+    lines.insert(closing + 1, "mutation: injected_after_the_literal\n");
+    lines.insert(inside, "mutation: injected\n");
+    write_file(root, conductor, &lines.concat());
+
+    let last_other = listed["crates"]
+        .iter()
+        .rev()
+        .find(|rel| !rel.ends_with(".rs"))
+        .expect("the crates/ walk lists a file that is not Rust source")
+        .clone();
+    let mut tail = fs::read(root.join(&last_other)).unwrap();
+    if !tail.is_empty() && !tail.ends_with(b"\n") {
+        tail.push(b'\n');
+    }
+    let appended_at = tail.iter().filter(|&&b| b == b'\n').count() + 1;
+    tail.extend_from_slice(b"rigger-mutants\n");
+    fs::write(root.join(&last_other), tail).unwrap();
+
+    assert_eq!(
+        located(&gate_token_lines(root)),
+        vec![
+            format!("{conductor}:{}: mutation:", inside + 1),
+            format!("{last_other}:{appended_at}: rigger-mutants"),
+        ]
+    );
+}
