@@ -7,12 +7,13 @@
 //! but never listed on a stage, fails.
 
 mod common;
-use common::cli::{cargo_project, run_rigger};
+use common::cli::{cargo_project, loaded_config, run_rigger};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
 use common::shell_outcome;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
@@ -31,8 +32,7 @@ fn rust_project_after_init() -> tempfile::TempDir {
 #[test]
 fn a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_line() {
     let dir = rust_project_after_init();
-    let cfg = rigger::config_store::load(dir.path().to_str().unwrap())
-        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"));
+    let cfg = loaded_config(dir.path());
     let wf = &cfg.workflow;
     assert_eq!(
         wf.gates.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -106,17 +106,22 @@ fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::Tem
     (dir, shas)
 }
 
-/// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
-/// Returns (passed, output).
-fn run_red_before_green(repo: &Path) -> (bool, String) {
-    let script = repo_root().join(".rigger/gates/red-before-green.sh");
+/// `sh` run with `args` from `repo`. Returns (passed, output).
+fn run_sh(repo: &Path, args: &[&OsStr]) -> (bool, String) {
     shell_outcome(
         &Command::new("sh")
-            .arg(script)
+            .args(args)
             .current_dir(repo)
             .output()
             .unwrap(),
     )
+}
+
+/// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
+/// Returns (passed, output).
+fn run_red_before_green(repo: &Path) -> (bool, String) {
+    let script = repo_root().join(".rigger/gates/red-before-green.sh");
+    run_sh(repo, &[script.as_os_str()])
 }
 
 /// The `red-before-green` command the workflow `rigger init` scaffolds in a Rust fixture project,
@@ -124,18 +129,10 @@ fn run_red_before_green(repo: &Path) -> (bool, String) {
 /// `commits` build on [`LIB`]. Returns (passed, output) and each commit's short sha.
 fn run_scaffolded_red_before_green(commits: &[(&str, &str, &str)]) -> (bool, String, Vec<String>) {
     let dir = rust_project_after_init();
-    let cfg = rigger::config_store::load(dir.path().to_str().unwrap())
-        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"));
+    let cfg = loaded_config(dir.path());
     let command = &cfg.workflow.gates["red-before-green"].run;
     let shas = build_unit_branch(dir.path(), LIB, commits);
-    let (passed, out) = shell_outcome(
-        &Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(dir.path())
-            .output()
-            .unwrap(),
-    );
+    let (passed, out) = run_sh(dir.path(), &["-c".as_ref(), command.as_ref()]);
     (passed, out, shas)
 }
 
