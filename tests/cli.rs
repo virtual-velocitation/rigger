@@ -8442,6 +8442,53 @@ fn step_reclaims_orphaned_scratch_while_sparing_the_live_worker_area() {
     );
 }
 
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger step`'s orphan sweep reclaims a unit's `rigger-gate-<slug>` exactly as its
+/// per-unit cache. The first step records the run's live units `a` and `b`; the second step's
+/// sweep then reclaims the gate scratch root of a unit the run does not hold and spares the
+/// live unit `a`'s, and leaves a `cargo-mutants-<slug>` an earlier binary left untouched - the
+/// one reclaimed entry is the dead gate scratch root.
+#[test]
+fn step_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_units() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    seed_store(root);
+    let scratch = root.join("scratchroot");
+    let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the first step must succeed; stderr:\n{err}");
+
+    let live = scratch.join("rigger-gate-a");
+    let dead = scratch.join("rigger-gate-gone-unit");
+    let legacy = scratch.join("cargo-mutants-gone-unit");
+    for d in [&live, &dead, &legacy] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("rerun.list"), [0u8; 8]).unwrap();
+    }
+
+    let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        !dead.exists(),
+        "the gate scratch root of a unit the run does not hold is reclaimed; stderr:\n{err}"
+    );
+    assert!(
+        live.join("rerun.list").exists(),
+        "the live unit a's gate scratch root is spared; stderr:\n{err}"
+    );
+    assert!(
+        legacy.join("rerun.list").exists(),
+        "a cargo-mutants-<slug> an earlier binary left matches no arm; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "rigger step: reclaimed 1 orphaned scratch entry under {}",
+            scratch.display()
+        )),
+        "exactly one entry - the dead gate scratch root - is reclaimed; stderr:\n{err}"
+    );
+}
+
 /// Plant the run-LEVEL shared scratch areas the terminal-state teardown (spec 34 c3) owns under
 /// `scratch`: the SHARED build cache (`cargo-target` + `target` directly under the root - the
 /// driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak), `agent-scratch` (probe repos +
@@ -13249,6 +13296,157 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
         "the unit-scoped reclaim hint must be named for the flagged worktrees/per-unit-caches \
          advisories; stderr:\n{err}"
     );
+}
+
+/// A committed project whose store holds a PRIOR run's abandoned `unit-old` and the CURRENT
+/// run's in-flight `unit-new`, with a hermetic `(scratch root, cache home)` holding each unit's
+/// worktree, build cache and gate scratch root (spec 113, THE GATE SCRATCH ROOT HAS ONE
+/// LIFECYCLE), a `cargo-mutants-unit-old` an earlier binary left, a nested `events.db` inside
+/// the live gate scratch root, and a standalone shadow store under `probe/`. Bytes: dead
+/// worktree 400, live worktree 20; dead cache 300, live cache 10; dead gate scratch root 150,
+/// live gate scratch root 30 + a 10-byte nested `events.db`; the legacy mutants root 5.
+fn gate_scratch_lifecycle_project() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = committed_scaffold_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+            ),
+        ],
+    );
+    let (scratch, cache_home) = footprint_roots(root);
+    seed_bytes(scratch.join("rigger-wt-unit-old").join("payload.bin"), 400);
+    seed_bytes(scratch.join("rigger-wt-unit-new").join("payload.bin"), 20);
+    seed_bytes(scratch.join("cargo-target-unit-old").join("lib.rlib"), 300);
+    seed_bytes(scratch.join("cargo-target-unit-new").join("lib.rlib"), 10);
+    seed_bytes(scratch.join("rigger-gate-unit-old").join("rerun.list"), 150);
+    seed_bytes(scratch.join("rigger-gate-unit-new").join("rerun.list"), 30);
+    seed_bytes(
+        scratch
+            .join("rigger-gate-unit-new")
+            .join("copy")
+            .join(".rigger")
+            .join("events.db"),
+        10,
+    );
+    seed_bytes(
+        scratch.join("cargo-mutants-unit-old").join("outcomes.json"),
+        5,
+    );
+    seed_bytes(scratch.join("probe").join(".rigger").join("events.db"), 2);
+    (dir, scratch, cache_home)
+}
+
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger validate` classifies a unit's `rigger-gate-<slug>` exactly as its per-unit
+/// cache at every walk it reads. The residue report names the DEAD unit's gate scratch root
+/// among the orphaned build caches and never the LIVE unit's; the shadow-store walk prunes a
+/// gate scratch root (its nested `events.db` is not reported) while still finding the
+/// standalone one; and the footprint's per-unit caches total counts both units' gate scratch
+/// roots while its dead share counts only the dead one's. A `cargo-mutants-<slug>` an earlier
+/// binary left is none of these: never reported, never counted.
+#[test]
+fn validate_classifies_a_gate_scratch_root_as_its_units_per_unit_cache_through_the_binary() {
+    let (dir, scratch, cache_home) = gate_scratch_lifecycle_project();
+    let (out, err, ok) = validate_with_scratch_and_cache_home(dir.path(), &scratch, &cache_home);
+    assert!(
+        ok,
+        "validate only WARNS about residue and footprint, still exits 0; stderr:\n{err}"
+    );
+
+    // Residue: the dead unit's gate scratch root beside its cache, the live unit's never.
+    assert!(
+        err.contains("\n  orphaned build cache: cargo-target-unit-old (300B)"),
+        "control: the dead unit's build cache is residue; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("\n  orphaned build cache: rigger-gate-unit-old (150B)"),
+        "the dead unit's gate scratch root is residue, sized like its cache; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger-gate-unit-new"),
+        "the live unit's gate scratch root is never residue, and the shadow-store walk never \
+         descends it; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("cargo-mutants-unit-old"),
+        "a cargo-mutants-<slug> an earlier binary left matches no arm; stderr:\n{err}"
+    );
+    // Shadow stores: the standalone one is found, so the prune above is not a dead walk.
+    assert!(
+        err.contains("\n  shadow store: probe/.rigger/events.db (2B)"),
+        "control: the shadow-store walk still finds a standalone store; stderr:\n{err}"
+    );
+    assert_eq!(
+        err.matches("\n  shadow store: ").count(),
+        1,
+        "exactly one shadow store: the gate scratch root's nested events.db is pruned; \
+         stderr:\n{err}"
+    );
+
+    // Footprint: total = 300 + 10 + 150 + 40 = 500 (the legacy mutants root's 5 bytes are in
+    // no category); dead = 300 + 150 = 450, so 90%.
+    assert!(
+        out.contains("footprint: per-unit caches 500B"),
+        "the per-unit caches total counts both units' gate scratch roots and not the legacy \
+         mutants root; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("per-unit caches is 90% dead (450B of 500B reclaimable)"),
+        "the dead share counts only the dead unit's cache and gate scratch root; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("footprint: worktrees 420B"),
+        "control: the worktrees category is unchanged by the gate scratch roots; stdout:\n{out}"
+    );
+}
+
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger reset --build-cache` reclaims the footprint's dead per-unit caches entry by
+/// entry, so the DEAD unit's gate scratch root goes with its build cache - one line, two dead
+/// entries, their exact bytes - while the LIVE unit's gate scratch root and cache and the
+/// legacy `cargo-mutants-<slug>` stay on disk.
+#[test]
+fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_units() {
+    let (dir, scratch, cache_home) = gate_scratch_lifecycle_project();
+    let (out, err, ok) = run_rigger_envs(
+        dir.path(),
+        &["reset", "--build-cache"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "reset --build-cache must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(
+            "--build-cache: reclaimed 450B (450 byte(s)) from per-unit caches (2 dead entries)"
+        ),
+        "the dead unit's cache and gate scratch root are the two reclaimed entries; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(!scratch.join("rigger-gate-unit-old").exists());
+    assert!(!scratch.join("cargo-target-unit-old").exists());
+    for kept in [
+        "rigger-gate-unit-new",
+        "cargo-target-unit-new",
+        "cargo-mutants-unit-old",
+    ] {
+        assert!(
+            scratch.join(kept).exists(),
+            "{kept} must stay on disk; stdout:\n{out}"
+        );
+    }
 }
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
