@@ -5150,7 +5150,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-619325cc4dc0",
+    "id": "dup-af8b91bc2b2a",
     "classification": "near",
     "sites": [
       {
@@ -5159,17 +5159,17 @@
         "content_hash": "6a7f9c9540df1486"
       },
       {
+        "file": "tests/common/source_audit.rs",
+        "name": "is_ident_char",
+        "content_hash": "7b60646c82d8cb53"
+      },
+      {
         "file": "tests/no_os_kill_audit.rs",
         "name": "is_word_char",
         "content_hash": "68a8eb36f4ce0b8d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "is_ident_char",
-        "content_hash": "68a8eb36f4ce0b8d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/no_os_kill_audit.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/source_audit.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

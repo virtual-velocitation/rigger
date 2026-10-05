@@ -515,7 +515,7 @@
     "reason": "`is_empty`/`is_any` report emptiness of four different types (a config section, a failure filter, a CLI selection, a run's unended spawns) over their own fields."
   },
   {
-    "id": "dup-619325cc4dc0",
+    "id": "dup-af8b91bc2b2a",
     "disposition": "not-a-duplicate",
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },

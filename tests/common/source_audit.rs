@@ -3,7 +3,9 @@
 //! writer both prove detection with, and the real-tree assertion both close on. Included by
 //! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
-//! and which function encloses a line. Each suite uses the subset it needs (hence the
+//! and which function encloses a line. And the one Rust lexer `tests/simplification_audit.rs`
+//! scans by and rule 4 of `tests/boundary_audit.rs` finds string text with: identifier,
+//! string, char-literal and block-comment skipping. Each suite uses the subset it needs (hence the
 //! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
@@ -189,4 +191,171 @@ pub fn enclosing_fn_line(lines: &[&str], sigs: &[usize], at: usize) -> Option<us
         .rev()
         .copied()
         .find(|&s| s <= at && at <= block_span(lines, s).1)
+}
+
+/// Whether `c` is a Rust identifier-continuation character (used for word-boundary checks so
+/// e.g. `fnv1a_64` is never mistaken for the `fn` keyword).
+pub fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// If `chars[i..]` opens a string literal (`"...\"`, `r"..."`, `r#"..."#`, ..., `b"..."`,
+/// `br#"..."#`, ...), advance `*i` past its closing delimiter and return how many `\n`s it
+/// contained. Returns `None` (and leaves `*i` untouched) if no string literal starts here.
+pub fn skip_string_literal(chars: &[char], i: &mut usize) -> Option<usize> {
+    let n = chars.len();
+    let start = *i;
+    let mut p = *i;
+    if p < n && chars[p] == 'b' {
+        p += 1;
+    }
+    let mut hashes = 0usize;
+    let mut raw = false;
+    if p < n && chars[p] == 'r' {
+        let mut q = p + 1;
+        let mut h = 0usize;
+        while q < n && chars[q] == '#' {
+            h += 1;
+            q += 1;
+        }
+        if q < n && chars[q] == '"' {
+            raw = true;
+            hashes = h;
+            p = q + 1;
+        }
+    }
+    if !raw {
+        if p < n && chars[p] == '"' {
+            p += 1;
+        } else {
+            return None;
+        }
+        // Plain (possibly byte-) string: scan for unescaped closing quote.
+        let mut lines = 0usize;
+        while p < n {
+            match chars[p] {
+                '\\' if p + 1 < n => {
+                    if chars[p + 1] == '\n' {
+                        lines += 1;
+                    }
+                    p += 2;
+                }
+                '\n' => {
+                    lines += 1;
+                    p += 1;
+                }
+                '"' => {
+                    p += 1;
+                    *i = p;
+                    return Some(lines);
+                }
+                _ => p += 1,
+            }
+        }
+        *i = p;
+        return Some(lines);
+    }
+    // Raw (possibly byte-) string: scan for `"` followed by exactly `hashes` `#`s.
+    let mut lines = 0usize;
+    while p < n {
+        if chars[p] == '"' {
+            let mut q = p + 1;
+            let mut h = 0usize;
+            while q < n && h < hashes && chars[q] == '#' {
+                h += 1;
+                q += 1;
+            }
+            if h == hashes {
+                *i = q;
+                return Some(lines);
+            }
+        }
+        if chars[p] == '\n' {
+            lines += 1;
+        }
+        p += 1;
+    }
+    *i = p;
+    let _ = start;
+    Some(lines)
+}
+
+/// If a char literal starts at `chars[i]` (`i` points at the opening `'`), return its length in
+/// chars (including both quotes); else `None` (this `'` is a lifetime marker instead). A char
+/// literal is a `'`, one source char OR a bounded backslash escape (`\n`, `\t`, `\r`, `\\`,
+/// `\'`, `\0`, `\xNN`, `\u{...}`), then a closing `'` - a lifetime is never followed by a bare
+/// closing `'`, so this is unambiguous.
+pub fn char_literal_len(chars: &[char], i: usize) -> Option<usize> {
+    let n = chars.len();
+    if i >= n || chars[i] != '\'' {
+        return None;
+    }
+    let mut p = i + 1;
+    if p >= n {
+        return None;
+    }
+    if chars[p] == '\\' {
+        p += 1;
+        if p >= n {
+            return None;
+        }
+        match chars[p] {
+            'x' => {
+                p += 1;
+                let mut hex = 0;
+                while p < n && hex < 2 && chars[p].is_ascii_hexdigit() {
+                    p += 1;
+                    hex += 1;
+                }
+            }
+            'u' => {
+                p += 1;
+                if p < n && chars[p] == '{' {
+                    p += 1;
+                    while p < n && chars[p] != '}' {
+                        p += 1;
+                    }
+                    if p < n {
+                        p += 1;
+                    }
+                }
+            }
+            _ => p += 1, // \n \t \r \\ \' \" \0 etc: one escaped char
+        }
+    } else {
+        p += 1;
+    }
+    if p < n && chars[p] == '\'' {
+        Some(p + 1 - i)
+    } else {
+        None
+    }
+}
+
+/// Advance `*i` past a nested block comment (`chars[*i]=='/'`, `chars[*i+1]=='*'` - the caller
+/// checks this before calling), returning the number of `\n`s crossed.
+pub fn skip_block_comment(chars: &[char], i: &mut usize) -> usize {
+    let n = chars.len();
+    let mut depth = 1usize;
+    let mut lines = 0usize;
+    *i += 2;
+    while *i < n && depth > 0 {
+        if chars[*i] == '\n' {
+            lines += 1;
+            *i += 1;
+            continue;
+        }
+        if chars[*i] == '/' && *i + 1 < n && chars[*i + 1] == '*' {
+            depth += 1;
+            *i += 2;
+            continue;
+        }
+        if chars[*i] == '*' && *i + 1 < n && chars[*i + 1] == '/' {
+            depth -= 1;
+            *i += 2;
+            continue;
+        }
+        *i += 1;
+    }
+    lines
 }

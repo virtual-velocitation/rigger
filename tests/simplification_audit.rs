@@ -96,6 +96,9 @@
 mod common;
 use common::repo::collect_rs_files;
 use common::repo::repo_root;
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::{char_literal_len, is_ident_char, skip_block_comment, skip_string_literal};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -197,12 +200,6 @@ impl Frame {
             FrameKind::TopLevel | FrameKind::Anonymous => false,
         }
     }
-}
-
-/// Whether `c` is a Rust identifier-continuation character (used for word-boundary checks so
-/// e.g. `fnv1a_64` is never mistaken for the `fn` keyword).
-fn is_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
 }
 
 /// Scan `content` (the text of `file`, a repo-relative forward-slash path used only to label
@@ -839,139 +836,6 @@ fn scan_fn_signature_end(chars: &[char], j: &mut usize, line: &mut usize) -> Sig
         *j += 1;
     }
     SignatureEnd::NoBody
-}
-
-/// If `chars[i..]` opens a string literal (`"...\"`, `r"..."`, `r#"..."#`, ..., `b"..."`,
-/// `br#"..."#`, ...), advance `*i` past its closing delimiter and return how many `\n`s it
-/// contained. Returns `None` (and leaves `*i` untouched) if no string literal starts here.
-fn skip_string_literal(chars: &[char], i: &mut usize) -> Option<usize> {
-    let n = chars.len();
-    let start = *i;
-    let mut p = *i;
-    if p < n && chars[p] == 'b' {
-        p += 1;
-    }
-    let mut hashes = 0usize;
-    let mut raw = false;
-    if p < n && chars[p] == 'r' {
-        let mut q = p + 1;
-        let mut h = 0usize;
-        while q < n && chars[q] == '#' {
-            h += 1;
-            q += 1;
-        }
-        if q < n && chars[q] == '"' {
-            raw = true;
-            hashes = h;
-            p = q + 1;
-        }
-    }
-    if !raw {
-        if p < n && chars[p] == '"' {
-            p += 1;
-        } else {
-            return None;
-        }
-        // Plain (possibly byte-) string: scan for unescaped closing quote.
-        let mut lines = 0usize;
-        while p < n {
-            match chars[p] {
-                '\\' if p + 1 < n => {
-                    if chars[p + 1] == '\n' {
-                        lines += 1;
-                    }
-                    p += 2;
-                }
-                '\n' => {
-                    lines += 1;
-                    p += 1;
-                }
-                '"' => {
-                    p += 1;
-                    *i = p;
-                    return Some(lines);
-                }
-                _ => p += 1,
-            }
-        }
-        *i = p;
-        return Some(lines);
-    }
-    // Raw (possibly byte-) string: scan for `"` followed by exactly `hashes` `#`s.
-    let mut lines = 0usize;
-    while p < n {
-        if chars[p] == '"' {
-            let mut q = p + 1;
-            let mut h = 0usize;
-            while q < n && h < hashes && chars[q] == '#' {
-                h += 1;
-                q += 1;
-            }
-            if h == hashes {
-                *i = q;
-                return Some(lines);
-            }
-        }
-        if chars[p] == '\n' {
-            lines += 1;
-        }
-        p += 1;
-    }
-    *i = p;
-    let _ = start;
-    Some(lines)
-}
-
-/// If a char literal starts at `chars[i]` (`i` points at the opening `'`), return its length in
-/// chars (including both quotes); else `None` (this `'` is a lifetime marker instead). A char
-/// literal is a `'`, one source char OR a bounded backslash escape (`\n`, `\t`, `\r`, `\\`,
-/// `\'`, `\0`, `\xNN`, `\u{...}`), then a closing `'` - a lifetime is never followed by a bare
-/// closing `'`, so this is unambiguous.
-fn char_literal_len(chars: &[char], i: usize) -> Option<usize> {
-    let n = chars.len();
-    if i >= n || chars[i] != '\'' {
-        return None;
-    }
-    let mut p = i + 1;
-    if p >= n {
-        return None;
-    }
-    if chars[p] == '\\' {
-        p += 1;
-        if p >= n {
-            return None;
-        }
-        match chars[p] {
-            'x' => {
-                p += 1;
-                let mut hex = 0;
-                while p < n && hex < 2 && chars[p].is_ascii_hexdigit() {
-                    p += 1;
-                    hex += 1;
-                }
-            }
-            'u' => {
-                p += 1;
-                if p < n && chars[p] == '{' {
-                    p += 1;
-                    while p < n && chars[p] != '}' {
-                        p += 1;
-                    }
-                    if p < n {
-                        p += 1;
-                    }
-                }
-            }
-            _ => p += 1, // \n \t \r \\ \' \" \0 etc: one escaped char
-        }
-    } else {
-        p += 1;
-    }
-    if p < n && chars[p] == '\'' {
-        Some(p + 1 - i)
-    } else {
-        None
-    }
 }
 
 /// Collect and scan the three target files under `root` (a repo checkout), in
@@ -2422,40 +2286,6 @@ const RUST_KEYWORDS: &[&str] = &[
 
 fn is_keyword(s: &str) -> bool {
     RUST_KEYWORDS.contains(&s)
-}
-
-/// Advance `*i` past a nested block comment (`chars[*i]=='/'`, `chars[*i+1]=='*'` - the caller
-/// checks this before calling), returning the number of `\n`s crossed. A second, standalone
-/// implementation of nested-comment skipping alongside `scan_file`'s own two inline copies
-/// (its main loop and `scan_fn_signature_end`) is itself exactly the kind of instance this
-/// catalog's own similarity pass is built to catch (and does - see the report); factoring a
-/// THIRD shared implementation across all of them is section 5/6 refactor-spec territory, out
-/// of scope for an audit-only spec that changes no production code and may not consolidate
-/// tests (spec 85 "WHAT THIS SPEC DOES NOT DO").
-fn skip_block_comment(chars: &[char], i: &mut usize) -> usize {
-    let n = chars.len();
-    let mut depth = 1usize;
-    let mut lines = 0usize;
-    *i += 2;
-    while *i < n && depth > 0 {
-        if chars[*i] == '\n' {
-            lines += 1;
-            *i += 1;
-            continue;
-        }
-        if chars[*i] == '/' && *i + 1 < n && chars[*i + 1] == '*' {
-            depth += 1;
-            *i += 2;
-            continue;
-        }
-        if chars[*i] == '*' && *i + 1 < n && chars[*i + 1] == '/' {
-            depth -= 1;
-            *i += 2;
-            continue;
-        }
-        *i += 1;
-    }
-    lines
 }
 
 /// Tokenize `chars` into a normalized-similarity-ready token stream: comments and whitespace
