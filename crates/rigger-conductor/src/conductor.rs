@@ -40551,6 +40551,7 @@ mod tests {
                 run: deferred_run.into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -40831,6 +40832,7 @@ mod tests {
                     run: "true".into(),
                     kind: "deferred".into(),
                     inputs: Vec::new(),
+                    requires: Vec::new(),
                 },
             ),
         ]));
@@ -40884,6 +40886,7 @@ mod tests {
                 run: "true".into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(
@@ -41036,6 +41039,7 @@ mod tests {
                 run: "true".into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         // A Manual-autonomy stage pauses on its gate awaiting a human (§4.3). It also
@@ -41126,6 +41130,7 @@ mod tests {
                 run: "true".into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         cfg.workflow.defaults.review = config::ReviewPanel {
@@ -41255,6 +41260,7 @@ mod tests {
                 run: "false".into(),
                 kind: "deferred".into(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         cfg.workflow.stages.insert(

@@ -28,8 +28,8 @@ use rigger::eventstore::{
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
-    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
-    MUTATION_GATE_ID, STORE_FENCE_ENV,
+    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
+    GateResult, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::instructions;

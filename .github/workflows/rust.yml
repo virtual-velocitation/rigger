@@ -103,14 +103,11 @@ jobs:
             ${{ github.workspace }}/.fastembed_cache
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      # The build-environment tests assert against the REAL PATH: config validation
-      # requires `cargo-mutants` resolvable while the repo's own workflow.yml declares the
-      # `mutation` gate (declared even while no stage lists it), and the
-      # build-environment-authority test requires the `sccache` wrapper it configures to
-      # exist. Install both as prebuilt binaries.
+      # The build-environment-authority test asserts against the REAL PATH: it requires the
+      # `sccache` wrapper it configures to exist. Install it as a prebuilt binary.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,sccache
+          tool: sccache
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy (turbovec, default features)

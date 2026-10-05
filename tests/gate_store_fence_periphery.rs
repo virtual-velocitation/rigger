@@ -830,6 +830,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
             ),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert(

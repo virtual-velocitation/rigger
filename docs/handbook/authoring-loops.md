@@ -77,6 +77,8 @@ stages:
     coverage: "each unit is implemented, reviews itself, and integrates green"
 ```
 
+A gate may declare `requires:`, the executables its command runs (`requires: [cargo-mutants, cargo-nextest]`). Every validating load (`config_store::load`, and `config_store::load_with_gate_requirements`, which it wraps and `rigger validate` calls) refuses a declared gate whose requirement is not an executable on `PATH`, and `rigger validate` prints one `gate <id>:` line per declared gate naming where each requirement resolved. `config_store::load_workflow`, and `config_store::read_scratch_defaults`, through which `rigger status` and `rigger watch` read their `defaults:`, never validate, so neither checks a requirement.
+
 Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
 
 ### The knobs that matter
