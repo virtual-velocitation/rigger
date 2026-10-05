@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-472ab93cb00a",
+    "id": "dup-b65b4cb82ba2",
     "classification": "semantic",
     "sites": [
       {
@@ -1731,7 +1731,7 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"no gate template set matches this project ({} at the project root), so \\\n                     .rigger/workflow.yml declares no gates - declare your own under gates:\"",
+        "name": "\"no gate template set matches this project ({catalogue} at the project \\\n                     root), so .rigger/workflow.yml declares no gates - declare your own under \\\n                     gates:\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -1793,6 +1793,11 @@
         "file": "src/cli/setup.rs",
         "name": "\"no gate template set matches this project (demo: a or b; other: c at the project \\\n                 root), so .rigger/workflow.yml declares no gates - declare your own under gates:\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "src/cli/setup.rs",
@@ -4066,7 +4071,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 584 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 585 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
