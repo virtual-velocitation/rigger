@@ -52,17 +52,9 @@ mod common;
 
 use common::fixtures::write_file;
 use common::git::{commit_files, git_answer, git_commit_all, git_ok, git_out, init_repo};
-use common::repo::repo_root;
+use common::repo::{mutation_gate_script, repo_root};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// The shipped gate script.
-fn gate_script() -> PathBuf {
-    repo_root()
-        .join(".rigger")
-        .join("gates")
-        .join("mutation.sh")
-}
 
 /// The tools the gate script runs besides `cargo` and `systemd-run`.
 const GATE_TOOLS: &[&str] = &[
@@ -170,7 +162,7 @@ fn run_gate_with(
     let cargo_capture = work.path().join("cargo.argv");
     let scope_capture = work.path().join("scope.argv");
     let mut cmd = Command::new("/bin/sh");
-    cmd.arg(gate_script())
+    cmd.arg(mutation_gate_script())
         .current_dir(repo)
         .env("PATH", &bin)
         .env(
@@ -268,7 +260,7 @@ const FORTY_GIB_KB: u64 = 40 * 1024 * 1024;
 
 #[test]
 fn the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base() {
-    let script = std::fs::read_to_string(gate_script()).expect("the shipped gate script");
+    let script = std::fs::read_to_string(mutation_gate_script()).expect("the shipped gate script");
     assert!(
         script.contains("test -n \"$RIGGER_RUN_BASE\""),
         "the shipped mutation gate must guard on RIGGER_RUN_BASE before diffing"
