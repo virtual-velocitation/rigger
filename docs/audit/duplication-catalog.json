@@ -692,7 +692,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-00615ca845fa",
+    "id": "dup-96aa5aa624f2",
     "classification": "semantic",
     "sites": [
       {
@@ -1068,7 +1068,7 @@
       {
         "file": "tests/principle_gates_wiring.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
+        "content_hash": "08d6b42e051847dc"
       },
       {
         "file": "tests/principle_gates_wiring.rs",

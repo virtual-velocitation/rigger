@@ -7,13 +7,14 @@
 //! but never listed on a stage, fails.
 
 mod common;
-use common::cli::{cargo_project, run_rigger};
+use common::cli::{cargo_project, loaded_config, run_rigger};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
 use common::shell_outcome;
 use rigger::config::RIGGER_DIR;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
@@ -32,8 +33,7 @@ fn rust_project_after_init() -> tempfile::TempDir {
 #[test]
 fn a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_line() {
     let dir = rust_project_after_init();
-    let cfg = rigger::config_store::load(dir.path().to_str().unwrap())
-        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"));
+    let cfg = loaded_config(dir.path());
     let wf = &cfg.workflow;
     assert_eq!(
         wf.gates.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -83,41 +83,75 @@ fn init_writes_each_file_the_rust_set_lists() {
 /// The fixture's committed source file: one function and a trailing test module.
 const LIB: &str = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
 
-/// A fixture repository whose `rigger-run` branch holds `lib` as its one committed source file,
-/// checked out on a unit branch that `commits` (each `(path, content, message)`, in order) build
-/// on it. Returns the repository and each commit's short sha.
-fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::TempDir, Vec<String>) {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path();
+/// Makes `repo` a git repository whose `rigger-run` branch commits everything in it with `lib` as
+/// its one source file, checked out on a unit branch that `commits` (each `(path, content,
+/// message)`, in order) build on it. Returns each commit's short sha.
+fn build_unit_branch(repo: &Path, lib: &str, commits: &[(&str, &str, &str)]) -> Vec<String> {
     init_repo(repo);
     commit_files(repo, &[("src/lib.rs", lib)], "base");
     git_ok(repo, &["branch", "rigger-run"]);
     git_ok(repo, &["checkout", "-q", "-b", "unit"]);
-    let shas = commits
+    commits
         .iter()
         .map(|(rel, content, msg)| {
             commit_files(repo, &[(*rel, *content)], msg);
             git_out(repo, &["rev-parse", "--short", "HEAD"])
         })
-        .collect();
+        .collect()
+}
+
+/// A fixture repository built by [`build_unit_branch`]. Returns it and each commit's short sha.
+fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let shas = build_unit_branch(dir.path(), lib, commits);
     (dir, shas)
+}
+
+/// `sh` run with `args` from `repo`. Returns (passed, output).
+fn run_sh(repo: &Path, args: &[&OsStr]) -> (bool, String) {
+    shell_outcome(
+        &Command::new("sh")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap(),
+    )
 }
 
 /// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
 /// Returns (passed, output).
 fn run_red_before_green(repo: &Path) -> (bool, String) {
     let script = repo_root().join(".rigger/gates/red-before-green.sh");
-    let out = Command::new("sh")
-        .arg(script)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+    run_sh(repo, &[script.as_os_str()])
+}
+
+/// The `red-before-green` command the workflow `rigger init` scaffolds in a Rust fixture project,
+/// run under `sh -c` from the project root as the gate runner runs it, on the unit branch that
+/// `commits` build on [`LIB`]. Returns (passed, output) and each commit's short sha.
+fn run_scaffolded_red_before_green(commits: &[(&str, &str, &str)]) -> (bool, String, Vec<String>) {
+    let dir = rust_project_after_init();
+    let cfg = loaded_config(dir.path());
+    let command = &cfg.workflow.gates["red-before-green"].run;
+    let shas = build_unit_branch(dir.path(), LIB, commits);
+    let (passed, out) = run_sh(dir.path(), &["-c".as_ref(), command.as_ref()]);
+    (passed, out, shas)
+}
+
+/// The gate's verdict failed the commit at index `offender` of `commits` (short shas `shas`),
+/// naming it as the first source commit no test commit precedes.
+fn assert_fails_naming(
+    (passed, out): (bool, String),
+    shas: &[String],
+    commits: &[(&str, &str, &str)],
+    offender: usize,
+) {
+    assert!(!passed, "the gate passed a test-less source commit: {out}");
+    assert!(
+        out.contains("error[red-before-green]")
+            && out.contains(&shas[offender])
+            && out.contains(commits[offender].2),
+        "the failure must name the offending commit: {out}"
     );
-    (out.status.success(), text)
 }
 
 const LIB_WITH_G: &str = "pub fn f() -> u8 {\n    1\n}\n\npub fn g() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
@@ -151,14 +185,28 @@ fn red_before_green_passes(lib: &str, commits: &[(&str, &str, &str)]) {
 /// commit at index `offender` as the first source commit no test commit precedes.
 fn red_before_green_fails_naming(lib: &str, commits: &[(&str, &str, &str)], offender: usize) {
     let (dir, shas) = unit_branch_repo(lib, commits);
-    let (passed, out) = run_red_before_green(dir.path());
-    assert!(!passed, "the gate passed a test-less source commit: {out}");
-    assert!(
-        out.contains("error[red-before-green]")
-            && out.contains(&shas[offender])
-            && out.contains(commits[offender].2),
-        "the failure must name the offending commit: {out}"
-    );
+    assert_fails_naming(run_red_before_green(dir.path()), &shas, commits, offender);
+}
+
+/// A source file holding one function and no test.
+const MEMBER_LIB: &str = "pub fn g() -> u8 {\n    2\n}\n";
+
+/// The scaffolded `red-before-green` command fails a test-less `src/` commit, naming it.
+#[test]
+fn the_scaffolded_red_before_green_command_fails_a_test_less_source_commit_naming_it() {
+    let commits = [("src/lib.rs", LIB_WITH_G, "green without red")];
+    let (passed, out, shas) = run_scaffolded_red_before_green(&commits);
+    assert_fails_naming((passed, out), &shas, &commits, 0);
+}
+
+/// The scaffolded `red-before-green` command passes a branch whose test commit comes first.
+#[test]
+fn the_scaffolded_red_before_green_command_passes_a_test_commit_before_the_source_commit() {
+    let (passed, out, _) = run_scaffolded_red_before_green(&[
+        ("tests/g.rs", TEST_FILE, "red"),
+        ("src/lib.rs", LIB_WITH_G, "green"),
+    ]);
+    assert!(passed, "{out}");
 }
 
 rigger::test_cases! {
@@ -251,6 +299,29 @@ rigger::test_cases! {
             &format!("{TEST_IMPORT}{LIB_WITH_G}"),
             "code with a test import",
         )], 0);
+    /// A test-less commit to a workspace member kept outside `crates/`: any file with a `src/`
+    /// path component is source, whatever the layout.
+    red_before_green_fails_a_test_less_commit_to_a_member_outside_crates:
+        red_before_green_fails_naming(LIB, &[(
+            "tools/x/src/lib.rs",
+            MEMBER_LIB,
+            "member code without a test",
+        )], 0);
+    /// A member's own test commit, then the member source it drives: a test under any `tests`
+    /// directory counts, whatever the layout.
+    red_before_green_passes_a_member_test_commit_before_the_member_source_commit:
+        red_before_green_passes(LIB, &[
+            ("tools/x/tests/g.rs", TEST_FILE, "member red"),
+            ("tools/x/src/lib.rs", MEMBER_LIB, "member green"),
+        ]);
+    /// A test-less commit to a directory whose name only ends in `src`: source is a whole `src/`
+    /// path component, so the branch touches no source.
+    red_before_green_passes_a_commit_to_a_directory_whose_name_only_ends_in_src:
+        red_before_green_passes(LIB, &[(
+            "tools/xsrc/lib.rs",
+            MEMBER_LIB,
+            "not a source component",
+        )]);
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,

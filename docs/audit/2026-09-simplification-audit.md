@@ -1570,7 +1570,7 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ### Mandatory sweeps
 
-- **Command::new call sites**: 88 site(s) - `dup-00615ca845fa`
+- **Command::new call sites**: 88 site(s) - `dup-96aa5aa624f2`
 - **/proc-path string literals**: 52 site(s) - `dup-0b65674d0c1c`
 - **sqlite Connection::open call sites**: 67 site(s) - `dup-59006467437a`
 - **.rigger-path string literals**: 584 site(s) - `dup-472ab93cb00a`
@@ -1810,7 +1810,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:15716-15722` `spawned`
 - `crates/rigger-domain/src/eventstore.rs:495-497` `covers`
 
-#### `dup-00615ca845fa` (semantic, 88 sites)
+#### `dup-96aa5aa624f2` (semantic, 88 sites)
 
 Proposed home: `a single injected process-spawn port every Command::new site routes through instead of constructing its own Command`
 
@@ -1855,8 +1855,8 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `tests/cli.rs:23135-23135` `Command::new`
 - `tests/cli.rs:26208-26208` `Command::new`
 - `tests/common/cli.rs:18-18` `Command::new`
-- `tests/common/cli.rs:65-65` `Command::new`
-- `tests/common/cli.rs:264-264` `Command::new`
+- `tests/common/cli.rs:71-71` `Command::new`
+- `tests/common/cli.rs:270-270` `Command::new`
 - `tests/common/fixtures/conductor.rs:283-283` `Command::new`
 - `tests/common/fixtures/conductor.rs:366-366` `Command::new`
 - `tests/common/fixtures/git.rs:25-25` `Command::new`
@@ -1890,8 +1890,8 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `tests/no_os_kill_test_helper_periphery.rs:29-29` `Command::new`
 - `tests/no_os_kill_test_helper_periphery.rs:47-47` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:59-59` `Command::new`
-- `tests/principle_gates_wiring.rs:110-110` `Command::new`
-- `tests/principle_gates_wiring.rs:327-327` `Command::new`
+- `tests/principle_gates_wiring.rs:113-113` `Command::new`
+- `tests/principle_gates_wiring.rs:398-398` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/reset_build_cache_periphery.rs:242-242` `Command::new`
 - `tests/reset_build_cache_periphery.rs:254-254` `Command::new`
@@ -2751,14 +2751,14 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:26577-26577` `".rigger"`
 - `tests/cli.rs:26608-26608` `"scaffolded .rigger/instructions/README.md"`
 - `tests/cli.rs:26612-26612` `".rigger/instructions/README.md"`
-- `tests/common/cli.rs:242-242` `".rigger"`
-- `tests/common/cli.rs:253-253` `".rigger"`
-- `tests/common/cli.rs:274-274` `".rigger"`
-- `tests/common/cli.rs:291-291` `".rigger"`
-- `tests/common/cli.rs:565-565` `".rigger"`
-- `tests/common/cli.rs:566-566` `"create .rigger/agents"`
-- `tests/common/cli.rs:679-679` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
-- `tests/common/cli.rs:776-776` `".rigger"`
+- `tests/common/cli.rs:248-248` `".rigger"`
+- `tests/common/cli.rs:259-259` `".rigger"`
+- `tests/common/cli.rs:280-280` `".rigger"`
+- `tests/common/cli.rs:297-297` `".rigger"`
+- `tests/common/cli.rs:571-571` `".rigger"`
+- `tests/common/cli.rs:572-572` `"create .rigger/agents"`
+- `tests/common/cli.rs:685-685` `"{why}: a server selection must NOT fabricate a local .rigger/events.db"`
+- `tests/common/cli.rs:782-782` `".rigger"`
 - `tests/common/fixtures/config.rs:102-102` `"{repo_path}/.rigger-test-scratch"`
 - `tests/common/layer_cli.rs:22-22` `".rigger"`
 - `tests/common/layer_cli.rs:28-28` `".rigger"`
@@ -2832,23 +2832,23 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/init_setup_unknown_key_agent_fleet_periphery.rs:56-56` `"create .rigger"`
 - `tests/init_setup_unknown_key_agent_fleet_periphery.rs:93-93` `".rigger"`
 - `tests/init_setup_unknown_key_agent_fleet_periphery.rs:95-95` `"create .rigger/agents"`
-- `tests/init_template_sets_periphery.rs:12-12` `"scaffolded .rigger/workflow.yml (gate template set: rust)"`
-- `tests/init_template_sets_periphery.rs:15-15` `"scaffolded .rigger/workflow.yml"`
-- `tests/init_template_sets_periphery.rs:18-18` `"no gate template set matches this project (rust: Cargo.toml at the \
+- `tests/init_template_sets_periphery.rs:14-14` `"scaffolded .rigger/workflow.yml (gate template set: rust)"`
+- `tests/init_template_sets_periphery.rs:17-17` `"scaffolded .rigger/workflow.yml"`
+- `tests/init_template_sets_periphery.rs:20-20` `"no gate template set matches this project (rust: Cargo.toml at the \
                            project root), so .rigger/workflow.yml declares no gates - declare \
                            your own under gates:"`
-- `tests/init_template_sets_periphery.rs:24-24` `"scaffolded .rigger/gates/red-before-green.sh"`
-- `tests/init_template_sets_periphery.rs:25-25` `"scaffolded .rigger/gates/mutation.sh"`
-- `tests/init_template_sets_periphery.rs:26-26` `"scaffolded .rigger/gates/container-env.sh"`
-- `tests/init_template_sets_periphery.rs:39-39` `"scaffolded .rigger/gates/"`
-- `tests/init_template_sets_periphery.rs:78-78` `".rigger/gates"`
-- `tests/init_template_sets_periphery.rs:107-107` `".rigger/workflow.yml"`
-- `tests/init_template_sets_periphery.rs:128-128` `"sh .rigger/gates/red-before-green.sh"`
-- `tests/init_template_sets_periphery.rs:172-172` `".rigger/gates/red-before-green.sh"`
-- `tests/init_template_sets_periphery.rs:182-182` `".rigger/gates/mutation.sh"`
-- `tests/init_template_sets_periphery.rs:186-186` `"scaffolded .rigger/gates/mutation.sh\n"`
-- `tests/init_template_sets_periphery.rs:209-209` `".rigger"`
-- `tests/init_template_sets_periphery.rs:290-290` `".rigger/workflow.yml"`
+- `tests/init_template_sets_periphery.rs:26-26` `"scaffolded .rigger/gates/red-before-green.sh"`
+- `tests/init_template_sets_periphery.rs:27-27` `"scaffolded .rigger/gates/mutation.sh"`
+- `tests/init_template_sets_periphery.rs:28-28` `"scaffolded .rigger/gates/container-env.sh"`
+- `tests/init_template_sets_periphery.rs:41-41` `"scaffolded .rigger/gates/"`
+- `tests/init_template_sets_periphery.rs:74-74` `".rigger/gates"`
+- `tests/init_template_sets_periphery.rs:103-103` `".rigger/workflow.yml"`
+- `tests/init_template_sets_periphery.rs:124-124` `"sh .rigger/gates/red-before-green.sh"`
+- `tests/init_template_sets_periphery.rs:168-168` `".rigger/gates/red-before-green.sh"`
+- `tests/init_template_sets_periphery.rs:178-178` `".rigger/gates/mutation.sh"`
+- `tests/init_template_sets_periphery.rs:182-182` `"scaffolded .rigger/gates/mutation.sh\n"`
+- `tests/init_template_sets_periphery.rs:205-205` `".rigger"`
+- `tests/init_template_sets_periphery.rs:286-286` `".rigger/workflow.yml"`
 - `tests/integrate_conflict_merge_periphery.rs:453-453` `"the project's own .rigger/workflow.yml must load through the real loader"`
 - `tests/migration_is_deliberate_periphery.rs:475-475` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:522-522` `".rigger"`
@@ -2856,10 +2856,10 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/principle_gates_wiring.rs:65-65` `".rigger/gates/red-before-green.sh"`
 - `tests/principle_gates_wiring.rs:66-66` `".rigger/gates/mutation.sh"`
 - `tests/principle_gates_wiring.rs:67-67` `".rigger/gates/container-env.sh"`
-- `tests/principle_gates_wiring.rs:109-109` `".rigger/gates/red-before-green.sh"`
-- `tests/principle_gates_wiring.rs:280-280` `".rigger/agents"`
-- `tests/principle_gates_wiring.rs:290-290` `".rigger/agents: {missing:#?}"`
-- `tests/principle_gates_wiring.rs:294-294` `".rigger/gates/container-env.sh"`
+- `tests/principle_gates_wiring.rs:124-124` `".rigger/gates/red-before-green.sh"`
+- `tests/principle_gates_wiring.rs:351-351` `".rigger/agents"`
+- `tests/principle_gates_wiring.rs:361-361` `".rigger/agents: {missing:#?}"`
+- `tests/principle_gates_wiring.rs:365-365` `".rigger/gates/container-env.sh"`
 - `tests/projections_stay_local.rs:91-91` `"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \
          store's .rigger/graph.db (`Projector::open(&self.file(\"graph.db\") ...)`); the \
          canonical local construction is gone"`
@@ -3916,8 +3916,8 @@ mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mech
 - `tests/cli.rs:846-846` `Connection::open`
 - `tests/cli.rs:889-889` `Connection::open`
 - `tests/cli.rs:8635-8635` `Connection::open`
-- `tests/common/cli.rs:336-336` `Connection::open`
-- `tests/common/cli.rs:787-787` `Connection::open`
+- `tests/common/cli.rs:342-342` `Connection::open`
+- `tests/common/cli.rs:793-793` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:8-8` `Connection::open`
 - `tests/common/fixtures/sqlite.rs:22-22` `Connection::open`
 - `tests/compaction_generations_periphery.rs:100-100` `Connection::open`
@@ -4653,9 +4653,9 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:39-43` `courier_project`
-- `tests/common/cli.rs:139-143` `temp_rigger_project`
-- `tests/common/cli.rs:147-151` `temp_store_project`
+- `tests/common/cli.rs:45-49` `courier_project`
+- `tests/common/cli.rs:145-149` `temp_rigger_project`
+- `tests/common/cli.rs:153-157` `temp_store_project`
 - `tests/courier_registry_refresh_boundary_periphery.rs:40-44` `courier_project_with_commit`
 
 #### `dup-8dd44d643a5c` (semantic, 2 sites)
@@ -4664,7 +4664,7 @@ Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/common/cli.rs:625-632` `write_workflow`
+- `tests/common/cli.rs:631-638` `write_workflow`
 - `tests/common/workflow_probe.rs:21-23` `write_workflow`
 
 #### `dup-b58b0ff72b22` (near, 3 sites)
@@ -4673,8 +4673,8 @@ Proposed home: `a new shared module (sites span 2 files: tests/common/cli.rs, te
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/common/cli.rs:661-681` `assert_selected_server`
-- `tests/common/cli.rs:685-701` `assert_selected_sqlite`
+- `tests/common/cli.rs:667-687` `assert_selected_server`
+- `tests/common/cli.rs:691-707` `assert_selected_sqlite`
 - `tests/store_secrets.rs:69-107` `assert_server_reached_and_credentials_redacted`
 
 #### `dup-c82a46fd1fec` (exact, 2 sites)
@@ -5093,7 +5093,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8305 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8312 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4854-4895` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14796-14818` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5375,10 +5375,10 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 584 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
-#### 10. The 88 `Command::new` call sites (`dup-00615ca845fa`) - production spawns already route through one process-spawn port
+#### 10. The 88 `Command::new` call sites (`dup-96aa5aa624f2`) - production spawns already route through one process-spawn port
 
 - Scope: every production spawn routes through `crates/rigger-process/src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `crates/rigger-process/src/subprocess.rs` are the port itself; the other 87 are test code spawning git, shells and the product binary.
-- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-00615ca845fa`.
+- Files: `crates/rigger-process/src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-96aa5aa624f2`.
 - Expected line delta: none left in production; a test site that repeats a shared fixture's spawn routes through that fixture instead.
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
@@ -5450,7 +5450,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 137 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 207 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-00615ca845fa`, `dup-472ab93cb00a`, `dup-59006467437a`, `dup-0b65674d0c1c`, `dup-96daf6c3e468`, `dup-6fdd86ee972f`, `dup-663145ccb151`); the remaining 137 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 207 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-96aa5aa624f2`, `dup-472ab93cb00a`, `dup-59006467437a`, `dup-0b65674d0c1c`, `dup-96daf6c3e468`, `dup-6fdd86ee972f`, `dup-663145ccb151`); the remaining 137 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

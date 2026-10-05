@@ -620,7 +620,7 @@
     ]
   },
   {
-    "id": "dup-00615ca845fa",
+    "id": "dup-96aa5aa624f2",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -819,13 +819,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 65,
-        "end_line": 65
+        "start_line": 71,
+        "end_line": 71
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 264,
-        "end_line": 264
+        "start_line": 270,
+        "end_line": 270
       },
       {
         "file": "tests/common/fixtures/conductor.rs",
@@ -994,13 +994,13 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 110,
-        "end_line": 110
+        "start_line": 113,
+        "end_line": 113
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 327,
-        "end_line": 327
+        "start_line": 398,
+        "end_line": 398
       },
       {
         "file": "tests/product_binary_authority_periphery.rs",
@@ -3009,43 +3009,43 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 242,
-        "end_line": 242
+        "start_line": 248,
+        "end_line": 248
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 253,
-        "end_line": 253
+        "start_line": 259,
+        "end_line": 259
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 274,
-        "end_line": 274
+        "start_line": 280,
+        "end_line": 280
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 291,
-        "end_line": 291
+        "start_line": 297,
+        "end_line": 297
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 565,
-        "end_line": 565
+        "start_line": 571,
+        "end_line": 571
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 566,
-        "end_line": 566
+        "start_line": 572,
+        "end_line": 572
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 679,
-        "end_line": 679
+        "start_line": 685,
+        "end_line": 685
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 776,
-        "end_line": 776
+        "start_line": 782,
+        "end_line": 782
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -3369,28 +3369,18 @@
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 12,
-        "end_line": 12
+        "start_line": 14,
+        "end_line": 14
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 15,
-        "end_line": 15
+        "start_line": 17,
+        "end_line": 17
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 18,
-        "end_line": 18
-      },
-      {
-        "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 24,
-        "end_line": 24
-      },
-      {
-        "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 25,
-        "end_line": 25
+        "start_line": 20,
+        "end_line": 20
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
@@ -3399,28 +3389,43 @@
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 39,
-        "end_line": 39
+        "start_line": 27,
+        "end_line": 27
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 78,
-        "end_line": 78
+        "start_line": 28,
+        "end_line": 28
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 107,
-        "end_line": 107
+        "start_line": 41,
+        "end_line": 41
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 128,
-        "end_line": 128
+        "start_line": 74,
+        "end_line": 74
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 172,
-        "end_line": 172
+        "start_line": 103,
+        "end_line": 103
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "start_line": 124,
+        "end_line": 124
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "start_line": 168,
+        "end_line": 168
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "start_line": 178,
+        "end_line": 178
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
@@ -3429,18 +3434,13 @@
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 186,
-        "end_line": 186
+        "start_line": 205,
+        "end_line": 205
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 209,
-        "end_line": 209
-      },
-      {
-        "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 290,
-        "end_line": 290
+        "start_line": 286,
+        "end_line": 286
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -3479,23 +3479,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 109,
-        "end_line": 109
+        "start_line": 124,
+        "end_line": 124
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 280,
-        "end_line": 280
+        "start_line": 351,
+        "end_line": 351
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 290,
-        "end_line": 290
+        "start_line": 361,
+        "end_line": 361
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "start_line": 294,
-        "end_line": 294
+        "start_line": 365,
+        "end_line": 365
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -5684,13 +5684,13 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 336,
-        "end_line": 336
+        "start_line": 342,
+        "end_line": 342
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 787,
-        "end_line": 787
+        "start_line": 793,
+        "end_line": 793
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -7269,18 +7269,18 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 39,
-        "end_line": 43
+        "start_line": 45,
+        "end_line": 49
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 139,
-        "end_line": 143
+        "start_line": 145,
+        "end_line": 149
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 147,
-        "end_line": 151
+        "start_line": 153,
+        "end_line": 157
       },
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -7294,8 +7294,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 625,
-        "end_line": 632
+        "start_line": 631,
+        "end_line": 638
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7309,13 +7309,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 661,
-        "end_line": 681
+        "start_line": 667,
+        "end_line": 687
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 685,
-        "end_line": 701
+        "start_line": 691,
+        "end_line": 707
       },
       {
         "file": "tests/store_secrets.rs",

@@ -4,7 +4,9 @@
 //! a workflow, and on a rerun - and that `rigger validate` accepts both fresh scaffolds.
 
 mod common;
-use common::cli::{cargo_project, run_rigger, run_rigger_envs, run_rigger_ok, temp_project};
+use common::cli::{
+    cargo_project, loaded_config, run_rigger, run_rigger_envs, run_rigger_ok, temp_project,
+};
 use common::repo::repo_root;
 use std::path::Path;
 
@@ -41,12 +43,6 @@ fn set_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
-/// `root`'s workflow loaded through the production parser, which validates it.
-fn load(root: &Path) -> rigger::config::Config {
-    rigger::config_store::load(root.to_str().unwrap())
-        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"))
-}
-
 /// The two unit stages' gate lists, `(implement, checkin)`.
 fn stage_lists(cfg: &rigger::config::Config) -> (Vec<String>, Vec<String>) {
     (
@@ -78,7 +74,7 @@ fn assert_no_set_scaffold(root: &Path, out: &str) {
         !root.join(".rigger/gates").exists(),
         "a project matching no set gets no gate script"
     );
-    let cfg = load(root);
+    let cfg = loaded_config(root);
     assert_eq!(cfg.workflow.gates.len(), 0, "no gate declared");
     assert_eq!(stage_lists(&cfg), (vec![], vec![]));
 }
@@ -109,7 +105,7 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
         workflow.contains(&format!("\ngates:\n{indented}")),
         "the workflow carries the embedded gates text verbatim under gates:\n{workflow}"
     );
-    let cfg = load(dir.path());
+    let cfg = loaded_config(dir.path());
     let runs: Vec<(&str, &str)> = cfg
         .workflow
         .gates
@@ -238,7 +234,7 @@ fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
     let mut expected = vec![RUST_WORKFLOW_LINE];
     expected.extend(RUST_SET_FILE_LINES);
     assert_eq!(set_lines(&out), expected, "stdout:\n{out}");
-    let cfg = load(dir.path());
+    let cfg = loaded_config(dir.path());
     assert_eq!(
         stage_lists(&cfg),
         (

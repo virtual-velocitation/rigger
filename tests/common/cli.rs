@@ -33,6 +33,12 @@ pub fn cargo_project() -> tempfile::TempDir {
     dir
 }
 
+/// `root`'s workflow loaded through the production parser, which validates it.
+pub fn loaded_config(root: &Path) -> rigger::config::Config {
+    rigger::config_store::load(root.to_str().unwrap())
+        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"))
+}
+
 /// A [`temp_project`] the compiled binary accepts as a courier target: its own git repo (so the
 /// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
 /// to fabricate one from a cwd with no existing store (spec 05).
