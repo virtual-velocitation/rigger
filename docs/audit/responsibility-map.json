@@ -445,7 +445,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "44ef64bfa018bc5e"
+    "content_hash": "f1b8a5e0de768c58"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -765,7 +765,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "9eabf999b9e8e9e9"
+    "content_hash": "2727fb2dc5c08c93"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -925,7 +925,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c99ca19534f511f6"
+    "content_hash": "bd347486e619b1b4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1157,7 +1157,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "39f60f315544a139"
+    "content_hash": "1f7017cbf99f719c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1165,15 +1165,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1da300dcb48ad8cc"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "reclaim_terminal_unit_mutation_scratch",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "e3c05f8e09f15701"
+    "content_hash": "2d6ef9104dc3deac"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1966,14 +1958,6 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "1899837206b9bd78"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "mutation_scratch_settled",
-    "is_test": false,
-    "proposed_module": "conductor::budget",
-    "reason": "name contains \"mutation\" (budget accounting); grouped under `conductor::budget`.",
-    "content_hash": "8dc30fba3cf4a3f4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3701,7 +3685,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a734e372c485b160"
+    "content_hash": "f7ca6b09c5287675"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8325,7 +8309,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "70bebef70fa0d3fd"
+    "content_hash": "4734ee0bd03bbb48"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8925,15 +8909,39 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1206f0f75c77056f"
+    "content_hash": "7c757a759b7eb67c"
   },
   {
     "file": "src/cli/mod.rs",
-    "name": "footprint_report_folds_a_none_mutation_root_to_a_zero_contribution",
+    "name": "seed_agent_scratch_leaf",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d7e41c5bbeadbfc7"
+    "content_hash": "a45da2cb5e257168"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "spawn_scoped_footprint",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a5590b8f7a679882"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "category",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "05899e8cfa68edfe"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "registered_scratch_roots_with",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "fee47ad232220cc4"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8941,7 +8949,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9f98bd43fb4ae34a"
+    "content_hash": "20021db524b2d8f8"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8949,7 +8957,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ddafbb1e835343b4"
+    "content_hash": "342a99dc2f877dff"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8989,7 +8997,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cdc437aa626b345e"
+    "content_hash": "2998b43772d376a9"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9005,7 +9013,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6ce71af530485e6d"
+    "content_hash": "2582aad72bd0e888"
   },
   {
     "file": "src/cli/mod.rs",

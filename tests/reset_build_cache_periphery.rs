@@ -578,8 +578,7 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
 
 /// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
 /// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
-/// dead spawn's registered scratch (under agent-scratch and under the mutation-scratch root),
-/// and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
+/// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
 /// process still holds (here: an open file descriptor in this test process) and everything
 /// that is not dead footprint (the sweep's mutation anchor).
 #[test]
@@ -587,12 +586,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     let project = temp_store_project();
     let root = project.path();
     let scratch = common::default_scratch_root(root);
-    let cache_home = scratch
-        .parent()
-        .and_then(Path::parent)
-        .expect("the scratch root nests two levels under the cache home")
-        .to_path_buf();
-    let mutation_root = rigger::driver::replay::mutation_scratch_root(&cache_home);
 
     let dead_unit_cache = scratch.join("cargo-target-gone-unit");
     write_file(&dead_unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
@@ -603,8 +596,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
         .join("run-gone")
         .join("spawn-gone");
     write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
-    let dead_mutation_leaf = mutation_root.join("spawn-gone");
-    write_file(&dead_mutation_leaf.join("d"), &[0u8; 100]);
     let unowned = scratch.join("agent-scratch").join("adhoc-target");
     write_file(&unowned.join("CACHEDIR.TAG"), &[0u8; 50]);
     let anchor = scratch.join("mutation-anchor").join("tip");
@@ -623,7 +614,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     for (what, dir) in [
         ("the dead per-unit cache", &dead_unit_cache),
         ("the dead agent-scratch spawn leaf", &dead_spawn_leaf),
-        ("the dead mutation-scratch leaf", &dead_mutation_leaf),
         ("the unowned agent scratch", &unowned),
     ] {
         assert!(

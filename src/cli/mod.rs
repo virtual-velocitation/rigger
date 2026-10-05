@@ -19,9 +19,7 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{
-    cache_home_from, mutation_scratch_path, mutation_scratch_root, spawn_scratch_path, ReplayDriver,
-};
+use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{DerivedPreview, PrunedDerived, Store},
@@ -4117,10 +4115,9 @@ type SizedPaths = Vec<(PathBuf, u64)>;
 
 /// `root`'s direct child directories whose name is NOT in `live_leaf_names`, each with its
 /// size - the one-level DEAD half of a scratch root whose direct children
-/// are themselves spawn leaves (the mutation-scratch root's own shape: every entry
-/// directly under `<cache_home>/rigger-mutants` IS a
-/// [`crate::liveness::marker_filename`]-encoded spawn leaf,
-/// [`crate::driver::replay::mutation_scratch_path`]). A leaf present in `live_leaf_names`
+/// are themselves spawn leaves (a well-formed `agent-scratch` run-id container's own shape:
+/// every entry directly under it IS a [`crate::liveness::marker_filename`]-encoded spawn
+/// leaf, [`crate::driver::replay::spawn_scratch_path`]). A leaf present in `live_leaf_names`
 /// is spared (it is a real in-flight spawn's own scratch); everything else - a completed
 /// spawn's leaf `reclaim_spawn_scratch` has not yet reclaimed, or a leftover from a run
 /// this process no longer tracks - counts fully dead, mirroring how [`scratch_footprint`]
@@ -4228,10 +4225,8 @@ fn classify_agent_scratch(
 /// PLUS a seventh, "unowned agent scratch", the Done-when text's own added requirement: a
 /// top-level ad-hoc dir directly under `agent-scratch` with no run/spawn owner is reported
 /// separately here, never folded into "registered scratch roots"'s dead-run-keyed tally
-/// ([`classify_agent_scratch`]). `mutation_root` is `None` in a homeless environment
-/// ([`cache_home_from`] found neither `XDG_CACHE_HOME` nor `HOME`), which folds to a zero
-/// contribution rather than an error - there is nowhere the mutation-scratch root could
-/// exist there either.
+/// ([`classify_agent_scratch`]). The registered scratch roots category is `agent-scratch`
+/// alone.
 ///
 /// Pure over its filesystem reads (every call is a plain `read_dir`/`metadata` walk with
 /// no side effect), so a fixture tree with seeded files/dirs drives this directly in a
@@ -4240,7 +4235,6 @@ fn classify_agent_scratch(
 fn footprint_report(
     rigger_dir: &Path,
     scratch_root: &Path,
-    mutation_root: Option<&Path>,
     live_slugs: &std::collections::HashSet<String>,
     dead_slugs: &std::collections::HashSet<String>,
     current_run_scratch_leaf: Option<&str>,
@@ -4249,9 +4243,8 @@ fn footprint_report(
     let (store_bytes, backup_bytes) = store_and_backup_bytes(rigger_dir);
     let (worktrees, unit_caches, build_cache) =
         scratch_footprint(scratch_root, live_slugs, dead_slugs);
-    // Registered scratch roots (spec 34 `agent-scratch` + spec 77 criterion 3's mutation-
-    // scratch root, `d-p77-needs-c6-after-c3`): a spawn-keyed category, so its dead share
-    // is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not the
+    // Registered scratch roots (spec 34 `agent-scratch`): a spawn-keyed category, so its
+    // dead share is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not the
     // unit liveness `scratch_footprint` reads above - closes
     // `adj-u77c6-verdict-reject-unflaggable-highest-stakes-category`
     // (supersedes `d-u77c6-footprint-design`'s dead_bytes:0/reclaim_hint:None narrowing,
@@ -4260,10 +4253,7 @@ fn footprint_report(
     // `adv-u77c6-registered-scratch-roots-dead-share-never-flaggable`). `agent-scratch`
     // additionally keys that liveness check by RUN, not just spawn leaf
     // (`current_run_scratch_leaf`, closing
-    // `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan`) - the
-    // mutation-scratch root has no run-id component to key on
-    // ([`crate::driver::replay::mutation_scratch_path`]'s own doc comment: "no run subdir to
-    // key on"), so it is unaffected.
+    // `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan`).
     let agent_scratch_root = scratch_root.join("agent-scratch");
     let (agent_scratch_dead, ad_hoc_entries) = classify_agent_scratch(
         &agent_scratch_root,
@@ -4276,19 +4266,6 @@ fn footprint_report(
     let ad_hoc_bytes: u64 = ad_hoc_entries.iter().map(|(_, bytes)| bytes).sum();
     let agent_scratch_well_formed_total =
         dir_size_bytes(&agent_scratch_root).saturating_sub(ad_hoc_bytes);
-    let scratch_bytes =
-        agent_scratch_well_formed_total + mutation_root.map(dir_size_bytes).unwrap_or(0);
-    // Each dead leaf with the root it was enumerated under: agent-scratch leaves sit under the
-    // scratch root, mutation-scratch leaves under the mutation-scratch root.
-    let dead_leaves: Vec<(PathBuf, u64, PathBuf)> = agent_scratch_dead
-        .into_iter()
-        .map(|(path, bytes)| (path, bytes, scratch_root.to_path_buf()))
-        .chain(mutation_root.into_iter().flat_map(|m| {
-            dead_spawn_leaves(m, live_spawn_leaf_names)
-                .into_iter()
-                .map(move |(path, bytes)| (path, bytes, m.to_path_buf()))
-        }))
-        .collect();
     vec![
         FootprintCategory {
             name: "store",
@@ -4309,12 +4286,15 @@ fn footprint_report(
         worktrees,
         FootprintCategory {
             name: "registered scratch roots",
-            total_bytes: scratch_bytes,
-            dead_bytes: dead_leaves.iter().map(|(_, bytes, _)| bytes).sum(),
+            total_bytes: agent_scratch_well_formed_total,
+            dead_bytes: agent_scratch_dead.iter().map(|(_, bytes)| bytes).sum(),
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED),
-            reclaimable: dead_leaves
+            reclaimable: agent_scratch_dead
                 .into_iter()
-                .map(|(path, _, root)| DeadEntry { path, root })
+                .map(|(path, _)| DeadEntry {
+                    path,
+                    root: scratch_root.to_path_buf(),
+                })
                 .collect(),
         },
         FootprintCategory {
@@ -7037,6 +7017,78 @@ mod tests {
         assert_eq!(by_name("unowned agent scratch").dead_bytes, 5);
     }
 
+    /// Write `n` bytes at `probe-repo/<file>` inside the spawn leaf `spawn_leaf` of the run
+    /// subdir `run_leaf` under `scratch`'s `agent-scratch` - the real
+    /// `agent-scratch/<run-id>/<spawn-id>` nesting [`crate::driver::replay::spawn_scratch_path`]
+    /// creates.
+    fn seed_agent_scratch_leaf(
+        scratch: &Path,
+        run_leaf: &str,
+        spawn_leaf: &str,
+        file: &str,
+        n: usize,
+    ) {
+        write_file(
+            &scratch
+                .join("agent-scratch")
+                .join(run_leaf)
+                .join(spawn_leaf)
+                .join("probe-repo")
+                .join(file),
+            &vec![0u8; n],
+        );
+    }
+
+    /// [`footprint_report`] over `scratch` with no unit liveness, `run_leaf` as the current
+    /// run's subdir and `live_leaf` its one live spawn leaf.
+    fn spawn_scoped_footprint(
+        root: &Path,
+        scratch: &Path,
+        run_leaf: &str,
+        live_leaf: &str,
+    ) -> Vec<FootprintCategory> {
+        footprint_report(
+            &root.join(".rigger"),
+            scratch,
+            &slugs([]),
+            &slugs([]),
+            Some(run_leaf),
+            &slugs([live_leaf]),
+        )
+    }
+
+    /// The category named `name` in `categories`.
+    fn category<'a>(categories: &'a [FootprintCategory], name: &str) -> &'a FootprintCategory {
+        categories.iter().find(|c| c.name == name).unwrap()
+    }
+
+    /// Seed one LIVE spawn's agent scratch and one DEAD spawn's, each `(run id, spawn id,
+    /// bytes)`, where the live spawn's run is the current run and its spawn the one live leaf;
+    /// assert "registered scratch roots" totals both and counts only the dead one dead (`why`
+    /// names the case), and return every category.
+    fn registered_scratch_roots_with(
+        live: (&str, &str, usize),
+        dead: (&str, &str, usize),
+        why: &str,
+    ) -> Vec<FootprintCategory> {
+        let root = tempfile::tempdir().unwrap();
+        let scratch = root.path().join("scratch");
+        let leaf = |id: &str| rigger::liveness::marker_filename(id).unwrap();
+        let (live_run, live_spawn) = (leaf(live.0), leaf(live.1));
+        seed_agent_scratch_leaf(&scratch, &live_run, &live_spawn, "live", live.2);
+        seed_agent_scratch_leaf(&scratch, &leaf(dead.0), &leaf(dead.1), "dead", dead.2);
+
+        let categories = spawn_scoped_footprint(root.path(), &scratch, &live_run, &live_spawn);
+        let cat = category(&categories, "registered scratch roots");
+        assert_eq!(
+            cat.total_bytes,
+            (live.2 + dead.2) as u64,
+            "every byte, live and dead"
+        );
+        assert_eq!(cat.dead_bytes, dead.2 as u64, "{why}");
+        categories
+    }
+
     #[test]
     fn footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn() {
         // adj-u77c6-verdict-reject-unflaggable-highest-stakes-category: the ONE category
@@ -7045,58 +7097,18 @@ mod tests {
         // `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold`
         // for THIS category, over the real `agent-scratch/<run-id>/<spawn-id>` nesting
         // ([`crate::driver::replay::spawn_scratch_path`]'s own doc comment), not a
-        // synthetic flat fixture.
-        let root = tempfile::tempdir().unwrap();
-        let scratch = root.path().join("scratch");
-
-        let live_id = "u-live/implementer#0";
-        let dead_id = "u-dead/implementer#0";
-        let live_leaf = rigger::liveness::marker_filename(live_id).unwrap();
-        let dead_leaf = rigger::liveness::marker_filename(dead_id).unwrap();
-        let run_leaf = rigger::liveness::marker_filename("r1").unwrap();
-
-        // A LIVE spawn's own build/verify scratch, nested under this run's own subdir.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&live_leaf)
-                .join("probe-repo")
-                .join("x"),
-            &[0u8; 10],
-        );
-        // A DEAD spawn's leftover scratch - same run, no result recorded for it, but its
-        // own id is not in the live set (mirrors a hung, never-retried spawn: nothing has
+        // synthetic flat fixture. The DEAD spawn shares the live one's run but has no result
+        // recorded and is not in the live set (a hung, never-retried spawn: nothing has
         // reclaimed it, and nothing else will until a real `rigger result` names it).
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&dead_leaf)
-                .join("probe-repo")
-                .join("y"),
-            &[0u8; 90],
+        let categories = registered_scratch_roots_with(
+            ("r1", "u-live/implementer#0", 10),
+            ("r1", "u-dead/implementer#0", 90),
+            "only the dead spawn's leaf - the live spawn's is spared",
         );
-
-        let live_leaf_names = slugs([live_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            &slugs([]),
-            &slugs([]),
-            Some(run_leaf.as_str()),
-            &live_leaf_names,
-        );
-        let cat = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(cat.total_bytes, 10 + 90, "every byte, live and dead");
         assert_eq!(
-            cat.dead_bytes, 90,
-            "only the dead spawn's leaf - the live spawn's is spared"
+            category(&categories, "registered scratch roots").reclaim_hint,
+            Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED)
         );
-        assert_eq!(cat.reclaim_hint, Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED));
 
         let advisories = footprint_advisories(&categories);
         assert!(
@@ -7119,57 +7131,12 @@ mod tests {
     /// ABANDONED prior run, the other a genuinely live spawn under the CURRENT run.
     #[test]
     fn footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone() {
-        let root = tempfile::tempdir().unwrap();
-        let scratch = root.path().join("scratch");
-
-        // Both run-id subdirs' spawns share the IDENTICAL unit/attempt id - the self-hosting
-        // re-proposal shape - so they encode to the SAME spawn leaf name.
-        let spawn_id = "u77c6/implementer#2";
-        let spawn_leaf = rigger::liveness::marker_filename(spawn_id).unwrap();
-        let old_run_leaf = rigger::liveness::marker_filename("r-old-abandoned").unwrap();
-        let current_run_leaf = rigger::liveness::marker_filename("r-current").unwrap();
-
-        // The OLD, abandoned run's own orphan: never answered before that run was killed.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&old_run_leaf)
-                .join(&spawn_leaf)
-                .join("probe-repo")
-                .join("orphan"),
-            &[0u8; 500],
-        );
-        // The CURRENT run's own live spawn, reusing the SAME spawn leaf name under its OWN
-        // run-id subdir - genuinely in flight, must be spared.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&current_run_leaf)
-                .join(&spawn_leaf)
-                .join("probe-repo")
-                .join("live"),
-            &[0u8; 5],
-        );
-
-        let live_leaf_names = slugs([spawn_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            &slugs([]),
-            &slugs([]),
-            Some(current_run_leaf.as_str()),
-            &live_leaf_names,
-        );
-        let cat = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(cat.total_bytes, 500 + 5, "every byte, old and current");
-        assert_eq!(
-            cat.dead_bytes, 500,
+        registered_scratch_roots_with(
+            ("r-current", "u77c6/implementer#2", 5),
+            ("r-old-abandoned", "u77c6/implementer#2", 500),
             "the OLD, abandoned run's orphan under a DIFFERENT run-id subdir must count \
              dead even though its spawn leaf name is identical to the current run's live \
-             spawn - classification must key off (run_id, leaf), never leaf name alone"
+             spawn - classification must key off (run_id, leaf), never leaf name alone",
         );
     }
 
@@ -7241,15 +7208,7 @@ mod tests {
 
         // A well-formed, LIVE spawn's own container - must stay spared, and counted ONLY in
         // "registered scratch roots".
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&live_leaf)
-                .join("probe-repo")
-                .join("x"),
-            &[0u8; 10],
-        );
+        seed_agent_scratch_leaf(&scratch, &run_leaf, &live_leaf, "x", 10);
         // The ad-hoc, unowned dir: a bare file sits directly inside it - no run/spawn
         // nesting at all.
         write_file(
@@ -7260,20 +7219,9 @@ mod tests {
             &[0u8; 500],
         );
 
-        let live_leaf_names = slugs([live_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            &slugs([]),
-            &slugs([]),
-            Some(run_leaf.as_str()),
-            &live_leaf_names,
-        );
+        let categories = spawn_scoped_footprint(root.path(), &scratch, &run_leaf, &live_leaf);
 
-        let scratch_roots = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
+        let scratch_roots = category(&categories, "registered scratch roots");
         assert_eq!(
             scratch_roots.total_bytes, 10,
             "the ad-hoc dir's bytes must NOT appear here"
@@ -7284,10 +7232,7 @@ mod tests {
              this dead-run bucket either"
         );
 
-        let unowned = categories
-            .iter()
-            .find(|c| c.name == "unowned agent scratch")
-            .unwrap();
+        let unowned = category(&categories, "unowned agent scratch");
         assert_eq!(unowned.total_bytes, 500);
         assert_eq!(
             unowned.dead_bytes, 500,

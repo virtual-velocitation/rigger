@@ -60,11 +60,10 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 ///
 /// INJECTIVE BY CONSTRUCTION, not by guard: every caller of this function derives a
 /// filesystem path with `<registered_root>.join(marker_filename(id))` (this module's own
-/// [`marker_path`], plus [`crate::driver::replay::spawn_scratch_path`] and
-/// [`crate::driver::replay::mutation_scratch_path`]), and several of those roots are
-/// later reaped with a bare `remove_dir_all` - so two DISTINCT ids must never produce the
-/// SAME encoded name (a same-level collision misattributes a reap to the wrong unit's
-/// live scratch), and no id may encode to `""`, `"."`, or `".."` (a `PathBuf::join`
+/// [`marker_path`], plus [`crate::driver::replay::spawn_scratch_path`]), and several of
+/// those roots are later reaped with a bare `remove_dir_all` - so two DISTINCT ids must
+/// never produce the SAME encoded name (a same-level collision misattributes a reap to the
+/// wrong unit's live scratch), and no id may encode to `""`, `"."`, or `".."` (a `PathBuf::join`
 /// no-op or an upward walk that lets a reaper delete a sibling or an ancestor). This
 /// encoding is injective: since `_` is NEVER emitted as a bare passthrough byte (it is
 /// always escaped to `_5f`), a decoder scanning left to right can unambiguously tell a
@@ -886,11 +885,9 @@ mod tests {
         // EMPTY input encodes to the EMPTY string (there are no bytes to escape), and
         // `<registered_root>.join("")` is a documented `PathBuf::join` no-op that collapses
         // the derived path to the registered root itself - letting a reaper delete every
-        // sibling leaf alongside it. Reachable directly: a spawn id of `""` cannot reach
-        // here (`cmd_result` already requires non-empty), but `reclaim_spawn_scratch`'s own
-        // `unit = spawn_id.split('/').next()` extraction yields `""` for any LEADING-SLASH
-        // spawn id (e.g. `rigger result "/foo" "text"`), and that empty `unit` is exactly
-        // what `mutation_scratch_path` feeds this function. `None` (skip entirely) is the
+        // sibling leaf alongside it. A spawn id of `""` cannot reach here through
+        // `cmd_result` (it already requires non-empty), but an empty run id or unit id
+        // derived from one can. `None` (skip entirely) is the
         // answer here - never a fixed placeholder (rounds 3 and 5 each tried exactly that
         // for this and the all-dots shape, and round 6 proved a placeholder drawn from the
         // map's own output alphabet can collide with a real id; see

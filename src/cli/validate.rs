@@ -1065,12 +1065,9 @@ pub(super) fn measure_footprint(
         Err(why) => (RunUnits::default(), Some(why)),
     };
     let slugs = live_slugs(&run_units.live_branches);
-    let cache_home = cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"));
-    let mutation_root = cache_home.map(|h| mutation_scratch_root(&h));
     let categories = footprint_report(
         &rigger_dir,
         &scratch,
-        mutation_root.as_deref(),
         &slugs,
         &run_units.dead_slugs,
         run_units.current_run_scratch_leaf.as_deref(),

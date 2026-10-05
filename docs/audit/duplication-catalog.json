@@ -1136,7 +1136,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4ae070d5d001",
+    "id": "dup-2240cdc5518a",
     "classification": "semantic",
     "sites": [
       {
@@ -1612,22 +1612,7 @@
       {
         "file": "src/cli/mod.rs",
         "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
+        "content_hash": "f71df05adff30fbc"
       },
       {
         "file": "src/cli/mod.rs",
@@ -2303,31 +2288,6 @@
         "file": "tests/cli.rs",
         "name": "\"under RIGGER_TMPDIR the marker is not under the repo's .rigger/tmp; got: {marker_str:?}\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6c4f566ba472b44d"
       },
       {
         "file": "tests/cli.rs",
@@ -3455,21 +3415,6 @@
         "content_hash": "c2dfa05b7c5ac948"
       },
       {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\"reclaim_unit_mutation_scratch's own doc comment promises every process rooted in a \\\n         matched registered mutation-scratch dir is reaped BEFORE the dir is removed - a \\\n         SIGTERM-ignoring process here must still be SIGKILLed. Round 1 broke this: \\\n         is_reapable_base's <repo>/.rigger/tmp containment requirement refused this real, \\\n         ALWAYS-outside-any-repo registered root (see this file's header doc comment and \\\n         decision u78c2-mutation-scratch-reap-now-refused-flagging-for-review), so \\\n         reap_processes_rooted_under silently no-opped. Round 2 (decision \\\n         u78c2r2-authorized-root-caller-supplied) fixed it by passing the registered \\\n         mutation-scratch root itself as authorized_root - a regression back to the round-1 \\\n         shape would fail this assertion again.\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "0a68549443b7c66d"
-      },
-      {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\"control: when the registered scratch root legitimately lies under a real repo's \\\n         .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \\\n         it - proving the sibling test's failure is specifically the base-guard's new scope, \\\n         not a defect in this file's own mechanics\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
         "file": "tests/principle_gates_wiring.rs",
         "name": "\"the scaffolded .rigger/: {missing:#?}\"",
         "content_hash": "c2ea6b4829cb254f"
@@ -3711,12 +3656,12 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's boundary violation; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"#### 10. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\"",
+        "name": "\"#### 9. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3991,7 +3936,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 570 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 559 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4627,12 +4572,12 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's boundary violation; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
+        "name": "\"#### 2. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
@@ -6714,7 +6659,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cc7d493486f5",
+    "id": "dup-96daf6c3e468",
     "classification": "semantic",
     "sites": [
       {
@@ -6750,7 +6695,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "render_section_6",
-        "content_hash": "203e2ccf9f7531c1"
+        "content_hash": "06d0cca307063f7e"
       },
       {
         "file": "tests/simplification_audit.rs",
