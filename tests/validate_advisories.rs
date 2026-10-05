@@ -460,31 +460,35 @@ rigger::test_cases! {
 // (d) NO UNGATED FAN-OUT TEMPLATE (spec 103, criterion 2)
 // ---------------------------------------------------------------------------------------
 
-/// Strip the scaffolded `implement` template's gate list
-/// (`gates: [build, audit, test, lint, boundary, red-before-green]`) down to `gates: []` in the
-/// REAL persisted `.rigger/workflow.yml` `rigger init` just wrote - the exact on-disk edit an
-/// author makes to (deliberately or accidentally) declare a gate-less fan-out template. Matches
-/// on the closing `]` immediately after `red-before-green`, which only the `implement` stage's
-/// own gate list carries, never `checkin`'s `gates: [build, audit, test, lint, boundary,
-/// mutation]`.
-fn strip_implement_gates(root: &Path) {
+/// Declare one gate in the REAL persisted `.rigger/workflow.yml` `rigger init` just wrote for a
+/// project matching no gate template set, and list it on the `implement` fan-out template: the
+/// fixture's own gate, since a scaffold matching no set declares none (`gates: {}`) and lists
+/// `[]` on its unit stages, of which `implement` comes first.
+fn declare_an_implement_gate(root: &Path) {
     let path = root.join(".rigger").join("workflow.yml");
     let raw = std::fs::read_to_string(&path).expect("read the scaffolded workflow");
-    let needle = "gates: [build, audit, test, lint, boundary, red-before-green]";
-    assert!(
-        raw.contains(needle),
-        "fixture bug: the scaffolded workflow's `implement` gate list has drifted from what \
-         this test edits; workflow.yml:\n{raw}"
-    );
-    std::fs::write(&path, raw.replacen(needle, "gates: []", 1))
-        .expect("rewrite workflow.yml with an ungated implement template");
+    for needle in ["gates: {}", "gates: []"] {
+        assert!(
+            raw.contains(needle),
+            "fixture bug: the no-set scaffold no longer carries {needle:?}; workflow.yml:\n{raw}"
+        );
+    }
+    let gated = raw
+        .replacen(
+            "gates: {}",
+            "gates:\n  unit-check: { run: \"make check\", kind: core }",
+            1,
+        )
+        .replacen("gates: []", "gates: [unit-check]", 1);
+    std::fs::write(&path, gated).expect("rewrite workflow.yml with a gated implement template");
 }
 
 #[test]
 fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err) = validate_after_init(root, strip_implement_gates);
+    // A project matching no gate template set: its scaffolded `implement` template lists no gate.
+    let (_out, err) = validate_after_init(root, |_| {});
     assert!(
         err.contains("fan-out template 'implement' declares no gates"),
         "validate must warn of the ungated fan-out template, naming it; stderr:\n{err}"
@@ -512,13 +516,13 @@ fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
 }
 
 #[test]
-fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
+fn validate_is_silent_on_a_gated_scaffolded_fanout_template() {
     let dir = temp_rigger_project();
     let root = dir.path();
-    let (_out, err) = validate_after_init(root, |_| {});
+    let (_out, err) = validate_after_init(root, declare_an_implement_gate);
     assert!(
         !err.contains("declares no gates"),
-        "the scaffolded `implement` template declares gates and must draw no warning; \
+        "a scaffolded `implement` template that lists a gate must draw no warning; \
          stderr:\n{err}"
     );
 }
@@ -532,8 +536,8 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     let dir = temp_rigger_project();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
-    // itself leaves a fresh project in.
-    let (out, err) = validate_after_init(root, |_| {});
+    // itself leaves a fresh project in, with the fixture's own gate on its fan-out template.
+    let (out, err) = validate_after_init(root, declare_an_implement_gate);
     assert!(
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"
@@ -552,7 +556,7 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     );
     assert!(
         !err.contains("declares no gates"),
-        "the freshly-scaffolded `implement` template declares gates and must draw no \
+        "a freshly-scaffolded `implement` template listing a gate must draw no \
          ungated-fan-out-template warning; stderr:\n{err}"
     );
 }
