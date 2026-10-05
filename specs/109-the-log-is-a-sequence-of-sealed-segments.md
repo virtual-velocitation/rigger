@@ -79,7 +79,7 @@ Crash mid-batch - torn tail truncated, batch absent. Crash mid-seal - trailer mi
 re-sealed on open. Crash mid-manifest rename - old manifest wins, new segment garbage-collected.
 Two processes appending - serialized by the lock; positions contiguous. Reader during append -
 reads up to the last complete record. Cold start - open is footers plus the active segment.
-Archive (spec 107) - replaces sealed segments through the manifest, never touches the lock.
+Archive (spec 114) - replaces sealed segments through the manifest, never touches the lock.
 
 ## Notes (non-criteria)
 

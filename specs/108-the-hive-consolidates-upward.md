@@ -22,7 +22,7 @@ review-tier id prefix (`sdet-` 2,205, `adj-` 1,794, `adv-` 1,383, `arch-` 996, `
 
 ## Design
 
-**FORGETTING BY AGE ENDS.** `rigger reset --runs` keeps its archive role (spec 107) and stops
+**FORGETTING BY AGE ENDS.** `rigger reset --runs` keeps its archive role (spec 114) and stops
 pruning decisions and findings from the graph. What leaves the live view leaves by one of the
 two operations below, each citing its evidence.
 
@@ -45,11 +45,11 @@ does not discriminate, 96% of all decisions carry it). The prefixes are constant
 and the classifier share, so a renamed tier cannot silently reclassify. The classifier is one function beside
 the event-class constants of spec 107 and is the single authority the fold, the archiver and
 `rigger peers` consult. Process records fold into the graph for the run they serve and are
-archived with the run's episodes by spec 107; durable decisions are knowledge and stay live
+archived with the run's episodes by spec 114; durable decisions are knowledge and stay live
 until superseded on evidence.
 
 **THE CONSOLIDATOR WRITES UPWARD.** The workflow template gains a `consolidate` stage that the
-conductor runs once at `RunStarted`, after spec 107's archive and before the first implement
+conductor runs once at `RunStarted`, after spec 114's archive and before the first implement
 wave, with a `consolidator` persona in `.rigger/agents/`. Its input is the durable decisions,
 lessons and upheld findings that are live and older than the current run, grouped by the
 concept each governed file realizes (`REL_REALIZES`, spec 54) and, for files outside every
