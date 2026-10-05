@@ -231,7 +231,9 @@ impl Drop for StoreFenceCleared {
 /// ([`default_scratch_root`]/[`rigger::worktree::cache_scratch_root_from`]'s own injective
 /// repo-path encoding), so no two tests' scratch state can collide by sharing this root -
 /// true before this change and unaffected by it.
-fn test_cache_home() -> PathBuf {
+///
+/// The cache home every rigger subprocess of the current test resolves.
+pub fn test_cache_home() -> PathBuf {
     thread_local! {
         static HOME: std::cell::RefCell<Option<tempfile::TempDir>> =
             const { std::cell::RefCell::new(None) };
@@ -260,6 +262,15 @@ pub fn default_scratch_root(root: &Path) -> PathBuf {
         None,
     )
     .expect("a non-empty fixture root always resolves a cache-home scratch root")
+}
+
+/// The leaf `spawn_id` would own under `cache_home`'s former `rigger-mutants` root (spec 113
+/// criterion 7 deleted that root): the one spelling of `<cache home>/rigger-mutants/<marker>`
+/// every suite planting a leftover there shares.
+pub fn cache_home_mutants_leaf(cache_home: &Path, spawn_id: &str) -> PathBuf {
+    cache_home
+        .join("rigger-mutants")
+        .join(rigger::liveness::marker_filename(spawn_id).expect("a plantable spawn id"))
 }
 
 /// The `defaults.workdir` value that nests a fixture repo's scratch/worktree DEFAULT back

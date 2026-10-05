@@ -11,7 +11,7 @@
 //! converted call site uses it in), and - closing a gap a `sleep`-only fixture cannot see - that
 //! termination is genuinely SIGKILL rather than a SIGTERM that merely happens to also end a
 //! non-trapping target, mirroring the identical proof `src/reap.rs`'s own periphery suites
-//! (`tests/mutation_scratch_reap_base_guard_periphery.rs` and its two siblings) already run for
+//! (`tests/spawn_scratch_reap_authorized_root_periphery.rs` and its sibling) already run for
 //! the production reaper's SIGKILL escalation stage.
 
 mod common;
@@ -35,7 +35,7 @@ fn spawn_sleeper() -> Child {
 /// Spawn a long-lived process that IGNORES SIGTERM, so only SIGKILL (uncatchable, unblockable)
 /// can end it - a target `sleep` cannot discriminate a correct SIGKILL from a wrong-but-still-
 /// fatal SIGTERM. Mirrors the fixture already established in
-/// `tests/mutation_scratch_reap_base_guard_periphery.rs` and its two siblings, for the same
+/// `tests/spawn_scratch_reap_authorized_root_periphery.rs` and its sibling, for the same
 /// reason: proving the SIGKILL-specific promise, not merely that "some signal" ended the target -
 /// but touches `ready_marker` only AFTER the trap is installed, so the caller can wait for that
 /// mark rather than race the shell's own startup: a signal sent before the trap statement has

@@ -30,8 +30,10 @@ use rigger_domain::{
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{spec, test_cases};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_driver::driver;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_driver::{driver, liveness};
+use rigger_driver::liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_gates_shell::gate;
 #[cfg(any(feature = "store", not(feature = "core")))]

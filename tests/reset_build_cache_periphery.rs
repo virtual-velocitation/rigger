@@ -578,8 +578,7 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
 
 /// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
 /// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
-/// dead spawn's registered scratch (under agent-scratch and under the mutation-scratch root),
-/// and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
+/// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
 /// process still holds (here: an open file descriptor in this test process) and everything
 /// that is not dead footprint (the sweep's mutation anchor).
 #[test]
@@ -587,12 +586,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     let project = temp_store_project();
     let root = project.path();
     let scratch = common::default_scratch_root(root);
-    let cache_home = scratch
-        .parent()
-        .and_then(Path::parent)
-        .expect("the scratch root nests two levels under the cache home")
-        .to_path_buf();
-    let mutation_root = rigger::driver::replay::mutation_scratch_root(&cache_home);
 
     let dead_unit_cache = scratch.join("cargo-target-gone-unit");
     write_file(&dead_unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
@@ -603,8 +596,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
         .join("run-gone")
         .join("spawn-gone");
     write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
-    let dead_mutation_leaf = mutation_root.join("spawn-gone");
-    write_file(&dead_mutation_leaf.join("d"), &[0u8; 100]);
     let unowned = scratch.join("agent-scratch").join("adhoc-target");
     write_file(&unowned.join("CACHEDIR.TAG"), &[0u8; 50]);
     let anchor = scratch.join("mutation-anchor").join("tip");
@@ -623,7 +614,6 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     for (what, dir) in [
         ("the dead per-unit cache", &dead_unit_cache),
         ("the dead agent-scratch spawn leaf", &dead_spawn_leaf),
-        ("the dead mutation-scratch leaf", &dead_mutation_leaf),
         ("the unowned agent scratch", &unowned),
     ] {
         assert!(
@@ -646,6 +636,44 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     assert!(
         anchor.exists(),
         "the mutation anchor is not dead footprint and must survive"
+    );
+}
+
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED): given a dead spawn's
+/// agent-scratch leaf and a leftover leaf of a spawn under the cache home's former
+/// `rigger-mutants` root, when the operator runs `rigger reset --build-cache`, then the dead
+/// agent-scratch leaf is reclaimed and the cache-home leftover is neither removed nor named in
+/// the report.
+#[test]
+fn reset_build_cache_reclaims_dead_agent_scratch_and_never_a_cache_home_leftover() {
+    let project = temp_store_project();
+    let root = project.path();
+    let scratch = common::default_scratch_root(root);
+    let dead_spawn_leaf = scratch
+        .join("agent-scratch")
+        .join("run-gone")
+        .join("spawn-gone");
+    write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
+    let leftover = common::cache_home_mutants_leaf(&common::test_cache_home(), "spawn-gone");
+    write_file(&leftover.join("d"), &[9u8; 100]);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        ok,
+        "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        !dead_spawn_leaf.exists(),
+        "the dead agent-scratch spawn leaf must be reclaimed: {dead_spawn_leaf:?}; stdout {out:?}"
+    );
+    assert_eq!(
+        std::fs::read(leftover.join("d")).ok(),
+        Some(vec![9u8; 100]),
+        "the cache home's former rigger-mutants leaf must survive byte for byte; stdout {out:?}"
+    );
+    assert!(
+        !out.contains("rigger-mutants") && !err.contains("rigger-mutants"),
+        "the report must never name the cache home's former root; stdout {out:?} stderr {err:?}"
     );
 }
 

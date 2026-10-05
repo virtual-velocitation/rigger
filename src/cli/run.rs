@@ -2838,29 +2838,14 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
 
 /// Reclaim the per-spawn scratch dir [`spawn_scratch_path`] assigned spawn `spawn_id`,
 /// resolving the scratch root and run id the SAME way the assignment (the replay driver's
-/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1) -
-/// PLUS every REGISTERED SCRATCH ROOT beyond `agent-scratch` (spec 77, criterion 2):
-/// currently just the SPAWN-scoped mutation-testing scratch dir the seeded persona's `cargo
-/// mutants` invocation points `TMPDIR` at ([`mutation_scratch_path`]). That root is keyed by
-/// the FULL spawn id, never a bare unit or a unit+attempt composite (spec 77 Design "mutation
-/// scratch is spawn-scoped, never unit-scoped"), so THIS reporting spawn's own result reclaims
-/// ONLY its own leaf - exactly like the agent-scratch half two lines above, both deriving from
-/// the identical `spawn_id` this function already has in hand, no extraction needed. A
-/// reviewer spawn (lens/adversary/adjudicator/sdet-author) never populated a mutation-scratch
-/// leaf of its own (only the implementer role ever runs `cargo mutants`), so its own reclaim
-/// call here is a harmless no-op - it was never going to name anything real to begin with.
-///
-/// Full-spawn-id keying is what keeps `speculation_width > 1` safe: each candidate lane is a
-/// DISTINCT spawn ([`crate::spawn::spawn_id`]`(unit, ROLE_IMPLEMENTER, lane)`), so concurrent
-/// lanes of one unit never share a reclaim target - the round-7 review reject found a bare-unit
-/// key let the first lane to report SIGKILL a sibling lane's still-running `cargo mutants`
-/// subprocess out from under it (`sdet-u77c2r7-mutation-scratch-key-collides-across-
-/// speculation-lanes`, `adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result`).
+/// park) did so the reclaim targets the exact path the run created (spec 34, criterion 1).
+/// Only the reporting spawn's own agent scratch is reclaimed: the path is keyed by the FULL
+/// spawn id, so concurrent speculation lanes of one unit never share a reclaim target.
 ///
 /// Entirely best-effort and platform-tolerant: the result already landed durably in
 /// `events.db`, so neither resolving a root nor removing a dir may surface an error that fails
 /// a recorded result, and an already-gone (or never-populated) path is a graceful no-op. A
-/// DEGENERATE id (`spawn_scratch_path`/`mutation_scratch_path` returning `None` -
+/// DEGENERATE id (`spawn_scratch_path` returning `None` -
 /// [`crate::liveness::marker_filename`]'s own doc comment) is likewise a no-op, never a
 /// fabricated path to reap: no fixed placeholder drawn from that function's own reachable
 /// alphabet can ever be proven disjoint from a real id's own mapped output (round-6 review
@@ -2885,9 +2870,7 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 }
 
 /// The reclaim ACTION itself: given an already-resolved `scratch_root`/`run_id`, reap spawn
-/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1) plus its REGISTERED
-/// mutation-testing scratch dir (spec 77, criterion 2), if the ambient environment resolves a
-/// cache home to look under (a homeless environment has nothing there to reclaim either).
+/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1).
 ///
 /// The ONE reap authority both production call sites that record a spawn's terminal outcome
 /// converge on, so they can never diverge on what "reclaim a spawn's scratch" means:
@@ -2896,35 +2879,15 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// `scratch_root`/`run_id` from its own `StoreLocation`/prior-events context and delegates
 /// here; `cmd_step`'s liveness-sweep call site delegates here directly for each spawn
 /// [`rigger::liveness::sweep`] just recorded a fault for, using the `scratch_root`/`run_id` it
-/// already resolved for the sweep call itself. Before this second call site existed, a hung
-/// spawn's fault - recorded by the sweep via `spawn_store::record_result_if_absent` DIRECTLY,
-/// in-process, never through `cmd_result` - left its registered mutation-scratch dir
-/// unreclaimed forever unless its owning unit later reached a terminal state (round-2/3 review
-/// reject, spec 77 criterion 2, `adv-u77c2b-liveness-sweep-bypasses-reclaim`): the mechanism
-/// spec 10 exists for (a hung `cargo mutants` implementer) is exactly the workload spec 77's
-/// own Problem statement targets, so this was not a hypothetical corner.
+/// already resolved for the sweep call itself, since the sweep records the fault in-process,
+/// never through `cmd_result`.
 ///
 /// Keyed on the SAME raw `spawn_id` at both call sites - no unit/attempt extraction, so
-/// neither can ever diverge from how `spawn::spawn_id` mints it. Entirely best-effort and
-/// platform-tolerant (see [`reclaim_spawn_scratch`]'s doc comment for the full rationale): a
-/// DEGENERATE id ([`spawn_scratch_path`]/[`mutation_scratch_path`] returning `None`) is a
-/// no-op, never a fabricated path to reap.
+/// neither can ever diverge from how `spawn::spawn_id` mints it. A DEGENERATE id
+/// ([`spawn_scratch_path`] returning `None`) is a no-op, never a fabricated path to reap.
 fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
     if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
         reap_then_remove_dir(&path, Path::new(scratch_root));
-    }
-    if let Some(cache_home) =
-        cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
-    {
-        if let Some(path) = mutation_scratch_path(&cache_home, spawn_id) {
-            // The registered mutation-scratch ROOT (`<cache_home>/rigger-mutants`), NEVER
-            // `scratch_root` - by construction (spec 77 criterion 2) it lives in the user
-            // cache, outside any one run's own scratch tree (spec 78 round 2, decision
-            // `u78c2r2-authorized-root-caller-supplied`: this is the exact call that was an
-            // unconditional no-op before this fix, since it could never canonicalize under
-            // any `<repo>/.rigger/tmp`).
-            reap_then_remove_dir(&path, &mutation_scratch_root(&cache_home));
-        }
     }
 }
 
