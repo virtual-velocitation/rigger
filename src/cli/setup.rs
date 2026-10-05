@@ -2115,13 +2115,20 @@ mod tests {
 
     /// The catalogue lists each set as `<key>: <markers joined by " or ">`, sets joined by `; `;
     /// detection picks the first set in order any of whose markers is a file at the root, and
-    /// writes that set's files when absent, creating their parent directories.
+    /// writes that set's files when absent, creating their parent directories. A set file at a
+    /// path `init_project` writes itself is never written: the scaffold's own rendering wins.
     #[test]
     fn init_project_detects_the_first_matching_set_and_writes_its_files_when_absent() {
         const FIRST: TemplateSet = TemplateSet {
             key: "first",
             set: "detect: [first.marker, both.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n",
-            files: &[("deep/dir/one.sh", "one\n")],
+            files: &[
+                (
+                    ".rigger/workflow.yml",
+                    "stages:\n  stand-in:\n    agent: planner\n",
+                ),
+                ("deep/dir/one.sh", "one\n"),
+            ],
         };
         const SECOND: TemplateSet = TemplateSet {
             key: "second",
@@ -2153,7 +2160,16 @@ mod tests {
             Some("first"),
             "the first set in order wins"
         );
-        assert_eq!(report.new_set_files, ["deep/dir/one.sh"]);
+        assert_eq!(
+            report.new_set_files,
+            ["deep/dir/one.sh"],
+            "a set file at a path init_project writes itself is never written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(both.path().join(RIGGER_DIR).join("workflow.yml")).unwrap(),
+            scaffold_workflow(Some(&parse_template_set(&FIRST).unwrap())),
+            "the workflow on disk is the scaffold's rendering, not the set's stand-in"
+        );
         assert_eq!(
             std::fs::read_to_string(both.path().join("deep/dir/one.sh")).unwrap(),
             "one\n"
