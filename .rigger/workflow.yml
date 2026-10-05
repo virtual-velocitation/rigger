@@ -191,12 +191,7 @@ gates:                      # the project's verification library, referenced by 
   # not committed is named on its own line (the attempt checkpoint commits it), never
   # reported as a failure.
   audit:
-    run: >-
-      RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit > /dev/null 2>&1;
-      cargo test --test simplification_audit ||
-      { echo "error[audit]: the simplification audit is red - close each open duplicate cluster or record why it is not one in docs/audit/duplication-dispositions.json, delete each dead-code ledger entry, and fix each disposition that names no cluster; the failing assertion is above"; exit 1; };
-      if test -n "$(git status --porcelain -- docs/audit)"; then
-      echo "audit: docs/audit was regenerated for this tree and is not committed - commit the regenerated files with the change (drift alone never fails this gate)"; fi
+    run: "sh .rigger/gates/audit.sh"
     kind: core
   # The red-before-green gate (workspace split, step 0): TDD made mechanical. The unit
   # branch's first commit that touches `src/` or `crates/<name>/src/` must be preceded by, or
