@@ -26,6 +26,9 @@ use std::sync::Mutex;
 
 mod common;
 use common::git::temp_git_project_with_commit;
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::gate_token_in;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -925,16 +928,12 @@ fn every_review_spawn_is_forbidden_a_mutation_sweep_without_naming_the_gate_or_i
             "the {role:?} review prompt carries the sweep discipline exactly once; prompt \
              was:\n{prompt}"
         );
-        for banned in [
-            "cargo-mutants",
-            "cargo mutants",
-            "gate:mutation",
-            "\"mutation\"",
-            "check-in gate",
-        ] {
-            assert!(
-                !prompt.contains(banned),
-                "the {role:?} review prompt names {banned:?}; prompt was:\n{prompt}"
+        for line in prompt.lines() {
+            assert_eq!(
+                gate_token_in(line),
+                None,
+                "the {role:?} review prompt names a gate or its tool on {line:?}; prompt \
+                 was:\n{prompt}"
             );
         }
     }

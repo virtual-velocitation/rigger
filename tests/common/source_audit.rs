@@ -3,10 +3,10 @@
 //! writer both prove detection with, and the real-tree assertion both close on. Included by
 //! each suite through `#[path]`, never through `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
-//! and which function encloses a line. And the one Rust lexer `tests/simplification_audit.rs`
-//! scans by and rule 4 of `tests/boundary_audit.rs` finds string text with: identifier,
-//! string, char-literal and block-comment skipping. Each suite uses the subset it needs (hence the
-//! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
+//! and which function encloses a line. And the one Rust lexer, [`tokenize`], that
+//! `tests/simplification_audit.rs` scans by and rule 4 of `tests/boundary_audit.rs` finds string
+//! literals with. Each suite uses the subset it needs (hence the module-wide `dead_code`
+//! allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -358,4 +358,188 @@ pub fn skip_block_comment(chars: &[char], i: &mut usize) -> usize {
         *i += 1;
     }
     lines
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawKind {
+    Keyword,
+    Ident,
+    Lifetime,
+    Lit,
+    Punct,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawTok {
+    pub kind: RawKind,
+    pub text: String,
+    /// 1-based line the token STARTS on, within whatever `chars` slice was tokenized.
+    pub line: usize,
+}
+
+/// What no line of any file under `src/` or `crates/` may hold, case-sensitively (rule 4 of
+/// `tests/boundary_audit.rs`): the one gate id the core once knew, spelled as a string literal or
+/// a concept id, its script, its scratch root and its tool. A token split across literals or
+/// built at run time to pass is not a removal.
+pub const GATE_TOKENS: &[&str] = &[
+    "cargo-mutants",
+    "cargo mutants",
+    "mutation.sh",
+    "rigger-mutants",
+    "MUTATION_GATE_ID",
+    "\"mutation\"",
+    "gate:mutation",
+];
+
+/// The tool's environment word, banned only as a whole word: `$MUTANTS` is a hit,
+/// `UNIT_MUTANTS_PREFIX` is not.
+pub const GATE_WORD: &str = "MUTANTS";
+
+/// Whether `line` holds `word` with no identifier character (`[A-Za-z0-9_]`) on either side.
+pub fn holds_whole_word(line: &str, word: &str) -> bool {
+    line.match_indices(word).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + word.len()..].chars().next();
+        !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
+    })
+}
+
+/// The rule-4 gate or tool token `line` holds, the first one when it holds several.
+pub fn gate_token_in(line: &str) -> Option<&'static str> {
+    GATE_TOKENS
+        .iter()
+        .copied()
+        .find(|token| line.contains(token))
+        .or_else(|| holds_whole_word(line, GATE_WORD).then_some(GATE_WORD))
+}
+
+/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
+/// verbatim by the simplification audit's normalizer rather than canonicalized like an
+/// identifier, since a keyword is structural signal, not a name.
+pub const RUST_KEYWORDS: &[&str] = &[
+    "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
+    "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
+    "use", "where", "while", "async", "await", "try", "union", "yield", "abstract", "become",
+    "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual",
+];
+
+pub fn is_keyword(s: &str) -> bool {
+    RUST_KEYWORDS.contains(&s)
+}
+
+/// Tokenize `chars` into a normalized-similarity-ready token stream: comments and whitespace
+/// produce no token; a string/byte/raw-string literal or a char literal becomes one `Lit`
+/// token (through [`skip_string_literal`]/[`char_literal_len`], so no lexical state is
+/// re-implemented); a `'`+ident not matched as a char literal is one `Lifetime` token; a digit-led run (plus one optional `.`-fraction) is one `Lit` (number)
+/// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
+/// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
+/// `->` becomes two/three adjacent `Punct` tokens - the simplification audit's mandatory-sweep
+/// matchers account for this).
+pub fn tokenize(chars: &[char]) -> Vec<RawTok> {
+    let n = chars.len();
+    let mut i = 0usize;
+    let mut line = 1usize;
+    let mut out = Vec::new();
+    while i < n {
+        let c = chars[i];
+        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            line += skip_block_comment(chars, &mut i);
+            continue;
+        }
+        if c == '\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if c.is_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let start_line = line;
+        if let Some(consumed_lines) = skip_string_literal(chars, &mut i) {
+            let text: String = chars[start..i].iter().collect();
+            out.push(RawTok {
+                kind: RawKind::Lit,
+                text,
+                line: start_line,
+            });
+            line += consumed_lines;
+            continue;
+        }
+        if c == '\'' {
+            if let Some(len) = char_literal_len(chars, i) {
+                i += len;
+                let text: String = chars[start..i].iter().collect();
+                out.push(RawTok {
+                    kind: RawKind::Lit,
+                    text,
+                    line: start_line,
+                });
+                continue;
+            }
+            i += 1;
+            while i < n && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let text: String = chars[start..i].iter().collect();
+            out.push(RawTok {
+                kind: RawKind::Lifetime,
+                text,
+                line: start_line,
+            });
+            continue;
+        }
+        if c.is_ascii_digit() {
+            i += 1;
+            while i < n && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            if i < n && chars[i] == '.' && i + 1 < n && chars[i + 1].is_ascii_digit() {
+                i += 1;
+                while i < n && is_ident_char(chars[i]) {
+                    i += 1;
+                }
+            }
+            let text: String = chars[start..i].iter().collect();
+            out.push(RawTok {
+                kind: RawKind::Lit,
+                text,
+                line: start_line,
+            });
+            continue;
+        }
+        if is_ident_char(c) {
+            i += 1;
+            while i < n && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let text: String = chars[start..i].iter().collect();
+            let kind = if is_keyword(&text) {
+                RawKind::Keyword
+            } else {
+                RawKind::Ident
+            };
+            out.push(RawTok {
+                kind,
+                text,
+                line: start_line,
+            });
+            continue;
+        }
+        out.push(RawTok {
+            kind: RawKind::Punct,
+            text: c.to_string(),
+            line: start_line,
+        });
+        i += 1;
+    }
+    out
 }

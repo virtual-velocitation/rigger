@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    assert_real_tree_clean, cfg_test_ranges, char_literal_len, enclosing_fn_line, fn_sig_lines,
-    in_ranges, is_ident_char, skip_block_comment, skip_string_literal, write_file, Finding,
+    assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_token_in,
+    holds_whole_word, in_ranges, tokenize, write_file, Finding, RawKind, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -779,82 +779,28 @@ fn principle_lints_carry_no_exemption() {
 // Rule 4: the core names no gate
 // ---------------------------------------------------------------------------------------------
 
-/// What no line of any file under `src/` or `crates/` may hold, case-sensitively: the one gate
-/// id the core once knew, spelled as a string literal or a concept id, its script, its scratch
-/// root and its tool. A token split across literals or built at run time to pass is not a
-/// removal.
-const GATE_TOKENS: &[&str] = &[
-    "cargo-mutants",
-    "cargo mutants",
-    "mutation.sh",
-    "rigger-mutants",
-    "MUTATION_GATE_ID",
-    "\"mutation\"",
-    "gate:mutation",
-];
-
-/// The tool's environment word, banned only as a whole word: `$MUTANTS` is a hit,
-/// `UNIT_MUTANTS_PREFIX` is not.
-const GATE_WORD: &str = "MUTANTS";
-
 /// The gate id as a YAML key, banned on a `.rs` line that begins inside a string literal.
 const GATE_YAML_KEY: &str = "mutation:";
 
-/// Whether `line` holds `word` with no identifier character (`[A-Za-z0-9_]`) on either side.
-fn holds_whole_word(line: &str, word: &str) -> bool {
-    line.match_indices(word).any(|(at, _)| {
-        let before = line[..at].chars().next_back();
-        let after = line[at + word.len()..].chars().next();
-        !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
-    })
-}
-
 /// The 0-based lines of the Rust source `text` that begin inside a string literal an earlier
-/// line opened, found with the one lexer the simplification audit scans by: comments, char
-/// literals and identifiers never open a string.
-fn lines_beginning_inside_a_string(text: &str) -> BTreeSet<usize> {
+/// line opened, read off the one lexer's literal tokens: a literal starting on 1-based line `L`
+/// that crosses `k` newlines makes 1-based lines `L+1..=L+k` begin inside it.
+fn lines_inside_a_literal(text: &str) -> BTreeSet<usize> {
     let chars: Vec<char> = text.chars().collect();
-    let mut inside = BTreeSet::new();
-    let (mut i, mut line) = (0, 0);
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\n' {
-            line += 1;
-            i += 1;
-        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
-            line += skip_block_comment(&chars, &mut i);
-        } else if let Some(crossed) = skip_string_literal(&chars, &mut i) {
-            inside.extend(line + 1..=line + crossed);
-            line += crossed;
-        } else if c == '\'' {
-            i += char_literal_len(&chars, i).unwrap_or(1);
-        } else if is_ident_char(c) {
-            while i < chars.len() && is_ident_char(chars[i]) {
-                i += 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    inside
+    tokenize(&chars)
+        .into_iter()
+        .filter(|tok| tok.kind == RawKind::Lit)
+        .flat_map(|tok| tok.line..tok.line + tok.text.matches('\n').count())
+        .collect()
 }
 
 /// The banned token or form `line` (0-based line `at` of a file) holds, the first one when it
 /// holds several; `in_string` is the file's lines that begin inside a string literal.
 fn gate_token_on(line: &str, at: usize, in_string: &BTreeSet<usize>) -> Option<&'static str> {
-    GATE_TOKENS
-        .iter()
-        .copied()
-        .find(|token| line.contains(token))
-        .or_else(|| holds_whole_word(line, GATE_WORD).then_some(GATE_WORD))
-        .or_else(|| {
-            (in_string.contains(&at) && line.trim_start().starts_with(GATE_YAML_KEY))
-                .then_some(GATE_YAML_KEY)
-        })
+    gate_token_in(line).or_else(|| {
+        (in_string.contains(&at) && line.trim_start().starts_with(GATE_YAML_KEY))
+            .then_some(GATE_YAML_KEY)
+    })
 }
 
 /// Every line under `root`'s `src/` and `crates/` holding a banned gate or tool token, as a
@@ -876,7 +822,7 @@ fn gate_token_lines(root: &Path) -> Vec<Finding> {
         let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
         let text = String::from_utf8_lossy(&bytes);
         let in_string = if path.extension().is_some_and(|ext| ext == "rs") {
-            lines_beginning_inside_a_string(&text)
+            lines_inside_a_literal(&text)
         } else {
             BTreeSet::new()
         };

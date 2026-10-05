@@ -98,7 +98,9 @@ use common::repo::collect_rs_files;
 use common::repo::repo_root;
 #[path = "common/source_audit.rs"]
 mod source_audit;
-use source_audit::{char_literal_len, is_ident_char, skip_block_comment, skip_string_literal};
+use source_audit::{
+    char_literal_len, is_ident_char, skip_string_literal, tokenize, RawKind, RawTok,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -2252,159 +2254,6 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      `marker_under_a_configured_workdir`",
 ];
 
-// -----------------------------------------------------------------------------------------
-// THE TOKENIZER
-// -----------------------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RawKind {
-    Keyword,
-    Ident,
-    Lifetime,
-    Lit,
-    Punct,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RawTok {
-    kind: RawKind,
-    text: String,
-    /// 1-based line the token STARTS on, within whatever `chars` slice was tokenized.
-    line: usize,
-}
-
-/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
-/// verbatim by [`normalize_tokens`] rather than canonicalized like an identifier, since a
-/// keyword is structural signal, not a name.
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
-    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-    "use", "where", "while", "async", "await", "try", "union", "yield", "abstract", "become",
-    "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual",
-];
-
-fn is_keyword(s: &str) -> bool {
-    RUST_KEYWORDS.contains(&s)
-}
-
-/// Tokenize `chars` into a normalized-similarity-ready token stream: comments and whitespace
-/// produce no token; a string/byte/raw-string literal or a char literal becomes one `Lit`
-/// token (reusing [`skip_string_literal`]/[`char_literal_len`] exactly as `scan_file` does, so
-/// no lexical state is re-implemented); a `'`+ident not matched as a char literal is one
-/// `Lifetime` token; a digit-led run (plus one optional `.`-fraction) is one `Lit` (number)
-/// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
-/// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
-/// `->` becomes two/three adjacent `Punct` tokens - the mandatory-sweep matchers below account
-/// for this).
-fn tokenize(chars: &[char]) -> Vec<RawTok> {
-    let n = chars.len();
-    let mut i = 0usize;
-    let mut line = 1usize;
-    let mut out = Vec::new();
-    while i < n {
-        let c = chars[i];
-        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
-            while i < n && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            line += skip_block_comment(chars, &mut i);
-            continue;
-        }
-        if c == '\n' {
-            line += 1;
-            i += 1;
-            continue;
-        }
-        if c.is_whitespace() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let start_line = line;
-        if let Some(consumed_lines) = skip_string_literal(chars, &mut i) {
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lit,
-                text,
-                line: start_line,
-            });
-            line += consumed_lines;
-            continue;
-        }
-        if c == '\'' {
-            if let Some(len) = char_literal_len(chars, i) {
-                i += len;
-                let text: String = chars[start..i].iter().collect();
-                out.push(RawTok {
-                    kind: RawKind::Lit,
-                    text,
-                    line: start_line,
-                });
-                continue;
-            }
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lifetime,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        if c.is_ascii_digit() {
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            if i < n && chars[i] == '.' && i + 1 < n && chars[i + 1].is_ascii_digit() {
-                i += 1;
-                while i < n && is_ident_char(chars[i]) {
-                    i += 1;
-                }
-            }
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lit,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        if is_ident_char(c) {
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let text: String = chars[start..i].iter().collect();
-            let kind = if is_keyword(&text) {
-                RawKind::Keyword
-            } else {
-                RawKind::Ident
-            };
-            out.push(RawTok {
-                kind,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        out.push(RawTok {
-            kind: RawKind::Punct,
-            text: c.to_string(),
-            line: start_line,
-        });
-        i += 1;
-    }
-    out
-}
-
 /// Canonicalize an identifier to its KIND by casing convention (this module's doc comment):
 /// `SCREAMING_SNAKE`/`ALLCAPS` (every letter uppercase, at least one letter present) -> `CONST`;
 /// leads with an uppercase letter -> `TYPE`; anything else -> `IDENT`.
@@ -3339,8 +3188,8 @@ fn find_same_named_helper_functions(files: &[FileScan], refs: &[FnRef]) -> Vec<D
     clusters
 }
 
-/// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and
-/// token-level lexer (`tokenize`) alongside the codebase's ONE canonical tree-sitter-based
+/// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and the
+/// source audits' shared token-level lexer (`tests/common/source_audit.rs::tokenize`) alongside the codebase's ONE canonical tree-sitter-based
 /// extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc calls it "the ONE
 /// function that touches tree-sitter", architecture 5.5.3) - a fourth semantic cluster, added
 /// per the adjudicator's REMEDY after u85c1's architecture lens routed this exact pair to this
@@ -3356,8 +3205,9 @@ fn find_bespoke_lexer_vs_canonical_extractor(files: &[FileScan], refs: &[FnRef])
     let mut hits = Vec::new();
     for r in refs {
         let sf = r.scanned(files);
-        let is_bespoke_lexer = sf.file == "tests/simplification_audit.rs"
-            && matches!(sf.name.as_str(), "scan_file" | "tokenize");
+        let is_bespoke_lexer = (sf.file == "tests/simplification_audit.rs"
+            && sf.name == "scan_file")
+            || (sf.file == "tests/common/source_audit.rs" && sf.name == "tokenize");
         let is_canonical_extractor = sf.file
             == "crates/rigger-grounder/src/grounder/symbols/extract.rs"
             && sf.name == "extract";
@@ -8985,19 +8835,28 @@ mod tests {
             &[
                 (
                     "tests/simplification_audit.rs",
-                    "fn scan_file() {}\nfn tokenize() {}\nfn unrelated() {}\n",
+                    "fn scan_file() {}\nfn unrelated() {}\n",
                 ),
+                ("tests/common/source_audit.rs", "pub fn tokenize() {}\n"),
                 ("crates/rigger-grounder/src/grounder/symbols/extract.rs", "pub fn extract() {}\n"),
             ],
             find_bespoke_lexer_vs_canonical_extractor,
             &["scan_file", "tokenize", "extract"],
         );
+        bespoke_lexer_sweep_finds_neither_lexer_name_in_the_other_lexer_file: assert_sweep_finds(
+            &[
+                ("tests/simplification_audit.rs", "fn tokenize() {}\n"),
+                ("tests/common/source_audit.rs", "pub fn scan_file() {}\n"),
+            ],
+            find_bespoke_lexer_vs_canonical_extractor,
+            &[],
+        );
     }
 
     rigger::test_cases! {
         /// The recall gap u85c1's architecture lens routed to this criterion by name across two
-        /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
-        /// file's own bespoke scanner/lexer) and `extract` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
+        /// prior review rounds, verified closed on the REAL tree: `scan_file` (this file's own
+        /// bespoke scanner), `tokenize` (the source audits' shared lexer) and `extract` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
         /// codebase's one canonical tree-sitter extractor) land in one cluster.
         the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster:
             assert_real_cluster_of_holds(
