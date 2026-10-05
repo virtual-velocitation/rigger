@@ -1,11 +1,11 @@
 #!/bin/sh
 # The check-in mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run ONCE by a
 # `checkin` stage that lists it - after every implement unit has integrated - never per
-# implementer round. Declared as `mutation: { run: "sh .rigger/gates/mutation.sh" }` in
-# .rigger/workflow.yml, where no stage runs it until issue #32 lands; the diff-base logic below
-# is what a re-wired `checkin` stage will use. `rigger init` writes this same file into a
-# consumer project (one home: src/cli/setup.rs includes it), whose scaffold `checkin` stage
-# lists a `mutation` gate.
+# implementer round. The Rust gate template set ships this script unwired: `rigger init` writes
+# it beside a root Cargo.toml, and the workflow it writes neither declares nor lists the gate.
+# To run it, declare it as that set's comment shows, its `requires` kept -
+# `mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }`
+# - and list it after `test` in the `checkin` stage's gates.
 #
 # THE GATE ENVIRONMENT. `$RIGGER_GATE_SCRATCH` is the unit's gate scratch root the conductor
 # hands every gate that runs for a unit: the `unit_sibling` of the unit worktree,
@@ -35,7 +35,7 @@
 # phase ended by a signal - its own process, or a compiler under it - means the mutant was
 # never tested: the gate fails as an environment failure naming each such mutant and phase,
 # before the anchor state is promoted, so the next sweep examines them again.
-# The checkin stage's task text carries the survivor-closing protocol: read
+# The survivor-closing protocol for a checkin stage that lists this gate: read
 # mutants.out/outcomes.json, close each missed mutant with a test that fails on it or a
 # rewrite that removes the mutable site, commit, and record the accounting as a DecisionMade.
 #
@@ -105,8 +105,8 @@
 # testcontainers at the operator's rootless podman when no DOCKER_HOST is set. A project
 # without that file sweeps exactly as before.
 #
-# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (the scaffold's
-# does) proves nothing to this gate: the conductor runs every listed gate whatever the earlier
+# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (as the Rust gate
+# template set's comment shows it wired) proves nothing to this gate: the conductor runs every listed gate whatever the earlier
 # ones returned and exports no record of their verdicts to a gate command - so nothing here can
 # confirm the mutated packages are green on this tree. The baseline (cargo-mutants runs it over
 # the mutated packages only: seconds, not minutes) is that confirmation; only the by-name

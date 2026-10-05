@@ -1,0 +1,18 @@
+# The Rust gate template set: rigger init applies it when Cargo.toml is at the project root.
+detect: [Cargo.toml]
+gates: |
+  fmt: { run: "cargo fmt --all --check", kind: core }
+  build: { run: "cargo build --workspace", kind: core }
+  test: { run: "cargo test --workspace", kind: core }
+  lint: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: elevated }
+  # The red-before-green gate: TDD made mechanical. A unit's first source commit must be
+  # preceded by, or carry, a test change (.rigger/gates/red-before-green.sh).
+  red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
+  # The check-in mutation sweep ships unwired as .rigger/gates/mutation.sh (its header explains
+  # each clause). To run it, declare it and list it after test in the checkin stage's gates
+  # (checkin: [fmt, build, test, lint, mutation]):
+  #   mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }
+  # Each requires entry is an executable on PATH: cargo subcommands that cargo install adds live in
+  # $CARGO_HOME/bin, which must be on PATH for requires to see them.
+implement: [fmt, build, test, lint, red-before-green]
+checkin: [fmt, build, test, lint]

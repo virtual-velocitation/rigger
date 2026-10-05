@@ -109,7 +109,8 @@ fn generates_every_set_in_name_order_and_returns_its_watch_paths() {
         ("gates/b.sh", "echo b\n"),
     ]);
     let generated = generate_template_sets(root.path()).expect("a well-formed scaffold/");
-    let include = |rel: &str| format!("include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{rel}\"))");
+    let include =
+        |rel: &str| format!("include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{rel}\"))");
     let expected = format!(
         "const TEMPLATE_SETS: &[TemplateSet] = &[\n    \
          TemplateSet {{\n        key: \"alpha\",\n        set: {},\n        files: &[\n            \

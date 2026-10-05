@@ -97,9 +97,14 @@ struct ScaffoldReport {
     minted_id: Option<String>,
     /// True when this run newly wrote `.rigger/instructions/README.md` (it was absent).
     wrote_instructions_readme: bool,
-    /// Gate scripts this run newly wrote under `.rigger/gates/` (empty when each already
-    /// existed).
-    new_gate_files: Vec<String>,
+    /// The key of the gate template set this project matched, or `None` when no set's
+    /// `detect` marker is a file at the project root.
+    gate_set: Option<String>,
+    /// Every gate template set this run was handed, as `<key>: <markers joined by " or ">`,
+    /// sets joined by `; ` - the parenthetical of the no-set line.
+    set_catalogue: String,
+    /// The matched set's listed paths this run newly wrote (empty when each already existed).
+    new_set_files: Vec<String>,
 }
 
 impl ScaffoldReport {
@@ -113,33 +118,49 @@ impl ScaffoldReport {
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
             || self.wrote_instructions_readme
-            || !self.new_gate_files.is_empty()
+            || !self.new_set_files.is_empty()
     }
 }
 
 /// Scaffold a project idempotently, returning a [`ScaffoldReport`] of what actually
 /// changed. Every step is a no-op when its artifact already exists and matches, so a
 /// rerun on an initialized project changes nothing and reports `changed: false`.
-fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
+///
+/// The workflow's gates come from the first of `sets` (handed in key order: the embedded
+/// [`TEMPLATE_SETS`] in production) any of whose `detect` markers is a file at `root`; with
+/// none, the workflow declares no gates. Every set is parsed before the first write, so a
+/// set that fails [`parse_template_set`] refuses naming its key and writes nothing.
+fn init_project(
+    root: &Path,
+    sets: &[TemplateSet],
+) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
+    let parsed = sets
+        .iter()
+        .map(|set| parse_template_set(set).map(|spec| (set, spec)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let set_catalogue = parsed
+        .iter()
+        .map(|(set, spec)| format!("{}: {}", set.key, spec.detect.join(" or ")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let matched = parsed
+        .iter()
+        .find(|(_, spec)| spec.detect.iter().any(|marker| root.join(marker).is_file()));
+
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
-    let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
+    let wrote_workflow = write_if_absent(
+        &rigger_dir.join("workflow.yml"),
+        &scaffold_workflow(matched.map(|(_, spec)| spec)),
+    )?;
     let instructions_dir = rigger_dir.join("instructions");
     std::fs::create_dir_all(&instructions_dir)?;
     let wrote_instructions_readme = write_if_absent(
         &instructions_dir.join(config_store::INSTRUCTIONS_README),
         SCAFFOLD_INSTRUCTIONS_README,
     )?;
-    let gates_dir = rigger_dir.join("gates");
-    std::fs::create_dir_all(&gates_dir)?;
-    let mut new_gate_files = Vec::new();
-    for (file, content) in SCAFFOLD_GATE_FILES {
-        if write_if_absent(&gates_dir.join(file), content)? {
-            new_gate_files.push(file.to_string());
-        }
-    }
 
     // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
     // `.rigger/project.id` line so the identity survives directory renames and machine
@@ -255,6 +276,19 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         }
     }
 
+    // 5. Write the matched set's files when absent, LAST: after every file this function
+    // writes or merges itself, so its own write wins at a path a set also lists.
+    let mut new_set_files = Vec::new();
+    for (path, content) in matched.map_or(&[][..], |(set, _)| set.files) {
+        let target = root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if write_if_absent(&target, content)? {
+            new_set_files.push(path.to_string());
+        }
+    }
+
     Ok(ScaffoldReport {
         wrote_workflow,
         new_agents,
@@ -263,7 +297,9 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         gitignore_added,
         minted_id,
         wrote_instructions_readme,
-        new_gate_files,
+        gate_set: matched.map(|(set, _)| set.key.to_string()),
+        set_catalogue,
+        new_set_files,
     })
 }
 
@@ -423,13 +459,25 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
         ));
     }
     if report.wrote_workflow {
-        lines.push("scaffolded .rigger/workflow.yml".to_string());
+        match &report.gate_set {
+            Some(key) => lines.push(format!(
+                "scaffolded .rigger/workflow.yml (gate template set: {key})"
+            )),
+            None => {
+                lines.push("scaffolded .rigger/workflow.yml".to_string());
+                lines.push(format!(
+                    "no gate template set matches this project ({} at the project root), so \
+                     .rigger/workflow.yml declares no gates - declare your own under gates:",
+                    report.set_catalogue
+                ));
+            }
+        }
     }
     if report.wrote_instructions_readme {
         lines.push("scaffolded .rigger/instructions/README.md".to_string());
     }
-    for file in &report.new_gate_files {
-        lines.push(format!("scaffolded .rigger/gates/{file}"));
+    for path in &report.new_set_files {
+        lines.push(format!("scaffolded {path}"));
     }
     if !report.new_agents.is_empty() {
         lines.push(format!(
@@ -460,7 +508,7 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 }
 
 pub(crate) fn cmd_init() -> Res {
-    let report = init_project(Path::new("."))?;
+    let report = init_project(Path::new("."), TEMPLATE_SETS)?;
     let lines = scaffold_summary_lines(&report);
     if lines.is_empty() {
         // Re-runnable: an already-initialized project is a silent no-op with a plain
@@ -642,7 +690,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted workflow and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = init_project(root)?;
+    let scaffold = init_project(root, TEMPLATE_SETS)?;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds: the only command that rebuilds it, because it is the verb
     // every install already runs.
@@ -1349,17 +1397,20 @@ These files are part of a run's definition pin: editing one mid-run halts the ne
 as a definition drift. Edit them between runs, or continue with `--rebase-definition`.
 ";
 
-/// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
+/// The scaffolded workflow template (§3.2): a worked plan -> implement pipeline where the
 /// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
 /// (autonomy + grounder + the three-tier `review` panel), a reusable `gates:`
 /// library, and an implement stage that runs each unit's complete lifecycle
-/// (implement -> gates -> three-tier review of THIS unit -> integrate). It loads
-/// through `config::load` against the agents scaffolded alongside it.
+/// (implement -> gates -> three-tier review of THIS unit -> integrate). Its three
+/// placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@` and `@CHECKIN_GATES@` -
+/// are filled by [`scaffold_workflow`] from the matched gate template set; every rendering
+/// loads through `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
-# Replace the gate commands with your own.\n\
+# Its gates come from the gate template set matching this project's language; with\n\
+# none, it declares no gates.\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
@@ -1393,29 +1444,8 @@ adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n
 build:\n  \
 wrapper: auto\n\
 \n\
-gates:                    # a reusable library of commands, referenced by name\n  \
-build: { run: \"echo build ok; true\", kind: core }\n  \
-test:  { run: \"echo test ok; true\",  kind: core }\n  \
-lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
-# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\n  \
-# unit has integrated - never per implementer round. For a Rust project, run the\n  \
-# sweep `rigger init` wrote beside this file: `run: \"sh .rigger/gates/mutation.sh\"`\n  \
-# (diff-scoped, in its own memory-bounded scope; its header explains each clause).\n  \
-mutation: { run: \"echo mutation ok; true\", kind: core }\n\
-# The boundary gate: Clean Architecture made mechanical. Replace with your\n  \
-# project's own check that dependencies point inward and adapters are constructed\n  \
-# only in the composition root (see this crate's tests/boundary_audit.rs for the\n  \
-# worked example). A red boundary gate is non-negotiable: the adjudicator\n  \
-# rejects, never balances it against other evidence.\n  \
-boundary: { run: \"echo boundary ok; true\", kind: core }\n\
-# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\n  \
-# duplication and dead-code check; if it keeps a generated catalog, regenerate it\n  \
-# before asserting so a unit is never red on a stale catalog alone.\n  \
-audit: { run: \"echo audit ok; true\", kind: core }\n\
-# The red-before-green gate: TDD made mechanical. Replace with a check that a\n  \
-# unit's first source commit is preceded by (or carries) a test change (see this\n  \
-# crate's .rigger/gates/red-before-green.sh for the worked example).\n  \
-red-before-green: { run: \"echo red-before-green ok; true\", kind: core }\n\
+# A reusable library of gate commands, referenced by name from the stages below.\n\
+@GATES@\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -1446,7 +1476,7 @@ needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
-gates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\n    \
+gates: @IMPLEMENT_GATES@\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
 coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 \n  \
@@ -1454,30 +1484,89 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 # `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\n  \
 # every unit it expanded into has integrated - never per implementer round, and\n  \
 # never before every unit has landed. Re-verifies the whole gate suite against\n  \
-# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\n  \
-# then integrate or escalate with the accounting already on record.\n  \
+# the merged tree; one remediation round (max_retries: 2), then integrate or\n  \
+# escalate with the accounting already on record.\n  \
 checkin:\n    \
 needs: [implement]\n    \
 agent: rust-engineer\n    \
-max_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\n    \
-gates: [build, audit, test, lint, boundary, mutation]\n    \
+max_retries: 2          # attempt bound: the gates, one remediation round, the gates again\n    \
+gates: @CHECKIN_GATES@\n    \
 on_pass: merge\n    \
-coverage: \"mutation efficacy of the whole spec diff\"\n";
+coverage: \"the whole spec diff passes every gate on the merged tree\"\n";
 
-/// The gate scripts `rigger init` writes into `.rigger/gates/`: this repository's own files,
-/// included verbatim so the gates a consumer runs are the ones this repository runs (one home -
-/// `tests/principle_gates_wiring.rs` pins each identical). The check-in mutation sweep sources
-/// the container runtime snippet from beside itself, so the two ship together.
-const SCAFFOLD_GATE_FILES: &[(&str, &str)] = &[
-    (
-        "mutation.sh",
-        include_str!("../../.rigger/gates/mutation.sh"),
-    ),
-    (
-        "container-env.sh",
-        include_str!("../../.rigger/gates/container-env.sh"),
-    ),
-];
+/// One gate template set as the build script embeds it (`build/template_sets.rs`): its key
+/// (the `scaffold/<key>/` directory name), its `set.yml` text, and each listed file as
+/// `(repository-relative path, bytes)`. The bytes are data `rigger init` copies; nothing here
+/// names a gate.
+struct TemplateSet {
+    key: &'static str,
+    set: &'static str,
+    files: &'static [(&'static str, &'static str)],
+}
+
+// The embedded `TEMPLATE_SETS`, one per `scaffold/<key>/` in key order, generated by build.rs.
+include!(concat!(env!("OUT_DIR"), "/template_sets.rs"));
+
+/// A gate template set's `set.yml`: the marker file names whose presence at the project root
+/// selects it, the text of its `gates:` block (comments kept), and the two stages' gate lists.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSpec {
+    detect: Vec<String>,
+    gates: String,
+    implement: Vec<String>,
+    checkin: Vec<String>,
+}
+
+/// Parse a gate template set: its `set.yml`, then its `gates` text as a mapping whose keys are
+/// the declared gate ids. A `gates` text declaring nothing (empty or comments only) comes back
+/// empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to parse and a
+/// stage list naming a gate id the `gates` text does not declare.
+fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
+    let refuse = |why: String| format!("gate template set {}: {why}", set.key);
+    let mut spec: SetSpec = serde_yaml::from_str(set.set).map_err(|e| refuse(e.to_string()))?;
+    let declared: Option<std::collections::BTreeMap<String, config::Gate>> =
+        serde_yaml::from_str(&spec.gates).map_err(|e| refuse(format!("gates: {e}")))?;
+    let declared = declared.unwrap_or_default();
+    for (stage, ids) in [("implement", &spec.implement), ("checkin", &spec.checkin)] {
+        if let Some(id) = ids.iter().find(|id| !declared.contains_key(*id)) {
+            return Err(refuse(format!(
+                "{stage} lists gate {id}, which its gates text does not declare"
+            )));
+        }
+    }
+    if declared.is_empty() {
+        spec.gates.clear();
+    }
+    Ok(spec)
+}
+
+/// Render [`SCAFFOLD_WORKFLOW`] for `set`: its `gates` text under `gates:`, indented two spaces
+/// (`gates: {}` when it declares nothing), and its two stage lists as YAML flow sequences; with
+/// no set, `gates: {}` and `[]` for both lists.
+fn scaffold_workflow(set: Option<&SetSpec>) -> String {
+    let gates = match set.filter(|spec| !spec.gates.is_empty()) {
+        Some(spec) => {
+            let body: Vec<String> = spec
+                .gates
+                .trim_end()
+                .lines()
+                .map(|line| match line {
+                    "" => String::new(),
+                    _ => format!("  {line}"),
+                })
+                .collect();
+            format!("gates:\n{}", body.join("\n"))
+        }
+        None => "gates: {}".to_string(),
+    };
+    let list =
+        |pick: fn(&SetSpec) -> &[String]| format!("[{}]", set.map_or(&[][..], pick).join(", "));
+    SCAFFOLD_WORKFLOW
+        .replace("@GATES@", &gates)
+        .replace("@IMPLEMENT_GATES@", &list(|spec| &spec.implement))
+        .replace("@CHECKIN_GATES@", &list(|spec| &spec.checkin))
+}
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
@@ -1571,7 +1660,7 @@ You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lens
 against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\
 on design / architecture / ADR adherence: any deviation or cut corner is a reject,\n\
 no matter which side flagged it. When you reject, say exactly what must change.\n\
-A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.\n\
+A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.\n\
 End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
 blocks integration no matter what the static gates say.\n",

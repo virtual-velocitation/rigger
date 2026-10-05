@@ -24,11 +24,19 @@ mod gitsemver;
 #[path = "build/watch.rs"]
 mod watch;
 
+// Spec 113: the gate template sets under `scaffold/` are enumerated by `build/template_sets.rs`,
+// which `tests/template_sets_build.rs` includes too, for the reason `watch` above is its own
+// module. It returns the generated `TEMPLATE_SETS` source and the paths to watch from ONE
+// enumeration; this script enumerates `scaffold/` nowhere itself.
+#[path = "build/template_sets.rs"]
+mod template_sets;
+
 fn main() {
     // Re-run when the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/gitsemver.rs");
     println!("cargo:rerun-if-changed=build/watch.rs");
+    println!("cargo:rerun-if-changed=build/template_sets.rs");
     // The committed go-gitsemver config: an edit changes what FullSemVer derives to.
     println!("cargo:rerun-if-changed=go-gitsemver.yml");
 
@@ -43,6 +51,22 @@ fn main() {
     for path in watch::git_watch_paths(Path::new(".")) {
         println!("cargo:rerun-if-changed={}", path.display());
     }
+
+    // Embed the gate template sets `rigger init` scaffolds from. A broken `scaffold/` fails the
+    // build naming what is wrong: rigger ships at least one set, so an empty catalogue is a
+    // broken tree, never a valid binary.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    let generated = template_sets::generate_template_sets(Path::new(&manifest_dir))
+        .unwrap_or_else(|refusal| panic!("{refusal}"));
+    for path in &generated.watch_paths {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    std::fs::write(
+        Path::new(&out_dir).join("template_sets.rs"),
+        generated.source,
+    )
+    .expect("write the generated template sets");
 
     let provenance = git_provenance().unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=RIGGER_BUILD_PROVENANCE={provenance}");
