@@ -72,6 +72,24 @@ rigger::test_cases! {
         &["gate template set demo", "gates/a.sh", "listed twice"],
         "the refusal names what is wrong",
     );
+    /// One file listed in two spellings that differ only in text is listed twice.
+    refuses_a_path_listed_twice_in_two_spellings: assert_names(
+        &files_refusal("gates/a.sh\ngates//a.sh\n"),
+        &["gate template set demo", "gates//a.sh", "listed twice"],
+        "the refusal names what is wrong",
+    );
+    /// A path listed beside its `./` spelling is refused naming the set and the path.
+    refuses_a_path_listed_beside_its_dot_spelling: assert_names(
+        &files_refusal("gates/a.sh\n./gates/a.sh\n"),
+        &["gate template set demo", "./gates/a.sh"],
+        "the refusal names what is wrong",
+    );
+    /// A listed path holding a `.` segment is refused naming the set and the path.
+    refuses_a_dot_listed_path: assert_names(
+        &files_refusal("./gates/a.sh\n"),
+        &["gate template set demo", "./gates/a.sh", "holds a . segment"],
+        "the refusal names what is wrong",
+    );
     /// A set directory missing `set.yml` is refused naming the set.
     refuses_a_set_missing_set_yml: assert_names(
         &refusal(&[("scaffold/demo/files", "")]),
