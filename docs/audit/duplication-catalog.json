@@ -609,7 +609,7 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "mutants_dirs",
+        "name": "gate_scratches",
         "content_hash": "70ce2252aa7ca16c"
       },
       {

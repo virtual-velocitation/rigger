@@ -105,6 +105,8 @@ Review is per unit, not a downstream stage. Each unit runs its own complete cycl
 
 Consequence worth knowing: units run as overlapping pipelines, so an earlier unit's review can complete while a later unit is still building. Progress displays group by per-unit phase labels (`u3:Build`, `u3:Review`) precisely so this does not read as stages running out of order.
 
+Every gate that runs for a unit gets `RIGGER_GATE_SCRATCH`, a directory beside the unit's worktree that the unit's gates share and no other unit's gate sees; a gate creates it when it needs one and touches only the names it created there.
+
 ### The check-in mutation sweep: bounds, scope and budget
 
 The `mutation` gate is `cargo mutants` over the whole spec diff, run once by a `checkin` stage that lists it, after every implement unit has integrated: one remediation round for its survivors, then the sweep again. The scaffold `rigger init` writes lists it in its `checkin` stage; rigger's own workflow declares the gate and ships its script, but no stage runs it until issue #32 lands, and the diff-base logic below is what a re-wired stage will use. Its logic lives in `.rigger/gates/mutation.sh` (`rigger init` writes the same script into your project; point your `mutation` gate at `sh .rigger/gates/mutation.sh` for a Rust workspace). What it guarantees:

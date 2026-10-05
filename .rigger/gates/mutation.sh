@@ -7,9 +7,11 @@
 # consumer project (one home: src/cli/setup.rs includes it), whose scaffold `checkin` stage
 # lists a `mutation` gate.
 #
-# THE GATE ENVIRONMENT. `$MUTANTS` is the unit-keyed mutants root the conductor exports to
-# every gate command (`worktree::unit_mutants_sibling`) and reaps at unit terminus; this script
-# owns creating and wiping it each run. `$RIGGER_RUN_BASE` is the run branch's tip AT THE
+# THE GATE ENVIRONMENT. `$RIGGER_GATE_SCRATCH` is the unit's gate scratch root the conductor
+# hands every gate that runs for a unit: the `unit_sibling` of the unit worktree,
+# `rigger-gate-<slug>`, shared by the unit's gates. This script's first command reads it into
+# `$MUTANTS`, refusing when it is empty or unset, and the script creates and removes there only
+# the names it, or a tool it runs, creates. `$RIGGER_RUN_BASE` is the run branch's tip AT THE
 # MOMENT the run started (`RunStarted.base_tip`) - never a merge base with the run branch: the
 # checkin worktree branches off the run branch after every unit integrated, so a merge base
 # there is already HEAD and would diff nothing. A run with no base tip, or a base tip this
@@ -178,6 +180,7 @@
 # count, the path of the full list in the worktree and in the anchor, and the first three
 # survivors, each shaped `error[...]` so the evidence keeps them.
 
+MUTANTS=${RIGGER_GATE_SCRATCH:?is empty or unset - this gate runs only for a unit}
 test -n "$RIGGER_RUN_BASE" || {
     echo "mutation gate: RIGGER_RUN_BASE is unset - this run recorded no base tip, so there is no spec diff to sweep; refusing rather than sweeping an empty diff"
     exit 1
@@ -223,8 +226,7 @@ changed_binaries() {
     done
 }
 
-last="${MUTANTS:-/nonexistent}"
-last="${last%/*}/mutation-anchor"
+last="${MUTANTS%/*}/mutation-anchor"
 anchor="$(cat "$last/tip" 2>/dev/null || true)"
 # The recorded base alone owns the misses; HEAD holding the tip governs narrowing alone (see
 # INCREMENTAL RE-SWEEPS). A record with no tip leaves `anchor` empty either way, so `since` is
@@ -248,7 +250,7 @@ if { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_B
     exit 1
 fi
 
-rm -rf "${MUTANTS:?}"/rerun "$MUTANTS"/rerun.args "$MUTANTS"/rerun.re "$MUTANTS"/rerun.all "$MUTANTS"/rerun.list "$MUTANTS"/rerun.todo "$MUTANTS"/rerun.diff "$MUTANTS"/last.new "$MUTANTS"/examined.txt "$MUTANTS"/cargo-mutants-* mutants.out mutants.out.old &&
+rm -rf "$MUTANTS"/rerun "$MUTANTS"/rerun.args "$MUTANTS"/rerun.re "$MUTANTS"/rerun.all "$MUTANTS"/rerun.list "$MUTANTS"/rerun.todo "$MUTANTS"/rerun.diff "$MUTANTS"/last.new "$MUTANTS"/examined.txt "$MUTANTS"/cargo-mutants-* mutants.out mutants.out.old &&
     mkdir -p "$MUTANTS/last.new" mutants.out || exit 1
 
 if test -n "$rerun"; then

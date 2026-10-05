@@ -54,16 +54,16 @@ pub use rigger_domain::gate::*;
 /// periphery suite already spawns the product through, so this is handled once there
 /// rather than by each test file remembering it).
 ///
-/// `mutants_dir` (spec 91, THE GATE ENVIRONMENT) mirrors `target_dir` exactly, registered
-/// alongside it: a non-empty value points the `checkin` stage's `mutation` gate at `$MUTANTS`
-/// (`ExecRunner::run` sets the env var of that name), the unit-keyed root the gate command
-/// itself creates/wipes/repopulates each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`) and
-/// [`crate::worktree::reclaim_cache_sibling`] reaps at unit terminus, on the SAME coordinate
-/// as `target_dir`'s own `cargo-target-<slug>` sibling. The CALLER (`conductor::run_gates`)
-/// computes it via `worktree::unit_sibling(dir, UNIT_MUTANTS_PREFIX)` and threads it in, exactly like
-/// `target_dir` itself, so this module still never depends on `worktree`. Empty for anything
-/// that owns no unit-keyed `target_dir` either (mirrors its `None` cases); harmless for a
-/// gate whose command never reads `$MUTANTS`.
+/// `gate_scratch` (spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY) is the unit's gate
+/// scratch root, handed to the gate as [`GATE_SCRATCH_ENV`]: the `rigger-gate-<slug>` sibling
+/// of the unit worktree, a directory the unit's gates share and no other unit's gate sees. The
+/// CALLER (`conductor::run_gates`) computes it via
+/// `worktree::unit_sibling(dir, UNIT_GATE_SCRATCH_PREFIX)` and threads it in, exactly like
+/// `target_dir`, so this module still never depends on `worktree`. Empty for a gate that runs
+/// for no unit (a standalone review worktree, a run with no worktree, the deferred gate), and
+/// then [`ExecRunner::run`] REMOVES the variable from the gate's environment, so no gate ever
+/// inherits a root from the process that runs it. rigger never creates the root; a gate that
+/// uses it does, and touches only the names it created there.
 pub trait Runner: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -71,7 +71,7 @@ pub trait Runner: Send + Sync {
         g: &Gate,
         dir: &str,
         target_dir: &str,
-        mutants_dir: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -521,6 +521,10 @@ pub fn resolve_requirements_on_path(
 /// once, for every current and future courier-spawning call site.
 pub const STORE_FENCE_ENV: &str = "RIGGER_STORE_FENCE_DIR";
 
+/// The env var naming a unit's gate scratch root (spec 113): set on a gate's spawned process
+/// from a non-empty `gate_scratch` and removed from it on an empty one (see [`Runner`]).
+pub const GATE_SCRATCH_ENV: &str = "RIGGER_GATE_SCRATCH";
+
 /// ExecRunner runs a gate as a shell command, reducing output to compact evidence.
 pub struct ExecRunner;
 
@@ -530,7 +534,7 @@ impl Runner for ExecRunner {
         g: &Gate,
         dir: &str,
         target_dir: &str,
-        mutants_dir: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -668,16 +672,15 @@ impl Runner for ExecRunner {
                 cmd.env(STORE_FENCE_ENV, store_fence);
             }
         }
-        // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): registered alongside
-        // `target_dir`'s own `CARGO_TARGET_DIR` above, but as its own independent check
-        // rather than nested inside that branch - a caller that ever passes a non-empty
-        // `mutants_dir` with an empty `target_dir` (not today's shape, but nothing here
-        // should assume otherwise) still gets `$MUTANTS` set. The `checkin` stage's
-        // `mutation` gate command owns creating/wiping/repopulating this dir itself each
-        // run; an empty value (every OTHER gate, and anything with no unit-keyed target
-        // either) injects nothing, exactly like an unconfigured `BuildEnv`.
-        if !mutants_dir.is_empty() {
-            cmd.env("MUTANTS", mutants_dir);
+        // The unit's gate scratch root (spec 113): its own check, independent of
+        // `target_dir`'s branch above. Set from a non-empty `gate_scratch`; on an empty one
+        // REMOVED, never left to inheritance - this repository's own `test` gate runs the
+        // suite with the variable naming the outer unit's root, and an inner gate on a review
+        // worktree or with no worktree must still run without it.
+        if gate_scratch.is_empty() {
+            cmd.env_remove(GATE_SCRATCH_ENV);
+        } else {
+            cmd.env(GATE_SCRATCH_ENV, gate_scratch);
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -1310,10 +1313,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
 
         let handed = "/scratch/rigger-gate-unit-7";
-        let set = run(
-            handed,
-            &format!("test \"${GATE_SCRATCH_ENV}\" = {handed}"),
-        );
+        let set = run(handed, &format!("test \"${GATE_SCRATCH_ENV}\" = {handed}"));
         assert!(
             set.pass,
             "a non-empty gate_scratch must reach the gate as {GATE_SCRATCH_ENV}, over the \

@@ -1584,14 +1584,15 @@ pub fn current_branch(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX and
-// unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX,
+// UNIT_GATE_SCRATCH_PREFIX and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
 // operations) and excluded from `core`. Re-exported so this module's own ~30 call
 // sites are unaffected.
 pub use crate::spawn::{
-    unit_cache_sibling, unit_sibling, UNIT_CACHE_PREFIX, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_sibling, UNIT_CACHE_PREFIX, UNIT_GATE_SCRATCH_PREFIX,
+    UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77

@@ -40,10 +40,10 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
 
 /// The dir named `<prefix><slug>` that is a SIBLING of the unit worktree at `worktree_dir`
 /// (`<root>/rigger-wt-<slug>` -> `<root>/<prefix><slug>`), or `None` for any dir that is
-/// not a unit worktree. The ONE derivation behind [`unit_cache_sibling`] and the per-unit
-/// mutants root (`unit_sibling(dir, UNIT_MUTANTS_PREFIX)`, spec 91: exported to the
-/// `checkin` stage's `mutation` gate command as `$MUTANTS`, mirroring how the cache sibling
-/// is exported as `CARGO_TARGET_DIR`). Pure path arithmetic.
+/// not a unit worktree. The ONE derivation behind [`unit_cache_sibling`] and the per-unit gate
+/// scratch root (`unit_sibling(dir, UNIT_GATE_SCRATCH_PREFIX)`, spec 113: handed to every gate
+/// that runs for the unit as `RIGGER_GATE_SCRATCH`, mirroring how the cache sibling is handed
+/// as `CARGO_TARGET_DIR`). Pure path arithmetic.
 pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
     let path = std::path::Path::new(worktree_dir);
     let slug = path
@@ -59,6 +59,14 @@ pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
 /// exact same sibling shape as [`UNIT_CACHE_PREFIX`]'s `cargo-target-<slug>`. See
 /// [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives here rather than in `worktree`.
 pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
+
+/// Filesystem prefix of a unit's gate scratch root (`rigger-gate-<slug>`), a SIBLING of its
+/// worktree under the scratch root (spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY):
+/// every gate that runs for the unit is handed it as `RIGGER_GATE_SCRATCH`, a directory the
+/// unit's gates share and no other unit's gate sees. rigger never creates it; a gate that uses
+/// it does. See [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives here rather than in
+/// `worktree`.
+pub const UNIT_GATE_SCRATCH_PREFIX: &str = "rigger-gate-";
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
