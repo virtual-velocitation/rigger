@@ -118,8 +118,8 @@
 # (`base`), the tree it examined (`tip`), its misses (`missed.txt`) and, per caught mutant, the
 # test binary whose first failure caught it (`caught.map`, read off the nextest FAIL line in
 # each mutant's log). The anchor lives OUTSIDE `$MUTANTS` because that root is reclaimed with
-# the unit (2026-09-19: an escalation reclaimed five hours of sweep state seconds after the gate
-# wrote it). Misses are the run's own, and the recorded base alone says whose: when it is this
+# the unit's worktree and at a passing post-merge re-gate (2026-09-19: an escalation reclaimed
+# five hours of sweep state seconds after the gate wrote it). Misses are the run's own, and the recorded base alone says whose: when it is this
 # sweep's own `$RIGGER_RUN_BASE` - an earlier sweep of this run, so of this spec - the sweep
 # re-runs every earlier miss by name. Narrowing needs one more fact, HEAD holding the tip: then
 # the sweep covers every mutant in the diff since the tip. An anchor of this run whose tip HEAD

@@ -1584,15 +1584,15 @@ pub fn current_branch(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX,
-// UNIT_GATE_SCRATCH_PREFIX and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
+// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
 // operations) and excluded from `core`. Re-exported so this module's own ~30 call
 // sites are unaffected.
 pub use crate::spawn::{
-    unit_cache_sibling, unit_sibling, UNIT_CACHE_PREFIX, UNIT_GATE_SCRATCH_PREFIX,
-    UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_scratch_slug, unit_sibling, UNIT_CACHE_PREFIX,
+    UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
@@ -1729,17 +1729,25 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
         reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
     }
-    // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): a THIRD sibling of the
-    // unit worktree, on the identical coordinate the cache sibling above already reclaims -
-    // widened here, in the ONE reclaim authority, so every current call site (`Worktree::
-    // remove`'s dominant graceful path, `sweep_terminal`'s crash recovery, and
-    // `reclaim_worktree_on_branch`'s resume-path branch GC) inherits the fix uniformly
-    // rather than each needing its own copy. A no-op for anything that owns no such root
-    // (mirrors `unit_cache_sibling`'s own `None` cases exactly, since both derive from the
-    // same worktree-dir shape).
-    if let Some(mutants) = unit_sibling(worktree_dir, UNIT_MUTANTS_PREFIX) {
-        reap_dir_before_removal(&mutants, authorized_root);
-        let _ = std::fs::remove_dir_all(&mutants);
+    // The unit's gate scratch root (spec 113): a THIRD sibling of the unit worktree, on the
+    // identical coordinate the cache sibling above already reclaims, so every removal path
+    // inherits it from this one authority. A no-op for anything that owns no such root.
+    reclaim_gate_scratch_sibling(worktree_dir, authorized_root);
+}
+
+/// Reclaim the gate scratch root (`rigger-gate-<slug>`) that is a SIBLING of the unit worktree
+/// at `worktree_dir` (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE): reap any process
+/// still rooted in it through [`reap_dir_before_removal`], under the caller's independently
+/// resolved `authorized_root`, then remove it. The one home of that derivation and that
+/// reap-then-remove pair, serving both [`reclaim_cache_sibling`] (the root goes with the unit's
+/// worktree) and the conductor's post-merge reclaim (the root a passing post-merge re-gate was
+/// handed goes at the landing, even when the worktree at that path was already removed). A
+/// no-op for any dir that is not a unit worktree, and for a root already gone. Best-effort: a
+/// failed removal of a throwaway root never fails the caller.
+pub fn reclaim_gate_scratch_sibling(worktree_dir: &str, authorized_root: &str) {
+    if let Some(root) = unit_sibling(worktree_dir, UNIT_GATE_SCRATCH_PREFIX) {
+        reap_dir_before_removal(&root, authorized_root);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

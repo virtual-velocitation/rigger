@@ -9479,6 +9479,12 @@ impl RunCtx<'_> {
         // (unchanged from before this fix) through the post-merge gate suite and staleness
         // marking below.
         let mut lock = self.integrate_mu.lock().unwrap();
+        // The gate scratch root a PASSING post-merge re-gate was handed (spec 113, THE GATE
+        // SCRATCH ROOT HAS ONE LIFECYCLE): the `rigger-gate-<slug>` sibling of
+        // `unit_worktree_dir`'s path, with the scratch root that authorizes its reap. Set only
+        // once that re-gate's outcome passed - whether it ran a gate command or replayed a
+        // recorded verdict - and reclaimed after `integrate_mu` is released below.
+        let mut postmerge_reclaim: Option<(String, String)> = None;
         // The run branch's tip right before THIS call's first landing: a mixed conflict lands
         // twice (the source resolution, then the owed regeneration), so the range that landed
         // starts there, never at the last pass's `pre_merge`. `None` when the call itself
@@ -9816,6 +9822,10 @@ impl RunCtx<'_> {
                     ..Default::default()
                 });
             }
+            // On a speculating unit lane 0's worktree sits at this path and may already have
+            // been removed (an implementer error) before the re-gate ran, so no worktree
+            // removal reclaims what the re-gate left there: this call does.
+            postmerge_reclaim = Some((unit_worktree_dir(&scratch, &st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
         // NOW - once the tree the run branch carries is the verified one - reindex, record the
@@ -9866,6 +9876,14 @@ impl RunCtx<'_> {
         // resume seeding. Computed under the integrate lock so a concurrent integration's
         // staleness view is serialized with the merge it observes.
         let staled = self.mark_stale_downstream(stages, &st.name, &landed);
+        // Released before the reclaim so a sibling landing waiting on the lock never waits on
+        // a reap. Only the gate scratch root goes here: the unit's `cargo-target-<slug>` cache
+        // and store-fence sibling stay for its worktree's removal, so a straggler lens still
+        // working the unit keeps its warm cache.
+        drop(lock);
+        if let Some((unit_dir, scratch)) = postmerge_reclaim {
+            crate::worktree::reclaim_gate_scratch_sibling(&unit_dir, &scratch);
+        }
         Ok(Integration {
             commit,
             staled,
@@ -40122,6 +40140,13 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let status =
             |v: Value| Event::new(ledger::TYPE_UNIT_STATUS, serde_json::to_vec(&v).unwrap());
+        let verdict = |key: String| {
+            Event::new(
+                contextgraph::TYPE_GATE_VERDICT,
+                serde_json::to_vec(&json!({"gate": "g", "pass": true, "evidence": ""})).unwrap(),
+            )
+            .with_meta(META_REPLAY_KEY, &key)
+        };
         seed_events_in_run(
             &st,
             &[],
@@ -40140,15 +40165,10 @@ mod tests {
                     "evidence": {"sha": unit_sha, "pre_merge": base_sha},
                 }))
                 .with_meta(META_REPLAY_KEY, &format!("{unit}/landed#0~0")),
-                Event::new(
-                    contextgraph::TYPE_GATE_VERDICT,
-                    serde_json::to_vec(&json!({"gate": "g", "pass": true, "evidence": ""}))
-                        .unwrap(),
-                )
-                .with_meta(
-                    META_REPLAY_KEY,
-                    &gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g"),
-                ),
+                // Both recorded passing verdicts the resumed step reaches - the exhaustive
+                // integrate door's and the post-merge re-gate's - so it runs no gate at all.
+                verdict(gate_key(GateKey::Verdict, unit, 0, 0, "g")),
+                verdict(gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g")),
             ],
         );
 

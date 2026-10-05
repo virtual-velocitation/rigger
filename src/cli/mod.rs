@@ -3442,8 +3442,8 @@ fn live_slugs(
 /// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
 /// that NO live unit of the current run owns - the ownership backstop that makes the
 /// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
-/// `rigger-wt-<slug>` worktree and a `cargo-target-<slug>` per-unit build cache (Gap 19)
-/// whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
+/// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
+/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
 /// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
 /// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
 /// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
@@ -3528,11 +3528,12 @@ fn reclaim_orphan_scratch(
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
-        } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-            // A per-unit / ad-hoc `cargo-target-<slug>` cache. Mirror the worktree liveness
-            // check on the reconstructed `rigger-wt-<slug>` name so a cache stays in lockstep
-            // with its unit's liveness (a live unit's cache is in use, not residue). A bare
-            // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
+        } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache, or a unit's gate scratch root
+            // (`rigger-gate-<slug>`, spec 113). Mirror the worktree liveness check on the
+            // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
+            // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
+            // `-<slug>` tail) never matches and is spared.
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
                 reap_then_remove_dir(&path, root_path);
@@ -3585,8 +3586,9 @@ fn scan_residue(
                 // A build cache directly under the scratch root - a shared/leftover target
                 // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
                 report.caches.push((name, dir_size_bytes(&entry.path())));
-            } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19). It is reclaimed with
+            } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113). It is reclaimed with
                 // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
                 // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
                 // longer live - a leftover a crash stranded between removing the worktree and
@@ -3678,14 +3680,15 @@ fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
             let name = entry.file_name();
             if ft.is_dir() {
                 let n = name.to_string_lossy();
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) is pruned like the
-                // shared `cargo-target`: it never holds a real `events.db`, and descending a
-                // leaked multi-gigabyte cache would defeat this walk's cheap-beside-a-target
-                // guarantee (adv-u3gap19-shadow-walk-descends-per-unit-caches).
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113) is pruned like the shared `cargo-target`: it
+                // never holds a real `events.db`, and descending a leaked multi-gigabyte cache
+                // would defeat this walk's cheap-beside-a-target guarantee
+                // (adv-u3gap19-shadow-walk-descends-per-unit-caches).
                 let pruned = matches!(
                     n.as_ref(),
                     "target" | "cargo-target" | "node_modules" | ".git"
-                ) || n.starts_with(rigger::worktree::UNIT_CACHE_PREFIX);
+                ) || rigger::worktree::unit_scratch_slug(&n).is_some();
                 if !pruned {
                     stack.push(entry.path());
                 }
@@ -3982,7 +3985,7 @@ const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
-/// `cargo-target-<slug>` per-unit build caches, and the bare `cargo-target`/`target`
+/// `cargo-target-<slug>` per-unit build caches and `rigger-gate-<slug>` gate scratch roots, and the bare `cargo-target`/`target`
 /// SHARED build cache. No liveness decision is made here at all - just a name-prefix sum -
 /// so [`worktree_belongs_to_live`] is never re-derived a second time; the DEAD half of each
 /// category comes from calling [`scan_residue`] itself (see [`scratch_footprint`]), the one
@@ -4003,7 +4006,7 @@ fn scratch_totals(scratch_root: &Path) -> (u64, u64, u64) {
                 wt_total += bytes;
             } else if name == "target" || name == "cargo-target" {
                 build_cache_total += bytes;
-            } else if name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX) {
+            } else if rigger::worktree::unit_scratch_slug(&name).is_some() {
                 cache_total += bytes;
             }
         }
@@ -4041,12 +4044,13 @@ fn scratch_footprint(
     );
     let wt_dead: u64 = residue.worktrees.iter().map(|(_, bytes)| bytes).sum();
     // `residue.caches` conflates the shared cache (bare `cargo-target`/`target`) with
-    // per-unit caches (`cargo-target-<slug>`); only the latter belongs to THIS category -
-    // the shared cache's dead share is decided unconditionally above, not read from here.
+    // per-unit caches (`cargo-target-<slug>`, `rigger-gate-<slug>`); only the latter belong to
+    // THIS category - the shared cache's dead share is decided unconditionally above, not read
+    // from here.
     let dead_caches: Vec<&(String, u64)> = residue
         .caches
         .iter()
-        .filter(|(name, _)| name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX))
+        .filter(|(name, _)| rigger::worktree::unit_scratch_slug(name).is_some())
         .collect();
     (
         FootprintCategory {
