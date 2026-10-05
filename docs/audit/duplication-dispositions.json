@@ -1028,5 +1028,10 @@
     "id": "dup-64eda8b7ffd5",
     "disposition": "not-a-duplicate",
     "reason": "Each is a test-module fixture constructor of a different two-field type (`instructions::Instruction`'s name and body vs `gate::RequirementUnavailable`'s gate and requirement); the shared token shape is one struct literal, and no logic is repeated."
+  },
+  {
+    "id": "dup-8fb3e9b78321",
+    "disposition": "not-a-duplicate",
+    "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
   }
 ]
