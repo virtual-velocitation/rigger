@@ -498,7 +498,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-bbd44f5fffcd",
+    "id": "dup-285c043f6562",
     "classification": "exact",
     "sites": [
       {
@@ -515,9 +515,14 @@
         "file": "tests/cli.rs",
         "name": "sweep_tool_refusal",
         "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/gate_scratch_root_periphery.rs",
+        "name": "recording_gate",
+        "content_hash": "c28c81e0bdeb1759"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, tests/cli.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -1146,7 +1151,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-8faa0b645437",
+    "id": "dup-9a7160a4d920",
     "classification": "semantic",
     "sites": [
       {
@@ -1983,6 +1988,11 @@
         "file": "tests/change_path_revert_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -3198,11 +3208,6 @@
         "file": "tests/common/mod.rs",
         "name": "\"{}/.rigger-test-scratch\"",
         "content_hash": "87085d501bb35f83"
-      },
-      {
-        "file": "tests/common/repo.rs",
-        "name": "\".rigger\"",
-        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "tests/common/workflow_probe.rs",

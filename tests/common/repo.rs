@@ -8,14 +8,6 @@ pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The shipped mutation gate script, `.rigger/gates/mutation.sh`.
-pub fn mutation_gate_script() -> PathBuf {
-    repo_root()
-        .join(".rigger")
-        .join("gates")
-        .join("mutation.sh")
-}
-
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
     let path = repo_root().join(rel);

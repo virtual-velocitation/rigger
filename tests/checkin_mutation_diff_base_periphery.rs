@@ -52,9 +52,17 @@ mod common;
 
 use common::fixtures::write_file;
 use common::git::{commit_files, git_answer, git_commit_all, git_ok, git_out, init_repo};
-use common::repo::{mutation_gate_script, repo_root};
+use common::repo::repo_root;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// The shipped gate script.
+fn gate_script() -> PathBuf {
+    repo_root()
+        .join(".rigger")
+        .join("gates")
+        .join("mutation.sh")
+}
 
 /// The tools the gate script runs besides `cargo` and `systemd-run`.
 const GATE_TOOLS: &[&str] = &[
@@ -128,28 +136,37 @@ impl GateRun {
 }
 
 /// Run the shipped gate in `repo` with `base` as `$RIGGER_RUN_BASE` (unset when `None`), a
-/// meminfo reporting `mem_available_kb`, and the fixture PATH.
+/// meminfo reporting `mem_available_kb`, the fixture PATH plus `env` for the fixture tools, and
+/// a `rigger-gate-checkin` gate scratch root inside a temporary directory of its own.
 fn run_gate(
     repo: &Path,
     base: Option<&str>,
     mem_available_kb: u64,
     with_systemd_run: bool,
+    env: &[(&str, &str)],
 ) -> GateRun {
-    run_gate_with(repo, base, mem_available_kb, with_systemd_run, &[], &[])
+    let scratch = tempfile::tempdir().unwrap();
+    let gate_scratch = scratch.path().join("rigger-gate-checkin");
+    run_gate_with(
+        repo,
+        base,
+        mem_available_kb,
+        with_systemd_run,
+        Some(gate_scratch.to_str().unwrap()),
+        env,
+    )
 }
 
-/// [`run_gate`] with extra environment for the fixture tools, and `unset` removed from the
-/// gate's environment. `RIGGER_GATE_SCRATCH` is always set explicitly - to a `rigger-gate-checkin`
-/// root inside this run's own temporary directory unless `env` names another, or removed when
-/// `unset` names it - and never inherited: this suite itself runs as a gate with the variable
-/// naming a real unit's root, which no fixture run may touch.
+/// [`run_gate`] with `gate_scratch` as `$RIGGER_GATE_SCRATCH` (removed when `None`). The variable
+/// is always set or removed explicitly, never inherited: this suite itself runs as a gate with
+/// the variable naming a real unit's root, which no fixture run may touch.
 fn run_gate_with(
     repo: &Path,
     base: Option<&str>,
     mem_available_kb: u64,
     with_systemd_run: bool,
+    gate_scratch: Option<&str>,
     env: &[(&str, &str)],
-    unset: &[&str],
 ) -> GateRun {
     let work = tempfile::tempdir().unwrap();
     let bin = fixture_bin(work.path(), with_systemd_run);
@@ -162,21 +179,18 @@ fn run_gate_with(
     let cargo_capture = work.path().join("cargo.argv");
     let scope_capture = work.path().join("scope.argv");
     let mut cmd = Command::new("/bin/sh");
-    cmd.arg(mutation_gate_script())
+    cmd.arg(gate_script())
         .current_dir(repo)
         .env("PATH", &bin)
-        .env(
-            "RIGGER_GATE_SCRATCH",
-            work.path().join("scratch").join("rigger-gate-checkin"),
-        )
         .env("RIGGER_MEMINFO", &meminfo)
         .env("RIGGER_ARGV_CAPTURE", &cargo_capture)
         .env("RIGGER_SCOPE_CAPTURE", &scope_capture)
         .env_remove("CARGO_TARGET_DIR")
         .envs(env.iter().copied());
-    for name in unset {
-        cmd.env_remove(name);
-    }
+    match gate_scratch {
+        Some(root) => cmd.env("RIGGER_GATE_SCRATCH", root),
+        None => cmd.env_remove("RIGGER_GATE_SCRATCH"),
+    };
     match base {
         Some(b) => cmd.env("RIGGER_RUN_BASE", b),
         None => cmd.env_remove("RIGGER_RUN_BASE"),
@@ -260,7 +274,7 @@ const FORTY_GIB_KB: u64 = 40 * 1024 * 1024;
 
 #[test]
 fn the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base() {
-    let script = std::fs::read_to_string(mutation_gate_script()).expect("the shipped gate script");
+    let script = std::fs::read_to_string(gate_script()).expect("the shipped gate script");
     assert!(
         script.contains("test -n \"$RIGGER_RUN_BASE\""),
         "the shipped mutation gate must guard on RIGGER_RUN_BASE before diffing"
@@ -297,7 +311,7 @@ fn mutation_gate_diffs_against_rigger_run_base_capturing_the_whole_spec_diff() {
          equal HEAD - the topology a merge-base diff silently sweeps nothing against"
     );
 
-    let run = run_gate(dir, Some(&base_tip), FORTY_GIB_KB, true);
+    let run = run_gate(dir, Some(&base_tip), FORTY_GIB_KB, true, &[]);
     assert!(
         run.passed,
         "the gate must pass on an all-caught sweep: {}",
@@ -326,7 +340,7 @@ fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping
     std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
     git_commit_all(dir, "origin");
 
-    let run = run_gate(dir, None, FORTY_GIB_KB, true);
+    let run = run_gate(dir, None, FORTY_GIB_KB, true, &[]);
     assert_refused_before_anything_ran(dir, &run, "no RIGGER_RUN_BASE, so no spec diff to sweep");
 }
 
@@ -336,23 +350,31 @@ fn mutation_gate_refuses_at_its_root_line_when_no_gate_scratch_root_is_handed() 
     // run with no worktree, where the conductor removes RIGGER_GATE_SCRATCH - it refuses at its
     // first command, with the shell's message naming the variable, before any read or write,
     // even with a valid run base that would otherwise let it sweep.
-    let repo = tempfile::tempdir().unwrap();
-    let base = workspace_repo(repo.path());
-    let run = run_gate_with(
-        repo.path(),
-        Some(&base),
-        FORTY_GIB_KB,
-        true,
-        &[],
-        &["RIGGER_GATE_SCRATCH"],
-    );
-    assert_refused_before_anything_ran(repo.path(), &run, "no RIGGER_GATE_SCRATCH handed");
-    assert!(
-        run.output
-            .contains("RIGGER_GATE_SCRATCH: is empty or unset - this gate runs only for a unit"),
-        "the refusal must name RIGGER_GATE_SCRATCH: {}",
-        run.output
-    );
+    // An empty root refuses there too: the root line's colon is the only guard between an empty
+    // value and the gate's removals and writes at the filesystem root.
+    for (case, gate_scratch) in [
+        ("RIGGER_GATE_SCRATCH removed", None),
+        ("RIGGER_GATE_SCRATCH empty", Some("")),
+    ] {
+        let repo = tempfile::tempdir().unwrap();
+        let base = workspace_repo(repo.path());
+        let run = run_gate_with(
+            repo.path(),
+            Some(&base),
+            FORTY_GIB_KB,
+            true,
+            gate_scratch,
+            &[],
+        );
+        assert_refused_before_anything_ran(repo.path(), &run, case);
+        assert!(
+            run.output.contains(
+                "RIGGER_GATE_SCRATCH: is empty or unset - this gate runs only for a unit"
+            ),
+            "{case}: the refusal must name RIGGER_GATE_SCRATCH: {}",
+            run.output
+        );
+    }
 }
 
 /// Three commits on one line - `origin`, a change to `a.rs`, then a new `b.rs` - returned in
@@ -455,11 +477,14 @@ fn run_gate_over_anchor_with(
         );
     }
     let gate_scratch = scratch.path().join("rigger-gate-checkin");
-    let env: Vec<(&str, &str)> = [("RIGGER_GATE_SCRATCH", gate_scratch.to_str().unwrap())]
-        .into_iter()
-        .chain(env.iter().copied())
-        .collect();
-    let run = run_gate_with(repo, Some(base), FORTY_GIB_KB, true, &env, &[]);
+    let run = run_gate_with(
+        repo,
+        Some(base),
+        FORTY_GIB_KB,
+        true,
+        Some(gate_scratch.to_str().unwrap()),
+        env,
+    );
     (run, scratch)
 }
 
@@ -1046,7 +1071,7 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
             Some(base),
             FORTY_GIB_KB,
             true,
-            &[("RIGGER_GATE_SCRATCH", gate_scratch.to_str().unwrap())],
+            Some(gate_scratch.to_str().unwrap()),
             &[],
         );
         std::fs::remove_dir_all(&gate_scratch).unwrap();
@@ -1122,7 +1147,7 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
 fn the_sweep_mutates_the_workspace_and_tests_only_the_touched_packages_plus_the_root() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true, &[]);
     assert!(run.passed, "{}", run.output);
     let sweep = run.sweep_line();
     assert!(
@@ -1157,7 +1182,7 @@ fn the_sweep_runs_in_its_own_scope_bounded_by_half_of_mem_available() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
 
-    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true, &[]);
     assert!(run.passed, "{}", run.output);
     let bounded = run
         .scope
@@ -1183,14 +1208,14 @@ fn the_sweep_runs_in_its_own_scope_bounded_by_half_of_mem_available() {
     // 20 GiB available: a 10 GiB bound holds two 5 GiB jobs (the measured per-copy figure).
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate(repo.path(), Some(&base), 20 * 1024 * 1024, true);
+    let run = run_gate(repo.path(), Some(&base), 20 * 1024 * 1024, true, &[]);
     assert!(run.passed, "{}", run.output);
     assert!(run.sweep_line().contains("-j 2 "), "{}", run.sweep_line());
 
     // 8 GiB available: a 4 GiB bound holds less than one 5 GiB job, and the floor is one.
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate(repo.path(), Some(&base), 8 * 1024 * 1024, true);
+    let run = run_gate(repo.path(), Some(&base), 8 * 1024 * 1024, true, &[]);
     assert!(run.passed, "{}", run.output);
     assert!(
         run.scope.contains("-p MemoryMax=4194304K "),
@@ -1204,7 +1229,7 @@ fn the_sweep_runs_in_its_own_scope_bounded_by_half_of_mem_available() {
 fn without_systemd_run_the_sweep_runs_unbounded_and_the_gate_says_so() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, false);
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, false, &[]);
     assert!(run.passed, "{}", run.output);
     assert!(
         run.output.contains("advisory") && run.output.contains("WITHOUT its own memory bound"),
@@ -1246,7 +1271,7 @@ fn the_gate_refuses_every_narrowing_token_before_any_sweep() {
             );
         }
         git_commit_all(repo.path(), "unit narrows the sweep");
-        let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+        let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true, &[]);
         assert!(!run.passed, "`{token}` must fail the gate: {}", run.output);
         assert!(
             run.output.contains("the gate owns its instrument"),
@@ -1265,7 +1290,7 @@ fn the_gate_refuses_every_narrowing_token_before_any_sweep() {
 fn the_sweep_scope_lets_the_reaper_end_one_mutant_never_the_whole_sweep() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true);
+    let run = run_gate(repo.path(), Some(&base), FORTY_GIB_KB, true, &[]);
     assert!(run.passed, "{}", run.output);
     let bounded = run
         .scope
@@ -1289,7 +1314,7 @@ fn each_copy_runs_its_share_of_the_cores_so_total_test_fanout_is_constant() {
     ] {
         let repo = tempfile::tempdir().unwrap();
         let base = workspace_repo(repo.path());
-        let run = run_gate(repo.path(), Some(&base), avail_kb, true);
+        let run = run_gate(repo.path(), Some(&base), avail_kb, true, &[]);
         assert!(run.passed, "{}", run.output);
         let threads = (cores / jobs).max(1);
         let sweep = run.sweep_line();
@@ -1309,13 +1334,12 @@ fn each_copy_runs_its_share_of_the_cores_so_total_test_fanout_is_constant() {
 fn a_test_phase_ended_by_a_signal_is_a_detection_like_a_timeout() {
     let repo = tempfile::tempdir().unwrap();
     let base = workspace_repo(repo.path());
-    let run = run_gate_with(
+    let run = run_gate(
         repo.path(),
         Some(&base),
         FORTY_GIB_KB,
         true,
         &[("RIGGER_FIXTURE_ENDED", "test")],
-        &[],
     );
     assert!(
         run.passed,
@@ -1336,13 +1360,12 @@ fn a_build_ended_by_a_signal_fails_the_gate_by_name_as_an_environment_failure() 
     for mode in ["build", "rustc"] {
         let repo = tempfile::tempdir().unwrap();
         let base = workspace_repo(repo.path());
-        let run = run_gate_with(
+        let run = run_gate(
             repo.path(),
             Some(&base),
             FORTY_GIB_KB,
             true,
             &[("RIGGER_FIXTURE_ENDED", mode)],
-            &[],
         );
         assert!(
             !run.passed,

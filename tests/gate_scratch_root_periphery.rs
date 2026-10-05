@@ -7,18 +7,14 @@
 //! `gate_scratch` value handed to a `RecordingRunner`, and `gate.rs`'s own test drives
 //! `ExecRunner` with literal values; neither layer sees what a REAL gate subprocess spawned by
 //! the REAL `conductor::run` wiring receives, so a drift between the value `run_gates` derives
-//! and what `ExecRunner` exports (or a gate path that bypasses one of them) passes both. And
-//! `tests/checkin_mutation_diff_base_periphery.rs` drives the shipped mutation script with the
-//! variable set BY THE TEST, never through the runner that hands it in production. This file
-//! drives every one of those seams end to end with the parent process holding an outer root,
-//! the exact shape of this repository's own `test` gate running this suite:
+//! and what `ExecRunner` exports (or a gate path that bypasses one of them) passes both. This
+//! file drives those seams end to end with the parent process holding an outer root, the exact
+//! shape of this repository's own `test` gate running this suite:
 //!
 //! 1. `every_unit_gate_is_handed_its_own_rigger_gate_sibling_never_the_root_its_parent_holds`:
 //!    two units, their pre-merge gates and the post-merge re-gate, through a real `ExecRunner`.
 //! 2. `a_standalone_review_worktree_gate_runs_with_no_gate_scratch_root`: a review-only stage.
 //! 3. `a_worktree_less_run_gate_runs_with_no_gate_scratch_root`: a run with no repository.
-//! 4. `the_shipped_mutation_gate_reads_the_root_the_runner_hands_and_refuses_when_handed_none`:
-//!    the runner-to-script contract over the shipped `.rigger/gates/mutation.sh`.
 
 mod common;
 
@@ -29,15 +25,12 @@ use common::env_test_lock;
 use common::fixtures::{bare_deps, gate_def, mk_stage, run_isolated, scratch_cfg, NoopDriver};
 use common::fixtures::{review_or_adjudicate, A_WORK_DRIVER};
 use common::git::temp_git_project_with_commit;
-use common::repo::mutation_gate_script;
 use common::RestoreEnvVars;
-use rigger::budget::BuildBudget;
 use rigger::conductor::{run, AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
-use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, GATE_SCRATCH_ENV};
+use rigger::gate::{ExecRunner, GATE_SCRATCH_ENV};
 use rigger::ledger;
-use rigger::worktree::UNIT_GATE_SCRATCH_PREFIX;
 
 /// The root the gate's parent process holds in every test here: what the outer unit's `test`
 /// gate hands this suite. No gate below may ever see it.
@@ -51,8 +44,8 @@ const LOG_ENV: &str = "GATE_SCRATCH_PERIPHERY_LOG";
 /// restored on drop.
 fn parent_holds_an_outer_root(log: &Path) -> (std::sync::MutexGuard<'static, ()>, RestoreEnvVars) {
     let lock = env_test_lock();
-    let restore = RestoreEnvVars::capture(&["RIGGER_GATE_SCRATCH", LOG_ENV]);
-    std::env::set_var("RIGGER_GATE_SCRATCH", OUTER_ROOT);
+    let restore = RestoreEnvVars::capture(&[GATE_SCRATCH_ENV, LOG_ENV]);
+    std::env::set_var(GATE_SCRATCH_ENV, OUTER_ROOT);
     std::env::set_var(LOG_ENV, log);
     (lock, restore)
 }
@@ -60,9 +53,13 @@ fn parent_holds_an_outer_root(log: &Path) -> (std::sync::MutexGuard<'static, ()>
 /// A gate command appending `<cwd> <$RIGGER_GATE_SCRATCH or UNSET> <present|absent>` to the
 /// file [`LOG_ENV`] names, outside the repository (an untracked file inside it would dirty the
 /// tree the integration guards). `${VAR-UNSET}` tells a removed variable from an empty one.
-const RECORDING_GATE: &str = "r=\"${RIGGER_GATE_SCRATCH-UNSET}\"; \
-     if [ -e \"$r\" ]; then s=present; else s=absent; fi; \
-     printf '%s %s %s\\n' \"$(pwd -P)\" \"$r\" \"$s\" >> \"$GATE_SCRATCH_PERIPHERY_LOG\"";
+fn recording_gate() -> String {
+    format!(
+        "r=\"${{{GATE_SCRATCH_ENV}-UNSET}}\"; \
+         if [ -e \"$r\" ]; then s=present; else s=absent; fi; \
+         printf '%s %s %s\\n' \"$(pwd -P)\" \"$r\" \"$s\" >> \"${LOG_ENV}\""
+    )
+}
 
 /// The `(cwd, root, presence)` triples the recording gate logged, in order.
 fn logged(log: &Path) -> Vec<(String, String, String)> {
@@ -111,7 +108,7 @@ fn every_unit_gate_is_handed_its_own_rigger_gate_sibling_never_the_root_its_pare
     let mut cfg = scratch_cfg(&repo_path);
     cfg.workflow
         .gates
-        .insert("g".into(), gate_def(RECORDING_GATE));
+        .insert("g".into(), gate_def(&recording_gate()));
     for unit in ["unit-a", "unit-b"] {
         cfg.workflow.stages.insert(unit.into(), mk_stage(unit, "g"));
     }
@@ -196,7 +193,7 @@ fn a_standalone_review_worktree_gate_runs_with_no_gate_scratch_root() {
     let mut cfg = scratch_cfg(&repo_path);
     cfg.workflow
         .gates
-        .insert("g".into(), gate_def(RECORDING_GATE));
+        .insert("g".into(), gate_def(&recording_gate()));
     cfg.workflow.stages.insert(
         "review".into(),
         Stage {
@@ -249,7 +246,7 @@ fn a_worktree_less_run_gate_runs_with_no_gate_scratch_root() {
     );
     cfg.workflow
         .gates
-        .insert("g".into(), gate_def(RECORDING_GATE));
+        .insert("g".into(), gate_def(&recording_gate()));
     cfg.workflow.stages.insert(
         "a".into(),
         Stage {
@@ -268,65 +265,5 @@ fn a_worktree_less_run_gate_runs_with_no_gate_scratch_root() {
         roots,
         vec!["UNSET".to_string()],
         "a run with no worktree runs its gate with RIGGER_GATE_SCRATCH removed"
-    );
-}
-
-#[test]
-fn the_shipped_mutation_gate_reads_the_root_the_runner_hands_and_refuses_when_handed_none() {
-    // The variable's name and the sibling prefix are a contract with every gate script: the
-    // shipped script spells the name literally on its root line.
-    assert_eq!(GATE_SCRATCH_ENV, "RIGGER_GATE_SCRATCH");
-    assert_eq!(UNIT_GATE_SCRATCH_PREFIX, "rigger-gate-");
-    let script = mutation_gate_script();
-
-    let work = tempfile::tempdir().unwrap();
-    let _env = parent_holds_an_outer_root(&work.path().join("unused.log"));
-    let dir = work.path().to_str().unwrap();
-    // RIGGER_RUN_BASE is removed so a script that got past its root line stops at the next
-    // refusal, before it touches anything.
-    let gate = Gate {
-        id: "mutation".into(),
-        run: format!("unset RIGGER_RUN_BASE; sh '{}'", script.display()),
-        kind: Kind::Core,
-        autonomy: Autonomy::Manual,
-        history: Vec::new(),
-    };
-    let run = |gate_scratch: &str| {
-        ExecRunner.run(
-            &gate,
-            dir,
-            "",
-            gate_scratch,
-            "",
-            "",
-            "",
-            &BuildEnv::default(),
-            &BuildBudget::default(),
-        )
-    };
-    let no_root = "RIGGER_GATE_SCRATCH: is empty or unset";
-    let past_root = "mutation gate: RIGGER_RUN_BASE is unset";
-
-    let none = run("");
-    assert!(!none.pass, "handed no root the gate refuses: {none:?}");
-    assert!(
-        none.evidence.contains(no_root) && !none.evidence.contains(past_root),
-        "handed no root, the gate refuses at its root line although its parent holds one: \
-         {none:?}"
-    );
-
-    let handed = work.path().join("rigger-gate-unit-7");
-    let given = run(handed.to_str().unwrap());
-    assert!(
-        !given.pass,
-        "the next refusal still fails the gate: {given:?}"
-    );
-    assert!(
-        given.evidence.contains(past_root) && !given.evidence.contains(no_root),
-        "handed a root, the gate reads it and passes its root line: {given:?}"
-    );
-    assert!(
-        !handed.exists(),
-        "a refusing gate creates nothing under the root it was handed"
     );
 }

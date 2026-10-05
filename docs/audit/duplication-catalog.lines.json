@@ -450,7 +450,7 @@
     ]
   },
   {
-    "id": "dup-bbd44f5fffcd",
+    "id": "dup-285c043f6562",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -466,6 +466,11 @@
         "file": "tests/cli.rs",
         "start_line": 12337,
         "end_line": 12342
+      },
+      {
+        "file": "tests/gate_scratch_root_periphery.rs",
+        "start_line": 56,
+        "end_line": 62
       }
     ]
   },
@@ -749,13 +754,13 @@
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 67,
-        "end_line": 67
+        "start_line": 75,
+        "end_line": 75
       },
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 164,
-        "end_line": 164
+        "start_line": 181,
+        "end_line": 181
       },
       {
         "file": "tests/ci_lanes.rs",
@@ -874,8 +879,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 346,
-        "end_line": 346
+        "start_line": 338,
+        "end_line": 338
       },
       {
         "file": "tests/common/served.rs",
@@ -1070,7 +1075,7 @@
     ]
   },
   {
-    "id": "dup-8faa0b645437",
+    "id": "dup-9a7160a4d920",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1906,6 +1911,11 @@
         "file": "tests/change_path_revert_periphery.rs",
         "start_line": 82,
         "end_line": 82
+      },
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "start_line": 62,
+        "end_line": 62
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -3121,11 +3131,6 @@
         "file": "tests/common/mod.rs",
         "start_line": 292,
         "end_line": 292
-      },
-      {
-        "file": "tests/common/repo.rs",
-        "start_line": 14,
-        "end_line": 14
       },
       {
         "file": "tests/common/workflow_probe.rs",
