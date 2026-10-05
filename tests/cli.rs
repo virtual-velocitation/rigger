@@ -11939,6 +11939,54 @@ fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the
     );
 }
 
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), as operator-visible
+/// behavior: given a live and an answered spawn, each with agent scratch AND a leftover leaf
+/// of its own id under the cache home's former `rigger-mutants` root, when the operator runs
+/// `rigger validate`, then "registered scratch roots" totals and flags the agent-scratch bytes
+/// alone - the cache-home bytes are neither measured nor offered for reclaim.
+#[test]
+fn validate_measures_registered_scratch_roots_from_agent_scratch_alone_never_the_cache_home() {
+    let live_id = "u-live/implementer#0";
+    let answered_id = "u-answered/implementer#0";
+    let (dir, scratch, cache_home) = footprint_project(&[
+        ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnResult",
+            r#"{"id":"u-answered/implementer#0","output":"done"}"#,
+        ),
+    ]);
+    seed_spawn_scratch(&scratch, "r1", live_id, "x", 40);
+    seed_spawn_scratch(&scratch, "r1", answered_id, "x", 60);
+    for (id, n) in [(live_id, 1_000), (answered_id, 3_000)] {
+        seed_bytes(
+            cache_home
+                .join("rigger-mutants")
+                .join(rigger::liveness::marker_filename(id).unwrap())
+                .join("w"),
+            n,
+        );
+    }
+
+    let err = assert_registered_scratch_roots_dead(
+        dir.path(),
+        (&scratch, &cache_home),
+        (100, 60, 60),
+        "only the answered spawn's agent scratch counts dead; no cache-home byte is measured",
+    );
+    assert!(
+        !err.contains("rigger-mutants"),
+        "no cache-home path may be offered for reclaim; stderr:\n{err}"
+    );
+}
+
 /// Spec 77 criterion 6's own added Done-when clause, over the AGENT SCRATCH IS SPAWN-OWNED
 /// Design bullet's named example: "a top-level ad-hoc dir directly under agent-scratch (no
 /// run/spawn owner) is reported as its own recognized-residue category with a reclaim

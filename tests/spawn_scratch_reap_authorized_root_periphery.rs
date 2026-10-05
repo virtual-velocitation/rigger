@@ -267,3 +267,136 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
          directory"
     );
 }
+
+/// The `agent-scratch` leaf `rigger result` reclaims for `spawn_id` in `project`'s run `r1`.
+fn agent_scratch_leaf(project: &ReapProject, spawn_id: &str) -> std::path::PathBuf {
+    spawn_scratch_path(
+        project.agent_scratch_root().to_str().unwrap(),
+        "r1",
+        spawn_id,
+    )
+    .expect("a well-formed spawn id must encode to a real path")
+}
+
+/// The literal refusal text `is_reapable_base` prints to stderr when it refuses a base - every
+/// assertion below checks it is ABSENT, since a gone-but-under-root target is authorized
+/// silently (spec 89 criterion 3), never refused loudly.
+const REAP_REFUSED_TEXT: &str = "not strictly under";
+
+/// Spec 89 criterion 3 (THE RECLAIM GUARD COMPARES PATHS) through the real per-spawn
+/// `cmd_result` reclaim, on the one root it reclaims: a process still rooted in the spawn's
+/// `agent-scratch` dir after that dir was removed out from under it (a worker's own cleanup
+/// racing the courier that reports its outcome) must still be found and killed, with no
+/// refusal logged - the inside-out `is_reapable_base` tests never reach this caller, the one
+/// that hands the reap a possibly-nonexistent path without checking.
+#[test]
+fn rigger_result_reaps_a_live_process_whose_agent_scratch_dir_was_already_removed_before_the_call()
+{
+    let project = ReapProject::new();
+    let spawn_id = "u-periphery-cli-gone-agent-scratch/implementer#0";
+    let leaf = agent_scratch_leaf(&project, spawn_id);
+    let mut child = live_child_in(&leaf, "agent-scratch", "before it is removed under it");
+
+    std::fs::remove_dir_all(&leaf).expect("remove the leaf out from under the live process");
+
+    let (out, err, ok) = project.result(spawn_id, "done");
+    assert!(
+        ok,
+        "recording the result must succeed even though its agent-scratch dir is already gone; \
+         stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        !err.contains(REAP_REFUSED_TEXT),
+        "a base strictly under the agent-scratch root that no longer exists is already \
+         reclaimed, never a logged refusal; stderr: {err}"
+    );
+    assert_reaped(
+        &mut child,
+        "a process still rooted in an agent-scratch dir removed before `rigger result` ran must \
+         still be found (through the kernel's deleted-cwd suffix) and killed, not left running \
+         because the gone base was refused",
+    );
+}
+
+/// Spec 89 criterion 3's other production instance on the remaining root: a reviewer spawn
+/// that never created its own `agent-scratch` leaf reports through the same reclaim on every
+/// round, and must log no refusal for the leaf that never existed while the run's
+/// `agent-scratch` root does.
+#[test]
+fn rigger_result_logs_no_false_refusal_for_a_reviewers_never_created_agent_scratch_dir() {
+    let project = ReapProject::new();
+    let spawn_id = "u-periphery-cli-reviewer-never-created-agent-scratch/adversary#0";
+    let leaf = agent_scratch_leaf(&project, spawn_id);
+    std::fs::create_dir_all(leaf.parent().unwrap()).unwrap();
+    assert!(
+        !leaf.exists(),
+        "fixture bug: the reviewer's own agent-scratch leaf must never have been created"
+    );
+
+    let (out, err, ok) = project.result(spawn_id, "no blocking findings");
+    assert!(
+        ok,
+        "recording a reviewer's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        !err.contains(REAP_REFUSED_TEXT),
+        "a never-created agent-scratch leaf under the run's root is already reclaimed, never a \
+         logged refusal on every `rigger result`; stderr: {err}"
+    );
+    assert!(
+        leaf.parent().unwrap().is_dir(),
+        "the run's agent-scratch root must survive the reclaim of a leaf that never existed"
+    );
+}
+
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), as operator-visible
+/// behavior: given a spawn with both an `agent-scratch` leaf and a leftover leaf of its own id
+/// under the cache home's former `rigger-mutants` root - each holding a file and a live process -
+/// when `rigger result` records that spawn's outcome, then only the `agent-scratch` leaf is
+/// reclaimed (its process killed, its dir gone) and the cache-home leaf is neither reaped nor
+/// removed: `rigger result` reclaims the reporting spawn's agent scratch and nothing else.
+#[test]
+fn rigger_result_reclaims_only_the_reporting_spawns_agent_scratch_never_a_cache_home_leaf() {
+    let project = ReapProject::new();
+    let spawn_id = "u-periphery-cli-agent-scratch-only/implementer#0";
+    let agent_leaf = agent_scratch_leaf(&project, spawn_id);
+    let cache_home_leaf = project
+        .cache_home
+        .path()
+        .join("rigger-mutants")
+        .join(rigger::liveness::marker_filename(spawn_id).unwrap());
+    let mut agent_child = live_child_in(&agent_leaf, "agent-scratch", "before `rigger result`");
+    let mut cache_home_child = live_child_in(
+        &cache_home_leaf,
+        "cache-home leftover",
+        "before `rigger result`",
+    );
+    std::fs::write(cache_home_leaf.join("keep"), [7u8; 32]).unwrap();
+
+    let (out, err, ok) = project.result(spawn_id, "done");
+    let cache_home_child_alive = matches!(cache_home_child.try_wait(), Ok(None));
+    cleanup(&mut cache_home_child);
+    assert!(
+        ok,
+        "recording the result must succeed; stdout: {out:?} stderr: {err}"
+    );
+    assert_reaped(
+        &mut agent_child,
+        "the reporting spawn's agent-scratch process must be reaped",
+    );
+    assert!(
+        !agent_leaf.exists(),
+        "the reporting spawn's agent-scratch leaf must be removed: {}",
+        agent_leaf.display()
+    );
+    assert!(
+        cache_home_child_alive,
+        "`rigger result` must never reap a process under the cache home's former \
+         rigger-mutants root - it reclaims only agent scratch"
+    );
+    assert_eq!(
+        std::fs::read(cache_home_leaf.join("keep")).unwrap(),
+        vec![7u8; 32],
+        "`rigger result` must never remove the cache home's former rigger-mutants leaf"
+    );
+}
