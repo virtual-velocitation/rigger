@@ -4677,6 +4677,27 @@ fn assert_the_solo_worktree_is_reclaimed(root: &Path, wt_dir: &Path, outcome: &s
     );
 }
 
+/// Plant a leftover leaf of `spawn_id` under the former `rigger-mutants` root of the cache
+/// home every `rigger` subprocess in this test resolves, holding one file; returns the leaf.
+fn plant_cache_home_leftover(spawn_id: &str) -> std::path::PathBuf {
+    let leaf = common::cache_home_mutants_leaf(&common::test_cache_home(), spawn_id);
+    std::fs::create_dir_all(&leaf).unwrap();
+    std::fs::write(leaf.join("keep"), [7u8; 32]).unwrap();
+    leaf
+}
+
+/// The leftover `leaf` [`plant_cache_home_leftover`] planted still holds its file byte for
+/// byte - `when` names the teardown that must not have touched it.
+fn assert_cache_home_leftover_intact(leaf: &Path, when: &str) {
+    assert_eq!(
+        std::fs::read(leaf.join("keep")).ok(),
+        Some(vec![7u8; 32]),
+        "{when} must never read, reap or remove anything under the cache home's former \
+         rigger-mutants root: {}",
+        leaf.display()
+    );
+}
+
 /// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
 /// existing test measures at the real binary boundary. The implementer's own regression
 /// (`a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate`,
@@ -4699,6 +4720,9 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
     // means the unit's own durable worktree is created right here, before the implementer
     // has produced any diff.
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    // Spec 113 criterion 7: a leftover of the spawn under the cache home's former
+    // `rigger-mutants` root, which neither the teardown nor its resume may touch.
+    let leftover = plant_cache_home_leftover("solo/implementer#0");
 
     // Write the implementer's "diff" directly into the worktree it was already handed - the
     // shape a real out-of-process agent takes - then record its result.
@@ -4742,6 +4766,15 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
         .is_none(),
         "a successfully integrated unit's branch must be deleted, not left on disk"
     );
+    assert_cache_home_leftover_intact(&leftover, "the integrate teardown");
+
+    // A later step resumes over the integrated unit (the branch-GC replay half).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""done":true"#),
+        "the resumed step over the integrated unit must converge; stdout: {out:?} stderr: {err}"
+    );
+    assert_cache_home_leftover_intact(&leftover, "the resumed branch-GC over an integrated unit");
 }
 
 /// Spec 64, criterion 2's other half at the real binary boundary - the mirror image of
@@ -4764,6 +4797,9 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
 
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    // Spec 113 criterion 7: a leftover of the spawn under the cache home's former
+    // `rigger-mutants` root, which neither the teardown nor its resume may touch.
+    let leftover = plant_cache_home_leftover("solo/implementer#0");
 
     // The out-of-process courier reports the implementer's result.
     let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
@@ -4795,107 +4831,9 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
         .is_some(),
         "an escalated unit's branch must be RETAINED, not deleted alongside its worktree"
     );
-}
-
-/// Plant a leftover leaf of `spawn_id` under the former `<cache home>/rigger-mutants` root of
-/// the cache home every `rigger` subprocess in this test resolves (the parent two levels up of
-/// the default scratch root, `<cache home>/rigger/<encoded repo>`), holding one file; returns
-/// the leaf.
-fn plant_cache_home_leftover(root: &Path, spawn_id: &str) -> std::path::PathBuf {
-    let cache_home = common::default_scratch_root(root)
-        .parent()
-        .and_then(Path::parent)
-        .expect("the default scratch root nests two levels under the cache home")
-        .to_path_buf();
-    let leaf = cache_home
-        .join("rigger-mutants")
-        .join(rigger::liveness::marker_filename(spawn_id).unwrap());
-    std::fs::create_dir_all(&leaf).unwrap();
-    std::fs::write(leaf.join("keep"), [7u8; 32]).unwrap();
-    leaf
-}
-
-/// The leftover `leaf` [`plant_cache_home_leftover`] planted still holds its file byte for
-/// byte - `when` names the teardown that must not have touched it.
-fn assert_cache_home_leftover_intact(leaf: &Path, when: &str) {
-    assert_eq!(
-        std::fs::read(leaf.join("keep")).ok(),
-        Some(vec![7u8; 32]),
-        "{when} must never read, reap or remove anything under the cache home's former \
-         rigger-mutants root: {}",
-        leaf.display()
-    );
-}
-
-/// Record `solo/implementer#0`'s result straight into the run log, never through `rigger
-/// result`, so that verb's own per-spawn reclaim never runs and only the unit's teardown in the
-/// next step can act on the spawn's scratch.
-fn seed_solo_implementer_result(root: &Path) {
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#0","output":"implemented"}"#,
-        )],
-    );
-}
-
-/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), at the conductor's unit
-/// teardown: given a unit whose implementer spawn has a leftover leaf under the cache home's
-/// former `rigger-mutants` root, when its result is recorded and the unit integrates in a real step (its worktree reclaimed
-/// and branch deleted by `run_stage`'s teardown) and a later step resumes over the integrated
-/// unit (the branch-GC replay half), then the leftover is untouched after both: a unit's
-/// teardown reaps only its worktree, branch and unit siblings.
-#[test]
-fn a_units_integrate_teardown_and_its_resume_never_touch_a_cache_home_leftover_of_its_spawn() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-
-    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
-    let leftover = plant_cache_home_leftover(root, "solo/implementer#0");
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    seed_solo_implementer_result(root);
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the integrating step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""done":true"#) && !out.contains("escalated"),
-        "the unit must integrate cleanly in this step; got: {out:?}"
-    );
-    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "clean integrate");
-    assert_cache_home_leftover_intact(&leftover, "the integrate teardown");
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok && out.contains(r#""done":true"#),
-        "the resumed step over the integrated unit must converge; stdout: {out:?} stderr: {err}"
-    );
-    assert_cache_home_leftover_intact(&leftover, "the resumed branch-GC over an integrated unit");
-}
-
-/// Spec 113 criterion 7, the escalation teardown: given a unit whose implementer spawn has a
-/// leftover leaf under the cache home's former `rigger-mutants` root, when its red gate
-/// exhausts remediation into an escalation (its worktree reclaimed, its branch kept) and a
-/// later step resumes over the escalated unit, then the leftover is untouched after both.
-#[test]
-fn a_units_escalation_teardown_and_its_resume_never_touch_a_cache_home_leftover_of_its_spawn() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
-
-    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
-    let leftover = plant_cache_home_leftover(root, "solo/implementer#0");
-    seed_solo_implementer_result(root);
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok && out.contains(r#""escalated":["solo"]"#),
-        "the red gate must escalate the unit in this step; stdout: {out:?} stderr: {err}"
-    );
-    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "terminal escalation");
     assert_cache_home_leftover_intact(&leftover, "the escalation teardown");
 
+    // A later step resumes over the escalated unit.
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok && out.contains(r#""escalated":["solo"]"#),
@@ -12007,10 +11945,7 @@ fn validate_measures_registered_scratch_roots_from_agent_scratch_alone_never_the
     seed_spawn_scratch(&scratch, "r1", answered_id, "x", 60);
     for (id, n) in [(live_id, 1_000), (answered_id, 3_000)] {
         seed_bytes(
-            cache_home
-                .join("rigger-mutants")
-                .join(rigger::liveness::marker_filename(id).unwrap())
-                .join("w"),
+            common::cache_home_mutants_leaf(&cache_home, id).join("w"),
             n,
         );
     }

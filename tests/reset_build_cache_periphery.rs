@@ -649,17 +649,12 @@ fn reset_build_cache_reclaims_dead_agent_scratch_and_never_a_cache_home_leftover
     let project = temp_store_project();
     let root = project.path();
     let scratch = common::default_scratch_root(root);
-    let cache_home = scratch
-        .parent()
-        .and_then(Path::parent)
-        .expect("the scratch root nests two levels under the cache home")
-        .to_path_buf();
     let dead_spawn_leaf = scratch
         .join("agent-scratch")
         .join("run-gone")
         .join("spawn-gone");
     write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
-    let leftover = cache_home.join("rigger-mutants").join("spawn-gone");
+    let leftover = common::cache_home_mutants_leaf(&common::test_cache_home(), "spawn-gone");
     write_file(&leftover.join("d"), &[9u8; 100]);
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);

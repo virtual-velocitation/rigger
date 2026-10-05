@@ -1,6 +1,6 @@
 //! Periphery test for spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) - the shared
 //! test-only `XDG_CACHE_HOME` every `rigger_courier()` spawn is pinned to
-//! ([`common::test_cache_home`], private to `tests/common/mod.rs`) must not leak the REAL
+//! ([`common::test_cache_home`]) must not leak the REAL
 //! content a subprocess writes into it past the lifetime of the one thing that can reliably
 //! reclaim it.
 //!
