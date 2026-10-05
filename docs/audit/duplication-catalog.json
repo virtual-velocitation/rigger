@@ -692,7 +692,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e12728a3bfbc",
+    "id": "dup-00615ca845fa",
     "classification": "semantic",
     "sites": [
       {
@@ -1073,16 +1073,6 @@
       {
         "file": "tests/principle_gates_wiring.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "Command::new",
         "content_hash": "1f01b7aba566e9fb"
       },
       {
@@ -1147,11 +1137,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 90 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 88 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9a7160a4d920",
+    "id": "dup-4ae070d5d001",
     "classification": "semantic",
     "sites": [
       {
@@ -2003,26 +1993,6 @@
         "file": "tests/ci_lanes.rs",
         "name": "\".rigger/gates/lanes.sh\"",
         "content_hash": "072cce40fb047d0b"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "8c2a719b85aedc62"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml must be valid YAML\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml must declare a `lanes` gate with a `run` command\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\". .rigger/gates/container-env.sh\"",
-        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -2941,46 +2911,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "3faefb01232ee7e0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \\\n         (spec 91): {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \\\n         so drift in the committed workflow fails this suite instead of silently diverging \\\n         from the spec it satisfies: {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"this repository's own .rigger/workflow.yml and agents must load: {e}\"",
-        "content_hash": "5c8bc0fb7d9e9b92"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `checkin` stage (spec 91)\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "\".rigger/gates\"",
         "content_hash": "bfe4eb29b4c56273"
       },
@@ -2988,6 +2918,16 @@
         "file": "tests/cli.rs",
         "name": "\".rigger/gates/{name}\"",
         "content_hash": "452d91e7f980731f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"sh .rigger/gates/content.sh {check} \\\"$RIGGER_RUN_BASE\\\"\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"sh .rigger/gates/content.sh {check}\"",
+        "content_hash": "758d6576075cf475"
       },
       {
         "file": "tests/cli.rs",
@@ -3536,16 +3476,6 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\"sh .rigger/gates/red-before-green.sh\"",
-        "content_hash": "7531401a94f0064f"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/workflow.yml: {missing:#?}\"",
-        "content_hash": "c2ea6b4829cb254f"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
         "name": "\"the scaffolded .rigger/: {missing:#?}\"",
         "content_hash": "c2ea6b4829cb254f"
       },
@@ -3566,11 +3496,6 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\"sh .rigger/gates/mutation.sh\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/{file}\"",
         "content_hash": "dc7684e06683ddb3"
       },
@@ -3578,16 +3503,6 @@
         "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/container-env.sh\"",
         "content_hash": "072cce40fb047d0b"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \\\n         exit 1; fi; cargo test --workspace\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates\"",
-        "content_hash": "090bbeba5641ea09"
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -4081,7 +3996,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 585 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 570 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

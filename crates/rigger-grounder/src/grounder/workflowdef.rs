@@ -561,7 +561,8 @@ run: cargo fmt --check\n";
     #[test]
     fn project_events_reads_this_projects_own_real_workflow_yml() {
         // The strongest proof of THE WHOLE PRODUCT IS COVERED: indexing the REAL, committed
-        // `.rigger/workflow.yml` (not a fixture) yields the Design text's own example triple.
+        // `.rigger/workflow.yml` (not a fixture) yields its stage and agent concepts; its gates are
+        // the operator's to change, so no assertion reads them.
         // `CARGO_MANIFEST_DIR` (not `.`), so this resolves the crate root regardless of the
         // process's own working directory.
         let events = project_events(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
@@ -579,7 +580,6 @@ run: cargo fmt --check\n";
             })
         };
         assert!(has_concept(KIND_STAGE, "stage:implement"));
-        assert!(has_concept(KIND_GATE, "gate:mutation"));
         assert!(has_concept(KIND_AGENT, "agent:rust-engineer"));
     }
 }

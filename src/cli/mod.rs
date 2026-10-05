@@ -12318,13 +12318,10 @@ mod tests {
         /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
         /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
         /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
-        /// template to pin. The mutant accounting contract those tests protected now
-        /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
-        /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
-        /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
-        /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
-        /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
-        /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
+        /// template to pin. The mutant accounting contract those tests protected now lives in
+        /// this persona's prose for when it is spawned as the `checkin` stage, after every
+        /// `implement` unit has already integrated and the `mutation` gate (spec 91 criterion 2)
+        /// has already swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
         /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
         /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
         /// ground non-code files, so no unit can own a Markdown blast radius").

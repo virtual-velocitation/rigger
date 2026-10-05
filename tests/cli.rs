@@ -7,7 +7,6 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
-use rigger::conductor::normalize_ws;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
@@ -24013,158 +24012,15 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     );
 }
 
-/// Spec 91 (THE CHECK-IN STAGE IS DEFINITION, criterion 2): the committed `.rigger/
-/// workflow.yml` must define the `checkin` stage and its `mutation` gate, and must NAME
-/// this spec in the definition's own prose - superseding
-/// `rust_engineer_persona_pins_the_mutation_accounting_contract` (spec 73's persona pin,
-/// retired here per `plan-u91-shared-spec-lint-file-blast-radius`): the kill-or-justify
-/// accounting contract that pin checked now lives in the `checkin` stage's task text
-/// (criterion 3's own new pin on the `rust-engineer` persona), not unconditionally in every
-/// implementer round.
+/// The content script checks the whole spec diff when handed a base and only the branch's own
+/// changes without one. Run with `$RIGGER_RUN_BASE` on a check-in branch cut from the run branch
+/// after an operator commit landed there directly, each check fails on that commit's em dash or
+/// process-ending shell-out, though the check-in branch's own commit is clean. Run with no base on
+/// the very same tree - a unit's shape - it keeps the run branch as its base, judges only the
+/// branch's own clean commit and passes.
 #[test]
-fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91() {
-    let text = normalize_ws(&repo_text(".rigger/workflow.yml"));
-
-    assert!(
-        text.contains("checkin:"),
-        ".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"
-    );
-    assert!(
-        text.contains("mutation:") && text.contains("cargo mutants"),
-        ".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
-         (spec 91): {text:?}"
-    );
-    assert!(
-        text.contains("spec 91"),
-        ".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
-         so drift in the committed workflow fails this suite instead of silently diverging \
-         from the spec it satisfies: {text:?}"
-    );
-}
-
-/// SDET periphery (spec 91 criterion 2, THE CHECK-IN STAGE IS DEFINITION): the STRUCTURAL
-/// counterpart of `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_
-/// to_spec_91` above.
-///
-/// WHAT THE TEXT PIN IS STRUCTURALLY BLIND TO: a substring check on raw YAML text passes
-/// identically whether `checkin:` is wired correctly or is a hollow stub that merely
-/// CONTAINS the right words - `needs: []` instead of `needs: [implement]`, a `max_retries`
-/// of `9` instead of `1`, or a `mutation` gate `run:` string that mentions "cargo mutants"
-/// only inside an adjacent comment and never actually invokes it, would all still satisfy
-/// every substring the sibling test asserts. This test instead LOADS the real committed
-/// file through the production parser (`rigger::config::load`, the exact function `rigger
-/// step`/`rigger validate` use - never a second, hand-rolled YAML read) and asserts on the
-/// resulting TYPED `Stage`/`Gate` structs - the same struct-level shape
-/// `main.rs::tests::scaffold_workflow_...` (grep `checkin.needs`) already proves for the
-/// SCAFFOLD template, mirrored here for the repository's own real, operative definition
-/// that this project's own loop actually runs itself with.
-#[test]
-fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_91_shape() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let cfg = rigger::config_store::load(root).unwrap_or_else(|e| {
-        panic!("this repository's own .rigger/workflow.yml and agents must load: {e}")
-    });
-
-    let checkin = cfg
-        .workflow
-        .stages
-        .get("checkin")
-        .expect(".rigger/workflow.yml must define a `checkin` stage (spec 91)");
-    assert_eq!(
-        checkin.needs,
-        vec!["implement".to_string()],
-        "checkin must need the fan-out `implement` TEMPLATE by name (satisfied once every \
-         unit it expanded into has integrated, per u91c1's generic conductor rule), not a \
-         specific unit: {:?}",
-        checkin.needs
-    );
-    assert_eq!(
-        checkin.max_retries, 2,
-        "checkin overrides the run default with an ATTEMPT bound of 2 - the gates, exactly \
-         one remediation round for the whole spec diff, the gates again; a value of 1 \
-         escalates on the first red gate (spec 91)"
-    );
-    // The `mutation` gate stays declared (asserted below) but is unwired from check-in until
-    // issue #32 lands, so neither the gate list nor the check-in unit's criterion names it.
-    assert!(
-        !checkin.gates.iter().any(|g| g == "mutation"),
-        "checkin must not list the `mutation` gate until issue #32 lands, got: {:?}",
-        checkin.gates
-    );
-    assert!(
-        !checkin.coverage.contains("mutation"),
-        "checkin's coverage is its unit's criterion, so it must not claim a mutation sweep \
-         the stage no longer runs, got: {:?}",
-        checkin.coverage
-    );
-    assert_eq!(
-        checkin.on_pass, "merge",
-        "checkin integrates the whole spec diff on a green gate suite, exactly like every \
-         other stage's on_pass: merge"
-    );
-    assert!(
-        !checkin.agent.is_empty(),
-        "checkin must name a real agent to remediate a red gate"
-    );
-
-    let mutation_gate = cfg
-        .workflow
-        .gates
-        .get("mutation")
-        .expect(".rigger/workflow.yml must define a `mutation` gate (spec 91)");
-    // The gate's command runs the shipped script; the script is what must invoke the sweep.
-    let script_rel = mutation_gate.run.strip_prefix("sh ").unwrap_or_else(|| {
-        panic!(
-            "the mutation gate runs a shipped script: {:?}",
-            mutation_gate.run
-        )
-    });
-    let script = repo_text(script_rel);
-    assert!(
-        script.contains("cargo mutants"),
-        "the mutation gate's script must actually invoke cargo mutants, not merely \
-         mention it in a comment: {script_rel}"
-    );
-    assert!(
-        script.contains("$MUTANTS"),
-        "the mutation gate's script must read the unit-keyed $MUTANTS root the conductor \
-         exports (THE GATE ENVIRONMENT) - never an ambient/shared TMPDIR: {script_rel}"
-    );
-
-    // The real ambient PATH on a correctly-provisioned machine has cargo-mutants installed
-    // (the same precondition every other real-PATH mutation test in this file already
-    // documents) - proving the committed definition does not merely parse, but actually
-    // VALIDATES, closing the loop the text-only pin above cannot: a structurally broken
-    // `checkin`/`mutation` definition could still contain every required substring.
-    assert!(
-        cfg.validate().is_ok(),
-        "this repository's own committed .rigger/workflow.yml must pass Config::validate \
-         on a correctly-provisioned machine (cargo-mutants installed)"
-    );
-}
-
-/// The check-in stage's content gates (the `style` and `no-os-kill` families) check the whole
-/// spec diff from `$RIGGER_RUN_BASE`, the run branch's tip when the run started, which the
-/// conductor exports to every gate. Run on a check-in branch cut from the run branch after an
-/// operator commit landed there directly, each fails on that commit's em dash or process-ending
-/// shell-out, though the check-in branch's own commit is clean. The implement stage's content
-/// gates keep the run branch as their base: on the very same tree - a unit's shape - they judge
-/// only the branch's own clean commit and pass.
-#[test]
-fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_gates_keep_the_run_branch(
-) {
+fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_without_one() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cfg = rigger::config_store::load(root.to_str().unwrap())
-        .unwrap_or_else(|e| panic!("this repository's own workflow must load: {e}"));
-    let content_gates = |stage: &str| -> Vec<(String, String)> {
-        cfg.workflow.stages[stage]
-            .gates
-            .iter()
-            .filter(|id| id.starts_with("style") || id.starts_with("no-os-kill"))
-            .map(|id| (id.clone(), cfg.workflow.gates[id].run.clone()))
-            .collect()
-    };
-
     // The repository's gate scripts sit in the run's base commit, as in every unit worktree.
     let dir = temp_git_project_with_commit();
     let repo = dir.path();
@@ -24213,27 +24069,19 @@ fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_ga
         );
         (out.status.success(), text)
     };
-    let checkin = content_gates("checkin");
-    assert_eq!(
-        checkin.len(),
-        2,
-        "a style and a no-os-kill gate: {checkin:?}"
-    );
-    for (id, run) in &checkin {
-        let (passed, out) = run_gate(run);
+    for check in ["style", "no-os-kill"] {
+        let (passed, out) = run_gate(&format!(
+            "sh .rigger/gates/content.sh {check} \"$RIGGER_RUN_BASE\""
+        ));
         assert!(
             !passed && out.contains("gate FAILED"),
-            "check-in gate `{id}` must find the operator commit's shape in the whole spec diff: \
-             {out}"
+            "`{check}` handed the run base must find the operator commit's shape in the whole \
+             spec diff: {out}"
         );
-    }
-    let unit = content_gates("implement");
-    assert_eq!(unit.len(), 2, "a style and a no-os-kill gate: {unit:?}");
-    for (id, run) in &unit {
-        let (passed, out) = run_gate(run);
+        let (passed, out) = run_gate(&format!("sh .rigger/gates/content.sh {check}"));
         assert!(
             passed,
-            "unit gate `{id}` must judge only the branch's own clean commit: {out}"
+            "`{check}` with no base must judge only the branch's own clean commit: {out}"
         );
     }
 }
