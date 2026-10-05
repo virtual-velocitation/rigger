@@ -8,6 +8,7 @@
 //! by [`spawn_config_args`], and each host's own `build_args` appends it.
 
 use crate::agent::Error;
+use crate::config::AgentDef;
 use crate::hooks;
 
 pub mod claude_code;
@@ -29,6 +30,26 @@ pub(crate) fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> 
     } else {
         configured
     }
+}
+
+/// The `--allowed-tools` pair every headless spawn passes: the tools `agent` is granted
+/// ([`AgentDef::allowed_tools`]: `recurse: false` strips any fan-out tool, runaway-proof by
+/// construction, §3.1, §6), then the helpers' rigger MCP tools ([`hooks::helper_mcp_tools`]),
+/// each name once. The helpers' tools are pre-approved because under `--permission-prompts
+/// none` nothing answers a prompt, so a `lookup` would otherwise be denied every graph call it
+/// makes; the critic's host (`rigger critique`, on the headless host) is the first production
+/// beneficiary, `rigger run`'s cli-host workers the second. Always present, since the helpers
+/// declare their tools.
+pub(crate) fn allowed_tools_args(agent: &AgentDef) -> Result<Vec<String>, Error> {
+    let mut tools = agent.allowed_tools();
+    for tool in hooks::helper_mcp_tools()
+        .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?
+    {
+        if !tools.contains(&tool) {
+            tools.push(tool);
+        }
+    }
+    Ok(vec!["--allowed-tools".to_string(), tools.join(",")])
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming

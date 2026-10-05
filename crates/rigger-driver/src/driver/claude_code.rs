@@ -27,7 +27,7 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
-use crate::driver::{bin_or_path_default, spawn_config_args};
+use crate::driver::{allowed_tools_args, bin_or_path_default, spawn_config_args};
 use crate::eventstore::EventStore;
 use crate::hooks;
 use crate::liveness;
@@ -1203,11 +1203,7 @@ pub fn build_args(
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
     }
-    let tools = agent.allowed_tools();
-    if !tools.is_empty() {
-        args.push("--allowed-tools".to_string());
-        args.push(tools.join(","));
-    }
+    args.extend(allowed_tools_args(agent)?);
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
@@ -1255,7 +1251,10 @@ mod tests {
         assert_eq!(get_val("--system-prompt"), "You implement findings.");
         assert_eq!(get_val("--model"), "sonnet");
         assert_eq!(get_val("--fallback-model"), "haiku");
-        assert_eq!(get_val("--allowed-tools"), "Read,Bash");
+        assert_eq!(
+            get_val("--allowed-tools"),
+            format!("Read,Bash,{}", hooks::helper_mcp_tools().unwrap().join(","))
+        );
         assert_eq!(get_val("--permission-mode"), "default");
         assert_eq!(get_val("--permission-prompts"), "none");
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
@@ -1507,7 +1506,9 @@ mod tests {
         assert!(!args.iter().any(|x| x == "--system-prompt"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));
-        assert!(!args.iter().any(|x| x == "--allowed-tools"));
+        // The helpers' MCP tools are pre-approved even for an agent declaring no tools.
+        let ti = args.iter().position(|x| x == "--allowed-tools").unwrap();
+        assert_eq!(args[ti + 1], hooks::helper_mcp_tools().unwrap().join(","));
         // The always-on flags are still present, the session configuration included.
         assert!(args.iter().any(|x| x == "--settings"));
         assert!(args.iter().any(|x| x == "--agents"));

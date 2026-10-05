@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
-use crate::driver::{bin_or_path_default, spawn_config_args};
+use crate::driver::{allowed_tools_args, bin_or_path_default, spawn_config_args};
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -182,22 +182,7 @@ pub fn build_args(
         args.push("--model".to_string());
         args.push(model);
     }
-    // recurse: false strips any fan-out (Agent/Task) tool so the agent cannot
-    // spawn sub-agents - runaway-proof by construction (§3.1, §6). The helpers' rigger
-    // MCP tools follow, pre-approved: nothing answers a prompt here, so a `lookup` would
-    // otherwise be denied every graph call it makes.
-    let mut tools = agent.allowed_tools();
-    for tool in crate::hooks::helper_mcp_tools().map_err(|e| {
-        Error(format!(
-            "cli driver: compose the spawn's allowed tools: {e}"
-        ))
-    })? {
-        if !tools.contains(&tool) {
-            tools.push(tool);
-        }
-    }
-    args.push("--allowed-tools".to_string());
-    args.push(tools.join(","));
+    args.extend(allowed_tools_args(agent)?);
     args.extend(spawn_config_args(
         rigger_bin,
         &["mcp"],
