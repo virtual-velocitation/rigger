@@ -201,27 +201,26 @@ held means held in this repository's object database and a partial clone starts 
 served by spec 107's one `git cat-file --batch` reader, `worktree::BlobBatch` beside
 `worktree::hash_blob`, one process held for the adapter's life from its first `read` and ended by
 closing its input and waiting, so `read_history` over any number of spans starts one, and answers
-three ways: the bytes, NOT HELD (git prints `<id> missing`) or an error, an object that is not a
-blob included; `list` matching nothing answers no refs, `holds` of no ids answers none and starts no
-process, and the write starts at most three git processes per span. So over a store holding no
-`RunArchived`, which archiving never appends inside no git repository or on KurrentDB, `rigger
-replay` and `rigger stats --all` start no process of the adapter's (`hash-object`, `update-ref`,
-`for-each-ref`, `cat-file`), while `tree_root`'s one `rev-parse` and the git calls `rigger replay`
-makes today stand. Git compresses the blob, so no compression crate is added. Git is the retention
-system: the ref is local until the operator pushes it, and no blob rigger wrote ever loses its last
-ref by rigger's hand. The rebuild (spec 107's `rebuild_owed_graph`) reads no archive, since an
-episodic event changes neither the live projection nor the fold state (spec 107's classes
-criterion), the `applied` rows of archived positions are outside spec 101's comparison surface, and
-an archive delete landing between the rebuild's position read (`read_live_positions`) and its
-selection read (`read_live_selection`) removes only positions whose fold changes no fact, so the
-rebuild needs no lock beyond `graph.db.lock`. BACKEND SCOPE: the sqlite store deletes; the KurrentDB
-adapter answers each of the three archive port methods (`delete_archived` and the two reads below)
-with the port's existing backend error (`Error::Backend`) naming the method, with no new error
-variant; production never reaches them, since the decision skips a store that is not sqlite first,
-and `read_history` calls none of them, so on KurrentDB `rigger replay` and `rigger stats --all`
-answer as today over a store holding no reissued row (criterion 2). Every `EventStore`
-implementation (both adapters, `Namespaced`, `FoldingStore`, the test doubles) gains the three
-methods in criterion 1's unit.
+three ways: the bytes, NOT HELD (git prints `<id> missing`) or an error; `list` matching nothing
+answers no refs, `holds` of no ids answers none and starts no process, and the write starts at most
+three git processes per span. So over a store holding no `RunArchived`, which archiving never
+appends inside no git repository or on KurrentDB, `rigger replay` and `rigger stats --all` start no
+process of the adapter's (`hash-object`, `update-ref`, `for-each-ref`, `cat-file`), while
+`tree_root`'s one `rev-parse` and the git calls `rigger replay` makes today stand. Git compresses
+the blob, so no compression crate is added. Git is the retention system: the ref is local until the
+operator pushes it, and no blob rigger wrote ever loses its last ref by rigger's hand. The rebuild
+(spec 107's `rebuild_owed_graph`) reads no archive, since an episodic event changes neither the live
+projection nor the fold state (spec 107's classes criterion), the `applied` rows of archived
+positions are outside spec 101's comparison surface, and an archive delete landing between the
+rebuild's position read (`read_live_positions`) and its selection read (`read_live_selection`)
+removes only positions whose fold changes no fact, so the rebuild needs no lock beyond
+`graph.db.lock`. BACKEND SCOPE: the sqlite store deletes; the KurrentDB adapter answers each of the
+three archive port methods (`delete_archived` and the two reads below) with the port's existing
+backend error (`Error::Backend`) naming the method, with no new error variant; production never
+reaches them, since the decision skips a store that is not sqlite first, and `read_history` calls
+none of them, so on KurrentDB `rigger replay` and `rigger stats --all` answer as today over a store
+holding no reissued row (criterion 2). Every `EventStore` implementation (both adapters,
+`Namespaced`, `FoldingStore`, the test doubles) gains the three methods in criterion 1's unit.
 
 **FINDING A PENDING SPAN READS THE INDEX, NOT THE BACKLOG.** A span is a range of log POSITIONS:
 from its `RunStarted`'s position up to the next `RunStarted`'s (the prelude: from the stream's start
@@ -646,8 +645,12 @@ the race between the probe's read and the close is today's.
   it in the tests of `kurrentdb.rs`. This criterion OWNS the three `EventStore` methods on every
   implementation (both adapters, `Namespaced`, `FoldingStore`, the test doubles, `ReadCountingStore`
   recording each as its own `CountedRead` variant before forwarding it, as its doc requires of a new
-  port method) and `assert_archive_contract`, and the passages DOCUMENT EDITS gives it; their
-  production callers are criteria 3 and 8's, NOT this one's.
+  port method), the two new reads forwarded in both arms of `delegate_event_store_reads!`
+  (`tests/common/fixtures/events.rs`), which stays a reads macro, and `delete_archived` forwarded by
+  ONE sibling one-arm macro beside it, `delegate_archive_delete!`, which every decorator that only
+  needs to compile invokes next to the reads macro while criterion 3's failing double implements
+  `delete_archived` itself, and `assert_archive_contract`, and the passages DOCUMENT EDITS gives it;
+  their production callers are criteria 3 and 8's, NOT this one's.
 - [ ] a test proves THE ARCHIVE READS BACK: `rigger replay <run>` and `rigger stats --all` print, over a store whose earlier spans are archived, the bytes of standard output they print over that store before archiving,
   over stores the `tests/common/` seeding helper archives, with the archive event standing in the
   current run, the descriptor list opening with the prelude and naming every run in position order,
