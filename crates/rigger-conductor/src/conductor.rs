@@ -39937,9 +39937,12 @@ mod tests {
     /// implementer then finds its work already on its branch and leaves the unit's
     /// `rigger-gate-<slug>` root at `gate_root`, the way a gate that used it would - after every
     /// worktree removal at that path, so no removal can reclaim it. Every review approves.
+    /// `planted` records that lane 1 left the root, so the reclaim assertion cannot pass on a
+    /// root that was never there.
     struct ReplayedGateScratchDriver {
         unit: &'static str,
         gate_root: String,
+        planted: std::sync::atomic::AtomicBool,
     }
     impl AgentDriver for ReplayedGateScratchDriver {
         fn spawn(
@@ -39955,6 +39958,8 @@ mod tests {
             if opts.id == spawn_id(self.unit, ROLE_IMPLEMENTER, 1) {
                 std::fs::create_dir_all(&self.gate_root).unwrap();
                 std::fs::write(Path::new(&self.gate_root).join("rerun.list"), "left\n").unwrap();
+                self.planted
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return Ok(AgentResult::default());
             }
             if opts.id.contains("/adjudicator#") {
@@ -40058,6 +40063,7 @@ mod tests {
         let driver = ReplayedGateScratchDriver {
             unit,
             gate_root: gate_root.clone(),
+            planted: std::sync::atomic::AtomicBool::new(false),
         };
         let deps = Deps {
             repo: repo_path.clone(),
@@ -40079,6 +40085,10 @@ mod tests {
         assert!(
             !log.exists(),
             "the recorded passing post-merge verdict replays - no gate command runs"
+        );
+        assert!(
+            driver.planted.load(std::sync::atomic::Ordering::SeqCst),
+            "premise: lane 1's implementer planted the gate scratch root {gate_root}"
         );
         assert!(
             !Path::new(&gate_root).exists(),
