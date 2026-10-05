@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-78168233f370",
+    "id": "dup-cba99f27fb43",
     "classification": "semantic",
     "sites": [
       {
@@ -3425,6 +3425,76 @@
         "content_hash": "647e8aea340be175"
       },
       {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/workflow.yml (gate template set: rust)\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/workflow.yml\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"no gate template set matches this project (rust: Cargo.toml at the \\\n                           project root), so .rigger/workflow.yml declares no gates - declare \\\n                           your own under gates:\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/red-before-green.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/mutation.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/container-env.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/\"",
+        "content_hash": "9f02411931cf98d2"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "1e9dc47e2f13e14b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"sh .rigger/gates/red-before-green.sh\"",
+        "content_hash": "328b4682e59ef8f5"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "aef4e9374f42f08d"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates/red-before-green.sh\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates/mutation.sh\"",
+        "content_hash": "e07fdfed75a43f83"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/mutation.sh\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\"",
         "content_hash": "6330ce3a5a38ef8d"
@@ -3971,7 +4041,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 565 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 579 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
