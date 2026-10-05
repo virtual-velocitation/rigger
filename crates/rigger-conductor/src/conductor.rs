@@ -39969,17 +39969,7 @@ mod tests {
                     (
                         "mover.txt",
                         Box::new(move || {
-                            std::process::Command::new("git")
-                                .arg("-C")
-                                .arg(&repo)
-                                .args([
-                                    "rev-parse",
-                                    "--verify",
-                                    "--quiet",
-                                    "refs/heads/rigger/u/gsr-spec1",
-                                ])
-                                .output()
-                                .is_ok_and(|o| o.status.success())
+                            branch_present(&repo, &format!("{}-spec1", unit_branch("gsr")))
                         }),
                     )
                 } else {
@@ -40164,7 +40154,7 @@ mod tests {
                     "attempt": 0,
                     "evidence": {"sha": unit_sha, "pre_merge": base_sha},
                 }))
-                .with_meta(META_REPLAY_KEY, &format!("{unit}/landed#0~0")),
+                .with_meta(META_REPLAY_KEY, format!("{unit}/landed#0~0")),
                 // Both recorded passing verdicts the resumed step reaches - the exhaustive
                 // integrate door's and the post-merge re-gate's - so it runs no gate at all.
                 verdict(gate_key(GateKey::Verdict, unit, 0, 0, "g")),
