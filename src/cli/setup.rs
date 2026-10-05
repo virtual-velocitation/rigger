@@ -100,9 +100,9 @@ struct ScaffoldReport {
     /// The key of the gate template set this project matched, or `None` when no set's
     /// `detect` marker is a file at the project root.
     gate_set: Option<String>,
-    /// Every gate template set this run was handed, as `<key>: <markers joined by " or ">`,
-    /// sets joined by `; ` - the parenthetical of the no-set line.
-    set_catalogue: String,
+    /// Every gate template set this run was handed, in catalogue order: its key and its
+    /// `detect` markers - the parenthetical of the no-set line.
+    set_catalogue: Vec<(String, Vec<String>)>,
     /// The matched set's listed paths this run newly wrote (empty when each already existed).
     new_set_files: Vec<String>,
 }
@@ -140,9 +140,8 @@ fn init_project(
         .collect::<Result<Vec<_>, String>>()?;
     let set_catalogue = parsed
         .iter()
-        .map(|(set, spec)| format!("{}: {}", set.key, spec.detect.join(" or ")))
-        .collect::<Vec<_>>()
-        .join("; ");
+        .map(|(set, spec)| (set.key.to_string(), spec.detect.clone()))
+        .collect();
     let matched = parsed
         .iter()
         .find(|(_, spec)| spec.detect.iter().any(|marker| root.join(marker).is_file()));
@@ -465,10 +464,16 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
             )),
             None => {
                 lines.push("scaffolded .rigger/workflow.yml".to_string());
+                let catalogue = report
+                    .set_catalogue
+                    .iter()
+                    .map(|(key, detect)| format!("{key}: {}", detect.join(" or ")))
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 lines.push(format!(
-                    "no gate template set matches this project ({} at the project root), so \
-                     .rigger/workflow.yml declares no gates - declare your own under gates:",
-                    report.set_catalogue
+                    "no gate template set matches this project ({catalogue} at the project \
+                     root), so .rigger/workflow.yml declares no gates - declare your own under \
+                     gates:"
                 ));
             }
         }
@@ -2074,7 +2079,7 @@ mod tests {
         let report = ScaffoldReport {
             wrote_workflow: true,
             gate_set: Some("demo".to_string()),
-            set_catalogue: "demo: a or b".to_string(),
+            set_catalogue: vec![("demo".to_string(), vec!["a".to_string(), "b".to_string()])],
             new_set_files: vec!["x/one.sh".to_string(), "two.sh".to_string()],
             ..ScaffoldReport::default()
         };
@@ -2088,7 +2093,7 @@ mod tests {
         );
         assert!(report.changed());
         let kept = ScaffoldReport {
-            set_catalogue: "demo: a or b".to_string(),
+            set_catalogue: vec![("demo".to_string(), vec!["a".to_string(), "b".to_string()])],
             ..ScaffoldReport::default()
         };
         assert!(scaffold_summary_lines(&kept).is_empty());
@@ -2100,7 +2105,10 @@ mod tests {
         assert!(files_only.changed(), "a written set file is a change");
         let unmatched = ScaffoldReport {
             wrote_workflow: true,
-            set_catalogue: "demo: a or b; other: c".to_string(),
+            set_catalogue: vec![
+                ("demo".to_string(), vec!["a".to_string(), "b".to_string()]),
+                ("other".to_string(), vec!["c".to_string()]),
+            ],
             ..ScaffoldReport::default()
         };
         assert_eq!(
@@ -2113,10 +2121,10 @@ mod tests {
         );
     }
 
-    /// The catalogue lists each set as `<key>: <markers joined by " or ">`, sets joined by `; `;
-    /// detection picks the first set in order any of whose markers is a file at the root, and
-    /// writes that set's files when absent, creating their parent directories. A set file at a
-    /// path `init_project` writes itself is never written: the scaffold's own rendering wins.
+    /// The catalogue carries each set's key and its markers, in order; detection picks the first
+    /// set in order any of whose markers is a file at the root, and writes that set's files when
+    /// absent, creating their parent directories. A set file at a path `init_project` writes
+    /// itself is never written: the scaffold's own rendering wins.
     #[test]
     fn init_project_detects_the_first_matching_set_and_writes_its_files_when_absent() {
         const FIRST: TemplateSet = TemplateSet {
@@ -2143,7 +2151,13 @@ mod tests {
         assert_eq!(report.new_set_files, ["two.sh"]);
         assert_eq!(
             report.set_catalogue,
-            "first: first.marker or both.marker; second: second.marker"
+            [
+                (
+                    "first".to_string(),
+                    vec!["first.marker".to_string(), "both.marker".to_string()]
+                ),
+                ("second".to_string(), vec!["second.marker".to_string()]),
+            ]
         );
         assert_eq!(
             std::fs::read_to_string(only_second.path().join("two.sh")).unwrap(),
