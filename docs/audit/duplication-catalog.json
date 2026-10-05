@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cba99f27fb43",
+    "id": "dup-f3e08cea9216",
     "classification": "semantic",
     "sites": [
       {
@@ -3461,6 +3461,11 @@
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "8d654464c21ca0ee"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
         "name": "\".rigger/workflow.yml\"",
         "content_hash": "1e9dc47e2f13e14b"
       },
@@ -3468,11 +3473,6 @@
         "file": "tests/init_template_sets_periphery.rs",
         "name": "\"sh .rigger/gates/red-before-green.sh\"",
         "content_hash": "328b4682e59ef8f5"
-      },
-      {
-        "file": "tests/init_template_sets_periphery.rs",
-        "name": "\".rigger/gates\"",
-        "content_hash": "aef4e9374f42f08d"
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
@@ -3492,6 +3492,11 @@
       {
         "file": "tests/init_template_sets_periphery.rs",
         "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
         "content_hash": "edbddea214457e40"
       },
       {
@@ -4041,7 +4046,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 579 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 580 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

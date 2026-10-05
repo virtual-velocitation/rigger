@@ -1065,7 +1065,7 @@
     ]
   },
   {
-    "id": "dup-cba99f27fb43",
+    "id": "dup-f3e08cea9216",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3384,38 +3384,43 @@
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 79,
-        "end_line": 79
+        "start_line": 78,
+        "end_line": 78
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 100,
-        "end_line": 100
+        "start_line": 107,
+        "end_line": 107
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 131,
-        "end_line": 131
+        "start_line": 128,
+        "end_line": 128
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 165,
-        "end_line": 165
+        "start_line": 172,
+        "end_line": 172
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 175,
-        "end_line": 175
+        "start_line": 182,
+        "end_line": 182
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 179,
-        "end_line": 179
+        "start_line": 186,
+        "end_line": 186
       },
       {
         "file": "tests/init_template_sets_periphery.rs",
-        "start_line": 202,
-        "end_line": 202
+        "start_line": 209,
+        "end_line": 209
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "start_line": 290,
+        "end_line": 290
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
