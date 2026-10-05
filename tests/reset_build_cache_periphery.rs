@@ -578,7 +578,8 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
 
 /// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
 /// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
-/// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting, and leaves alone a dead dir a live
+/// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting,
+/// and leaves alone a dead dir a live
 /// process still holds (here: an open file descriptor in this test process) and everything
 /// that is not dead footprint (the sweep's mutation anchor).
 #[test]

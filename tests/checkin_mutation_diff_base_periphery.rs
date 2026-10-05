@@ -1,5 +1,6 @@
 //! Periphery (real-git) proof for the check-in `mutation` gate: the shipped script
-//! `.rigger/gates/mutation.sh` - driven against fixture repositories with a stand-in `cargo` and a stand-in `systemd-run` on a fixture PATH
+//! `.rigger/gates/mutation.sh` - driven against fixture repositories with a stand-in `cargo` and a
+//! stand-in `systemd-run` on a fixture PATH
 //! (`tests/fixtures/mutation-gate-*.sh`, argv capture), so every launch decision is read back
 //! exactly and no real sweep ever runs.
 //!

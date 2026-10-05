@@ -43,7 +43,8 @@
 //! `<repo>/.rigger/tmp` literal, no git resolution of the caller's repo): the caller passes
 //! the SAME resolved root it already used to build `base_dir` itself
 //! ([`crate::worktree::scratch_root_path_from_env`] for the run's own scratch tree, or any
-//! other registered scratch root, wherever it is placed) - so the boundary can never silently diverge
+//! other registered scratch root, wherever it is placed) - so the boundary can never silently
+//! diverge
 //! from what the rest of the codebase already treats as authoritative, however that root is
 //! placed (a relocated `RIGGER_TMPDIR`/`defaults.workdir`, or a cache home entirely outside
 //! any git tree). [`Worktree::remove`](crate::worktree::Worktree::remove) is the one

@@ -881,7 +881,8 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
 // ============================================================================================
 
 /// A [`rigger::gate::Runner`] fake that ONLY intercepts the `"regenerate"` gate id (recording
-/// its call - gate id, gate run command, dir, gate scratch root - and writing its OWN sentinel content instead of
+/// its call - gate id, gate run command, dir, gate scratch root - and writing its OWN sentinel
+/// content instead of
 /// actually running `g.run` as a shell command); every OTHER gate id (a unit's ordinary `"g"`
 /// gate, the post-merge re-gate) delegates straight to the REAL [`rigger::gate::ExecRunner`], so
 /// this fake changes nothing about how the surrounding conflict/merge/gate machinery behaves -

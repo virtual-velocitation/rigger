@@ -39634,7 +39634,8 @@ mod tests {
             "must never be visible to a gate\n",
         )
         .unwrap();
-        // Every gate run appends "<physical cwd> <$RIGGER_GATE_SCRATCH> <$CARGO_TARGET_DIR> <marker>" to a
+        // Every gate run appends "<physical cwd> <$RIGGER_GATE_SCRATCH> <$CARGO_TARGET_DIR>
+        // <marker>" to a
         // log OUTSIDE the repo (an untracked file inside it would dirty the very tree the
         // integrate lock guards).
         let log_dir = tempfile::tempdir().unwrap();
@@ -39766,7 +39767,8 @@ mod tests {
         );
     }
 
-    /// The driver for [`a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names`]:
+    /// The driver for
+    /// [`a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names`]:
     /// the speculating unit `gsr`'s lane-0 implementer CRASHES (so `run_speculation` removes
     /// lane 0's worktree, at `unit_worktree_dir`'s path, before any re-gate runs); the
     /// single-lane batch-mate `gsr-mover` waits until lane 1's worktree is cut, then writes

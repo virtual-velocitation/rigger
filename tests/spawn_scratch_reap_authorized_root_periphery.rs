@@ -9,7 +9,8 @@
 //! repeatedly (spec 77's `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`,
 //! `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root`, and others) -
 //! but every one of them plants only FILES and asserts an UNRELATED SIBLING's files survive.
-//! None of them plants a live process and asserts the TARGET's own process actually dies. That is a structural blind spot, not an oversight: this
+//! None of them plants a live process and asserts the TARGET's own process actually dies. That is a
+//! structural blind spot, not an oversight: this
 //! module's `reap_then_remove_dir` always calls `std::fs::remove_dir_all` unconditionally,
 //! regardless of whether the reap that precedes it was a genuine kill or a silent no-op - so a
 //! file-survival assertion passes IDENTICALLY either way. It cannot see the exact defect class

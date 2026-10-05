@@ -1585,7 +1585,8 @@ pub fn current_branch(repo: &str) -> Option<String> {
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
-// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
+// than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
 // operations) and excluded from `core`. Re-exported so this module's own ~30 call

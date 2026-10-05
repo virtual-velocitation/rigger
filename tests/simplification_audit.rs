@@ -3189,7 +3189,8 @@ fn find_same_named_helper_functions(files: &[FileScan], refs: &[FnRef]) -> Vec<D
 }
 
 /// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and the
-/// source audits' shared token-level lexer (`tests/common/source_audit.rs::tokenize`) alongside the codebase's ONE canonical tree-sitter-based
+/// source audits' shared token-level lexer (`tests/common/source_audit.rs::tokenize`) alongside the
+/// codebase's ONE canonical tree-sitter-based
 /// extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc calls it "the ONE
 /// function that touches tree-sitter", architecture 5.5.3) - a fourth semantic cluster, added
 /// per the adjudicator's REMEDY after u85c1's architecture lens routed this exact pair to this
@@ -3742,7 +3743,8 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
 // This criterion's own Done-when text: "This criterion OWNS sections 3-5 and introduces no
 // generator code" - unlike criteria 1 and 2, there is no new mechanical scanner here. Each
 // `render_section_N` below is hand-authored prose from a real investigation (decisions
-// `u85c3-scope-and-instruments`, `u85c3-dead-code-clean-both-instruments`, `u85c3-test-suite-shape-from-committed-catalog`),
+// `u85c3-scope-and-instruments`, `u85c3-dead-code-clean-both-instruments`,
+// `u85c3-test-suite-shape-from-committed-catalog`),
 // citing `file:line` and naming its instrument per claim, exactly as sections 1 and 2 already
 // do for their own mechanically-derived content. Section 3's citations and figures are
 // computed at render time (see LIVE CITATIONS FOR THE HAND-WRITTEN PROSE); the static prose of
@@ -8856,7 +8858,8 @@ mod tests {
     rigger::test_cases! {
         /// The recall gap u85c1's architecture lens routed to this criterion by name across two
         /// prior review rounds, verified closed on the REAL tree: `scan_file` (this file's own
-        /// bespoke scanner), `tokenize` (the source audits' shared lexer) and `extract` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
+        /// bespoke scanner), `tokenize` (the source audits' shared lexer) and `extract`
+        /// (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
         /// codebase's one canonical tree-sitter extractor) land in one cluster.
         the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster:
             assert_real_cluster_of_holds(

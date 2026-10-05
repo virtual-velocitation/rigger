@@ -256,7 +256,8 @@ pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
 /// unlike [`load`], which fails outright whenever either is unsatisfied (e.g. a declared
 /// gate whose `requires` names an executable off PATH, or simply no `agents/` dir at all),
 /// so this read never checks a gate requirement. A caller reading only a `defaults.*` field
-/// must never inherit that unrelated failure by routing through the full loader and `.unwrap_or_default()`-ing past
+/// must never inherit that unrelated failure by routing through the full loader and
+/// `.unwrap_or_default()`-ing past
 /// it - doing so silently zeroes the field it actually wanted alongside the one that failed
 /// (spec 83's own round-2 reject: `rigger status`/`rigger watch` silently lost a configured
 /// `defaults.workdir` this way whenever `Config::validate` failed for an unrelated reason).

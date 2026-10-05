@@ -949,7 +949,8 @@ fn mutants_is_banned_only_as_a_whole_word() {
 /// Rule 4 over the REAL core tree, copied byte for byte under a fresh root with four injections:
 /// a YAML gate key on a line of the real conductor source that begins inside its first
 /// escaped-newline string continuation, the same key leading the line that opens that literal and
-/// on the line just after it closes (both outside it, so never reported), and a tool token appended to the last non-`.rs` file the
+/// on the line just after it closes (both outside it, so never reported), and a tool token appended
+/// to the last non-`.rs` file the
 /// `crates/` walk lists. Exactly the two banned lines are reported, at their file and line, so the
 /// real-tree check above is not vacuous (the walk reads every real file of any extension at its
 /// real path) and the lexer keeps its line count aligned across the real source's literals,

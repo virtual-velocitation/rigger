@@ -439,7 +439,8 @@ pub fn is_keyword(s: &str) -> bool {
 /// Tokenize `chars` into a normalized-similarity-ready token stream: comments and whitespace
 /// produce no token; a string/byte/raw-string literal or a char literal becomes one `Lit`
 /// token (through [`skip_string_literal`]/[`char_literal_len`], so no lexical state is
-/// re-implemented); a `'`+ident not matched as a char literal is one `Lifetime` token; a digit-led run (plus one optional `.`-fraction) is one `Lit` (number)
+/// re-implemented); a `'`+ident not matched as a char literal is one `Lifetime` token; a digit-led
+/// run (plus one optional `.`-fraction) is one `Lit` (number)
 /// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
 /// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
 /// `->` becomes two/three adjacent `Punct` tokens - the simplification audit's mandatory-sweep

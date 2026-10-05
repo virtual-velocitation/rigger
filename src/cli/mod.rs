@@ -3441,7 +3441,8 @@ fn live_slugs(
 /// that NO live unit of the current run owns - the ownership backstop that makes the
 /// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
 /// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
-/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
+/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit -
+/// a prior run's killed-process leftover, or an ad-hoc
 /// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
 /// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
 /// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
@@ -3983,7 +3984,8 @@ const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
-/// `cargo-target-<slug>` per-unit build caches and `rigger-gate-<slug>` gate scratch roots, and the bare `cargo-target`/`target`
+/// `cargo-target-<slug>` per-unit build caches and `rigger-gate-<slug>` gate scratch roots, and the
+/// bare `cargo-target`/`target`
 /// SHARED build cache. No liveness decision is made here at all - just a name-prefix sum -
 /// so [`worktree_belongs_to_live`] is never re-derived a second time; the DEAD half of each
 /// category comes from calling [`scan_residue`] itself (see [`scratch_footprint`]), the one
@@ -4248,7 +4250,8 @@ fn footprint_report(
     let (worktrees, unit_caches, build_cache) =
         scratch_footprint(scratch_root, live_slugs, dead_slugs);
     // Registered scratch roots (spec 34 `agent-scratch`): a spawn-keyed category, so its
-    // dead share is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not the
+    // dead share is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not
+    // the
     // unit liveness `scratch_footprint` reads above - closes
     // `adj-u77c6-verdict-reject-unflaggable-highest-stakes-category`
     // (supersedes `d-u77c6-footprint-design`'s dead_bytes:0/reclaim_hint:None narrowing,
