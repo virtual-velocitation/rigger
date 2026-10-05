@@ -360,11 +360,7 @@ fn rigger_result_reclaims_only_the_reporting_spawns_agent_scratch_never_a_cache_
     let project = ReapProject::new();
     let spawn_id = "u-periphery-cli-agent-scratch-only/implementer#0";
     let agent_leaf = agent_scratch_leaf(&project, spawn_id);
-    let cache_home_leaf = project
-        .cache_home
-        .path()
-        .join("rigger-mutants")
-        .join(rigger::liveness::marker_filename(spawn_id).unwrap());
+    let cache_home_leaf = common::cache_home_mutants_leaf(project.cache_home.path(), spawn_id);
     let mut agent_child = live_child_in(&agent_leaf, "agent-scratch", "before `rigger result`");
     let mut cache_home_child = live_child_in(
         &cache_home_leaf,
