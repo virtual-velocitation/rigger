@@ -13,16 +13,23 @@ use serde_json::Value;
 use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
+use crate::driver::{bin_or_path_default, spawn_config_args};
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
+    /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`.
     pub bin: String,
+    /// The `rigger` binary each spawn runs as its MCP server (`<rigger_bin> mcp`). Empty
+    /// resolves to `"rigger"` on `$PATH`, the same rule the headless host's own
+    /// `rigger_bin` follows.
+    pub rigger_bin: String,
 }
 
 impl Default for Driver {
     fn default() -> Self {
         Driver {
             bin: "claude".to_string(),
+            rigger_bin: "rigger".to_string(),
         }
     }
 }
@@ -35,11 +42,7 @@ impl AgentDriver for Driver {
         opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        let bin = if self.bin.is_empty() {
-            "claude"
-        } else {
-            &self.bin
-        };
+        let bin = bin_or_path_default(&self.bin, "claude");
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         // Live progress (spec 14): frame the same per-step progress instruction the workflow
         // drivers give, so a worker on this path also reports what it is doing between
@@ -52,9 +55,9 @@ impl AgentDriver for Driver {
         cmd.args(build_args(
             agent,
             &framed,
-            &opts.system_prompt,
-            opts.attempt,
-        ));
+            opts,
+            bin_or_path_default(&self.rigger_bin, "rigger"),
+        )?);
         // The ONE build-environment authority's second injection site (spec 65): every
         // var the resolver derived (empty when no wrapper is configured, applying
         // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the
@@ -150,36 +153,57 @@ fn bridge_emits(
 /// Build the `claude` headless invocation: the grounded task is the `-p` prompt and
 /// the agent's PERSONA (its role) is the SYSTEM prompt (`--system-prompt`), with the
 /// model and allowed tools the agent declares. The persona is taken from
-/// `system_prompt` - the conductor's single persona source (`SpawnOpts::system_prompt`,
+/// `opts.system_prompt` - the conductor's single persona source (`SpawnOpts::system_prompt`,
 /// set from `AgentDef::prompt`) - NOT read from `agent.prompt` here, so the cli and
 /// workflow paths thread the SAME persona and cannot diverge. An empty persona omits
-/// the flag (the agent runs with the default system prompt). `attempt` selects the
+/// the flag (the agent runs with the default system prompt). `opts.attempt` selects the
 /// cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
 /// agent runs on the rung it escalated to for this remediation attempt.
+///
+/// The spawn configuration follows (see [`spawn_config_args`]: permissions, then the
+/// operator's read-only `<rigger_bin> mcp` server, the session settings and the helpers),
+/// so this argv and the headless host's agree on everything but the protocol flags. This
+/// host keeps the operator's server rather than a spawn-bound one because its emits travel
+/// on stdout ([`bridge_emits`]), not through the server. Fails only when
+/// `opts.settings_json` is not a JSON object the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
     prompt: &str,
-    system_prompt: &str,
-    attempt: u32,
-) -> Vec<String> {
+    opts: &SpawnOpts,
+    rigger_bin: &str,
+) -> Result<Vec<String>, Error> {
     let mut args = vec!["-p".to_string(), prompt.to_string()];
-    if !system_prompt.is_empty() {
+    if !opts.system_prompt.is_empty() {
         args.push("--system-prompt".to_string());
-        args.push(system_prompt.to_string());
+        args.push(opts.system_prompt.clone());
     }
-    let model = agent.model_for_attempt(attempt);
+    let model = agent.model_for_attempt(opts.attempt);
     if !model.is_empty() {
         args.push("--model".to_string());
         args.push(model);
     }
     // recurse: false strips any fan-out (Agent/Task) tool so the agent cannot
-    // spawn sub-agents - runaway-proof by construction (§3.1, §6).
-    let tools = agent.allowed_tools();
-    if !tools.is_empty() {
-        args.push("--allowed-tools".to_string());
-        args.push(tools.join(","));
+    // spawn sub-agents - runaway-proof by construction (§3.1, §6). The helpers' rigger
+    // MCP tools follow, pre-approved: nothing answers a prompt here, so a `lookup` would
+    // otherwise be denied every graph call it makes.
+    let mut tools = agent.allowed_tools();
+    for tool in crate::hooks::helper_mcp_tools().map_err(|e| {
+        Error(format!(
+            "cli driver: compose the spawn's allowed tools: {e}"
+        ))
+    })? {
+        if !tools.contains(&tool) {
+            tools.push(tool);
+        }
     }
-    args
+    args.push("--allowed-tools".to_string());
+    args.push(tools.join(","));
+    args.extend(spawn_config_args(
+        rigger_bin,
+        &["mcp"],
+        &opts.settings_json,
+    )?);
+    Ok(args)
 }
 
 #[cfg(test)]
@@ -292,7 +316,10 @@ thinking out loud, not json\n\
             .to_string_lossy()
             .into_owned();
 
-        let driver = Driver { bin };
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
         let calls = Mutex::new(Vec::new());
         let emit = |t: &str, v: Value| {
             calls.lock().unwrap().push((t.to_string(), v));
@@ -347,7 +374,10 @@ thinking out loud, not json\n\
             .join("../../tests/fixtures/env-echo-agent.sh")
             .to_string_lossy()
             .into_owned();
-        let driver = Driver { bin };
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
         let emit = |_: &str, _: Value| Ok(());
 
         let with = driver
@@ -401,6 +431,37 @@ thinking out loud, not json\n\
             .unwrap_or_else(|| panic!("{flag} must be in the args: {args:?}"))
     }
 
+    /// `persona_tools` followed by the helpers' MCP tools, the `--allowed-tools` value a
+    /// persona declaring `persona_tools` runs with.
+    fn with_helper_tools(persona_tools: &str) -> String {
+        format!(
+            "{persona_tools},{}",
+            crate::hooks::helper_mcp_tools().unwrap().join(",")
+        )
+    }
+
+    /// The spawn options carrying `system_prompt` as the persona and `attempt` as the
+    /// remediation attempt, everything else at its default.
+    fn persona_opts(system_prompt: &str, attempt: u32) -> SpawnOpts {
+        SpawnOpts {
+            system_prompt: system_prompt.to_string(),
+            attempt,
+            ..Default::default()
+        }
+    }
+
+    /// `build_args` for `agent` with the task `prompt`, persona `system_prompt` and remediation
+    /// `attempt`, naming the `rigger` binary on `$PATH` for the MCP server.
+    fn args_for(agent: &AgentDef, prompt: &str, system_prompt: &str, attempt: u32) -> Vec<String> {
+        build_args(
+            agent,
+            prompt,
+            &persona_opts(system_prompt, attempt),
+            "rigger",
+        )
+        .unwrap()
+    }
+
     #[test]
     fn persona_is_the_system_prompt_task_is_the_prompt() {
         // The persona (the agent's role) is threaded in as the `system_prompt` arg -
@@ -416,7 +477,7 @@ thinking out loud, not json\n\
             prompt: "stale body that must not be used".into(),
             ..Default::default()
         };
-        let args = build_args(&a, "do the thing", "You implement findings.", 0);
+        let args = args_for(&a, "do the thing", "You implement findings.", 0);
         // The grounded task is the -p prompt, and the persona is NOT spliced into it.
         let pi = arg_index(&args, "-p");
         assert_eq!(args[pi + 1], "do the thing");
@@ -428,7 +489,7 @@ thinking out loud, not json\n\
         let mi = arg_index(&args, "--model");
         assert_eq!(args[mi + 1], "sonnet");
         let ti = arg_index(&args, "--allowed-tools");
-        assert_eq!(args[ti + 1], "Read,Bash");
+        assert_eq!(args[ti + 1], with_helper_tools("Read,Bash"));
     }
 
     #[test]
@@ -439,9 +500,9 @@ thinking out loud, not json\n\
             recurse: false,
             ..Default::default()
         };
-        let args = build_args(&a, "task", "", 0);
+        let args = args_for(&a, "task", "", 0);
         let ti = arg_index(&args, "--allowed-tools");
-        assert_eq!(args[ti + 1], "Read");
+        assert_eq!(args[ti + 1], with_helper_tools("Read"));
         assert!(!args[ti + 1].contains("Agent"));
     }
 
@@ -453,9 +514,9 @@ thinking out loud, not json\n\
             recurse: true,
             ..Default::default()
         };
-        let args = build_args(&a, "task", "", 0);
+        let args = args_for(&a, "task", "", 0);
         let ti = arg_index(&args, "--allowed-tools");
-        assert_eq!(args[ti + 1], "Read,Agent");
+        assert_eq!(args[ti + 1], with_helper_tools("Read,Agent"));
     }
 
     #[test]
@@ -468,7 +529,7 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let model_at = |attempt: u32| {
-            let args = build_args(&a, "task", "", attempt);
+            let args = args_for(&a, "task", "", attempt);
             let mi = arg_index(&args, "--model");
             args[mi + 1].clone()
         };
@@ -486,10 +547,11 @@ thinking out loud, not json\n\
     }
 
     #[test]
-    fn minimal_agent_with_no_persona_yields_just_the_prompt() {
+    fn minimal_agent_with_no_persona_yields_the_prompt_the_helper_tools_and_the_configuration() {
         // No persona (empty system_prompt) omits --system-prompt entirely, so a bare
-        // agent's args are exactly the task prompt.
-        let args = build_args(
+        // agent's args are exactly the task prompt, the helpers' pre-approved MCP tools
+        // and the spawn configuration every spawn carries.
+        let args = args_for(
             &AgentDef {
                 id: "bare".into(),
                 ..Default::default()
@@ -498,6 +560,129 @@ thinking out loud, not json\n\
             "",
             0,
         );
-        assert_eq!(args, ["-p", "task"]);
+        let mut expected = vec![
+            "-p".to_string(),
+            "task".to_string(),
+            "--allowed-tools".to_string(),
+            crate::hooks::helper_mcp_tools().unwrap().join(","),
+        ];
+        expected.extend(spawn_config_args("rigger", &["mcp"], "").unwrap());
+        assert_eq!(args, expected);
+    }
+
+    /// The JSON value that follows `flag` in `args`, panicking when it is absent or not JSON.
+    fn flag_json(args: &[String], flag: &str) -> Value {
+        serde_json::from_str(&args[arg_index(args, flag) + 1])
+            .unwrap_or_else(|e| panic!("{flag} is not JSON ({e}): {args:?}"))
+    }
+
+    #[test]
+    fn build_args_hands_the_spawn_the_operators_mcp_server_settings_and_helpers() {
+        // A unit worktree carries no `.mcp.json` or `.claude/settings.json`, so the worker
+        // gets them on its command line: the operator's read-only `rigger mcp` server alone,
+        // the three session settings and the two fan-out helpers.
+        let a = AgentDef {
+            id: "impl".into(),
+            tools: vec!["Read".into(), "Agent".into()],
+            recurse: true,
+            ..Default::default()
+        };
+        let args = build_args(
+            &a,
+            "task",
+            &persona_opts("persona", 0),
+            "/custom/bin/rigger",
+        )
+        .unwrap();
+        let mcp = flag_json(&args, "--mcp-config");
+        let servers = mcp["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1, "exactly one server: {mcp}");
+        assert_eq!(servers["rigger"]["command"], "/custom/bin/rigger");
+        assert_eq!(servers["rigger"]["args"], serde_json::json!(["mcp"]));
+        assert!(args.iter().any(|x| x == "--strict-mcp-config"));
+        let settings = &args[arg_index(&args, "--settings") + 1];
+        assert!(
+            crate::hooks::carries_session_settings(settings.as_bytes()),
+            "the spawn's settings carry the prime hook, the grep-guard and the status line: {settings}"
+        );
+        let agents = flag_json(&args, "--agents");
+        assert!(agents.get("lookup").is_some(), "{agents}");
+        assert!(agents.get("verify").is_some(), "{agents}");
+        assert_eq!(args[arg_index(&args, "--permission-mode") + 1], "default");
+        assert_eq!(args[arg_index(&args, "--permission-prompts") + 1], "none");
+    }
+
+    #[test]
+    fn build_args_pre_approves_the_helpers_mcp_tools_once() {
+        // Under `--permission-prompts none` a tool nobody pre-approved is denied, so the
+        // `lookup` helper's graph calls must be on the allow list; a persona that already
+        // declares one does not get it twice.
+        let a = AgentDef {
+            id: "impl".into(),
+            tools: vec!["Read".into(), "mcp__rigger__rigger_graph".into()],
+            ..Default::default()
+        };
+        let args = args_for(&a, "task", "", 0);
+        assert_eq!(
+            args[arg_index(&args, "--allowed-tools") + 1],
+            "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers"
+        );
+    }
+
+    #[test]
+    fn build_args_orders_task_persona_model_tools_permissions_then_configuration() {
+        let a = AgentDef {
+            id: "impl".into(),
+            model: "opus".into(),
+            tools: vec!["Read".into()],
+            ..Default::default()
+        };
+        let args = args_for(&a, "task", "persona", 0);
+        let order: Vec<usize> = [
+            "-p",
+            "--system-prompt",
+            "--model",
+            "--allowed-tools",
+            "--permission-mode",
+            "--permission-prompts",
+            "--mcp-config",
+            "--strict-mcp-config",
+            "--settings",
+            "--agents",
+        ]
+        .iter()
+        .map(|flag| arg_index(&args, flag))
+        .collect();
+        assert!(
+            order.windows(2).all(|w| w[0] < w[1]),
+            "the flags follow the documented order: {args:?}"
+        );
+    }
+
+    #[test]
+    fn build_args_carries_the_spawns_own_settings_under_the_session_settings() {
+        let opts = SpawnOpts {
+            settings_json: "{\"model\":\"opus\"}".to_string(),
+            ..Default::default()
+        };
+        let args = build_args(&AgentDef::default(), "task", &opts, "rigger").unwrap();
+        let settings = flag_json(&args, "--settings");
+        assert_eq!(
+            settings["model"], "opus",
+            "the spawn's own settings survive"
+        );
+        assert!(crate::hooks::carries_session_settings(
+            settings.to_string().as_bytes()
+        ));
+    }
+
+    #[test]
+    fn build_args_fails_when_the_spawns_settings_are_not_a_json_object() {
+        let opts = SpawnOpts {
+            settings_json: "[1]".to_string(),
+            ..Default::default()
+        };
+        let err = build_args(&AgentDef::default(), "task", &opts, "rigger").unwrap_err();
+        assert!(err.0.contains("settings"), "{}", err.0);
     }
 }

@@ -27,6 +27,7 @@ impl RealDriverSpy {
         RealDriverSpy {
             inner: cli::Driver {
                 bin: bin.to_string_lossy().into_owned(),
+                ..cli::Driver::default()
             },
             outputs: Mutex::new(Vec::new()),
         }

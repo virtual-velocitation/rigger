@@ -27,6 +27,7 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
+use crate::driver::{bin_or_path_default, spawn_config_args};
 use crate::eventstore::EventStore;
 use crate::hooks;
 use crate::liveness;
@@ -34,13 +35,6 @@ use crate::progress::{self, SpawnLaunched};
 use crate::progress_store;
 use crate::spawn::SpawnResult;
 use crate::spawn_store;
-
-/// The permission mode this host always passes (architecture addendum §4.1): paired with
-/// `--permission-prompts none`, whatever would otherwise prompt is DENIED and reported on
-/// the stream, rather than silently blocking on a prompt nobody can answer. Not
-/// configurable per agent - every persona runs unattended through the same path (§2,
-/// invariant 6: one host).
-const PERMISSION_MODE: &str = "default";
 
 /// How often [`Driver::read_stream`]'s loop wakes when `max_wall_clock` is 0 (unbounded): a
 /// "wake up occasionally" budget, never itself a wall-clock bound - the wake-up never stops
@@ -66,16 +60,6 @@ const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 /// best-effort diagnostic wait, never a caller-configurable timeout for a concern anyone
 /// outside this module has a reason to tune.
 const ORDINARY_DRAIN_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// A configured binary, or `default` (resolved on `$PATH`) when none is configured - the
-/// ONE empty-means-default rule both [`Driver::bin`] and [`Driver::rigger_bin`] follow.
-fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> &'s str {
-    if configured.is_empty() {
-        default
-    } else {
-        configured
-    }
-}
 
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
@@ -1180,60 +1164,6 @@ fn first_user_message(task: &str) -> String {
     .to_string()
 }
 
-/// One composed configuration as the inline JSON argument its flag takes, or the error naming
-/// which configuration could not be composed.
-fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<String, Error> {
-    composed
-        .and_then(|bytes| String::from_utf8(bytes).map_err(|e| hooks::Error(e.to_string())))
-        .map_err(|e| {
-            Error(format!(
-                "claude_code driver: compose the spawn's {what}: {e}"
-            ))
-        })
-}
-
-/// The spawn's configuration, handed over on the command line because a headless session reads
-/// its hooks, MCP servers and subagents from its working directory and a fresh unit worktree
-/// carries none of them (`.claude/` is machine-local, and a consumer's `.gitignore` ignores it).
-/// Nothing is written into the worktree - the attempt checkpoint commits whatever is there -
-/// and every value comes from the one home [`hooks`] keeps for it, the same one `rigger setup`
-/// installs from, as inline JSON (the CLI takes all three flags as JSON strings, so no file
-/// outlives the launch):
-///
-/// - `--mcp-config` names exactly one server, this spawn's own bound MCP server (§4.3,
-///   `<rigger_bin> mcp --spawn <spawn_id>`), and `--strict-mcp-config` keeps every other MCP
-///   configuration out;
-/// - `--settings` is the spawn's own settings (`opts.settings_json`, may be empty) with the
-///   SessionStart prime hook, the PreToolUse grep-guard and the status line merged in;
-/// - `--agents` defines the `lookup` and `verify` fan-out helpers.
-fn spawn_config_args(opts: &SpawnOpts, rigger_bin: &str) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_agents_json().map_err(|e| {
-        Error(format!(
-            "claude_code driver: compose the spawn's agents: {e}"
-        ))
-    })?;
-    Ok(vec![
-        "--mcp-config".to_string(),
-        json_arg(
-            hooks::install_mcp_server(
-                b"",
-                hooks::MCP_SERVER_NAME,
-                rigger_bin,
-                &["mcp", "--spawn", &opts.id],
-            ),
-            "MCP config",
-        )?,
-        "--strict-mcp-config".to_string(),
-        "--settings".to_string(),
-        json_arg(
-            hooks::install_session_settings(opts.settings_json.as_bytes()),
-            "settings",
-        )?,
-        "--agents".to_string(),
-        helpers.to_string(),
-    ])
-}
-
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1278,11 +1208,11 @@ pub fn build_args(
         args.push("--allowed-tools".to_string());
         args.push(tools.join(","));
     }
-    args.push("--permission-mode".to_string());
-    args.push(PERMISSION_MODE.to_string());
-    args.push("--permission-prompts".to_string());
-    args.push("none".to_string());
-    args.extend(spawn_config_args(opts, rigger_bin)?);
+    args.extend(spawn_config_args(
+        rigger_bin,
+        &["mcp", "--spawn", &opts.id],
+        &opts.settings_json,
+    )?);
     Ok(args)
 }
 

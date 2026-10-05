@@ -111,6 +111,7 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
 
     let driver = cli::Driver {
         bin: agent_bin.to_string_lossy().into_owned(),
+        ..cli::Driver::default()
     };
     let agent = AgentDef {
         id: "worker".into(),
@@ -172,6 +173,7 @@ fn a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
 
     let driver = cli::Driver {
         bin: agent_bin.to_string_lossy().into_owned(),
+        ..cli::Driver::default()
     };
     let agent = AgentDef {
         id: "worker".into(),

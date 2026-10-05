@@ -159,6 +159,7 @@ fn an_exhausted_budget_gates_a_real_build_but_never_a_real_agent_spawn() {
     assert!(agent_bin.exists(), "fixture agent {agent_bin:?} must exist");
     let driver = cli::Driver {
         bin: agent_bin.to_string_lossy().into_owned(),
+        ..cli::Driver::default()
     };
     let agent = AgentDef {
         id: "worker".into(),
@@ -343,6 +344,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
     assert!(agent_bin.exists(), "fixture agent {agent_bin:?} must exist");
     let driver = cli::Driver {
         bin: agent_bin.to_string_lossy().into_owned(),
+        ..cli::Driver::default()
     };
     let store = Store::open(":memory:").unwrap();
     let deps = Deps {
