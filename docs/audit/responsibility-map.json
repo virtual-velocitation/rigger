@@ -2665,11 +2665,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "fan_out_checkin_cfg",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6c9e0cacab00f4fa"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "94da2b3e77a22a5e"
+    "content_hash": "fbd9993b3d2c43dd"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2677,7 +2685,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5f46c5d3b0f96624"
+    "content_hash": "2194cf8a279e8fe9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
