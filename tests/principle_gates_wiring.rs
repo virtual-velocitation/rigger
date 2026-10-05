@@ -574,6 +574,86 @@ fn the_audit_script_fails_red_assertions_with_its_own_diagnostic() {
     assert!(out.contains("error[audit]:"), "{out}");
 }
 
+/// `.rigger/gates/test.sh` run in the worktree `tree` - the gate's working directory - with a
+/// stand-in `cargo` (`tests/fixtures/recording-cargo.sh`) that records its argv and the
+/// environment it received. Returns (passed, output, what cargo recorded - empty when cargo never
+/// ran).
+fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
+    let dump = work.join("cargo.dump");
+    let path = stub_path(work, "cargo", Some("recording-cargo.sh"));
+    let (passed, out) = run_gate_script(
+        tree,
+        "test.sh",
+        &[
+            ("PATH", path.as_ref()),
+            ("RECORDING_CARGO_DUMP_FILE", dump.as_os_str()),
+        ],
+    );
+    (
+        passed,
+        out,
+        std::fs::read_to_string(&dump).unwrap_or_default(),
+    )
+}
+
+/// A worktree `tree` under `work` holding the container runtime snippet `snippet`.
+fn tree_with_snippet(work: &Path, snippet: &str) -> std::path::PathBuf {
+    let tree = work.join("tree");
+    let at = tree.join(CONTAINER_SNIPPET);
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::fs::write(at, snippet).unwrap();
+    tree
+}
+
+/// A unit's worktree can predate the snippet: the script still runs every workspace crate's
+/// tests, without it.
+#[test]
+fn the_test_script_runs_the_workspace_tests_in_a_worktree_holding_no_snippet() {
+    let work = tempfile::tempdir().unwrap();
+    let tree = work.path().join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    let (passed, out, recorded) = run_test_gate(work.path(), &tree);
+    assert!(passed, "{out}");
+    assert_eq!(
+        recorded.lines().next(),
+        Some("ARGS:test --workspace"),
+        "{out}"
+    );
+}
+
+/// A snippet that is present but fails to source fails the script before any test runs, never a
+/// silent run without the container runtime.
+#[test]
+fn the_test_script_fails_before_cargo_runs_when_its_snippet_fails_to_source() {
+    let work = tempfile::tempdir().unwrap();
+    let tree = tree_with_snippet(work.path(), "false\n");
+    let (passed, out, recorded) = run_test_gate(work.path(), &tree);
+    assert!(
+        !passed,
+        "a snippet that fails to source must fail the gate: {out}"
+    );
+    assert!(recorded.is_empty(), "cargo must not run: {recorded}");
+}
+
+/// The script sources the snippet in its own shell before it starts `cargo`, so what the snippet
+/// exports reaches the tests.
+#[test]
+fn the_test_script_sources_the_snippet_so_its_exports_reach_cargo() {
+    let work = tempfile::tempdir().unwrap();
+    let tree = tree_with_snippet(
+        work.path(),
+        "SNIPPET_EXPORT=sourced\nexport SNIPPET_EXPORT\n",
+    );
+    let (passed, out, recorded) = run_test_gate(work.path(), &tree);
+    assert!(passed, "{out}");
+    let lines: Vec<&str> = recorded.lines().collect();
+    assert_eq!(lines.first(), Some(&"ARGS:test --workspace"), "{out}");
+    assert!(
+        lines.contains(&"SNIPPET_EXPORT=sourced"),
+        "the snippet's export must reach cargo: {recorded}"
+    );
+}
+
 /// The committed implementer persona (`.rigger/agents/rust-engineer.md`), whitespace-
 /// normalized (newlines and indentation collapsed to single spaces) so a pure reflow of a
 /// wrapped paragraph never false-fails or false-passes a contiguous-phrase check.
