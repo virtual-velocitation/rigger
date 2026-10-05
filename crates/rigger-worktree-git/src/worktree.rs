@@ -6152,24 +6152,26 @@ mod tests {
     }
 
     #[test]
-    fn unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest() {
-        // Spec 91, THE GATE ENVIRONMENT: the identical derivation shape as
-        // `unit_cache_sibling` above, just a different sibling name - a `rigger-wt-<slug>`
-        // unit worktree maps to its `cargo-mutants-<slug>` sibling under the SAME parent;
-        // anything that is not a unit worktree owns no such root and maps to None.
+    fn unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest(
+    ) {
+        // Spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY: the one generic sibling
+        // helper `unit_sibling` maps a `rigger-wt-<slug>` unit worktree to its
+        // `rigger-gate-<slug>` sibling under the SAME parent - the root every gate of that unit
+        // is handed as `RIGGER_GATE_SCRATCH`; anything that is not a unit worktree (a review
+        // worktree, the root itself, the worktree-less path) owns no such root and maps to None.
         assert_eq!(
-            unit_sibling("/scratch/rigger-wt-unit-7", UNIT_MUTANTS_PREFIX),
-            Some("/scratch/cargo-mutants-unit-7".to_string())
+            unit_sibling("/scratch/rigger-wt-unit-7", UNIT_GATE_SCRATCH_PREFIX),
+            Some("/scratch/rigger-gate-unit-7".to_string())
         );
         assert_eq!(
-            unit_sibling("/scratch/rigger-review-panel-0", UNIT_MUTANTS_PREFIX),
+            unit_sibling("/scratch/rigger-review-panel-0", UNIT_GATE_SCRATCH_PREFIX),
             None
         );
         assert_eq!(
-            unit_sibling("/scratch/cargo-mutants", UNIT_MUTANTS_PREFIX),
+            unit_sibling("/scratch/rigger-gate-unit-7", UNIT_GATE_SCRATCH_PREFIX),
             None
         );
-        assert_eq!(unit_sibling("", UNIT_MUTANTS_PREFIX), None);
+        assert_eq!(unit_sibling("", UNIT_GATE_SCRATCH_PREFIX), None);
     }
 
     #[test]

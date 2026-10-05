@@ -1,8 +1,5 @@
-//! Periphery (real-git) proof for the check-in `mutation` gate: the SHIPPED script
-//! `.rigger/gates/mutation.sh` - the file `.rigger/workflow.yml` declares as its `mutation` gate
-//! (no stage runs it until issue #32 lands; its diff-base logic is what a re-wired `checkin`
-//! stage will use) and `rigger init` writes into a consumer project - driven against fixture
-//! repositories with a stand-in `cargo` and a stand-in `systemd-run` on a fixture PATH
+//! Periphery (real-git) proof for the check-in `mutation` gate: the shipped script
+//! `.rigger/gates/mutation.sh` - driven against fixture repositories with a stand-in `cargo` and a stand-in `systemd-run` on a fixture PATH
 //! (`tests/fixtures/mutation-gate-*.sh`, argv capture), so every launch decision is read back
 //! exactly and no real sweep ever runs.
 //!
@@ -146,16 +143,21 @@ fn run_gate(
     mem_available_kb: u64,
     with_systemd_run: bool,
 ) -> GateRun {
-    run_gate_with(repo, base, mem_available_kb, with_systemd_run, &[])
+    run_gate_with(repo, base, mem_available_kb, with_systemd_run, &[], &[])
 }
 
-/// [`run_gate`] with extra environment for the fixture tools.
+/// [`run_gate`] with extra environment for the fixture tools, and `unset` removed from the
+/// gate's environment. `RIGGER_GATE_SCRATCH` is always set explicitly - to a `rigger-gate-checkin`
+/// root inside this run's own temporary directory unless `env` names another, or removed when
+/// `unset` names it - and never inherited: this suite itself runs as a gate with the variable
+/// naming a real unit's root, which no fixture run may touch.
 fn run_gate_with(
     repo: &Path,
     base: Option<&str>,
     mem_available_kb: u64,
     with_systemd_run: bool,
     env: &[(&str, &str)],
+    unset: &[&str],
 ) -> GateRun {
     let work = tempfile::tempdir().unwrap();
     let bin = fixture_bin(work.path(), with_systemd_run);
@@ -172,14 +174,17 @@ fn run_gate_with(
         .current_dir(repo)
         .env("PATH", &bin)
         .env(
-            "MUTANTS",
-            work.path().join("scratch").join("cargo-mutants-checkin"),
+            "RIGGER_GATE_SCRATCH",
+            work.path().join("scratch").join("rigger-gate-checkin"),
         )
         .env("RIGGER_MEMINFO", &meminfo)
         .env("RIGGER_ARGV_CAPTURE", &cargo_capture)
         .env("RIGGER_SCOPE_CAPTURE", &scope_capture)
         .env_remove("CARGO_TARGET_DIR")
         .envs(env.iter().copied());
+    for name in unset {
+        cmd.env_remove(name);
+    }
     match base {
         Some(b) => cmd.env("RIGGER_RUN_BASE", b),
         None => cmd.env_remove("RIGGER_RUN_BASE"),
@@ -333,6 +338,31 @@ fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping
     assert_refused_before_anything_ran(dir, &run, "no RIGGER_RUN_BASE, so no spec diff to sweep");
 }
 
+#[test]
+fn mutation_gate_refuses_at_its_root_line_when_no_gate_scratch_root_is_handed() {
+    // Spec 113: the gate needs a unit's gate scratch root. Handed none - a review worktree or a
+    // run with no worktree, where the conductor removes RIGGER_GATE_SCRATCH - it refuses at its
+    // first command, with the shell's message naming the variable, before any read or write,
+    // even with a valid run base that would otherwise let it sweep.
+    let repo = tempfile::tempdir().unwrap();
+    let base = workspace_repo(repo.path());
+    let run = run_gate_with(
+        repo.path(),
+        Some(&base),
+        FORTY_GIB_KB,
+        true,
+        &[],
+        &["RIGGER_GATE_SCRATCH"],
+    );
+    assert_refused_before_anything_ran(repo.path(), &run, "no RIGGER_GATE_SCRATCH handed");
+    assert!(
+        run.output
+            .contains("RIGGER_GATE_SCRATCH: is empty or unset - this gate runs only for a unit"),
+        "the refusal must name RIGGER_GATE_SCRATCH: {}",
+        run.output
+    );
+}
+
 /// Three commits on one line - `origin`, a change to `a.rs`, then a new `b.rs` - returned in
 /// that order: the history every anchor case below picks its run base and its anchor from.
 fn three_commit_history(repo: &Path) -> [String; 3] {
@@ -432,12 +462,12 @@ fn run_gate_over_anchor_with(
             &format!("{recorded}\n"),
         );
     }
-    let mutants = scratch.path().join("cargo-mutants-checkin");
-    let env: Vec<(&str, &str)> = [("MUTANTS", mutants.to_str().unwrap())]
+    let gate_scratch = scratch.path().join("rigger-gate-checkin");
+    let env: Vec<(&str, &str)> = [("RIGGER_GATE_SCRATCH", gate_scratch.to_str().unwrap())]
         .into_iter()
         .chain(env.iter().copied())
         .collect();
-    let run = run_gate_with(repo, Some(base), FORTY_GIB_KB, true, &env);
+    let run = run_gate_with(repo, Some(base), FORTY_GIB_KB, true, &env, &[]);
     (run, scratch)
 }
 
@@ -1014,7 +1044,7 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
     let dir = repo.path();
     let [origin, middle, head] = three_commit_history(dir);
     let scratch = tempfile::tempdir().unwrap();
-    let mutants = scratch.path().join("cargo-mutants-checkin");
+    let gate_scratch = scratch.path().join("rigger-gate-checkin");
     // One sweep against `base` at the current HEAD, sharing one scratch root with every other
     // sweep here, and the unit's own root reclaimed after it the way a reclaimed unit loses it,
     // so the anchor under the scratch root is the only state one sweep hands the next.
@@ -1024,9 +1054,10 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
             Some(base),
             FORTY_GIB_KB,
             true,
-            &[("MUTANTS", mutants.to_str().unwrap())],
+            &[("RIGGER_GATE_SCRATCH", gate_scratch.to_str().unwrap())],
+            &[],
         );
-        std::fs::remove_dir_all(&mutants).unwrap();
+        std::fs::remove_dir_all(&gate_scratch).unwrap();
         run
     };
     let diff_since = |from: &str| git_out(dir, &["diff", from, "--", "*.rs"]);
@@ -1292,6 +1323,7 @@ fn a_test_phase_ended_by_a_signal_is_a_detection_like_a_timeout() {
         FORTY_GIB_KB,
         true,
         &[("RIGGER_FIXTURE_ENDED", "test")],
+        &[],
     );
     assert!(
         run.passed,
@@ -1318,6 +1350,7 @@ fn a_build_ended_by_a_signal_fails_the_gate_by_name_as_an_environment_failure() 
             FORTY_GIB_KB,
             true,
             &[("RIGGER_FIXTURE_ENDED", mode)],
+            &[],
         );
         assert!(
             !run.passed,

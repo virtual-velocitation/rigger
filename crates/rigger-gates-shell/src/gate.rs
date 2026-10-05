@@ -1270,6 +1270,58 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     #[test]
+    fn exec_runner_removes_an_inherited_gate_scratch_root_when_handed_none() {
+        // Spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY: the gate scratch root follows
+        // the `gate_scratch` the caller hands, never the environment of the process that runs
+        // the gate. This repository's own `test` gate runs this very suite with
+        // `RIGGER_GATE_SCRATCH` set to the outer unit's root, so the variable is set in THIS
+        // process first: handed an empty `gate_scratch`, the gate must find it unset
+        // (`${RIGGER_GATE_SCRATCH+set}` expands empty), and handed a path, exactly that path.
+        // The prior value is restored afterwards so the rest of the suite sees its own.
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var(GATE_SCRATCH_ENV, v),
+                    None => std::env::remove_var(GATE_SCRATCH_ENV),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(GATE_SCRATCH_ENV));
+        std::env::set_var(GATE_SCRATCH_ENV, "/inherited/rigger-gate-outer");
+        let run = |gate_scratch: &str, check: &str| {
+            ExecRunner.run(
+                &gate_cmd(check),
+                "",
+                "",
+                gate_scratch,
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+        };
+
+        let none = run("", &format!("test -z \"${{{GATE_SCRATCH_ENV}+set}}\""));
+        assert!(
+            none.pass,
+            "an empty gate_scratch must remove an inherited {GATE_SCRATCH_ENV}: {none:?}"
+        );
+
+        let handed = "/scratch/rigger-gate-unit-7";
+        let set = run(
+            handed,
+            &format!("test \"${GATE_SCRATCH_ENV}\" = {handed}"),
+        );
+        assert!(
+            set.pass,
+            "a non-empty gate_scratch must reach the gate as {GATE_SCRATCH_ENV}, over the \
+             inherited value: {set:?}"
+        );
+    }
+
+    #[test]
     fn exec_runner_honors_an_injected_store_fence_override_when_target_dir_is_empty() {
         // Spec 70 criterion 3, u4 round 3 fix for
         // arch-u4c70r2-fence-signal-not-injected-into-runner-review-case /
