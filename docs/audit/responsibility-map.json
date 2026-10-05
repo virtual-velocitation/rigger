@@ -5881,11 +5881,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "every_reviewer_prompt_forbids_cargo_mutants",
+    "name": "every_reviewer_prompt_forbids_a_mutation_sweep",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "369e9b226477a7c7"
+    "content_hash": "3d79f238695d6098"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8853,7 +8853,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "365f6a67820c532b"
+    "content_hash": "2c7b7a99a9064ff8"
   },
   {
     "file": "src/cli/mod.rs",
@@ -9093,7 +9093,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5c11bbd30e8bc579"
+    "content_hash": "5eabd1c61887bb6b"
   },
   {
     "file": "src/cli/mod.rs",
@@ -10110,30 +10110,6 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "d4175e803a4f4b54"
-  },
-  {
-    "file": "src/cli/mod.rs",
-    "name": "implementer_persona_normalized",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6826d78dbd47c83c"
-  },
-  {
-    "file": "src/cli/mod.rs",
-    "name": "assert_implementer_persona_pins",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7eb783115a4e3164"
-  },
-  {
-    "file": "src/cli/mod.rs",
-    "name": "no_persona_under_rigger_agents_invokes_cargo_mutants",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "49846e33e0a39f2a"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

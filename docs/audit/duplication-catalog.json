@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-890941763c23",
+    "id": "dup-472ab93cb00a",
     "classification": "semantic",
     "sites": [
       {
@@ -1973,6 +1973,11 @@
         "file": "tests/architecture_current_surface.rs",
         "name": "\"docs/architecture.md must describe the system that exists today (spec 56, \\\n         criterion 1): it must name the store-resolution and configuration surface (the \\\n         committed `store:` selection, the `KURRENTDB_CONN` environment variable, and the \\\n         per-machine `.rigger/store.conn` secret file) and the graph inspector's real query \\\n         surface (the three `lens=` names and the directed `view=calls` `dir=` views). \\\n         Surfaces the document fails to name: {missing:#?}\"",
         "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/boundary_audit.rs",
+        "name": "\"let b = \\\"sh .rigger/gates/mutation.sh\\\";\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -4061,7 +4066,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 583 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 584 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
