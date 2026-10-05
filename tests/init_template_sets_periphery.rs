@@ -55,6 +55,34 @@ fn stage_lists(cfg: &rigger::config::Config) -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// Asserts `out` and `root` show a no-set scaffold: the plain workflow line directly followed by
+/// the no-set line, no `.rigger/gates/`, and a workflow declaring no gate with `[]` on both unit
+/// stages.
+fn assert_no_set_scaffold(root: &Path, out: &str) {
+    assert_eq!(
+        set_lines(out),
+        [PLAIN_WORKFLOW_LINE, NO_SET_LINE],
+        "stdout:\n{out}"
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == PLAIN_WORKFLOW_LINE)
+        .unwrap();
+    assert_eq!(
+        lines[at + 1],
+        NO_SET_LINE,
+        "the no-set line follows the workflow line"
+    );
+    assert!(
+        !root.join(".rigger/gates").exists(),
+        "a project matching no set gets no gate script"
+    );
+    let cfg = load(root);
+    assert_eq!(cfg.workflow.gates.len(), 0, "no gate declared");
+    assert_eq!(stage_lists(&cfg), (vec![], vec![]));
+}
+
 /// Given a project with a root `Cargo.toml`, when the operator runs `rigger init`, then it names
 /// the Rust set on the workflow line, reports every listed file in listed order, prints no no-set
 /// line, and writes a workflow carrying the repository's `scaffold/rust/set.yml` gates text
@@ -112,28 +140,7 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
 fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() {
     let dir = temp_project();
     let out = run_rigger_ok(dir.path(), &["init"]);
-    assert_eq!(
-        set_lines(&out),
-        [PLAIN_WORKFLOW_LINE, NO_SET_LINE],
-        "stdout:\n{out}"
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    let at = lines
-        .iter()
-        .position(|l| *l == PLAIN_WORKFLOW_LINE)
-        .unwrap();
-    assert_eq!(
-        lines[at + 1],
-        NO_SET_LINE,
-        "the no-set line follows the workflow line"
-    );
-    assert!(
-        !dir.path().join(".rigger/gates").exists(),
-        "a project matching no set gets no gate script"
-    );
-    let cfg = load(dir.path());
-    assert_eq!(cfg.workflow.gates.len(), 0, "no gate declared");
-    assert_eq!(stage_lists(&cfg), (vec![], vec![]));
+    assert_no_set_scaffold(dir.path(), &out);
 
     let (validated, warned, ok) = run_rigger(dir.path(), &["validate"]);
     assert!(
@@ -240,5 +247,53 @@ fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
                 .to_vec(),
             ["fmt", "build", "test", "lint"].map(String::from).to_vec(),
         )
+    );
+}
+
+/// Given a project whose only `Cargo.toml` sits below the root (a member directory), when the
+/// operator runs `rigger init`, then no set matches - the marker must be a file AT the project
+/// root - so it prints the plain workflow line and the no-set line, writes no `.rigger/gates/`,
+/// and the workflow declares no gate.
+#[test]
+fn init_with_a_cargo_toml_only_below_the_root_matches_no_set() {
+    let dir = temp_project();
+    let member = dir.path().join("member");
+    std::fs::create_dir_all(&member).unwrap();
+    std::fs::write(
+        member.join("Cargo.toml"),
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let out = run_rigger_ok(dir.path(), &["init"]);
+    assert_no_set_scaffold(dir.path(), &out);
+}
+
+/// Given a project matching no set, `rigger setup` scaffolds exactly as `rigger init` does: the
+/// plain workflow line directly followed by the no-set line, no `.rigger/gates/`, and a workflow
+/// declaring no gate with `[]` on both unit stages.
+#[test]
+fn setup_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() {
+    let dir = temp_project();
+    let (out, err, ok) = run_rigger_envs(dir.path(), &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup failed:\nstdout:\n{out}\nstderr:\n{err}");
+    assert_no_set_scaffold(dir.path(), &out);
+}
+
+/// Given a project already initialized with no set matching, a rerun of `rigger init` prints only
+/// the already-initialized line: the no-set line belongs to the run that wrote the workflow, so a
+/// rerun that writes nothing never repeats it, and the workflow is left byte for byte.
+#[test]
+fn init_rerun_matching_no_set_does_not_repeat_the_no_set_line() {
+    let dir = temp_project();
+    run_rigger_ok(dir.path(), &["init"]);
+    let workflow = dir.path().join(".rigger/workflow.yml");
+    let before = std::fs::read(&workflow).unwrap();
+
+    assert_eq!(run_rigger_ok(dir.path(), &["init"]), ALREADY_INITIALIZED);
+    assert_eq!(
+        std::fs::read(&workflow).unwrap(),
+        before,
+        "a rerun keeps the workflow"
     );
 }
