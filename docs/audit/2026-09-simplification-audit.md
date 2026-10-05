@@ -1874,9 +1874,9 @@ mandatory sweep: Command::new call sites - 90 site(s), collected mechanically re
 - `tests/hermetic_test_git_audit.rs:235-235` `Command::new`
 - `tests/hermetic_test_git_audit.rs:307-307` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:331-331` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1539-1539` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1630-1630` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1875-1875` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1556-1556` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1647-1647` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1892-1892` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:83-83` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:107-107` `Command::new`
 - `tests/mutation_runner_pdeathsig_periphery.rs:167-167` `Command::new`
@@ -5041,7 +5041,7 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/integrate_conflict_merge_periphery.rs:496-561` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1284-1329` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1301-1346` `spawn`
 
 #### `dup-333ec555460f` (near, 2 sites)
 
@@ -5049,8 +5049,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:1891-1955` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:1959-2023` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:1908-1972` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:1976-2040` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
 
 #### `dup-8f0f2622431b` (exact, 2 sites)
 

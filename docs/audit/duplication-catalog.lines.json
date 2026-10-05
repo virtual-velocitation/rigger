@@ -944,18 +944,18 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1539,
-        "end_line": 1539
+        "start_line": 1556,
+        "end_line": 1556
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1630,
-        "end_line": 1630
+        "start_line": 1647,
+        "end_line": 1647
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1875,
-        "end_line": 1875
+        "start_line": 1892,
+        "end_line": 1892
       },
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -7809,8 +7809,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1284,
-        "end_line": 1329
+        "start_line": 1301,
+        "end_line": 1346
       }
     ]
   },
@@ -7819,13 +7819,13 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1891,
-        "end_line": 1955
+        "start_line": 1908,
+        "end_line": 1972
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1959,
-        "end_line": 2023
+        "start_line": 1976,
+        "end_line": 2040
       }
     ]
   },
