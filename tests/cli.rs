@@ -4797,6 +4797,113 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     );
 }
 
+/// Plant a leftover leaf of `spawn_id` under the former `<cache home>/rigger-mutants` root of
+/// the cache home every `rigger` subprocess in this test resolves (the parent two levels up of
+/// the default scratch root, `<cache home>/rigger/<encoded repo>`), holding one file; returns
+/// the leaf.
+fn plant_cache_home_leftover(root: &Path, spawn_id: &str) -> std::path::PathBuf {
+    let cache_home = common::default_scratch_root(root)
+        .parent()
+        .and_then(Path::parent)
+        .expect("the default scratch root nests two levels under the cache home")
+        .to_path_buf();
+    let leaf = cache_home
+        .join("rigger-mutants")
+        .join(rigger::liveness::marker_filename(spawn_id).unwrap());
+    std::fs::create_dir_all(&leaf).unwrap();
+    std::fs::write(leaf.join("keep"), [7u8; 32]).unwrap();
+    leaf
+}
+
+/// The leftover `leaf` [`plant_cache_home_leftover`] planted still holds its file byte for
+/// byte - `when` names the teardown that must not have touched it.
+fn assert_cache_home_leftover_intact(leaf: &Path, when: &str) {
+    assert_eq!(
+        std::fs::read(leaf.join("keep")).ok(),
+        Some(vec![7u8; 32]),
+        "{when} must never read, reap or remove anything under the cache home's former \
+         rigger-mutants root: {}",
+        leaf.display()
+    );
+}
+
+/// Record `solo/implementer#0`'s result straight into the run log, never through `rigger
+/// result`, so that verb's own per-spawn reclaim never runs and only the unit's teardown in the
+/// next step can act on the spawn's scratch.
+fn seed_solo_implementer_result(root: &Path) {
+    seed_run_events(
+        root,
+        &[(
+            "SpawnResult",
+            r#"{"id":"solo/implementer#0","output":"implemented"}"#,
+        )],
+    );
+}
+
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), at the conductor's unit
+/// teardown: given a unit whose implementer spawn has a leftover leaf under the cache home's
+/// former `rigger-mutants` root, when its result is recorded and the unit integrates in a real step (its worktree reclaimed
+/// and branch deleted by `run_stage`'s teardown) and a later step resumes over the integrated
+/// unit (the branch-GC replay half), then the leftover is untouched after both: a unit's
+/// teardown reaps only its worktree, branch and unit siblings.
+#[test]
+fn a_units_integrate_teardown_and_its_resume_never_touch_a_cache_home_leftover_of_its_spawn() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+
+    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    let leftover = plant_cache_home_leftover(root, "solo/implementer#0");
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    seed_solo_implementer_result(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(ok, "the integrating step must succeed; stderr: {err}");
+    assert!(
+        out.contains(r#""done":true"#) && !out.contains("escalated"),
+        "the unit must integrate cleanly in this step; got: {out:?}"
+    );
+    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "clean integrate");
+    assert_cache_home_leftover_intact(&leftover, "the integrate teardown");
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""done":true"#),
+        "the resumed step over the integrated unit must converge; stdout: {out:?} stderr: {err}"
+    );
+    assert_cache_home_leftover_intact(&leftover, "the resumed branch-GC over an integrated unit");
+}
+
+/// Spec 113 criterion 7, the escalation teardown: given a unit whose implementer spawn has a
+/// leftover leaf under the cache home's former `rigger-mutants` root, when its red gate
+/// exhausts remediation into an escalation (its worktree reclaimed, its branch kept) and a
+/// later step resumes over the escalated unit, then the leftover is untouched after both.
+#[test]
+fn a_units_escalation_teardown_and_its_resume_never_touch_a_cache_home_leftover_of_its_spawn() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
+
+    let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    let leftover = plant_cache_home_leftover(root, "solo/implementer#0");
+    seed_solo_implementer_result(root);
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""escalated":["solo"]"#),
+        "the red gate must escalate the unit in this step; stdout: {out:?} stderr: {err}"
+    );
+    assert_the_solo_worktree_is_reclaimed(root, &wt_dir, "terminal escalation");
+    assert_cache_home_leftover_intact(&leftover, "the escalation teardown");
+
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""escalated":["solo"]"#),
+        "the resumed step must still report the escalated unit; stdout: {out:?} stderr: {err}"
+    );
+    assert_cache_home_leftover_intact(&leftover, "the resumed step over an escalated unit");
+}
+
 /// Spec 88, criterion 3's own Done-when, end to end through the compiled binary against
 /// a real git repo: `rigger resume-unit` re-parks the implementer on the SAME durable
 /// branch with the granted attempts as its new bound, `rigger status` names the grant

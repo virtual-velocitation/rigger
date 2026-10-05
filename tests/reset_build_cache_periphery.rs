@@ -639,6 +639,49 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     );
 }
 
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED): given a dead spawn's
+/// agent-scratch leaf and a leftover leaf of a spawn under the cache home's former
+/// `rigger-mutants` root, when the operator runs `rigger reset --build-cache`, then the dead
+/// agent-scratch leaf is reclaimed and the cache-home leftover is neither removed nor named in
+/// the report.
+#[test]
+fn reset_build_cache_reclaims_dead_agent_scratch_and_never_a_cache_home_leftover() {
+    let project = temp_store_project();
+    let root = project.path();
+    let scratch = common::default_scratch_root(root);
+    let cache_home = scratch
+        .parent()
+        .and_then(Path::parent)
+        .expect("the scratch root nests two levels under the cache home")
+        .to_path_buf();
+    let dead_spawn_leaf = scratch
+        .join("agent-scratch")
+        .join("run-gone")
+        .join("spawn-gone");
+    write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
+    let leftover = cache_home.join("rigger-mutants").join("spawn-gone");
+    write_file(&leftover.join("d"), &[9u8; 100]);
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        ok,
+        "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        !dead_spawn_leaf.exists(),
+        "the dead agent-scratch spawn leaf must be reclaimed: {dead_spawn_leaf:?}; stdout {out:?}"
+    );
+    assert_eq!(
+        std::fs::read(leftover.join("d")).ok(),
+        Some(vec![9u8; 100]),
+        "the cache home's former rigger-mutants leaf must survive byte for byte; stdout {out:?}"
+    );
+    assert!(
+        !out.contains("rigger-mutants") && !err.contains("rigger-mutants"),
+        "the report must never name the cache home's former root; stdout {out:?} stderr {err:?}"
+    );
+}
+
 /// Gap 96, FAIL CLOSED: when the run log cannot be read, nothing says which units and spawns
 /// are live, so `rigger reset --build-cache` reclaims nothing from the per-unit and scratch
 /// classes and says why - it never reads "unknown" as "every unit is dead". The holder check is
