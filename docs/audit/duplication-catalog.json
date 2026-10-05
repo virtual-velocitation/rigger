@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b65b4cb82ba2",
+    "id": "dup-4d4dee559928",
     "classification": "semantic",
     "sites": [
       {
@@ -3561,8 +3561,8 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates/red-before-green.sh\"",
-        "content_hash": "5ba8cb17a05d01f4"
+        "name": "\".rigger/gates\"",
+        "content_hash": "2404970484b55ff8"
       },
       {
         "file": "tests/principle_gates_wiring.rs",
