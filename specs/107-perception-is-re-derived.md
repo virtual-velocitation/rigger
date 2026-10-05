@@ -90,45 +90,47 @@ event's type with `retention`'s constant. It has three outcomes, each one transa
 whose position `applied` already holds folds nothing and never calls `batch` (`fold_new`'s
 per-position guard); (b) a RE-RECORDING, an entry naming its identity's current generation, writes
 only its `applied` row and never calls `batch`; (c) any other entry writes its `applied` row and
-calls `batch`. A resolved batch folds event by event at the entry's position and valid-time through
-the existing `fold` (`advance_generation`, the event's arm with its `fresh` head,
-`retire_unheld_nodes`), so spec 101's generation rule applies unchanged and installs the entry's
-generation. Every batch event is asserted under the ENTRY's identity and generation, never under a
-key a batch event carries: the three `(path, bytes, excluded)` functions return the batch unkeyed,
-`key_batch` is the grounder's, and `fold` today cuts both from each event's replay key
-(`Asserter::of`, `derived_generation`), where an empty identity makes `advance_generation` return
-early and install nothing. So `fold` takes the asserter as a parameter, `fold_new` handing it
-`Asserter::of(e)` as today and `apply_generation` the entry's identity and generation at the entry's
-valid-time, and each batch event carries the entry's position and valid-time, which `fold_event`
-reads for every edge it adds; that change is criterion 2's. Outcome (c)'s resolved branch ends its
-transaction exactly as `fold_new` ends: the entry's position recorded once in `applied`
-(`record_applied`, which cannot guard the batch's events, since they share that position), each
-batch event folded, then `relabel_owed_communities`, which labels every community `settle_node` and
-the fold's arms owed through `owe_relabel_of` and empties `relabel_owed`, all in the one transaction
-`fold_batch` opens and commits; a re-recording or an unresolved entry folds nothing, so it owes no
-relabel. An entry no source resolves folds NOTHING: the identity's facts and current generation stay
-as they stood, and the sinks' two-sided check heals it, since the log's latest generation is then
-not the graph's current one and the next ingest of the file records again.
-`Projection::current_generation(identity)`, a new port read of the `generations` table, answers it.
-`FoldingStore` gains a ledger form, the only fold an entry reaches: `Projection::apply` and
-`apply_batch` refuse a `GenerationIngested`, naming `apply_generation`, and write no `applied` row,
-a lost fold like any other that marks `graph.db` owing its rebuild. `rigger emit` already refuses
-the new type (`EMITTABLE_TYPES`). A failed or refused fold writes no `applied` row (criterion 2's),
-as a process dying between append and fold leaves none, and `rigger setup` pays that hole through
-the ledger fold (criterion 3's). `Projector::apply_generation` keeps `apply_batch`'s two guards
-through one inherent function both fold under: it refuses before folding when `graph.db` owes its
-rebuild, and a fold that fails marks the file owed (`mark_lost_fold`) and names `rigger setup`; the
-ledger form only appends, calls it and reports. `apply_generation` takes no `FoldAccess`, whose mint
-would have no production caller before criterion 4, so for this one method the rule that every
-fold's outcome is reported holds by convention of its one production caller, the ledger form, which
-answers a `Fold` through `Fold::settle`, made public. The rebuild's per-event fold (`fold_source`),
-which folds through the transaction and never the port, routes an entry through the ledger fold
-behind `apply_generation` as it routes every other event through `fold_new`, under the same
-savepoint, `Projector::rebuild` and `fold_source` taking the re-extracting function as a new
-parameter, and `check_fold_payload` judges a `GenerationIngested` by `retention`'s parse, so a
-rebuild passes over an entry whose payload does not parse, as it passes over any event the fold
-rejects; a re-extracted batch event's fold error is a store failure that propagates, never passed
-over, since the batch is this binary's own extraction.
+calls `batch`. Each outcome's transaction begins with that `applied` insert (`record_applied`'s
+`INSERT OR IGNORE`), as `fold_new` begins today, so the generation is read under the write lock and
+two processes folding entries of one generation meet SINK OUTCOMES row 13, never row 15. A resolved
+batch folds event by event at the entry's position and valid-time through the existing `fold`
+(`advance_generation`, the event's arm with its `fresh` head, `retire_unheld_nodes`), so spec 101's
+generation rule applies unchanged and installs the entry's generation. Every batch event is asserted
+under the ENTRY's identity and generation, never under a key a batch event carries: the three
+`(path, bytes, excluded)` functions return the batch unkeyed, `key_batch` is the grounder's, and
+`fold` today cuts both from each event's replay key (`Asserter::of`, `derived_generation`), where an
+empty identity makes `advance_generation` return early and install nothing. So `fold` takes the
+asserter as a parameter, `fold_new` handing it `Asserter::of(e)` as today and `apply_generation` the
+entry's identity and generation at the entry's valid-time, and each batch event carries the entry's
+position and valid-time, which `fold_event` reads for every edge it adds; that change is criterion
+2's. Outcome (c)'s resolved branch ends its transaction exactly as `fold_new` ends: the entry's
+position recorded once in `applied` (`record_applied`, which cannot guard the batch's events, since
+they share that position), each batch event folded, then `relabel_owed_communities`, which labels
+every community `settle_node` and the fold's arms owed through `owe_relabel_of` and empties
+`relabel_owed`, all in the one transaction `fold_batch` opens and commits; a re-recording or an
+unresolved entry folds nothing, so it owes no relabel. An entry no source resolves folds NOTHING:
+the identity's facts and current generation stay as they stood, and the sinks' two-sided check heals
+it, since the log's latest generation is then not the graph's current one and the next ingest of the
+file records again. `Projection::current_generation(identity)`, a new port read of the `generations`
+table, answers it. `FoldingStore` gains a ledger form, the only fold an entry reaches:
+`Projection::apply` and `apply_batch` refuse a `GenerationIngested`, naming `apply_generation`, and
+write no `applied` row, a lost fold like any other that marks `graph.db` owing its rebuild. `rigger
+emit` already refuses the new type (`EMITTABLE_TYPES`). A failed or refused fold writes no `applied`
+row (criterion 2's), as a process dying between append and fold leaves none, and `rigger setup` pays
+that hole through the ledger fold (criterion 3's). `Projector::apply_generation` keeps
+`apply_batch`'s two guards through one inherent function both fold under: it refuses before folding
+when `graph.db` owes its rebuild, and a fold that fails marks the file owed (`mark_lost_fold`) and
+names `rigger setup`; the ledger form only appends, calls it and reports. `apply_generation` takes
+no `FoldAccess`, whose mint would have no production caller before criterion 4, so for this one
+method the rule that every fold's outcome is reported holds by convention of its one production
+caller, the ledger form, which answers a `Fold` through `Fold::settle`, made public. The rebuild's
+per-event fold (`fold_source`), which folds through the transaction and never the port, routes an
+entry through the ledger fold behind `apply_generation` as it routes every other event through
+`fold_new`, under the same savepoint, `Projector::rebuild` and `fold_source` taking the
+re-extracting function as a new parameter, and `check_fold_payload` judges a `GenerationIngested` by
+`retention`'s parse, so a rebuild passes over an entry whose payload does not parse, as it passes
+over any event the fold rejects; a re-extracted batch event's fold error is a store failure that
+propagates, never passed over, since the batch is this binary's own extraction.
 
 **THE REBUILD RE-EXTRACTS THE LEDGER.** `rigger setup`'s rebuild (`rebuild_owed_graph`,
 `src/cli/setup.rs`, over `Projector::rebuild`) folds the log's live selection as spec 101 decided
@@ -195,22 +197,24 @@ prints the number a single pass does. The one hash function applies no filter, s
 stored blob differs from its working-tree bytes (end-of-line conversion, a clean filter, LFS)
 resolves from the tree's file while it is unchanged, never from the object database. An entry no
 source resolves folds nothing (THE ENTRY AND ITS BATCH block). The rebuild's report is ONE number,
-computed from the stores once it ends, its log side one `read_stream_typed` read of
-`retention::PERCEPTION_TYPES` handed to `project_scoped_latest_generations` with those types, a
-type-list parameter criterion 3 adds (its other callers pass the derived types, unchanged), which
-cuts each row's replay key and so sees a keyed derived row with no `META_GROUP`: the identities
-whose current generation in `graph.db` is not the generation of their latest recording (MIGRATION),
-none held included, and whose path holds a regular file in scope under the ONE ROOT that its half's
-function maps to a batch that is not empty (every `gc` input is; not applied in the light lane,
-where no extraction compiles): exactly the ones the next default-lane ingest of the file restores,
-printed with a note saying so (criterion 4 asserts it); a zero prints without the note. A deleted
-`gc` file's identity holds `gc`'s batch for no bytes once the walk's deletion ingest recorded it, so
-that ingest retires the file's facts, at a rebuild as live; a `gd` or `gw` identity whose file is
-gone or extracts to the empty batch is named by no ingest, so live it keeps what its last fold left,
-and after a rebuild it holds what its latest resolvable entry gave, none for a migrated identity
-with no earlier entry (WHAT A REBUILD REPRODUCES). An identity whose path holds no such file is not
-counted: what it holds after a rebuild, nothing for a gone file with no resolvable entry, is its
-correct state. The `applied` rows of shed positions are outside spec 101's comparison surface.
+computed from the stores once it ends, its log side one whole `read_stream_typed` read of
+`retention::PERCEPTION_TYPES`, which on a store not yet migrated holds every derived row at once, a
+cost paid until `rigger reset --derived` runs, handed to `project_scoped_latest_generations` with
+those types, a type-list parameter criterion 3 adds (its other callers pass the derived types,
+unchanged), which cuts each row's replay key and so sees a keyed derived row with no `META_GROUP`:
+the identities whose current generation in `graph.db` is not the generation of their latest
+recording (MIGRATION), none held included, and whose path holds a regular file in scope under the
+ONE ROOT that its half's function maps to a batch that is not empty (every `gc` input is; not
+applied in the light lane, where no extraction compiles): exactly the ones the next default-lane
+ingest of the file restores, printed with a note saying so (criterion 4 asserts it); a zero prints
+without the note. A deleted `gc` file's identity holds `gc`'s batch for no bytes once the walk's
+deletion ingest recorded it, so that ingest retires the file's facts, at a rebuild as live; a `gd`
+or `gw` identity whose file is gone or extracts to the empty batch is named by no ingest, so live it
+keeps what its last fold left, and after a rebuild it holds what its latest resolvable entry gave,
+none for a migrated identity with no earlier entry (WHAT A REBUILD REPRODUCES). An identity whose
+path holds no such file is not counted: what it holds after a rebuild, nothing for a gone file with
+no resolvable entry, is its correct state. The `applied` rows of shed positions are outside spec
+101's comparison surface.
 
 **WHAT A REBUILD REPRODUCES, stated once.** An entry no source resolves is as if absent from the
 fold. For every identity whose latest entry resolves, a rebuild holds the same live facts and
@@ -231,7 +235,9 @@ accepted differences:
 
 - *An unresolved superseded entry:* the rebuild folds its neighbours as adjacent, so a design link
   or node assertion its batch dropped and the next resolved entry re-asserts keeps the earlier
-  valid-time, where the incremental graph dated it at the re-assertion.
+  valid-time, where the incremental graph dated it at the re-assertion; a later entry of a
+  generation the rebuild already holds is a re-recording there, so every fact of the identity, code
+  structural edges included, is dated and sourced at the earlier entry.
 - *A migrated identity:* its earliest surviving recording carries the identity's earliest pre-ledger
   valid-time (MIGRATION), so a fact asserted from that recording on takes it, and a rewritten entry
   stands at the first position of its identity's latest derived batch, where the incremental graph
@@ -324,10 +330,12 @@ file is opened, a rebuild left unfinished, naming it and `rigger setup`; then, w
 stands, an owed `graph.db`, as today. The lock is a named local of the verb, released when it
 returns, so the one transaction runs under it. ONE public function, criterion 7's, answers the
 third: `Projector::rebuild_unfinished(held: &RebuildLock) -> Result<bool, Error>`, beside
-`Projector::rebuild`, unchanged, is true when the shadow `Projector::rebuild` resumes stands, or the
-graph file stands and holds the rebuild cursor whose tail it finishes, read through the private
-`shadow_of` and `rebuild_tail_owed` that `Projector::rebuild` reads, so each keeps one spelling; it
-takes the held lock, so no caller asks without one, and opens no graph file that does not stand.
+`Projector::rebuild`, unchanged, is true when the graph file stands and holds the rebuild cursor
+whose tail `Projector::rebuild` finishes or has beside it the shadow it resumes, and false when no
+graph file stands, a shadow beside a deleted `graph.db` being the forbidden state OUT OF SCOPE
+names, read through the private `shadow_of` and `rebuild_tail_owed` that `Projector::rebuild` reads,
+so each keeps one spelling; it takes the held lock, so no caller asks without one, and opens no
+graph file that does not stand.
 `REBUILD_IN_PROGRESS`, the one spelling of the second, reads "graph.db.lock is held by another
 `rigger setup` or `rigger reset`", true of every holder. It appends nothing, folds nothing and
 writes no projection or ledger row to `graph.db`, its owed refusal's open bringing the schema up as
@@ -546,7 +554,7 @@ row inserter, THE STORE REFUSES block):
 | `a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted`, `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` (`sqlite.rs`) | 6 | moved onto `Store::reclaim_space`'s injectable step |
 | `discipline_names_reset_derived_as_the_event_logs_own_prune` (`docs.rs`), `the_committed_operator_documents_ship_the_derived_prunes_guidance` | 6 | staging sentences re-expressed as held in memory; the `--derived` wording re-expressed by 7 |
 | kept properties: `tests/reset_derived_live_writer_guard_periphery.rs` (both refusals), `reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backend_it_needs` (sqlite only), `the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_literally`, `reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order`, `each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exactly_both`, `the_reclamation_the_command_reports_is_the_space_the_file_actually_lost`, `a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_to` (asserting each blob read and hashed under `tree_root(store_dir)`, not the working directory's top level), the console floor tests of `tests/dash_console_stream_periphery.rs` | 7 | re-homed onto `rigger reset --derived`, the console tests over a hand-built gap |
-| the compaction's selection, carries and per-type report (the prune tests of `sqlite.rs`, `tests/compaction_generations_periphery.rs`, `tests/reset_derived_compaction.rs`, `tests/reset_derived_compaction_periphery.rs` but its nested-worktree test), every preview- or measurement-versus-prune comparison (`measure_derived_duplication_counts_superseded_generations_as_the_prune_selects_them`, `bare_reset_previews_superseded_generations_and_the_real_prune_removes_exactly_that`) and the menu-agreement tests (`bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune_and_mutates_nothing`, `reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_still_refuses`, the three `count_derived_duplicates_*` of `tests/reset_menu_previews_periphery.rs`) | 7 | deleted: the compaction's selection and its preview die; `read_live_selection`'s tests stay |
+| the compaction's selection, carries and per-type report (the prune tests of `sqlite.rs`, `tests/compaction_generations_periphery.rs` but its tests calling neither `prune_derived_index` nor `count_derived_duplicates` (its rebuild, live-selection, key-parts, setup, owed-graph and rebuild-lock tests, their lock text DOCUMENT EDITS' and their derived seeding the last row's), `tests/reset_derived_compaction.rs`, `tests/reset_derived_compaction_periphery.rs` but its nested-worktree test), every preview- or measurement-versus-prune comparison (`measure_derived_duplication_counts_superseded_generations_as_the_prune_selects_them`, `bare_reset_previews_superseded_generations_and_the_real_prune_removes_exactly_that`) and the menu-agreement tests (`bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune_and_mutates_nothing`, `reset_composes_derived_with_runs_bare_reset_previews_it_and_an_unknown_mode_still_refuses`, the three `count_derived_duplicates_*` of `tests/reset_menu_previews_periphery.rs`) | 7 | deleted but for a test another row names, which that row disposes: the compaction's selection and its preview die; `read_live_selection`'s tests stay |
 | the other menu tests of `tests/reset_menu.rs` | 8 | re-expressed over `Store::count_derived` |
 | the log-bloat tests of `tests/validate_advisories.rs` | 9 | re-expressed over `Store::count_derived` |
 | contract-suite tests of a store property on derived fixtures | 10 | re-expressed over ledger entries, both backends |
@@ -684,15 +692,15 @@ pin its text:
   whose latest recording is already a ledger entry above derived rows, an out-of-line test module, a
   path that is not a regular file, an unkeyed derived event and a keyed one whose replay key does
   not parse, the unkeyed count on its own line, a regular file standing at `graph.db`'s shadow path
-  refused naming `rigger setup` with nothing deleted, and the rebuild lock held by the test refused
-  with the `REBUILD_IN_PROGRESS` text, asserted in `tests/cli.rs`, with each rewritten entry at the
-  first position of its identity's latest derived batch, every identity's earliest surviving
-  recording dated at its earliest recorded valid-time, the test module's entry recording `excluded:
-  true`, no projection or ledger row written to `graph.db`, a rebuild of the migrated store reaching
-  the live facts the keyed recordings asserted and the current generations the store held before for
-  the files the tree holds unchanged, the bytes reclaimed reported, nothing to shed when run again
-  while still reclaiming, and, in `src/cli/hygiene.rs`'s tests, `reset_derived` handed a failing
-  hash function failing before any row changes, and in
+  beside it refused naming `rigger setup` with nothing deleted, and the rebuild lock held by the
+  test refused with the `REBUILD_IN_PROGRESS` text, asserted in `tests/cli.rs`, with each rewritten
+  entry at the first position of its identity's latest derived batch, every identity's earliest
+  surviving recording dated at its earliest recorded valid-time, the test module's entry recording
+  `excluded: true`, no projection or ledger row written to `graph.db`, a rebuild of the migrated
+  store reaching the live facts the keyed recordings asserted and the current generations the store
+  held before for the files the tree holds unchanged, the bytes reclaimed reported, nothing to shed
+  when run again while still reclaiming, and, in `src/cli/hygiene.rs`'s tests, `reset_derived`
+  handed a failing hash function failing before any row changes, and in
   `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`'s tests `Projector::rebuild_unfinished`
   over a standing shadow, a graph file holding the cursor, neither and no graph file. This criterion
   OWNS the migration, `Projector::rebuild_unfinished`, the reworded `REBUILD_IN_PROGRESS`,
