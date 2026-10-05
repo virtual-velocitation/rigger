@@ -1024,6 +1024,23 @@ mod tests {
     use crate::eventstore::Event;
     use crate::ledger::{AttentionEntry, RequiredItem};
 
+    /// Every scratch walk classifies a per-unit cache by one predicate (spec 113, THE GATE
+    /// SCRATCH ROOT HAS ONE LIFECYCLE): the text after a `cargo-target-` or `rigger-gate-`
+    /// prefix, empty included, and nothing for any other name.
+    #[test]
+    fn unit_scratch_slug_names_the_unit_of_a_cache_or_gate_scratch_root_and_nothing_else() {
+        assert_eq!(unit_scratch_slug("cargo-target-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("rigger-gate-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("cargo-target-"), Some(""));
+        assert_eq!(unit_scratch_slug("rigger-gate-"), Some(""));
+        assert_eq!(unit_scratch_slug("cargo-target"), None);
+        assert_eq!(unit_scratch_slug("rigger-gate"), None);
+        assert_eq!(unit_scratch_slug("rigger-wt-unit-7"), None);
+        assert_eq!(unit_scratch_slug("cargo-mutants-unit-7"), None);
+        assert_eq!(unit_scratch_slug("x-rigger-gate-unit-7"), None);
+        assert_eq!(unit_scratch_slug(""), None);
+    }
+
     /// A reject's verdict line names the items it requires fixed - each one's finding, the
     /// file it is in, whether it is a correctness defect, and the shape of a defect that
     /// recurs across sites - read by the one verdict-line parse beside the rest of the

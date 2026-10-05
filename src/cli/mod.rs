@@ -6651,6 +6651,15 @@ mod tests {
                 .join("events.db"),
             b"not-a-store-either",
         );
+        // A unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache too,
+        // holding the build copies a gate's tool makes there: pruned the same way.
+        write_file(
+            &root
+                .join("rigger-gate-unit-9")
+                .join("cargo-mutants-copy")
+                .join("events.db"),
+            b"not-a-store-at-all",
+        );
         let mut found: Vec<String> = find_shadow_stores(root)
             .iter()
             .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
@@ -6808,6 +6817,16 @@ mod tests {
             &scratch.join("cargo-target-unit-6").join("i.rlib"),
             &[0u8; 128],
         );
+        // The same two units' gate scratch roots (`rigger-gate-<slug>`, spec 113): the dead
+        // one reported among the caches with its size, the live one omitted.
+        write_file(
+            &scratch.join("rigger-gate-unit-99-ghost").join("rerun.list"),
+            &[0u8; 256],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-6").join("rerun.list"),
+            &[0u8; 64],
+        );
         // A shadow store inside the dead worktree.
         write_file(
             &scratch
@@ -6841,8 +6860,9 @@ mod tests {
             vec![
                 ("cargo-target".to_string(), 2048),
                 ("cargo-target-unit-99-ghost".to_string(), 512),
+                ("rigger-gate-unit-99-ghost".to_string(), 256),
             ],
-            "the shared orphan cache and the DEAD unit's per-unit cache are residue; the LIVE unit's per-unit cache is omitted"
+            "the shared orphan cache and the DEAD unit's per-unit cache and gate scratch root are residue; the LIVE unit's are omitted"
         );
         assert_eq!(
             report.shadow_stores,
@@ -6948,6 +6968,16 @@ mod tests {
             &scratch.join("cargo-target-unit-dead").join("d.rlib"),
             &[0u8; 7],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) counts in the
+        // per-unit caches category beside its cache sibling.
+        write_file(
+            &scratch.join("rigger-gate-unit-live").join("rerun.list"),
+            &[0u8; 20],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-dead").join("rerun.list"),
+            &[0u8; 100],
+        );
         write_file(
             &scratch.join("cargo-target").join("shared.rlib"),
             &[0u8; 900],
@@ -6961,10 +6991,28 @@ mod tests {
         assert_eq!(worktrees.dead_bytes, 40, "only the dead unit's worktree");
         assert_eq!(
             unit_caches.total_bytes,
-            3 + 7,
-            "live + dead per-unit cache bytes"
+            3 + 7 + 20 + 100,
+            "live + dead per-unit cache and gate scratch root bytes"
         );
-        assert_eq!(unit_caches.dead_bytes, 7, "only the dead unit's cache");
+        assert_eq!(
+            unit_caches.dead_bytes,
+            7 + 100,
+            "only the dead unit's cache and gate scratch root"
+        );
+        let mut reclaimable: Vec<PathBuf> = unit_caches
+            .reclaimable
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        reclaimable.sort();
+        assert_eq!(
+            reclaimable,
+            vec![
+                scratch.join("cargo-target-unit-dead"),
+                scratch.join("rigger-gate-unit-dead"),
+            ],
+            "the reclaimable list holds the dead unit's cache and gate scratch root, never the live one's"
+        );
         assert_eq!(build_cache.total_bytes, 900);
         assert_eq!(
             build_cache.dead_bytes, 900,
@@ -7520,6 +7568,21 @@ mod tests {
             &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
             &[0u8; 8],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
+        // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
+        // reclaimed. A `cargo-mutants-<slug>` an earlier binary left matches no arm and stays.
+        write_file(
+            &scratch.join("rigger-gate-live-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("rigger-gate-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("cargo-mutants-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
         // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
         // owner) - the unbounded per-agent build-cache leak spec 34 names.
         write_file(
@@ -7559,8 +7622,20 @@ mod tests {
             &std::collections::HashSet::new(),
         );
         assert_eq!(
-            removed, 4,
-            "exactly the four non-live-owned entries are reclaimed"
+            removed, 5,
+            "exactly the five non-live-owned entries are reclaimed"
+        );
+        assert!(
+            scratch.join("rigger-gate-live-unit").exists(),
+            "the LIVE unit's gate scratch root is spared"
+        );
+        assert!(
+            !scratch.join("rigger-gate-dead-unit").exists(),
+            "the DEAD unit's gate scratch root is reclaimed"
+        );
+        assert!(
+            scratch.join("cargo-mutants-dead-unit").exists(),
+            "a cargo-mutants-<slug> an earlier binary left matches no arm and is never reclaimed"
         );
 
         // Live-owned scratch: spared.

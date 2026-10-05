@@ -5841,16 +5841,16 @@ mod tests {
                 "built.rlib",
                 "panel-0",
             );
-        /// Spec 91, THE GATE ENVIRONMENT: the `checkin` stage's `mutation` gate populates a
-        /// THIRD per-unit scratch sibling - `cargo-mutants-<slug>` - alongside the build
-        /// cache. It must be reclaimed on the SAME dominant graceful path, or every
-        /// gracefully-terminated unit leaks its cargo-mutants build debris exactly as an
+        /// Spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE: every gate that runs for a unit
+        /// is handed a THIRD per-unit scratch sibling - `rigger-gate-<slug>` - alongside the
+        /// build cache. It must be reclaimed on the SAME dominant graceful path, or every
+        /// gracefully-terminated unit leaks whatever its gates left there exactly as an
         /// un-reclaimed cache would.
-        worktree_remove_also_reclaims_the_sibling_mutants_root:
+        worktree_remove_also_reclaims_the_sibling_gate_scratch_root:
             assert_remove_reclaims_the_unit_sibling(
-                UNIT_MUTANTS_PREFIX,
-                "mutated",
-                "outcomes.json",
+                UNIT_GATE_SCRATCH_PREFIX,
+                "gated",
+                "rerun.list",
                 "panel-1",
             );
         /// Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
