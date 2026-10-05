@@ -1,8 +1,10 @@
 //! THE PRINCIPLE GATES ARE DEFINITION: the gates that hold every unit to the engineering
 //! principles mechanically are declared in the workflow `rigger init` scaffolds for a consumer
-//! project, each listed on the stages it guards. That scaffolded workflow is the one workflow this
-//! file reads, loaded through the production parser (`rigger::config_store::load`), so a gate that
-//! is merely mentioned in a comment, or declared but never listed on a stage, fails.
+//! project from the gate template set matching its language, each listed on the stages it
+//! guards. That scaffolded workflow, written beside a root `Cargo.toml` from the Rust set, is the
+//! one workflow this file reads, loaded through the production parser
+//! (`rigger::config_store::load`), so a gate that is merely mentioned in a comment, or declared
+//! but never listed on a stage, fails.
 
 mod common;
 use common::cli::{run_rigger, temp_project};
@@ -14,83 +16,72 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-/// One principle gate: its id, the stages that must list it, and the gates it must run before
-/// wherever both are listed.
-struct PrincipleGate {
-    id: &'static str,
-    stages: &'static [&'static str],
-    precedes: &'static [&'static str],
-}
-
-const PRINCIPLE_GATES: &[PrincipleGate] = &[
-    PrincipleGate {
-        id: "boundary",
-        stages: &["implement", "checkin"],
-        precedes: &[],
-    },
-    // The audit gate regenerates `docs/audit/*` before it asserts, so it must run before the
-    // `test` gate, whose plain `cargo test` includes the audit's drift guards: a unit whose
-    // only audit difference is a stale generated catalog is then never red.
-    PrincipleGate {
-        id: "audit",
-        stages: &["implement", "checkin"],
-        precedes: &["test"],
-    },
-    PrincipleGate {
-        id: "red-before-green",
-        stages: &["implement"],
-        precedes: &[],
-    },
-];
-
-/// Every principle gate missing from the workflow at `root`: undeclared, or not listed on a stage
-/// it guards.
-fn missing_principle_gates(root: &Path) -> Vec<String> {
-    let cfg = rigger::config_store::load(root.to_str().unwrap())
-        .unwrap_or_else(|e| panic!("the workflow at {} must load: {e}", root.display()));
-    let wf = &cfg.workflow;
-    let mut missing = Vec::new();
-    for gate in PRINCIPLE_GATES {
-        if !wf.gates.contains_key(gate.id) {
-            missing.push(format!("gate `{}` is not declared", gate.id));
-        }
-        for stage in gate.stages {
-            let gates = wf
-                .stages
-                .get(*stage)
-                .map(|s| s.gates.clone())
-                .unwrap_or_default();
-            let Some(at) = gates.iter().position(|g| g == gate.id) else {
-                missing.push(format!("stage `{stage}` does not list gate `{}`", gate.id));
-                continue;
-            };
-            for later in gate.precedes {
-                if gates
-                    .iter()
-                    .position(|g| g == later)
-                    .is_some_and(|l| l < at)
-                {
-                    missing.push(format!(
-                        "stage `{stage}` runs gate `{later}` before gate `{}`",
-                        gate.id
-                    ));
-                }
-            }
-        }
-    }
-    missing
-}
-
-/// A consumer project scaffolded by `rigger init` carries every principle gate on the stages it
-/// guards and every persona checklist line ([`PERSONA_CHECKLIST`]).
-#[test]
-fn a_scaffolded_consumer_project_carries_every_principle_gate_and_checklist_line() {
+/// A fixture project holding a root `Cargo.toml`, after `rigger init` ran in it.
+fn rust_project_after_init() -> tempfile::TempDir {
     let dir = temp_project();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let mut missing = missing_principle_gates(dir.path());
-    missing.extend(missing_checklist_lines(dir.path()));
-    assert!(missing.is_empty(), "the scaffolded .rigger/: {missing:#?}");
+    dir
+}
+
+/// `rigger init` beside a root `Cargo.toml` writes the Rust gate template set's workflow: it loads
+/// through `config_store::load`, declares exactly the Rust set's gates and lists them on the
+/// implement and check-in stages in order - the one pin of the Rust set's gate ids and stage
+/// lists - and the scaffolded personas carry every checklist line ([`PERSONA_CHECKLIST`]).
+#[test]
+fn a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_line() {
+    let dir = rust_project_after_init();
+    let cfg = rigger::config_store::load(dir.path().to_str().unwrap())
+        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"));
+    let wf = &cfg.workflow;
+    assert_eq!(
+        wf.gates.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["build", "fmt", "lint", "red-before-green", "test"],
+        "the Rust set declares exactly its five gates"
+    );
+    assert_eq!(
+        wf.stages["implement"].gates,
+        ["fmt", "build", "test", "lint", "red-before-green"]
+    );
+    assert_eq!(wf.stages["checkin"].gates, ["fmt", "build", "test", "lint"]);
+    let missing = missing_checklist_lines(dir.path());
+    assert!(
+        missing.is_empty(),
+        "the scaffolded .rigger/agents: {missing:#?}"
+    );
+}
+
+/// `rigger init` beside a root `Cargo.toml` writes every path the Rust set's `files` lists, each
+/// with the bytes of this repository's copy.
+#[test]
+fn init_writes_each_file_the_rust_set_lists() {
+    let dir = rust_project_after_init();
+    let listed = std::fs::read_to_string(repo_root().join("scaffold/rust/files")).unwrap();
+    let paths: Vec<&str> = listed.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        paths,
+        [
+            ".rigger/gates/red-before-green.sh",
+            ".rigger/gates/mutation.sh",
+            ".rigger/gates/container-env.sh",
+        ],
+        "the Rust set lists its three scripts"
+    );
+    for path in paths {
+        let shipped = std::fs::read(repo_root().join(path))
+            .unwrap_or_else(|e| panic!("the shipped {path}: {e}"));
+        let scaffolded = std::fs::read(dir.path().join(path))
+            .unwrap_or_else(|e| panic!("rigger init must write {path}: {e}"));
+        assert_eq!(
+            scaffolded, shipped,
+            "the consumer gets the same {path}, byte for byte"
+        );
+    }
 }
 
 /// The fixture's committed source file: one function and a trailing test module.
@@ -267,8 +258,8 @@ rigger::test_cases! {
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,
-/// line)`: the lens names the principle, the adjudicator never trades a boundary red away, the
-/// test lens checks red before green.
+/// line)`: the lens names the principle, the adjudicator never trades a red gate away, the test
+/// lens checks red before green.
 const PERSONA_CHECKLIST: &[(&str, &str)] = &[
     (
         "architecture-reviewer.md",
@@ -276,7 +267,7 @@ const PERSONA_CHECKLIST: &[(&str, &str)] = &[
     ),
     (
         "adjudicator.md",
-        "A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.",
+        "A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.",
     ),
     (
         "sdet.md",
@@ -301,29 +292,6 @@ fn missing_checklist_lines(root: &Path) -> Vec<String> {
 fn every_persona_carries_its_principle_gate_checklist_line() {
     let missing = missing_checklist_lines(&repo_root());
     assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
-}
-
-/// The check-in mutation gate's logic lives in ONE shipped script, and `rigger init` writes the
-/// identical file into a consumer project, so the sweep's bounds and scope reach every consumer
-/// rather than living in this repository alone.
-/// The script sources the container runtime snippet from beside itself, so `rigger init`
-/// writes that file too, identical as well.
-#[test]
-fn the_mutation_gate_runs_the_shipped_script_and_init_writes_the_same_script() {
-    let dir = temp_project();
-    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    for file in ["mutation.sh", "container-env.sh"] {
-        let path = format!(".rigger/gates/{file}");
-        let shipped = std::fs::read_to_string(repo_root().join(&path))
-            .unwrap_or_else(|e| panic!("the shipped {path}: {e}"));
-        let scaffolded = std::fs::read_to_string(dir.path().join(&path))
-            .unwrap_or_else(|e| panic!("rigger init must write {path}: {e}"));
-        assert_eq!(
-            scaffolded, shipped,
-            "the consumer gets the same {path}, byte for byte"
-        );
-    }
 }
 
 /// The container runtime snippet a gate that runs tests sources, relative to the worktree.
