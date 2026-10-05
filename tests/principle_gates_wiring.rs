@@ -12,6 +12,7 @@ use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
 use common::shell_outcome;
+use rigger::config::RIGGER_DIR;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -444,4 +445,208 @@ fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
 fn the_container_snippet_goes_on_without_a_container_cli() {
     let (out, _, _) = source_container_snippet(true, false, Some("0"));
     assert_eq!(out.lines().count(), 1, "{out}");
+}
+
+/// The committed implementer persona (`.rigger/agents/rust-engineer.md`), whitespace-
+/// normalized (newlines and indentation collapsed to single spaces) so a pure reflow of a
+/// wrapped paragraph never false-fails or false-passes a contiguous-phrase check.
+fn implementer_persona_normalized() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(RIGGER_DIR)
+        .join("agents")
+        .join("rust-engineer.md");
+    let persona = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+    persona.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The committed implementer persona carries (`true`) or never carries (`false`) each
+/// `(carried, clause, why)` contiguous clause.
+fn assert_implementer_persona_pins(clauses: &[(bool, &str, &str)]) {
+    let normalized = implementer_persona_normalized();
+    for (carried, clause, why) in clauses {
+        assert_eq!(
+            normalized.contains(clause),
+            *carried,
+            "{why}; got:\n{normalized}"
+        );
+    }
+}
+
+rigger::test_cases! {
+    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
+    /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
+    /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
+    /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
+    /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
+    /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
+    /// template to pin. The mutant accounting contract those tests protected now lives in
+    /// this persona's prose for when it is spawned as the `checkin` stage, after every
+    /// `implement` unit has already integrated and the `mutation` gate (spec 91 criterion 2)
+    /// has already swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
+    /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
+    /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
+    /// ground non-code files, so no unit can own a Markdown blast radius").
+    implementer_persona_pins_the_checkin_stage_survivor_closing_contract:
+        assert_implementer_persona_pins(&[
+        // One contiguous-phrase check, not two independently-satisfiable fragments: a
+        // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
+        // sentences (destroying the "this runs only when you are the checkin stage" gating
+        // relation) must fail this test, not pass it.
+        (
+            true,
+            "When you are spawned for the `checkin` stage",
+            "the survivor-closing step must be gated on being spawned for the checkin stage, \
+             as one contiguous clause, not two independently-satisfiable fragments",
+        ),
+        (
+            true,
+            "read `mutants.out/outcomes.json`",
+            "the checkin stage must read the mutation gate's own outcomes file, never \
+             stdout",
+        ),
+        // A survivor is always a failure (Byran 2026-09-26): one contiguous clause naming
+        // the two ways it closes and the instrument narrowing that never closes it, so a
+        // persona that re-admits a justification (an equivalence argument recorded as an
+        // exclusion) fails this test.
+        (
+            true,
+            "(surviving) mutant is always a failure: it is closed by a test that fails on it \
+             or by rewriting the site so the mutable token disappears, never by an \
+             `exclude_re` or `mutants::skip`",
+            "a missed mutant closes only by a failing test or a rewrite, never by an \
+             exclusion, as one contiguous clause",
+        ),
+        (
+            false,
+            "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
+             equivalence reason",
+            "no justification closes a survivor: the kill-or-justify disjunction is gone",
+        ),
+        (
+            true,
+            "a miss still standing means the checkin stage is not done",
+            "a missed mutant still standing must leave the checkin stage not done - the \
+             consequence clause itself",
+        ),
+        // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
+        // contiguous clause each for the id convention, the no-new-event-type + deterministic
+        // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
+        // decomposed persona that keeps these as scattered bare words could satisfy
+        // independent substring checks while dropping the actual shape a downstream consumer
+        // parses against.
+        (
+            true,
+            "record the accounting as one `<unit>-mutation-accounting`",
+            "the accounting must be recorded under the deterministic <unit>-mutation- \
+             accounting id (spec 73's shape)",
+        ),
+        (
+            true,
+            "DecisionMade (no new event type), deterministically ordered",
+            "the accounting must be one DecisionMade, no new event type, deterministically \
+             ordered",
+        ),
+        (
+            true,
+            "caught | missed-caught (naming the catching test) | unviable | timeout",
+            "the accounting's per-mutant status vocabulary must be exhaustive and in this \
+             order",
+        ),
+        (
+            true,
+            "A diff touching no Rust file records a provably-empty accounting",
+            "an empty-diff checkin must still record a provably-empty accounting, never skip \
+             the step",
+        ),
+        // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
+        // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
+        // owns running cargo-mutants, so it never re-invokes the sweep by hand.
+        (
+            true,
+            "the `mutation` gate itself owns running cargo-mutants",
+            "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
+             the agent never re-runs it by hand",
+        ),
+    ]);
+    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+    /// The persona must carry the checkpoint rule literally, using the design's own
+    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+    /// below, which spec 91 landed first and which this persona edit must not regress).
+    implementer_persona_pins_the_checkpoint_before_long_work_contract:
+        assert_implementer_persona_pins(&[
+        // The trigger and the action as ONE contiguous clause - a decomposed persona
+        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+        // the "before long work, commit first" relation) must fail this test.
+        (
+            true,
+            "Before a mutation sweep or any full lane suite, commit your current \
+             tree",
+            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+             suite, as one contiguous clause",
+        ),
+        // The exact commit-message template spec 89 Design specifies, verbatim.
+        (
+            true,
+            "`wip(<unit>): checkpoint before <mutation sweep | lane suite>`",
+            "the checkpoint commit message template must be pinned verbatim",
+        ),
+        (
+            true,
+            "squash that checkpoint into your round's own commit \
+             when you report",
+            "the checkpoint must be squashed into the round commit on report, never \
+             left standing as a separate commit",
+        ),
+        // Never the banned invocation phrase (spec 91): this persona edit must not
+        // regress the already-landed no-cargo-mutants-invocation drift guard.
+        (
+            false,
+            "cargo mutants",
+            "the checkpoint rule must use the design's own vocabulary (\"mutation \
+             sweep\"), never the literal invocation phrase \"cargo mutants\"",
+        ),
+    ]);
+}
+
+/// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
+/// `implementer_persona_pins_the_checkin_stage_survivor_closing_contract` above: no persona
+/// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
+/// `cargo mutants` itself any more. Only the `checkin` stage's `mutation` GATE (spec 91
+/// criterion 2, `.rigger/workflow.yml`) runs that command now; a persona merely reading or
+/// discussing its output (`mutants.out/outcomes.json`, or the noun "cargo-mutants") is
+/// fine, so this checks for the two-word INVOCATION phrase specifically, never the bare
+/// words "cargo" and "mutants" appearing anywhere in unrelated sentences.
+#[test]
+fn no_persona_under_rigger_agents_invokes_cargo_mutants() {
+    let agents_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(RIGGER_DIR)
+        .join("agents");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&agents_dir)
+        .unwrap_or_else(|e| panic!("read committed {}: {e}", agents_dir.display()))
+    {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !normalized.contains("cargo mutants"),
+            "{} must never invoke `cargo mutants` itself - only the checkin stage's \
+             `mutation` gate does now (spec 91); got:\n{normalized}",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 7,
+        "expected to check every seeded persona file under {} (adjudicator, adversary, \
+         architecture-reviewer, planner, rust-engineer, sdet, sdet-author, plus any \
+         others); checked {checked}",
+        agents_dir.display()
+    );
 }
