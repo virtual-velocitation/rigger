@@ -2837,7 +2837,7 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
-        _mutants_dir: &str,
+        _gate_scratch: &str,
         _build_cache_dir: &str,
         _build_cache_guard: &str,
         _store_fence: &str,

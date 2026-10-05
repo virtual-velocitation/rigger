@@ -8326,14 +8326,12 @@ impl RunCtx<'_> {
         // never the unit's own `rigger-wt-<slug>` dir, which the merge already landed out of),
         // whose basename is no `rigger-wt-<slug>` either, so the plain sibling derivation below
         // yields nothing there - yet the merged tree it certifies is still THIS unit's, and (a)
-        // a `checkin` stage's `mutation` gate must sweep it into a real root (`mkdir -p ""`
-        // fails the gate before cargo-mutants ever runs, blocking the integration of a green
-        // unit - spec 89's own check-in, 2026-09-13) and (b) the re-gate should build into the
-        // SAME warm cache the pre-merge sweep already populated, not a cold shared one. Both
-        // fall back to the path the unit's OWN worktree occupies - `unit_worktree_dir(&scratch,
-        // &st.name)`, the SAME derivation `stage_worktree` used to create it - computed ONCE
-        // here and shared by `target` and `mutants` below, so the one terminus reap
-        // (`Worktree::remove` / `sweep_terminal`) still reclaims exactly what both point at.
+        // a gate there that needs the unit's gate scratch root must be handed it (a gate that
+        // refuses an empty root would block the integration of a green unit) and (b) the
+        // re-gate should build into the SAME warm cache the pre-merge gates already populated,
+        // not a cold shared one. Both fall back to the path the unit's OWN worktree occupies -
+        // `unit_worktree_dir(&scratch, &st.name)`, the SAME derivation `stage_worktree` used to
+        // create it - computed ONCE here and shared by `target` and `gate_scratch` below.
         let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge).then(|| {
             let scratch = crate::worktree::scratch_root_from_env(
                 &self.deps.repo,
@@ -8348,21 +8346,20 @@ impl RunCtx<'_> {
                     .and_then(crate::worktree::unit_cache_sibling)
             })
             .unwrap_or_default();
-        // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): derived from the
-        // SAME `dir` and the SAME sibling shape as `target` immediately above (Gap 19's own
-        // precedent) - a `checkin` stage's `mutation` gate command creates/wipes/repopulates
-        // this dir itself each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`), never this
-        // crate. Empty for anything that owns no per-unit `target` either (a review/plan
-        // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
-        // gate, whose command never reads `$MUTANTS`. Shares `postmerge_unit_dir`'s fallback
-        // with `target` immediately above for the post-merge re-gate.
-        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
-            .or_else(|| {
-                postmerge_unit_dir.as_deref().and_then(|d| {
-                    crate::worktree::unit_sibling(d, crate::worktree::UNIT_MUTANTS_PREFIX)
+        // The unit's gate scratch root (spec 113, THE GATE SCRATCH ROOT IS HANDED
+        // GENERICALLY): the `rigger-gate-<slug>` sibling of the SAME `dir`, the SAME sibling
+        // shape as `target` immediately above, handed to every gate as `RIGGER_GATE_SCRATCH`.
+        // rigger never creates it; a gate that uses it does. Empty for a standalone review
+        // worktree or a worktree-less run, so the runner removes the variable there. Shares
+        // `postmerge_unit_dir`'s fallback with `target` for the post-merge re-gate.
+        let gate_scratch =
+            crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                .or_else(|| {
+                    postmerge_unit_dir.as_deref().and_then(|d| {
+                        crate::worktree::unit_sibling(d, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                    })
                 })
-            })
-            .unwrap_or_default();
+                .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
         // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
         // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
@@ -8519,7 +8516,7 @@ impl RunCtx<'_> {
                 &g,
                 dir,
                 &target,
-                &mutants,
+                &gate_scratch,
                 &build_cache_dir,
                 &build_cache_guard,
                 &store_fence,
@@ -8598,7 +8595,7 @@ impl RunCtx<'_> {
         g: &Gate,
         dir: &str,
         target: &str,
-        mutants: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -8609,7 +8606,7 @@ impl RunCtx<'_> {
             g,
             dir,
             target,
-            mutants,
+            gate_scratch,
             build_cache_dir,
             build_cache_guard,
             store_fence,
@@ -8651,7 +8648,7 @@ impl RunCtx<'_> {
                 g,
                 dir,
                 target,
-                mutants,
+                gate_scratch,
                 build_cache_dir,
                 build_cache_guard,
                 store_fence,
@@ -8931,7 +8928,9 @@ impl RunCtx<'_> {
                     // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
                     // shared-cache case) - so it holds the SAME shared build-cache guard
                     // every other ambient-cache gate build holds AND builds into the SAME
-                    // dir that guard protects (spec 77 criterion 5).
+                    // dir that guard protects (spec 77 criterion 5). It runs for no unit, so
+                    // its gate scratch is empty too and the runner removes
+                    // `RIGGER_GATE_SCRATCH` (spec 113).
                     let (cache_dir, guard) = self.shared_build_cache_paths();
                     let res = self.deps.gates.run(
                         &g,
@@ -9629,7 +9628,7 @@ impl RunCtx<'_> {
             // throwaway, scratch-rooted worktree checked out AT `commit` (the exact tree that
             // is about to land) via a deterministic throwaway branch, sharing the unit's own
             // warm build cache (`run_gates`'s PostMerge fallback derives it the same way it
-            // already derives the mutants root), and that worktree - dir and branch both - is
+            // derives the unit's gate scratch root), and that worktree - dir and branch both - is
             // reaped the moment the gate suite ends, pass or fail, never left for a later step
             // to find.
             let scratch = crate::worktree::scratch_root_from_env(
@@ -10056,8 +10055,9 @@ impl RunCtx<'_> {
     /// event store.
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
-        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
-            .unwrap_or_default();
+        let gate_scratch =
+            crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                .unwrap_or_default();
         let (build_cache_dir, build_cache_guard) = if target.is_empty() {
             self.shared_build_cache_paths()
         } else {
@@ -10077,7 +10077,7 @@ impl RunCtx<'_> {
             &g,
             dir,
             &target,
-            &mutants,
+            &gate_scratch,
             &build_cache_dir,
             &build_cache_guard,
             &store_fence,
@@ -31187,49 +31187,56 @@ mod tests {
     }
 
     #[test]
-    fn two_units_gate_environments_never_share_a_mutants_root() {
-        // Spec 91, THE GATE ENVIRONMENT: the identical isolation proof as
-        // `two_units_gate_environments_never_share_a_target_dir` above, for the `checkin`
-        // stage's unit-keyed `$MUTANTS` root instead of `CARGO_TARGET_DIR` - registered
-        // ALONGSIDE it (per the spec's own Design), so it must reach every gate command with
-        // the same per-unit isolation: DISTINCT, both NON-EMPTY, and each the
-        // `cargo-mutants-<unit-slug>` sibling of that unit's worktree under the run's scratch
-        // root.
+    fn two_units_gate_environments_never_share_a_gate_scratch_root() {
+        // Spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY: the identical isolation
+        // proof as `two_units_gate_environments_never_share_a_target_dir` above, for the gate
+        // scratch root every gate of a unit is handed as `RIGGER_GATE_SCRATCH`: DISTINCT, both
+        // NON-EMPTY, and each the `rigger-gate-<unit-slug>` sibling of that unit's worktree
+        // under the run's scratch root.
         let (_repo, runner, scratch) = two_unit_gate_runs();
-        assert_one_isolated_dir_per_unit(&runner.mutants_dirs(), "$MUTANTS root", &scratch, |wt| {
-            crate::worktree::unit_sibling(wt, crate::worktree::UNIT_MUTANTS_PREFIX).unwrap()
-        });
+        assert_one_isolated_dir_per_unit(
+            &runner.gate_scratches(),
+            "gate scratch root",
+            &scratch,
+            |wt| {
+                crate::worktree::unit_sibling(wt, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
+                    .unwrap()
+            },
+        );
     }
 
     #[test]
-    fn an_implement_stage_gate_round_creates_no_mutants_directory() {
-        // Spec 91, criterion 3 (NO SWEEP IN THE LOOP): an ordinary `implement` round's gate
-        // list never includes `mutation` - only the `checkin` stage (spec 91 criterion 2)
-        // does - so its real gate commands never run `rm -rf "$MUTANTS" && mkdir -p
-        // "$MUTANTS"` (the `mutation` gate's OWN command, the only place that ever
-        // materializes it - see `worktree::unit_sibling`'s own doc comment: "this
-        // crate never creates it"). Proven with a REAL `ExecRunner` (never `RecordingRunner`,
-        // which only records the env VALUE `two_units_gate_environments_never_share_a_
-        // mutants_root` above proves is non-empty, and could never distinguish "set" from
-        // "materialized"): the stage's one real gate command asserts, LIVE, mid-round, that
-        // its own non-empty $MUTANTS path does not exist on disk - immune to whatever
-        // unit-terminus cleanup runs afterward, which would otherwise make a post-hoc
-        // filesystem check pass vacuously regardless of whether the round itself ever
-        // created it.
+    fn a_gate_round_never_creates_the_gate_scratch_root() {
+        // Spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY: rigger never creates the
+        // root; a gate that uses it creates it. Proven with a REAL `ExecRunner` (never
+        // `RecordingRunner`, which only records the value handed and could never distinguish
+        // "set" from "materialized"): the stage's one real gate command asserts, LIVE,
+        // mid-round, that `$RIGGER_GATE_SCRATCH` names exactly this unit worktree's
+        // `rigger-gate-<slug>` sibling and that the path does not exist on disk - immune to
+        // whatever unit-terminus cleanup runs afterward, which would otherwise make a
+        // post-hoc filesystem check pass vacuously.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let want = crate::worktree::unit_sibling(
+            &unit_worktree_dir(&scratch, "implement-like"),
+            crate::worktree::UNIT_GATE_SCRATCH_PREFIX,
+        )
+        .unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
         cfg.workflow.gates.insert(
-            "no-mutants-dir-yet".into(),
-            gate_def(r#"test -n "$MUTANTS" && test ! -e "$MUTANTS""#),
+            "no-gate-scratch-yet".into(),
+            gate_def(&format!(
+                r#"test "$RIGGER_GATE_SCRATCH" = '{want}' && test ! -e "$RIGGER_GATE_SCRATCH""#
+            )),
         );
         cfg.workflow.stages.insert(
             "implement-like".into(),
             Stage {
                 name: "implement-like".into(),
                 agent: "worker".into(),
-                gates: vec!["no-mutants-dir-yet".into()],
+                gates: vec!["no-gate-scratch-yet".into()],
                 on_pass: "none".into(),
                 ..Default::default()
             },
@@ -31244,8 +31251,8 @@ mod tests {
         assert_ne!(
             rs.units["implement-like"].status,
             ledger::Status::Escalated,
-            "an implement-shaped stage's real gate command found its own $MUTANTS path \
-             already materialized on disk (or unset) mid-round: {:?}",
+            "a unit's real gate command found its $RIGGER_GATE_SCRATCH unset, naming another \
+             path than {want}, or already materialized on disk mid-round: {:?}",
             rs.units["implement-like"].status
         );
     }
@@ -34897,6 +34904,14 @@ mod tests {
             targets[0], "",
             "a review worktree owns no per-unit build cache: target_dir must stay empty"
         );
+        // Spec 113: a standalone review stage's gate pass (`run_fan_out_review_loop`) is
+        // handed the EMPTY gate scratch, so `ExecRunner` removes `RIGGER_GATE_SCRATCH` from
+        // its gate's environment.
+        assert_eq!(
+            runner.gate_scratches(),
+            vec![String::new()],
+            "a standalone review worktree's gate must be handed no gate scratch root"
+        );
 
         // The exact fence path production would derive: the sibling of the ACTUAL review
         // worktree `run_fan_out_stage` created, via the SAME single-source
@@ -35426,7 +35441,7 @@ mod tests {
             _g: &Gate,
             _dir: &str,
             _target: &str,
-            _mutants: &str,
+            _gate_scratch: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -36484,10 +36499,11 @@ mod tests {
         /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
         /// lets a test assert two units' gate environments never share a target (Gap 19).
         targets: Mutex<Vec<String>>,
-        /// The `$MUTANTS` unit-keyed mutants root (`mutants_dir`) handed to each run, in
-        /// invocation order (spec 91, THE GATE ENVIRONMENT) - lets a test assert two units'
-        /// gate environments never share a mutants root, mirroring `targets` above.
-        mutants_dirs: Mutex<Vec<String>>,
+        /// The gate scratch root (`gate_scratch`, exported as `RIGGER_GATE_SCRATCH`) handed to
+        /// each run, in invocation order (spec 113) - lets a test assert two units' gate
+        /// environments never share a root, and which gate passes are handed none,
+        /// mirroring `targets` above.
+        gate_scratches: Mutex<Vec<String>>,
         /// The resolved [`gate::BuildEnv`] vars handed to each run, in invocation order
         /// (spec 65) - lets a test assert the ONE build-environment authority reaches
         /// every gate build.
@@ -36539,7 +36555,7 @@ mod tests {
             RecordingRunner {
                 calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
-                mutants_dirs: Mutex::new(Vec::new()),
+                gate_scratches: Mutex::new(Vec::new()),
                 build_envs: Mutex::new(Vec::new()),
                 store_fences: Mutex::new(Vec::new()),
                 build_cache_guards: Mutex::new(Vec::new()),
@@ -36563,8 +36579,8 @@ mod tests {
         fn targets(&self) -> Vec<String> {
             self.targets.lock().unwrap().clone()
         }
-        fn mutants_dirs(&self) -> Vec<String> {
-            self.mutants_dirs.lock().unwrap().clone()
+        fn gate_scratches(&self) -> Vec<String> {
+            self.gate_scratches.lock().unwrap().clone()
         }
         fn store_fences(&self) -> Vec<String> {
             self.store_fences.lock().unwrap().clone()
@@ -36582,7 +36598,7 @@ mod tests {
             g: &Gate,
             dir: &str,
             target: &str,
-            mutants_dir: &str,
+            gate_scratch: &str,
             build_cache_dir: &str,
             build_cache_guard: &str,
             store_fence: &str,
@@ -36591,10 +36607,10 @@ mod tests {
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
-            self.mutants_dirs
+            self.gate_scratches
                 .lock()
                 .unwrap()
-                .push(mutants_dir.to_string());
+                .push(gate_scratch.to_string());
             self.build_cache_dirs
                 .lock()
                 .unwrap()
@@ -36704,7 +36720,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
-            _mutants: &str,
+            _gate_scratch: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -39564,12 +39580,12 @@ mod tests {
         // content cache and RUNS for real - and it must run in its OWN throwaway,
         // scratch-rooted worktree, NEVER `self.deps.repo` (the operator's own checkout, where a
         // stray untracked file used to be able to flip the verdict) and never a bare/empty
-        // root: a `checkin` stage's `mutation` gate there runs `rm -rf "$MUTANTS" && mkdir -p
-        // "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate (`mkdir: cannot create directory
-        // ''`) and blocks the integration of a green unit - exactly what spec 89's own
-        // check-in hit (2026-09-13). It must still export the SAME unit-keyed `$MUTANTS` root
-        // AND `$CARGO_TARGET_DIR` the pre-merge sweep already warmed, and its own worktree must
-        // be gone once its gate suite ends.
+        // root. Its throwaway worktree is no `rigger-wt-<slug>` dir, so its gate scratch root
+        // and its cache fall back to the unit's own worktree path (spec 113): it must be handed
+        // the unit's `rigger-gate-<slug>` sibling as `$RIGGER_GATE_SCRATCH` - a gate wired
+        // there that needs a root refuses on an empty one and blocks the integration of a
+        // green unit - AND the `$CARGO_TARGET_DIR` the pre-merge gates already warmed, and its
+        // own worktree must be gone once its gate suite ends.
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
@@ -39588,7 +39604,7 @@ mod tests {
             "must never be visible to a gate\n",
         )
         .unwrap();
-        // Every gate run appends "<physical cwd> <$MUTANTS> <$CARGO_TARGET_DIR> <marker>" to a
+        // Every gate run appends "<physical cwd> <$RIGGER_GATE_SCRATCH> <$CARGO_TARGET_DIR> <marker>" to a
         // log OUTSIDE the repo (an untracked file inside it would dirty the very tree the
         // integrate lock guards).
         let log_dir = tempfile::tempdir().unwrap();
@@ -39602,7 +39618,7 @@ mod tests {
         cfg.workflow.gates.insert(
             "g".into(),
             gate_def(&format!(
-                "printf '%s %s %s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" \"$CARGO_TARGET_DIR\" \
+                "printf '%s %s %s %s\\n' \"$(pwd -P)\" \"$RIGGER_GATE_SCRATCH\" \"$CARGO_TARGET_DIR\" \
                  \"$([ -f operator-only.marker ] && echo present || echo absent)\" >> '{}'",
                 log.display()
             )),
@@ -39644,12 +39660,12 @@ mod tests {
         let seen = std::fs::read_to_string(&log).unwrap();
         let repo_physical = std::fs::canonicalize(&repo_path).unwrap();
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let mutants_roots: HashSet<String> = ["unit-a", "unit-b"]
+        let gate_scratch_roots: HashSet<String> = ["unit-a", "unit-b"]
             .iter()
             .map(|u| {
                 crate::worktree::unit_sibling(
                     &unit_worktree_dir(&scratch, u),
-                    crate::worktree::UNIT_MUTANTS_PREFIX,
+                    crate::worktree::UNIT_GATE_SCRATCH_PREFIX,
                 )
                 .unwrap()
             })
@@ -39672,7 +39688,7 @@ mod tests {
         for line in seen.lines() {
             let mut fields = line.split(' ');
             let cwd = fields.next().unwrap_or_default();
-            let mutants = fields.next().unwrap_or_default();
+            let gate_scratch = fields.next().unwrap_or_default();
             let target = fields.next().unwrap_or_default();
             let marker = fields.next().unwrap_or_default();
             // No gate run - pre-merge OR post-merge - may ever use the operator's own
@@ -39687,7 +39703,7 @@ mod tests {
                 "no gate run may see the operator's untracked file; cwd={cwd}, log:\n{seen}"
             );
             if is_postmerge_cwd(cwd) {
-                postmerge_lines.push((cwd, mutants, target));
+                postmerge_lines.push((cwd, gate_scratch, target));
             }
         }
         assert_eq!(
@@ -39696,16 +39712,16 @@ mod tests {
             "exactly one post-merge re-gate should have run for real (a content-cache miss \
              over the merged two-MARK tree); gate runs seen:\n{seen}"
         );
-        let (pm_cwd, pm_mutants, pm_target) = postmerge_lines[0];
+        let (pm_cwd, pm_gate_scratch, pm_target) = postmerge_lines[0];
         assert!(
             pm_cwd.starts_with(&scratch),
             "the post-merge re-gate must run under the scratch root, got {pm_cwd:?}"
         );
         assert!(
-            mutants_roots.contains(pm_mutants),
-            "the post-merge re-gate must get the integrating unit's own unit-keyed $MUTANTS \
-             root (one of {mutants_roots:?}), never an empty or foreign one; got \
-             {pm_mutants:?} in:\n{seen}"
+            gate_scratch_roots.contains(pm_gate_scratch),
+            "the post-merge re-gate must get the integrating unit's own rigger-gate-<slug> \
+             $RIGGER_GATE_SCRATCH root (one of {gate_scratch_roots:?}), never an empty or \
+             foreign one; got {pm_gate_scratch:?} in:\n{seen}"
         );
         assert!(
             cache_roots.contains(pm_target),
@@ -40425,6 +40441,18 @@ mod tests {
             deferred_at > inline_at,
             "the deferred gate must run AFTER the inline gate (at end-of-run), not during the inline lifecycle; calls: {calls:?}"
         );
+        // Spec 113: the deferred gate (`run_deferred_gates`) is handed the EMPTY gate scratch
+        // beside its empty `dir`, so it runs with `RIGGER_GATE_SCRATCH` removed.
+        let gate_scratches = runner.gate_scratches();
+        assert_eq!(
+            gate_scratches.len(),
+            calls.len(),
+            "one gate scratch recorded per gate run: {gate_scratches:?}"
+        );
+        assert_eq!(
+            gate_scratches[deferred_at], "",
+            "the deferred gate must be handed no gate scratch root: {gate_scratches:?}"
+        );
 
         // The deferred gate emitted a GateVerdict at the boundary, and (since it
         // passed) the run is fully done.
@@ -40476,7 +40504,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
-            _mutants: &str,
+            _gate_scratch: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -41363,7 +41391,7 @@ mod tests {
             _g: &Gate,
             dir: &str,
             _target: &str,
-            _mutants: &str,
+            _gate_scratch: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
