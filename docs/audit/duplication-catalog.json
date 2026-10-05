@@ -1141,7 +1141,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4ae070d5d001",
+    "id": "dup-da85af2c5bd7",
     "classification": "semantic",
     "sites": [
       {
@@ -2528,6 +2528,21 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "e398d83a9b990d53"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"\\n  shadow store: probe/.rigger/events.db (2B)\"",
+        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -3996,7 +4011,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 570 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 573 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
