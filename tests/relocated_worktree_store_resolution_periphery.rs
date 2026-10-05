@@ -19,13 +19,20 @@
 //! from inside a REAL git-linked worktree living outside the repo's own directory tree - the
 //! shape every real spawn's worktree takes once this criterion's relocated scratch default is
 //! in effect (spec 89 Design, SCRATCH LIVES OUTSIDE THE STORE TREE).
+//!
+//! The context-graph reads an agent runs from that same worktree (`rigger graph --show`,
+//! `rigger graph --around` and the spawn MCP server's `rigger_graph`) cross the same boundary:
+//! they answer from the owning repository's graph, never a graph opened in the worktree.
 
 use std::path::Path;
 
 mod common;
+use common::cli::open_graph;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
+use common::fixtures::apply_code_entity;
 use common::git::run_git;
+use common::mcp::McpSession;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -55,6 +62,77 @@ fn seed_store(root: &Path) {
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(&rigger).expect("create .rigger");
     std::fs::File::create(rigger.join("events.db")).expect("create events.db");
+}
+
+/// Add a git-linked worktree of `root` at `worktree` on the new branch `branch` - placed by the
+/// caller wholly outside `root`'s own directory tree, the shape a real spawn's worktree takes.
+fn add_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
+    assert!(
+        run_git(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                worktree.to_str().unwrap(),
+                "-b",
+                branch
+            ],
+        )
+        .status
+        .success(),
+        "git worktree add must succeed for the fixture"
+    );
+}
+
+/// A committed repository at `root` with a store and a graph holding one code entity,
+/// `a.rs::alpha`, folded under the identity the binary resolves for `root` - the owning graph a
+/// lookup from any of its worktrees must answer from - and a relocated worktree of it at
+/// `worktree` on `branch`, carrying the `.rigger/` a unit worktree checks out (its tracked
+/// workflow) with no graph of its own. Answers nothing; the caller owns both directories.
+fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
+    git_init_committed(root);
+    seed_store(root);
+    // Seeded at a position the store below never reaches, so an emit the test folds never
+    // collides with it on the graph's per-position applied ledger.
+    apply_code_entity(
+        &open_graph(root),
+        100_001,
+        "a.rs",
+        "alpha",
+        "function",
+        1,
+        "rust",
+    );
+    add_relocated_worktree(root, worktree, branch);
+    std::fs::create_dir_all(worktree.join(".rigger")).expect("create the worktree's .rigger");
+    std::fs::write(
+        worktree.join(".rigger").join("workflow.yml"),
+        "stages: []\n",
+    )
+    .expect("write the worktree's workflow");
+}
+
+/// The structured answer of one `rigger_graph` tool call with `arguments` over `mcp`.
+fn graph_tool(mcp: &mut McpSession, arguments: serde_json::Value) -> serde_json::Value {
+    let resp = mcp.call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": arguments}),
+    );
+    resp["result"]["structuredContent"].clone()
+}
+
+/// The node ids of a `rigger_graph` `around` answer.
+fn node_ids(around: &serde_json::Value) -> Vec<String> {
+    around["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| n["id"].as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Every `DecisionMade` payload recorded in `root`'s real store, read back through a FRESH
@@ -93,22 +171,7 @@ fn rigger_emit_from_a_relocated_worktree_resolves_the_owning_repos_real_store() 
 
     let elsewhere = tempfile::tempdir().expect("create the relocated-scratch sibling dir");
     let worktree = elsewhere.path().join("rigger-wt-x");
-    assert!(
-        run_git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                worktree.to_str().unwrap(),
-                "-b",
-                "rigger/u/x",
-            ],
-        )
-        .status
-        .success(),
-        "git worktree add must succeed for the fixture"
-    );
+    add_relocated_worktree(root, &worktree, "rigger/u/x");
 
     let marker = "probe-outside-the-repo-tree";
     let (stdout, stderr, ok) = run_rigger(
@@ -141,6 +204,92 @@ fn rigger_emit_from_a_relocated_worktree_resolves_the_owning_repos_real_store() 
     );
 }
 
+/// A graph read run from a relocated worktree - `rigger graph --show` and `rigger graph --around`,
+/// the lookups every spawned agent is told to run from its worktree - answers from the OWNING
+/// repository's graph, and never opens a graph of its own in the worktree: a worktree carries no
+/// graph, so a read rooted there answers every lookup empty and the agent loses the graph.
+#[test]
+fn rigger_graph_show_and_around_from_a_relocated_worktree_answer_from_the_owning_repos_graph() {
+    let dir = tempfile::tempdir().expect("create the fixture repo dir");
+    let root = dir.path();
+    let elsewhere = tempfile::tempdir().expect("create the relocated-scratch sibling dir");
+    let worktree = elsewhere.path().join("rigger-wt-g");
+    owning_graph_with_relocated_worktree(root, &worktree, "rigger/u/g");
+
+    let (show, stderr, ok) = run_rigger(&worktree, &["graph", "--show", "alpha"]);
+    assert!(
+        ok,
+        "graph --show from the worktree must succeed; stderr: {stderr}"
+    );
+    assert!(
+        show.contains("show a.rs::alpha"),
+        "graph --show from the worktree must find the entity in the owning graph; got:\n{show}"
+    );
+    let (around, stderr, ok) = run_rigger(&worktree, &["graph", "--around", "a.rs"]);
+    assert!(
+        ok,
+        "graph --around from the worktree must succeed; stderr: {stderr}"
+    );
+    assert!(
+        around.contains("a.rs::alpha"),
+        "graph --around from the worktree must answer the owning graph's neighbourhood; got:\n{around}"
+    );
+    assert!(
+        !worktree.join(".rigger").join("graph.db").exists(),
+        "a graph read from the worktree must never open a graph.db of its own there"
+    );
+}
+
+/// The spawn MCP server a spawn's host starts in its worktree (`rigger mcp --spawn <id>`) serves
+/// `rigger_graph` from the OWNING repository's graph, and folds an emit it serves into that same
+/// graph - never a graph.db of its own in the worktree, which would answer every lookup empty and
+/// swallow every fold.
+#[test]
+fn rigger_mcp_spawn_from_a_relocated_worktree_serves_and_folds_into_the_owning_repos_graph() {
+    let dir = tempfile::tempdir().expect("create the fixture repo dir");
+    let root = dir.path();
+    let elsewhere = tempfile::tempdir().expect("create the relocated-scratch sibling dir");
+    let worktree = elsewhere.path().join("rigger-wt-m");
+    owning_graph_with_relocated_worktree(root, &worktree, "rigger/u/m");
+
+    let mut mcp = McpSession::start_with(&worktree, &["mcp", "--spawn", "u/implementer#0"]);
+    let show = graph_tool(&mut mcp, serde_json::json!({"show": "alpha"}));
+    assert_eq!(
+        show["site"]["id"], "a.rs::alpha",
+        "rigger_graph show from the worktree must find the owning graph's entity; got:\n{show}"
+    );
+    let around = graph_tool(&mut mcp, serde_json::json!({"around": "a.rs"}));
+    assert!(
+        node_ids(&around).contains(&"a.rs::alpha".to_string()),
+        "rigger_graph around from the worktree must answer the owning graph's neighbourhood; \
+         got:\n{around}"
+    );
+    let emitted = mcp.call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade",
+            "data": {"id": "d-probe", "summary": "s", "governs": ["a.rs"]}}}),
+    );
+    assert_eq!(
+        emitted["result"]["structuredContent"]["folded"], true,
+        "the spawn server's emit must fold; got:\n{emitted}"
+    );
+    let _ = mcp.finish();
+
+    let (owning, stderr, ok) = run_rigger(root, &["graph", "--around", "a.rs"]);
+    assert!(
+        ok,
+        "graph --around at the owning root must succeed; stderr: {stderr}"
+    );
+    assert!(
+        owning.contains("d-probe"),
+        "the spawn server's emit must be folded into the owning graph; got:\n{owning}"
+    );
+    assert!(
+        !worktree.join(".rigger").join("graph.db").exists(),
+        "the spawn server must never open a graph.db of its own in the worktree"
+    );
+}
+
 /// Spec 89, criterion 2: when a git-linked worktree lives outside the repo tree AND a FOREIGN
 /// project's store sits at one of the worktree's own filesystem ancestors (an unrelated
 /// project, or a leftover fixture, parked under the same cache-home mount the relocated
@@ -168,22 +317,7 @@ fn rigger_emit_from_a_relocated_worktree_never_climbs_into_a_foreign_ancestors_s
     seed_store(elsewhere.path());
     let worktree = elsewhere.path().join("nested").join("rigger-wt-y");
     std::fs::create_dir_all(worktree.parent().unwrap()).expect("create the worktree's parent");
-    assert!(
-        run_git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "-q",
-                worktree.to_str().unwrap(),
-                "-b",
-                "rigger/u/y",
-            ],
-        )
-        .status
-        .success(),
-        "git worktree add must succeed for the fixture"
-    );
+    add_relocated_worktree(root, &worktree, "rigger/u/y");
 
     let marker = "probe-past-a-foreign-ancestor";
     let (_stdout, stderr, ok) = run_rigger(

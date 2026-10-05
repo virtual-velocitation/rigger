@@ -150,7 +150,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{line}");
         }
     }
-    let cfg = config_store::load(".")?;
+    let config_store::LoadedConfig {
+        config: cfg,
+        gate_requirements,
+    } = config_store::load_with_gate_requirements(".")?;
     // Static verdict-line lint (spec 18, unit 1): a gating adjudicator whose persona only
     // records its verdict via `rigger_emit` - never on its result output - is a guaranteed
     // stall, because the integration gate reads the result channel, not emitted events. This
@@ -196,18 +199,14 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             Ok(w) => w,
             Err(e) => return Err(e.to_string().into()),
         };
-    // Mutation gate SURFACE (spec 91, moved from the retired `build.mutation` switch): a
-    // declared `mutation` gate with no `cargo-mutants` resolvable already failed above
-    // (`config::load`'s `Config::validate` rejects it at run start, before `cfg` could
-    // exist), so by this point declaring the gate at all means it is resolvable - the
-    // report reads the SAME gates-map signal `Config::validate` keys its refusal on, never
-    // a second, independently re-derived check.
-    let mutation_gate_declared = cfg.workflow.gates.contains_key(MUTATION_GATE_ID);
-    for line in build_environment_report(
-        wrapper.as_deref(),
-        &cfg.workflow.build,
-        mutation_gate_declared,
-    ) {
+    // Gate requirement SURFACE (spec 113): one line per declared gate, in gate-id order,
+    // rendered from the resolution the load itself made - a missing requirement already
+    // refused the load above, before any output, so every line names a resolved path and no
+    // second lookup runs here.
+    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build)
+        .into_iter()
+        .chain(gate_requirement_lines(&gate_requirements))
+    {
         println!("{line}");
     }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
@@ -352,22 +351,11 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
 ///   configured, so an operator sees it even with the wrapper off. `0` is the documented
 ///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
 ///   bare, easily-misread `0`.
-/// - the checkin-stage mutation gate, ALWAYS (spec 91, moved from the retired
-///   `build.mutation` switch): `declared` or `not configured`, given whether the workflow's
-///   `gates:` map names [`MUTATION_GATE_ID`] - the SAME gates-map signal `Config::validate`'s
-///   run-start check keys its cargo-mutants-on-PATH refusal on, so a declared gate with the
-///   binary absent already failed before this could be reached; by the time this prints,
-///   `declared` and "cargo-mutants resolvable" always agree.
 ///
 /// Pure formatting over already-resolved values, so it is unit-tested without touching
 /// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
-/// edge that calls this (the mutation gate's presence is a plain, already-in-hand `bool`,
-/// nothing to resolve).
-fn build_environment_report(
-    wrapper: Option<&str>,
-    build: &config::BuildConfig,
-    mutation_gate_declared: bool,
-) -> Vec<String> {
+/// edge that calls this.
+fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) -> Vec<String> {
     let mut lines = Vec::new();
     match wrapper {
         Some(w) => {
@@ -387,15 +375,30 @@ fn build_environment_report(
             build.max_concurrent.to_string()
         }
     ));
-    lines.push(format!(
-        "mutation gate ({MUTATION_GATE_ID:?}): {}",
-        if mutation_gate_declared {
-            "declared"
-        } else {
-            "not configured"
-        }
-    ));
     lines
+}
+
+/// The `gate <id>:` lines `rigger validate` prints after its build budget line (spec 113):
+/// one per declared gate, in the order the load's resolution holds them (gate-id order),
+/// `gate <id>: requires nothing`, or each resolved entry as `<name> at <path>` joined by
+/// `, `. Pure over that resolution, which holds resolved entries only, so no line can name
+/// an unresolved requirement.
+fn gate_requirement_lines(gates: &[GateRequirements]) -> Vec<String> {
+    gates
+        .iter()
+        .map(|g| {
+            let requires = if g.requires.is_empty() {
+                "nothing".to_string()
+            } else {
+                g.requires
+                    .iter()
+                    .map(|r| format!("{} at {}", r.name, r.at.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!("gate {}: requires {requires}", g.gate)
+        })
+        .collect()
 }
 
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
@@ -1062,12 +1065,9 @@ pub(super) fn measure_footprint(
         Err(why) => (RunUnits::default(), Some(why)),
     };
     let slugs = live_slugs(&run_units.live_branches);
-    let cache_home = cache_home_from(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"));
-    let mutation_root = cache_home.map(|h| mutation_scratch_root(&h));
     let categories = footprint_report(
         &rigger_dir,
         &scratch,
-        mutation_root.as_deref(),
         &slugs,
         &run_units.dead_slugs,
         run_units.current_run_scratch_leaf.as_deref(),
@@ -1163,6 +1163,7 @@ mod tests {
     use crate::test_support::git_ok_with_identity;
     use crate::test_support::git_out;
     use crate::test_support::tool_available;
+    use rigger::gate::ResolvedRequirement;
     use std::process::Command;
 
     /// Spec 20, unit 2 (the drift seam, at the unit level); spec 68, criterion 1 (the gate
@@ -1825,14 +1826,13 @@ mod tests {
             max_concurrent: 4,
             mutation: String::new(),
         };
-        let lines = build_environment_report(Some("sccache"), &build, false);
+        let lines = build_environment_report(Some("sccache"), &build);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: sccache".to_string(),
                 "build cache dir: /tmp/example-cache".to_string(),
                 "build budget: 4".to_string(),
-                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -1850,13 +1850,12 @@ mod tests {
             max_concurrent: 8,
             mutation: String::new(),
         };
-        let lines = build_environment_report(None, &build, false);
+        let lines = build_environment_report(None, &build);
         assert_eq!(
             lines,
             vec![
                 "build wrapper: none".to_string(),
                 "build budget: 8".to_string(),
-                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -1870,41 +1869,67 @@ mod tests {
             max_concurrent: 0,
             ..Default::default()
         };
-        let lines = build_environment_report(None, &build, false);
+        let lines = build_environment_report(None, &build);
         assert!(
             lines.iter().any(|l| l == "build budget: unlimited"),
             "a zero max_concurrent must report as unlimited, got: {lines:?}"
         );
     }
 
-    /// Spec 91: `rigger validate` reports the mutation gate as `declared` when the workflow's
-    /// `gates:` map names it - given the ALREADY-IN-HAND bool, mirroring the wrapper report's
-    /// own already-resolved convention.
+    // --- Spec 113: `rigger validate` reports each declared gate's requirements from the
+    // load's own resolution. ---
+
+    /// A gate requiring nothing renders `requires nothing`.
     #[test]
-    fn build_environment_report_reports_mutation_gate_declared() {
-        let build = config::BuildConfig::default();
-        let lines = build_environment_report(None, &build, true);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l == "mutation gate (\"mutation\"): declared"),
-            "a declared mutation gate must report declared, got: {lines:?}"
+    fn gate_requirement_lines_render_a_gate_requiring_nothing() {
+        let gates = vec![GateRequirements {
+            gate: "build".into(),
+            requires: vec![],
+        }];
+        assert_eq!(
+            gate_requirement_lines(&gates),
+            vec!["gate build: requires nothing".to_string()]
         );
     }
 
-    /// The `not configured` counterpart of
-    /// `build_environment_report_reports_mutation_gate_declared` - the default case for every
-    /// workflow that never declares a `mutation` gate.
+    /// A gate requiring two executables renders each as `<name> at <path>`, joined by `, `,
+    /// one line per gate in the gate-id order the resolution holds.
     #[test]
-    fn build_environment_report_reports_mutation_gate_not_configured() {
-        let build = config::BuildConfig::default();
-        let lines = build_environment_report(None, &build, false);
-        assert!(
-            lines
-                .iter()
-                .any(|l| l == "mutation gate (\"mutation\"): not configured"),
-            "an undeclared mutation gate must report not configured, got: {lines:?}"
+    fn gate_requirement_lines_render_each_resolved_entry_joined_in_gate_id_order() {
+        let gates = vec![
+            GateRequirements {
+                gate: "build".into(),
+                requires: vec![],
+            },
+            GateRequirements {
+                gate: "sweep".into(),
+                requires: vec![
+                    ResolvedRequirement {
+                        name: "sweeper".into(),
+                        at: PathBuf::from("/home/u/.cargo/bin/sweeper"),
+                    },
+                    ResolvedRequirement {
+                        name: "cargo-nextest".into(),
+                        at: PathBuf::from("/usr/local/bin/cargo-nextest"),
+                    },
+                ],
+            },
+        ];
+        assert_eq!(
+            gate_requirement_lines(&gates),
+            vec![
+                "gate build: requires nothing".to_string(),
+                "gate sweep: requires sweeper at /home/u/.cargo/bin/sweeper, \
+                 cargo-nextest at /usr/local/bin/cargo-nextest"
+                    .to_string(),
+            ]
         );
+    }
+
+    /// A workflow declaring no gate prints no gate line.
+    #[test]
+    fn gate_requirement_lines_of_no_gates_is_empty() {
+        assert_eq!(gate_requirement_lines(&[]), Vec::<String>::new());
     }
 
     // --- Spec 71, criterion 3: `rigger validate` detects a stream whose position order and

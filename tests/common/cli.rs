@@ -22,6 +22,23 @@ pub fn temp_project() -> tempfile::TempDir {
     dir
 }
 
+/// A [`temp_project`] holding a root `Cargo.toml`: the marker the Rust gate template set detects.
+pub fn cargo_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write the fixture Cargo.toml");
+    dir
+}
+
+/// `root`'s workflow loaded through the production parser, which validates it.
+pub fn loaded_config(root: &Path) -> rigger::config::Config {
+    rigger::config_store::load(root.to_str().unwrap())
+        .unwrap_or_else(|e| panic!("the scaffolded workflow must load: {e}"))
+}
+
 /// A [`temp_project`] the compiled binary accepts as a courier target: its own git repo (so the
 /// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
 /// to fabricate one from a cwd with no existing store (spec 05).

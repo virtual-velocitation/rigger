@@ -26,6 +26,9 @@ use std::sync::Mutex;
 
 mod common;
 use common::git::temp_git_project_with_commit;
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::gate_name_in;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -627,6 +630,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert(
@@ -885,6 +889,74 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
             "the {role:?} review prompt must carry the grep-fallback reporting instruction; \
              prompt was:\n{prompt}"
         );
+    }
+}
+
+/// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: the reviewer discipline
+/// every review tier receives forbids a mutation sweep by naming the generic mechanism, never the
+/// one gate the core once knew or its tool. The conductor's in-process
+/// `every_reviewer_prompt_forbids_a_mutation_sweep` pins the assembled strings; this pins the exact
+/// bytes the lens, the adversary AND the adjudicator each receive through the `AgentDriver` port
+/// during a live fan-out `run`, so a review call site that dropped the discipline, or a core string
+/// that named the gate or its tool again, reddens here.
+#[test]
+fn every_review_spawn_is_forbidden_a_mutation_sweep_without_naming_the_gate_or_its_tool() {
+    let graph = Projector::open(":memory:", "test").unwrap();
+    let finding = json!({
+        "id": "f_sweep",
+        "by": "lens:lens",
+        "unit": "u1",
+        "summary": "a lens finding about the seed file",
+        "about": ["core.rs"],
+    });
+    let prompts = run_and_capture_review_prompts(&graph, finding);
+    let roles: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        roles,
+        vec!["lens", "adversary", "adj"],
+        "the three review tiers spawn once each, in order"
+    );
+    for (role, prompt) in &prompts {
+        assert_eq!(
+            prompt
+                .matches(
+                    "Never run a mutation sweep, directly or through a verify helper: mutation \
+                     testing belongs to the gate that sweeps, never to a review."
+                )
+                .count(),
+            1,
+            "the {role:?} review prompt carries the sweep discipline exactly once; prompt \
+             was:\n{prompt}"
+        );
+        for line in prompt.lines() {
+            assert_eq!(
+                prompt_line_gate_name(line),
+                None,
+                "the {role:?} review prompt names a gate or its tool on {line:?}; prompt \
+                 was:\n{prompt}"
+            );
+        }
+    }
+}
+
+/// The banned gate token or form a review prompt's `line` holds. A prompt is the content of a
+/// string, so every line of it is held to the rule for a line that begins inside a literal.
+fn prompt_line_gate_name(line: &str) -> Option<&'static str> {
+    gate_name_in(line, true)
+}
+
+/// A prompt line that leads with the gate id as a YAML key names the gate, exactly as a core
+/// line beginning inside a string literal does.
+#[test]
+fn a_prompt_line_leading_with_the_gate_yaml_key_is_reported() {
+    for (line, named) in [
+        ("mutation: on", Some("mutation:")),
+        ("  mutation: on", Some("mutation:")),
+        ("sweep mutation: no", None),
+        ("a mutation sweep", None),
+        ("$MUTANTS", Some("MUTANTS")),
+    ] {
+        assert_eq!(prompt_line_gate_name(line), named, "{line:?}");
     }
 }
 

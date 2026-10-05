@@ -107,6 +107,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
             ),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     let panel = ReviewPanel {

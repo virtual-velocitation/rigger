@@ -19,17 +19,15 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{
-    cache_home_from, mutation_scratch_path, mutation_scratch_root, spawn_scratch_path, ReplayDriver,
-};
+use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{DerivedPreview, PrunedDerived, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
-    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
-    MUTATION_GATE_ID, STORE_FENCE_ENV,
+    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
+    GateResult, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::instructions;
@@ -1434,8 +1432,8 @@ impl StoreLocation {
 /// see each caller's own doc comment for why). Every caller reads via
 /// [`config_store::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
 /// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
-/// just to learn two string/int fields - this project's own committed `.rigger/workflow.yml`
-/// sets `build.mutation: on`, which `validate` rejects whenever `cargo-mutants` is off PATH,
+/// just to learn two string/int fields - a committed `.rigger/workflow.yml` may declare a gate
+/// whose `requires` names an executable, which `validate` rejects whenever it is off PATH,
 /// so ANY environment invoking one of these commands without it on PATH used to silently lose
 /// a configured `defaults.workdir` (and `defaults.max_retries`) via each call site's own
 /// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
@@ -1563,6 +1561,24 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
         );
     }
     Ok((StoreLocation { dir }, sel))
+}
+
+/// The context graph a read-only graph verb (`rigger graph --around`/`--show`) answers from: the
+/// `graph.db` of the store [`require_store_dir`] resolves, under that store's identity. A read run
+/// from a linked worktree so answers from the owning repository's graph, and one run under the
+/// gate store fence from the fence - never from a `graph.db` opened in the working directory,
+/// which a worktree does not carry and which would answer every lookup empty. A project with no
+/// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
+/// its not-found note instead of refusing; every other resolution failure propagates.
+fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
+    let loc = match require_store_dir() {
+        Ok((loc, _selection)) => loc,
+        Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => StoreLocation {
+            dir: std::env::current_dir()?.join(RIGGER_DIR),
+        },
+        Err(e) => return Err(e),
+    };
+    open_graph_to_read(&loc.file("graph.db"), &loc.identity())
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -1777,7 +1793,7 @@ fn live_branches_for_sweep(
 /// best-effort and never fail the step. `authorized_root` (spec 78 round 2, decision
 /// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
 /// used to build `dir` - never re-derived here - so this reap is safe on any relocated
-/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered mutation-scratch root
+/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered scratch root
 /// under a cache home, and still never touches a process outside `authorized_root`. Off a
 /// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is
 /// the shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the
@@ -2821,7 +2837,7 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
-        _mutants_dir: &str,
+        _gate_scratch: &str,
         _build_cache_dir: &str,
         _build_cache_guard: &str,
         _store_fence: &str,
@@ -3424,8 +3440,9 @@ fn live_slugs(
 /// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
 /// that NO live unit of the current run owns - the ownership backstop that makes the
 /// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
-/// `rigger-wt-<slug>` worktree and a `cargo-target-<slug>` per-unit build cache (Gap 19)
-/// whose `<slug>` names no live unit - a prior run's killed-process leftover, or an ad-hoc
+/// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
+/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit -
+/// a prior run's killed-process leftover, or an ad-hoc
 /// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
 /// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
 /// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
@@ -3510,11 +3527,12 @@ fn reclaim_orphan_scratch(
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
-        } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-            // A per-unit / ad-hoc `cargo-target-<slug>` cache. Mirror the worktree liveness
-            // check on the reconstructed `rigger-wt-<slug>` name so a cache stays in lockstep
-            // with its unit's liveness (a live unit's cache is in use, not residue). A bare
-            // `cargo-target` (no `-<slug>` tail) never matches this prefix and is spared.
+        } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache, or a unit's gate scratch root
+            // (`rigger-gate-<slug>`, spec 113). Mirror the worktree liveness check on the
+            // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
+            // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
+            // `-<slug>` tail) never matches and is spared.
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
                 reap_then_remove_dir(&path, root_path);
@@ -3567,8 +3585,9 @@ fn scan_residue(
                 // A build cache directly under the scratch root - a shared/leftover target
                 // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
                 report.caches.push((name, dir_size_bytes(&entry.path())));
-            } else if let Some(slug) = name.strip_prefix(rigger::worktree::UNIT_CACHE_PREFIX) {
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19). It is reclaimed with
+            } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113). It is reclaimed with
                 // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
                 // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
                 // longer live - a leftover a crash stranded between removing the worktree and
@@ -3660,14 +3679,15 @@ fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
             let name = entry.file_name();
             if ft.is_dir() {
                 let n = name.to_string_lossy();
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) is pruned like the
-                // shared `cargo-target`: it never holds a real `events.db`, and descending a
-                // leaked multi-gigabyte cache would defeat this walk's cheap-beside-a-target
-                // guarantee (adv-u3gap19-shadow-walk-descends-per-unit-caches).
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
+                // (`rigger-gate-<slug>`, spec 113) is pruned like the shared `cargo-target`: it
+                // never holds a real `events.db`, and descending a leaked multi-gigabyte cache
+                // would defeat this walk's cheap-beside-a-target guarantee
+                // (adv-u3gap19-shadow-walk-descends-per-unit-caches).
                 let pruned = matches!(
                     n.as_ref(),
                     "target" | "cargo-target" | "node_modules" | ".git"
-                ) || n.starts_with(rigger::worktree::UNIT_CACHE_PREFIX);
+                ) || rigger::worktree::unit_scratch_slug(&n).is_some();
                 if !pruned {
                     stack.push(entry.path());
                 }
@@ -3964,7 +3984,8 @@ const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
-/// `cargo-target-<slug>` per-unit build caches, and the bare `cargo-target`/`target`
+/// `cargo-target-<slug>` per-unit build caches and `rigger-gate-<slug>` gate scratch roots, and the
+/// bare `cargo-target`/`target`
 /// SHARED build cache. No liveness decision is made here at all - just a name-prefix sum -
 /// so [`worktree_belongs_to_live`] is never re-derived a second time; the DEAD half of each
 /// category comes from calling [`scan_residue`] itself (see [`scratch_footprint`]), the one
@@ -3985,7 +4006,7 @@ fn scratch_totals(scratch_root: &Path) -> (u64, u64, u64) {
                 wt_total += bytes;
             } else if name == "target" || name == "cargo-target" {
                 build_cache_total += bytes;
-            } else if name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX) {
+            } else if rigger::worktree::unit_scratch_slug(&name).is_some() {
                 cache_total += bytes;
             }
         }
@@ -4023,12 +4044,13 @@ fn scratch_footprint(
     );
     let wt_dead: u64 = residue.worktrees.iter().map(|(_, bytes)| bytes).sum();
     // `residue.caches` conflates the shared cache (bare `cargo-target`/`target`) with
-    // per-unit caches (`cargo-target-<slug>`); only the latter belongs to THIS category -
-    // the shared cache's dead share is decided unconditionally above, not read from here.
+    // per-unit caches (`cargo-target-<slug>`, `rigger-gate-<slug>`); only the latter belong to
+    // THIS category - the shared cache's dead share is decided unconditionally above, not read
+    // from here.
     let dead_caches: Vec<&(String, u64)> = residue
         .caches
         .iter()
-        .filter(|(name, _)| name.starts_with(rigger::worktree::UNIT_CACHE_PREFIX))
+        .filter(|(name, _)| rigger::worktree::unit_scratch_slug(name).is_some())
         .collect();
     (
         FootprintCategory {
@@ -4099,10 +4121,9 @@ type SizedPaths = Vec<(PathBuf, u64)>;
 
 /// `root`'s direct child directories whose name is NOT in `live_leaf_names`, each with its
 /// size - the one-level DEAD half of a scratch root whose direct children
-/// are themselves spawn leaves (the mutation-scratch root's own shape: every entry
-/// directly under `<cache_home>/rigger-mutants` IS a
-/// [`crate::liveness::marker_filename`]-encoded spawn leaf,
-/// [`crate::driver::replay::mutation_scratch_path`]). A leaf present in `live_leaf_names`
+/// are themselves spawn leaves (a well-formed `agent-scratch` run-id container's own shape:
+/// every entry directly under it IS a [`crate::liveness::marker_filename`]-encoded spawn
+/// leaf, [`crate::driver::replay::spawn_scratch_path`]). A leaf present in `live_leaf_names`
 /// is spared (it is a real in-flight spawn's own scratch); everything else - a completed
 /// spawn's leaf `reclaim_spawn_scratch` has not yet reclaimed, or a leftover from a run
 /// this process no longer tracks - counts fully dead, mirroring how [`scratch_footprint`]
@@ -4210,10 +4231,8 @@ fn classify_agent_scratch(
 /// PLUS a seventh, "unowned agent scratch", the Done-when text's own added requirement: a
 /// top-level ad-hoc dir directly under `agent-scratch` with no run/spawn owner is reported
 /// separately here, never folded into "registered scratch roots"'s dead-run-keyed tally
-/// ([`classify_agent_scratch`]). `mutation_root` is `None` in a homeless environment
-/// ([`cache_home_from`] found neither `XDG_CACHE_HOME` nor `HOME`), which folds to a zero
-/// contribution rather than an error - there is nowhere the mutation-scratch root could
-/// exist there either.
+/// ([`classify_agent_scratch`]). The registered scratch roots category is `agent-scratch`
+/// alone.
 ///
 /// Pure over its filesystem reads (every call is a plain `read_dir`/`metadata` walk with
 /// no side effect), so a fixture tree with seeded files/dirs drives this directly in a
@@ -4222,7 +4241,6 @@ fn classify_agent_scratch(
 fn footprint_report(
     rigger_dir: &Path,
     scratch_root: &Path,
-    mutation_root: Option<&Path>,
     live_slugs: &std::collections::HashSet<String>,
     dead_slugs: &std::collections::HashSet<String>,
     current_run_scratch_leaf: Option<&str>,
@@ -4231,9 +4249,9 @@ fn footprint_report(
     let (store_bytes, backup_bytes) = store_and_backup_bytes(rigger_dir);
     let (worktrees, unit_caches, build_cache) =
         scratch_footprint(scratch_root, live_slugs, dead_slugs);
-    // Registered scratch roots (spec 34 `agent-scratch` + spec 77 criterion 3's mutation-
-    // scratch root, `d-p77-needs-c6-after-c3`): a spawn-keyed category, so its dead share
-    // is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not the
+    // Registered scratch roots (spec 34 `agent-scratch`): a spawn-keyed category, so its
+    // dead share is decided by SPAWN liveness (`live_spawn_leaf_names`, `current_run_units`), not
+    // the
     // unit liveness `scratch_footprint` reads above - closes
     // `adj-u77c6-verdict-reject-unflaggable-highest-stakes-category`
     // (supersedes `d-u77c6-footprint-design`'s dead_bytes:0/reclaim_hint:None narrowing,
@@ -4242,10 +4260,7 @@ fn footprint_report(
     // `adv-u77c6-registered-scratch-roots-dead-share-never-flaggable`). `agent-scratch`
     // additionally keys that liveness check by RUN, not just spawn leaf
     // (`current_run_scratch_leaf`, closing
-    // `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan`) - the
-    // mutation-scratch root has no run-id component to key on
-    // ([`crate::driver::replay::mutation_scratch_path`]'s own doc comment: "no run subdir to
-    // key on"), so it is unaffected.
+    // `sdet-u77c6r2-cross-run-leaf-collision-hides-the-highest-stakes-orphan`).
     let agent_scratch_root = scratch_root.join("agent-scratch");
     let (agent_scratch_dead, ad_hoc_entries) = classify_agent_scratch(
         &agent_scratch_root,
@@ -4258,19 +4273,6 @@ fn footprint_report(
     let ad_hoc_bytes: u64 = ad_hoc_entries.iter().map(|(_, bytes)| bytes).sum();
     let agent_scratch_well_formed_total =
         dir_size_bytes(&agent_scratch_root).saturating_sub(ad_hoc_bytes);
-    let scratch_bytes =
-        agent_scratch_well_formed_total + mutation_root.map(dir_size_bytes).unwrap_or(0);
-    // Each dead leaf with the root it was enumerated under: agent-scratch leaves sit under the
-    // scratch root, mutation-scratch leaves under the mutation-scratch root.
-    let dead_leaves: Vec<(PathBuf, u64, PathBuf)> = agent_scratch_dead
-        .into_iter()
-        .map(|(path, bytes)| (path, bytes, scratch_root.to_path_buf()))
-        .chain(mutation_root.into_iter().flat_map(|m| {
-            dead_spawn_leaves(m, live_spawn_leaf_names)
-                .into_iter()
-                .map(move |(path, bytes)| (path, bytes, m.to_path_buf()))
-        }))
-        .collect();
     vec![
         FootprintCategory {
             name: "store",
@@ -4291,12 +4293,15 @@ fn footprint_report(
         worktrees,
         FootprintCategory {
             name: "registered scratch roots",
-            total_bytes: scratch_bytes,
-            dead_bytes: dead_leaves.iter().map(|(_, bytes, _)| bytes).sum(),
+            total_bytes: agent_scratch_well_formed_total,
+            dead_bytes: agent_scratch_dead.iter().map(|(_, bytes)| bytes).sum(),
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED),
-            reclaimable: dead_leaves
+            reclaimable: agent_scratch_dead
                 .into_iter()
-                .map(|(path, _, root)| DeadEntry { path, root })
+                .map(|(path, _)| DeadEntry {
+                    path,
+                    root: scratch_root.to_path_buf(),
+                })
                 .collect(),
         },
         FootprintCategory {
@@ -6137,7 +6142,7 @@ mod tests {
 
     // --- Spec 91 checkin round 4 (op-checkin-round-4-hang-class-mutants-fail-fast-or-justify):
     // a direct, zero-wait contract test for `resolve_main_worktree_or_refuse`'s SUCCESS return
-    // value - the whole-diff mutation sweep's own machinery (cargo-mutants --in-diff, spec 91)
+    // value - the whole-diff mutation sweep's own machinery (the mutation tool, spec 91)
     // reported this mutant (line 1807, both String-literal stubs) reachable ONLY through the
     // real-subprocess suite in tests/cli.rs, whose narrowest existing coverage
     // (`serve_from_a_linked_worktree_refuses_naming_both_trees`) exercises only the REFUSAL
@@ -6633,6 +6638,15 @@ mod tests {
                 .join("events.db"),
             b"not-a-store-either",
         );
+        // A unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache too,
+        // holding the build copies a gate's tool makes there: pruned the same way.
+        write_file(
+            &root
+                .join("rigger-gate-unit-9")
+                .join("tool-copy")
+                .join("events.db"),
+            b"not-a-store-at-all",
+        );
         let mut found: Vec<String> = find_shadow_stores(root)
             .iter()
             .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
@@ -6790,6 +6804,16 @@ mod tests {
             &scratch.join("cargo-target-unit-6").join("i.rlib"),
             &[0u8; 128],
         );
+        // The same two units' gate scratch roots (`rigger-gate-<slug>`, spec 113): the dead
+        // one reported among the caches with its size, the live one omitted.
+        write_file(
+            &scratch.join("rigger-gate-unit-99-ghost").join("rerun.list"),
+            &[0u8; 256],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-6").join("rerun.list"),
+            &[0u8; 64],
+        );
         // A shadow store inside the dead worktree.
         write_file(
             &scratch
@@ -6823,8 +6847,9 @@ mod tests {
             vec![
                 ("cargo-target".to_string(), 2048),
                 ("cargo-target-unit-99-ghost".to_string(), 512),
+                ("rigger-gate-unit-99-ghost".to_string(), 256),
             ],
-            "the shared orphan cache and the DEAD unit's per-unit cache are residue; the LIVE unit's per-unit cache is omitted"
+            "the shared orphan cache and the DEAD unit's per-unit cache and gate scratch root are residue; the LIVE unit's are omitted"
         );
         assert_eq!(
             report.shadow_stores,
@@ -6930,6 +6955,16 @@ mod tests {
             &scratch.join("cargo-target-unit-dead").join("d.rlib"),
             &[0u8; 7],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) counts in the
+        // per-unit caches category beside its cache sibling.
+        write_file(
+            &scratch.join("rigger-gate-unit-live").join("rerun.list"),
+            &[0u8; 20],
+        );
+        write_file(
+            &scratch.join("rigger-gate-unit-dead").join("rerun.list"),
+            &[0u8; 100],
+        );
         write_file(
             &scratch.join("cargo-target").join("shared.rlib"),
             &[0u8; 900],
@@ -6943,10 +6978,28 @@ mod tests {
         assert_eq!(worktrees.dead_bytes, 40, "only the dead unit's worktree");
         assert_eq!(
             unit_caches.total_bytes,
-            3 + 7,
-            "live + dead per-unit cache bytes"
+            3 + 7 + 20 + 100,
+            "live + dead per-unit cache and gate scratch root bytes"
         );
-        assert_eq!(unit_caches.dead_bytes, 7, "only the dead unit's cache");
+        assert_eq!(
+            unit_caches.dead_bytes,
+            7 + 100,
+            "only the dead unit's cache and gate scratch root"
+        );
+        let mut reclaimable: Vec<PathBuf> = unit_caches
+            .reclaimable
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
+        reclaimable.sort();
+        assert_eq!(
+            reclaimable,
+            vec![
+                scratch.join("cargo-target-unit-dead"),
+                scratch.join("rigger-gate-unit-dead"),
+            ],
+            "the reclaimable list holds the dead unit's cache and gate scratch root, never the live one's"
+        );
         assert_eq!(build_cache.total_bytes, 900);
         assert_eq!(
             build_cache.dead_bytes, 900,
@@ -6984,13 +7037,9 @@ mod tests {
             &[0u8; 5],
         );
 
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
-        write_file(&mutation_root.join("spawn-2").join("x"), &[0u8; 8]);
-
         let categories = footprint_report(
             &rigger_dir,
             &scratch,
-            Some(&mutation_root),
             &slugs([]),
             &slugs(["unit-dead"]),
             None,
@@ -7011,9 +7060,9 @@ mod tests {
         assert_eq!(by_name("per-unit caches").total_bytes, 0);
         assert_eq!(
             by_name("registered scratch roots").total_bytes,
-            12 + 8,
-            "the well-formed agent-scratch container + the mutation-scratch root - the \
-             ad-hoc dir's bytes are excluded"
+            12,
+            "the well-formed agent-scratch container alone - the ad-hoc dir's bytes are \
+             excluded"
         );
         assert_eq!(
             by_name("unowned agent scratch").total_bytes,
@@ -7023,24 +7072,76 @@ mod tests {
         assert_eq!(by_name("unowned agent scratch").dead_bytes, 5);
     }
 
-    #[test]
-    fn footprint_report_folds_a_none_mutation_root_to_a_zero_contribution() {
-        let root = tempfile::tempdir().unwrap();
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &root.path().join("scratch"),
-            None,
-            &slugs([]),
-            &slugs([]),
-            None,
-            &slugs([]),
+    /// Write `n` bytes at `probe-repo/<file>` inside the spawn leaf `spawn_leaf` of the run
+    /// subdir `run_leaf` under `scratch`'s `agent-scratch` - the real
+    /// `agent-scratch/<run-id>/<spawn-id>` nesting [`crate::driver::replay::spawn_scratch_path`]
+    /// creates.
+    fn seed_agent_scratch_leaf(
+        scratch: &Path,
+        run_leaf: &str,
+        spawn_leaf: &str,
+        file: &str,
+        n: usize,
+    ) {
+        write_file(
+            &scratch
+                .join("agent-scratch")
+                .join(run_leaf)
+                .join(spawn_leaf)
+                .join("probe-repo")
+                .join(file),
+            &vec![0u8; n],
         );
-        let scratch_roots = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(scratch_roots.total_bytes, 0);
-        assert_eq!(scratch_roots.dead_bytes, 0);
+    }
+
+    /// [`footprint_report`] over `scratch` with no unit liveness, `run_leaf` as the current
+    /// run's subdir and `live_leaf` its one live spawn leaf.
+    fn spawn_scoped_footprint(
+        root: &Path,
+        scratch: &Path,
+        run_leaf: &str,
+        live_leaf: &str,
+    ) -> Vec<FootprintCategory> {
+        footprint_report(
+            &root.join(".rigger"),
+            scratch,
+            &slugs([]),
+            &slugs([]),
+            Some(run_leaf),
+            &slugs([live_leaf]),
+        )
+    }
+
+    /// The category named `name` in `categories`.
+    fn category<'a>(categories: &'a [FootprintCategory], name: &str) -> &'a FootprintCategory {
+        categories.iter().find(|c| c.name == name).unwrap()
+    }
+
+    /// Seed one LIVE spawn's agent scratch and one DEAD spawn's, each `(run id, spawn id,
+    /// bytes)`, where the live spawn's run is the current run and its spawn the one live leaf;
+    /// assert "registered scratch roots" totals both and counts only the dead one dead (`why`
+    /// names the case), and return every category.
+    fn registered_scratch_roots_with(
+        live: (&str, &str, usize),
+        dead: (&str, &str, usize),
+        why: &str,
+    ) -> Vec<FootprintCategory> {
+        let root = tempfile::tempdir().unwrap();
+        let scratch = root.path().join("scratch");
+        let leaf = |id: &str| rigger::liveness::marker_filename(id).unwrap();
+        let (live_run, live_spawn) = (leaf(live.0), leaf(live.1));
+        seed_agent_scratch_leaf(&scratch, &live_run, &live_spawn, "live", live.2);
+        seed_agent_scratch_leaf(&scratch, &leaf(dead.0), &leaf(dead.1), "dead", dead.2);
+
+        let categories = spawn_scoped_footprint(root.path(), &scratch, &live_run, &live_spawn);
+        let cat = category(&categories, "registered scratch roots");
+        assert_eq!(
+            cat.total_bytes,
+            (live.2 + dead.2) as u64,
+            "every byte, live and dead"
+        );
+        assert_eq!(cat.dead_bytes, dead.2 as u64, "{why}");
+        categories
     }
 
     #[test]
@@ -7049,75 +7150,20 @@ mod tests {
         // the spec 77 Problem statement names as the worst observed leak must be able to
         // flag a dead-share breach like every other reclaimable category - mirrors
         // `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold`
-        // for THIS category, over the real `agent-scratch/<run-id>/<spawn-id>` and
-        // `<cache_home>/rigger-mutants/<spawn-id>` nesting
-        // ([`crate::driver::replay::spawn_scratch_path`] /
-        // [`crate::driver::replay::mutation_scratch_path`]'s own doc comments), not a
-        // synthetic flat fixture.
-        let root = tempfile::tempdir().unwrap();
-        let scratch = root.path().join("scratch");
-
-        let live_id = "u-live/implementer#0";
-        let dead_id = "u-dead/implementer#0";
-        let live_leaf = rigger::liveness::marker_filename(live_id).unwrap();
-        let dead_leaf = rigger::liveness::marker_filename(dead_id).unwrap();
-        let run_leaf = rigger::liveness::marker_filename("r1").unwrap();
-
-        // A LIVE spawn's own build/verify scratch, nested under this run's own subdir.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&live_leaf)
-                .join("probe-repo")
-                .join("x"),
-            &[0u8; 10],
-        );
-        // A DEAD spawn's leftover scratch - same run, no result recorded for it, but its
-        // own id is not in the live set (mirrors a hung, never-retried spawn: nothing has
+        // for THIS category, over the real `agent-scratch/<run-id>/<spawn-id>` nesting
+        // ([`crate::driver::replay::spawn_scratch_path`]'s own doc comment), not a
+        // synthetic flat fixture. The DEAD spawn shares the live one's run but has no result
+        // recorded and is not in the live set (a hung, never-retried spawn: nothing has
         // reclaimed it, and nothing else will until a real `rigger result` names it).
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&dead_leaf)
-                .join("probe-repo")
-                .join("y"),
-            &[0u8; 90],
-        );
-
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
-        // The LIVE spawn's own mutation-scratch leaf - spared.
-        write_file(&mutation_root.join(&live_leaf).join("z"), &[0u8; 5]);
-        // The DEAD spawn's orphaned mutation-scratch tree - the 47G leak class spec 77's
-        // own Problem statement names.
-        write_file(&mutation_root.join(&dead_leaf).join("w"), &[0u8; 45]);
-
-        let live_leaf_names = slugs([live_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            Some(&mutation_root),
-            &slugs([]),
-            &slugs([]),
-            Some(run_leaf.as_str()),
-            &live_leaf_names,
-        );
-        let cat = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(
-            cat.total_bytes,
-            10 + 90 + 5 + 45,
-            "every byte, live and dead"
+        let categories = registered_scratch_roots_with(
+            ("r1", "u-live/implementer#0", 10),
+            ("r1", "u-dead/implementer#0", 90),
+            "only the dead spawn's leaf - the live spawn's is spared",
         );
         assert_eq!(
-            cat.dead_bytes,
-            90 + 45,
-            "only the dead spawn's leaves in BOTH roots - the live spawn's are spared"
+            category(&categories, "registered scratch roots").reclaim_hint,
+            Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED)
         );
-        assert_eq!(cat.reclaim_hint, Some(FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED));
 
         let advisories = footprint_advisories(&categories);
         assert!(
@@ -7140,58 +7186,12 @@ mod tests {
     /// ABANDONED prior run, the other a genuinely live spawn under the CURRENT run.
     #[test]
     fn footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone() {
-        let root = tempfile::tempdir().unwrap();
-        let scratch = root.path().join("scratch");
-
-        // Both run-id subdirs' spawns share the IDENTICAL unit/attempt id - the self-hosting
-        // re-proposal shape - so they encode to the SAME spawn leaf name.
-        let spawn_id = "u77c6/implementer#2";
-        let spawn_leaf = rigger::liveness::marker_filename(spawn_id).unwrap();
-        let old_run_leaf = rigger::liveness::marker_filename("r-old-abandoned").unwrap();
-        let current_run_leaf = rigger::liveness::marker_filename("r-current").unwrap();
-
-        // The OLD, abandoned run's own orphan: never answered before that run was killed.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&old_run_leaf)
-                .join(&spawn_leaf)
-                .join("probe-repo")
-                .join("orphan"),
-            &[0u8; 500],
-        );
-        // The CURRENT run's own live spawn, reusing the SAME spawn leaf name under its OWN
-        // run-id subdir - genuinely in flight, must be spared.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&current_run_leaf)
-                .join(&spawn_leaf)
-                .join("probe-repo")
-                .join("live"),
-            &[0u8; 5],
-        );
-
-        let live_leaf_names = slugs([spawn_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            None,
-            &slugs([]),
-            &slugs([]),
-            Some(current_run_leaf.as_str()),
-            &live_leaf_names,
-        );
-        let cat = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
-        assert_eq!(cat.total_bytes, 500 + 5, "every byte, old and current");
-        assert_eq!(
-            cat.dead_bytes, 500,
+        registered_scratch_roots_with(
+            ("r-current", "u77c6/implementer#2", 5),
+            ("r-old-abandoned", "u77c6/implementer#2", 500),
             "the OLD, abandoned run's orphan under a DIFFERENT run-id subdir must count \
              dead even though its spawn leaf name is identical to the current run's live \
-             spawn - classification must key off (run_id, leaf), never leaf name alone"
+             spawn - classification must key off (run_id, leaf), never leaf name alone",
         );
     }
 
@@ -7263,15 +7263,7 @@ mod tests {
 
         // A well-formed, LIVE spawn's own container - must stay spared, and counted ONLY in
         // "registered scratch roots".
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join(&run_leaf)
-                .join(&live_leaf)
-                .join("probe-repo")
-                .join("x"),
-            &[0u8; 10],
-        );
+        seed_agent_scratch_leaf(&scratch, &run_leaf, &live_leaf, "x", 10);
         // The ad-hoc, unowned dir: a bare file sits directly inside it - no run/spawn
         // nesting at all.
         write_file(
@@ -7282,21 +7274,9 @@ mod tests {
             &[0u8; 500],
         );
 
-        let live_leaf_names = slugs([live_leaf.as_str()]);
-        let categories = footprint_report(
-            &root.path().join(".rigger"),
-            &scratch,
-            None,
-            &slugs([]),
-            &slugs([]),
-            Some(run_leaf.as_str()),
-            &live_leaf_names,
-        );
+        let categories = spawn_scoped_footprint(root.path(), &scratch, &run_leaf, &live_leaf);
 
-        let scratch_roots = categories
-            .iter()
-            .find(|c| c.name == "registered scratch roots")
-            .unwrap();
+        let scratch_roots = category(&categories, "registered scratch roots");
         assert_eq!(
             scratch_roots.total_bytes, 10,
             "the ad-hoc dir's bytes must NOT appear here"
@@ -7307,10 +7287,7 @@ mod tests {
              this dead-run bucket either"
         );
 
-        let unowned = categories
-            .iter()
-            .find(|c| c.name == "unowned agent scratch")
-            .unwrap();
+        let unowned = category(&categories, "unowned agent scratch");
         assert_eq!(unowned.total_bytes, 500);
         assert_eq!(
             unowned.dead_bytes, 500,
@@ -7349,7 +7326,6 @@ mod tests {
     fn footprint_advisories_name_reset_build_cache_for_every_class_it_reclaims() {
         let root = tempfile::tempdir().unwrap();
         let scratch = root.path().join("scratch");
-        let mutation_root = root.path().join("cache-home").join("rigger-mutants");
         write_file(&scratch.join("cargo-target-gone").join("a"), &[0u8; 10]);
         let leaf = scratch
             .join("agent-scratch")
@@ -7360,12 +7336,10 @@ mod tests {
             &scratch.join("agent-scratch").join("adhoc").join("c"),
             &[0u8; 10],
         );
-        write_file(&mutation_root.join("spawn-gone").join("d"), &[0u8; 10]);
         let none = std::collections::HashSet::new();
         let categories = footprint_report(
             &root.path().join(".rigger"),
             &scratch,
-            Some(&mutation_root),
             &none,
             &none,
             None,
@@ -7502,6 +7476,21 @@ mod tests {
             &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
             &[0u8; 8],
         );
+        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
+        // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
+        // reclaimed. A directory of another prefix matches no arm and stays.
+        write_file(
+            &scratch.join("rigger-gate-live-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("rigger-gate-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
+        write_file(
+            &scratch.join("mutation-tool-dead-unit").join("rerun.list"),
+            &[0u8; 8],
+        );
         // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
         // owner) - the unbounded per-agent build-cache leak spec 34 names.
         write_file(
@@ -7541,8 +7530,20 @@ mod tests {
             &std::collections::HashSet::new(),
         );
         assert_eq!(
-            removed, 4,
-            "exactly the four non-live-owned entries are reclaimed"
+            removed, 5,
+            "exactly the five non-live-owned entries are reclaimed"
+        );
+        assert!(
+            scratch.join("rigger-gate-live-unit").exists(),
+            "the LIVE unit's gate scratch root is spared"
+        );
+        assert!(
+            !scratch.join("rigger-gate-dead-unit").exists(),
+            "the DEAD unit's gate scratch root is reclaimed"
+        );
+        assert!(
+            scratch.join("mutation-tool-dead-unit").exists(),
+            "a directory of another prefix matches no arm and is never reclaimed"
         );
 
         // Live-owned scratch: spared.
@@ -12264,213 +12265,6 @@ mod tests {
         assert!(
             anomalies.is_empty(),
             "a marker naming a real serving dash must report no anomaly: {anomalies:?}"
-        );
-    }
-
-    /// The committed implementer persona (`.rigger/agents/rust-engineer.md`), whitespace-
-    /// normalized (newlines and indentation collapsed to single spaces) so a pure reflow of a
-    /// wrapped paragraph never false-fails or false-passes a contiguous-phrase check.
-    fn implementer_persona_normalized() -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(RIGGER_DIR)
-            .join("agents")
-            .join("rust-engineer.md");
-        let persona = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
-        persona.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    /// The committed implementer persona carries (`true`) or never carries (`false`) each
-    /// `(carried, clause, why)` contiguous clause.
-    fn assert_implementer_persona_pins(clauses: &[(bool, &str, &str)]) {
-        let normalized = implementer_persona_normalized();
-        for (carried, clause, why) in clauses {
-            assert_eq!(
-                normalized.contains(clause),
-                *carried,
-                "{why}; got:\n{normalized}"
-            );
-        }
-    }
-
-    rigger::test_cases! {
-        /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
-        /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
-        /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
-        /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
-        /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
-        /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
-        /// template to pin. The mutant accounting contract those tests protected now
-        /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
-        /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
-        /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
-        /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
-        /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
-        /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
-        /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
-        /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
-        /// ground non-code files, so no unit can own a Markdown blast radius").
-        implementer_persona_pins_the_checkin_stage_survivor_closing_contract:
-            assert_implementer_persona_pins(&[
-            // One contiguous-phrase check, not two independently-satisfiable fragments: a
-            // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
-            // sentences (destroying the "this runs only when you are the checkin stage" gating
-            // relation) must fail this test, not pass it.
-            (
-                true,
-                "When you are spawned for the `checkin` stage",
-                "the survivor-closing step must be gated on being spawned for the checkin stage, \
-                 as one contiguous clause, not two independently-satisfiable fragments",
-            ),
-            (
-                true,
-                "read `mutants.out/outcomes.json`",
-                "the checkin stage must read the mutation gate's own outcomes file, never \
-                 stdout",
-            ),
-            // A survivor is always a failure (Byran 2026-09-26): one contiguous clause naming
-            // the two ways it closes and the instrument narrowing that never closes it, so a
-            // persona that re-admits a justification (an equivalence argument recorded as an
-            // exclusion) fails this test.
-            (
-                true,
-                "(surviving) mutant is always a failure: it is closed by a test that fails on it \
-                 or by rewriting the site so the mutable token disappears, never by an \
-                 `exclude_re` or `mutants::skip`",
-                "a missed mutant closes only by a failing test or a rewrite, never by an \
-                 exclusion, as one contiguous clause",
-            ),
-            (
-                false,
-                "is either KILLED by a strengthened test or JUSTIFIED with a concrete \
-                 equivalence reason",
-                "no justification closes a survivor: the kill-or-justify disjunction is gone",
-            ),
-            (
-                true,
-                "a miss still standing means the checkin stage is not done",
-                "a missed mutant still standing must leave the checkin stage not done - the \
-                 consequence clause itself",
-            ),
-            // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
-            // contiguous clause each for the id convention, the no-new-event-type + deterministic
-            // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
-            // decomposed persona that keeps these as scattered bare words could satisfy
-            // independent substring checks while dropping the actual shape a downstream consumer
-            // parses against.
-            (
-                true,
-                "record the accounting as one `<unit>-mutation-accounting`",
-                "the accounting must be recorded under the deterministic <unit>-mutation- \
-                 accounting id (spec 73's shape)",
-            ),
-            (
-                true,
-                "DecisionMade (no new event type), deterministically ordered",
-                "the accounting must be one DecisionMade, no new event type, deterministically \
-                 ordered",
-            ),
-            (
-                true,
-                "caught | missed-caught (naming the catching test) | unviable | timeout",
-                "the accounting's per-mutant status vocabulary must be exhaustive and in this \
-                 order",
-            ),
-            (
-                true,
-                "A diff touching no Rust file records a provably-empty accounting",
-                "an empty-diff checkin must still record a provably-empty accounting, never skip \
-                 the step",
-            ),
-            // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
-            // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
-            // owns running cargo-mutants, so it never re-invokes the sweep by hand.
-            (
-                true,
-                "the `mutation` gate itself owns running cargo-mutants",
-                "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
-                 the agent never re-runs it by hand",
-            ),
-        ]);
-        /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
-        /// The persona must carry the checkpoint rule literally, using the design's own
-        /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
-        /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
-        /// below, which spec 91 landed first and which this persona edit must not regress).
-        implementer_persona_pins_the_checkpoint_before_long_work_contract:
-            assert_implementer_persona_pins(&[
-            // The trigger and the action as ONE contiguous clause - a decomposed persona
-            // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
-            // the "before long work, commit first" relation) must fail this test.
-            (
-                true,
-                "Before a mutation sweep or any full lane suite, commit your current \
-                 tree",
-                "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
-                 suite, as one contiguous clause",
-            ),
-            // The exact commit-message template spec 89 Design specifies, verbatim.
-            (
-                true,
-                "`wip(<unit>): checkpoint before <mutation sweep | lane suite>`",
-                "the checkpoint commit message template must be pinned verbatim",
-            ),
-            (
-                true,
-                "squash that checkpoint into your round's own commit \
-                 when you report",
-                "the checkpoint must be squashed into the round commit on report, never \
-                 left standing as a separate commit",
-            ),
-            // Never the banned invocation phrase (spec 91): this persona edit must not
-            // regress the already-landed no-cargo-mutants-invocation drift guard.
-            (
-                false,
-                "cargo mutants",
-                "the checkpoint rule must use the design's own vocabulary (\"mutation \
-                 sweep\"), never the literal invocation phrase \"cargo mutants\"",
-            ),
-        ]);
-    }
-
-    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
-    /// `implementer_persona_pins_the_checkin_stage_survivor_closing_contract` above: no persona
-    /// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
-    /// `cargo mutants` itself any more. Only the `checkin` stage's `mutation` GATE (spec 91
-    /// criterion 2, `.rigger/workflow.yml`) runs that command now; a persona merely reading or
-    /// discussing its output (`mutants.out/outcomes.json`, or the noun "cargo-mutants") is
-    /// fine, so this checks for the two-word INVOCATION phrase specifically, never the bare
-    /// words "cargo" and "mutants" appearing anywhere in unrelated sentences.
-    #[test]
-    fn no_persona_under_rigger_agents_invokes_cargo_mutants() {
-        let agents_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(RIGGER_DIR)
-            .join("agents");
-        let mut checked = 0;
-        for entry in std::fs::read_dir(&agents_dir)
-            .unwrap_or_else(|e| panic!("read committed {}: {e}", agents_dir.display()))
-        {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("md") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
-            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(
-                !normalized.contains("cargo mutants"),
-                "{} must never invoke `cargo mutants` itself - only the checkin stage's \
-                 `mutation` gate does now (spec 91); got:\n{normalized}",
-                path.display()
-            );
-            checked += 1;
-        }
-        assert!(
-            checked >= 7,
-            "expected to check every seeded persona file under {} (adjudicator, adversary, \
-             architecture-reviewer, planner, rust-engineer, sdet, sdet-author, plus any \
-             others); checked {checked}",
-            agents_dir.display()
         );
     }
 }

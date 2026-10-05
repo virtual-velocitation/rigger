@@ -7,7 +7,6 @@
 
 use common::git::git_ok;
 use common::repo::repo_text;
-use rigger::conductor::normalize_ws;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
@@ -1174,8 +1173,6 @@ fn scratch_falls_back_to_home_dot_cache_when_xdg_cache_home_is_unset_end_to_end(
 /// one real call site (`scratch_root_path`'s `unwrap_or_else` fallback arm dropped, an
 /// `.unwrap()` panicking on the `None` instead of degrading, or the wrong env vars read).
 /// Driven against the REAL compiled binary with BOTH env vars removed (`.env_remove`,
-/// mirroring the established homeless-environment integration-test shape
-/// `a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment`
 /// rather than mutating this shared test binary's own process environment), `rigger scratch`
 /// must still succeed, never panic, and print the OLD repo-nested default byte-identical to
 /// what `scratch_root_path`'s own fallback formula produces - never the cache-home rung and
@@ -1667,21 +1664,6 @@ fn result_prints_a_supersede_advisory_when_a_result_already_exists() {
     );
 }
 
-/// Populate one registered mutation-scratch leaf per spawn under `cache_home`
-/// (`rigger-mutants/<encoded spawn>`, each holding debris), standing in for real `cargo
-/// mutants` runs in progress under each spawn's own TMPDIR; returns the leaves in order.
-fn populated_mutation_scratch<const N: usize>(
-    cache_home: &Path,
-    leaves: [&str; N],
-) -> [std::path::PathBuf; N] {
-    leaves.map(|leaf| {
-        let d = cache_home.join("rigger-mutants").join(leaf);
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("mutants-debris.out"), [0u8; 32]).unwrap();
-        d
-    })
-}
-
 /// Write persona `id` to `<root>/.rigger/agents/<id>.md` - a sonnet agent with `tools` (the
 /// inside of the `[...]` list) whose prompt body is `body` - creating the agents dir as needed.
 fn write_agent(root: &Path, id: &str, tools: &str, body: &str) {
@@ -1762,6 +1744,41 @@ fn validate_footprint_advisories(
     (out, err)
 }
 
+/// A committed scaffold project whose seeded store holds `events`, with its hermetic
+/// [`footprint_roots`]: `(project, scratch root, cache home)`.
+fn footprint_project(
+    events: &[(&str, &str)],
+) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = committed_scaffold_project();
+    seed_store(dir.path());
+    seed_run_events(dir.path(), events);
+    let (scratch, cache_home) = footprint_roots(dir.path());
+    (dir, scratch, cache_home)
+}
+
+/// [`validate_footprint_advisories`], asserting the "registered scratch roots" category
+/// totals `total` bytes of which `dead` (`pct`%) are flagged dead - `why` names the case;
+/// returns stderr.
+fn assert_registered_scratch_roots_dead(
+    root: &Path,
+    roots: (&Path, &Path),
+    (total, dead, pct): (u64, u64, u64),
+    why: &str,
+) -> String {
+    let (out, err) = validate_footprint_advisories(root, roots.0, roots.1);
+    assert!(
+        out.contains(&format!("footprint: registered scratch roots {total}B")),
+        "every seeded byte, live and dead together; stdout:\n{out}"
+    );
+    assert!(
+        err.contains(&format!(
+            "registered scratch roots is {pct}% dead ({dead}B of {total}B reclaimable)"
+        )),
+        "{why}; stderr:\n{err}"
+    );
+    err
+}
+
 /// Write `n` bytes at `file` inside `spawn_id`'s own agent-scratch leaf of `run` under the
 /// scratch root `scratch` - the path the single authority `spawn_scratch_path` computes.
 fn seed_spawn_scratch(scratch: &Path, run: &str, spawn_id: &str, file: &str, n: usize) {
@@ -1790,7 +1807,7 @@ fn run_started_project() -> tempfile::TempDir {
 }
 
 /// Run `rigger <args...>` in `root` with `XDG_CACHE_HOME` pointed at `cache_home`, so a
-/// scratch reclaim resolves its cache-home roots there and never under the operator's real
+/// scratch reclaim resolves its scratch root there and never under the operator's real
 /// `~/.cache`; returns (stdout, stderr, success).
 fn run_rigger_with_cache_home(
     root: &Path,
@@ -1859,30 +1876,30 @@ fn agent_scratch_run_root(root: &Path, cache_home: &Path) -> std::path::PathBuf 
     .join("r1")
 }
 
-/// The registered spawn-scoped mutation-scratch root (`driver::replay::mutation_scratch_path`:
-/// `$XDG_CACHE_HOME/rigger-mutants/<spawn>`) under `cache_home`, derived by the product itself.
-fn registered_mutation_scratch_root(_root: &Path, cache_home: &Path) -> std::path::PathBuf {
-    rigger::driver::replay::mutation_scratch_root(cache_home)
-}
-
-/// For EVERY outcome ([`EVERY_REPORTED_OUTCOME`]), in a fresh live-run project: the reporting
-/// spawn `u/implementer#0`'s own populated leaf under the registered scratch root
-/// `scratch_root(root, cache_home)` is GONE the moment its result lands, while a different
-/// spawn `v/implementer#0` with no recorded result keeps its own leaf untouched. Leaves are
-/// keyed by the FULL injectively-encoded spawn id (spec 77 Design
-/// `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`); a dedicated cache home keeps
-/// `XDG_CACHE_HOME` off the operator's real `~/.cache`. `what` names the root in messages.
-fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
-    what: &str,
-    scratch_root: fn(&Path, &Path) -> std::path::PathBuf,
-) {
+/// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
+/// dedicated, rigger-assigned scratch dir the MOMENT its result is recorded - for EVERY
+/// outcome ([`EVERY_REPORTED_OUTCOME`]: a success, a reject verdict, an `--error`, and a
+/// liveness/infra fault) - while a sibling spawn with NO recorded result keeps its scratch
+/// untouched. All four outcomes reach the store through the SAME courier (`rigger result`,
+/// [`cmd_result`]): the driver records even a liveness/infra fault as `--error` +
+/// `--meta '{"liveness_class":"infra"}'` (see
+/// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so the
+/// reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is the
+/// single authority `driver::replay::spawn_scratch_path`: the run's agent-scratch root
+/// [`agent_scratch_run_root`] (`<scratch_root>/agent-scratch/<run>`) joined with the FULL
+/// injectively-encoded spawn id (spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`,
+/// `#` -> `_23`); a dedicated cache home keeps `XDG_CACHE_HOME` off the operator's real
+/// `~/.cache`. The "keeps its scratch" half falls out by construction: `cmd_result` only ever
+/// runs for the spawn being reported, so a spawn with no result is never touched.
+#[test]
+fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome() {
     for (label, args) in EVERY_REPORTED_OUTCOME {
         let dir = run_started_project();
         let root = dir.path();
         let cache_home = tempfile::tempdir().unwrap();
-        let registered = scratch_root(root, cache_home.path());
-        let done = registered.join("u_2fimplementer_230");
-        let live = registered.join("v_2fimplementer_230");
+        let run_scratch = agent_scratch_run_root(root, cache_home.path());
+        let done = run_scratch.join("u_2fimplementer_230");
+        let live = run_scratch.join("v_2fimplementer_230");
         for d in [&done, &live] {
             seed_bytes(d.join("scratch-debris"), 64);
         }
@@ -1894,361 +1911,82 @@ fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
         );
         assert!(
             !done.exists(),
-            "[{label}] a spawn's {what} must be reclaimed the moment its own result is \
+            "[{label}] a spawn's agent scratch must be reclaimed the moment its own result is \
              recorded; {} still exists",
             done.display()
         );
         assert!(
             live.exists() && live.join("scratch-debris").exists(),
-            "[{label}] a spawn with no recorded result must keep its own {what}; {} was \
+            "[{label}] a spawn with no recorded result must keep its own agent scratch; {} was \
              wrongly reclaimed",
             live.display()
         );
     }
 }
 
-rigger::test_cases! {
-    /// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
-    /// dedicated, rigger-assigned scratch dir the MOMENT its result is recorded - for EVERY
-    /// outcome (a success, a reject verdict, an `--error`, and a liveness/infra fault) - while a
-    /// sibling spawn with NO recorded result keeps its scratch untouched. All four outcomes reach
-    /// the store through the SAME courier (`rigger result`, [`cmd_result`]): the driver records
-    /// even a liveness/infra fault as `--error` + `--meta '{"liveness_class":"infra"}'` (see
-    /// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so
-    /// the reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is
-    /// the single authority `driver::replay::spawn_scratch_path`
-    /// (`<scratch_root>/agent-scratch/<run>/<sanitized id>`); the reclaim is `cmd_result`'s. The
-    /// "keeps its scratch" half falls out by construction: `cmd_result` only ever runs for the
-    /// spawn being reported, so a spawn with no result is never touched.
-    a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome:
-        assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
-            "rigger-assigned scratch",
-            agent_scratch_run_root,
-        );
-    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED): `cmd_result`'s per-spawn reclaim (spec
-    /// 34, criterion 1) gains a REGISTERED SCRATCH ROOT beyond `agent-scratch` - the
-    /// SPAWN-scoped mutation-testing dir the seeded implementer persona points `cargo mutants`'
-    /// `TMPDIR` at (`driver::replay::mutation_scratch_path`: `$XDG_CACHE_HOME/rigger-mutants/
-    /// <spawn>`, per spec 77 Design "mutation scratch is spawn-scoped, never unit-scoped"). The
-    /// moment a spawn reports its OWN result (for every outcome) its OWN mutation-scratch dir is
-    /// deleted, while a sibling spawn with no recorded result keeps its own dir untouched,
-    /// exactly like agent-scratch. A different spawn entirely, whether a different unit or a
-    /// different lane/attempt/role of the SAME unit, is covered separately (see
-    /// `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs` and
-    /// `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`), since same-unit
-    /// same-spawn cross-role/cross-lane sharing is exactly the axis the round-7 review reject
-    /// found uncovered.
-    a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome:
-        assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
-            "registered mutation-scratch dir",
-            registered_mutation_scratch_root,
-        );
-}
-
-/// Sibling of `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`,
-/// pinning the property spec 77's shift to SPAWN-scoped keying (Design "mutation scratch is
-/// spawn-scoped, never unit-scoped") introduces: only the IMPLEMENTER role ever populates a
-/// mutation-scratch dir (reviewers never run `cargo mutants`), and only the SAME spawn's own
-/// result reclaims its own leaf - a DIFFERENT role of the SAME unit+attempt must never resolve
-/// to (and so never reclaim) the implementer's leaf. This is the mirror image of the OLD
-/// bare-unit design's "any role reclaims" behavior, which the round-7 review reject found was
-/// exactly what let a fast-finishing sibling spawn's result SIGKILL a slower spawn's live
-/// `cargo mutants` subprocess sharing that one dir - under full-spawn-id keying no two distinct
-/// spawns (whatever their unit, attempt, or role) ever share a leaf, so this can no longer
-/// happen by construction, not merely by luck of test ordering.
-#[test]
-fn a_reviewers_result_never_reclaims_the_implementers_mutation_scratch() {
-    let dir = run_started_project();
-    let root = dir.path();
-
-    let cache_home = tempfile::tempdir().unwrap();
-    // The IMPLEMENTER's own populated mutation-scratch dir, standing in for a real `cargo
-    // mutants` run still in progress underneath it.
-    let implementer_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("u_2fimplementer_230");
-    std::fs::create_dir_all(&implementer_scratch).unwrap();
-    std::fs::write(implementer_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
-
-    // The ADVERSARY role of the SAME unit+attempt reports - not the implementer role that ran
-    // mutants, and not a role that ever populated a mutation-scratch dir of its own.
-    let (out, err, ok) = run_rigger_with_cache_home(
-        root,
-        cache_home.path(),
-        &["result", "u/adversary#0", "no blocking findings"],
-    );
-    assert!(
-        ok,
-        "recording the adversary's result must succeed; stdout: {out:?} stderr: {err}"
-    );
-
-    assert!(
-        implementer_scratch.exists() && implementer_scratch.join("mutants-debris.out").exists(),
-        "a reviewer's result must never reclaim (or SIGKILL a live process under) the \
-         implementer's own mutation-scratch dir for the same unit+attempt; {} was wrongly \
-         reclaimed",
-        implementer_scratch.display()
-    );
-}
-
-/// Records a result for the hostile `spawn_id` in a live-run project whose dedicated cache
-/// home already holds the registered `rigger-mutants/` root (it must exist on disk for the OS
-/// to resolve a path THROUGH it - an absent intermediate directory makes `remove_dir_all` fail
-/// closed regardless of any escape, passing for the wrong reason) plus a populated `sibling`
-/// dir (path components under the cache home), and proves the reclaim deleted neither the
-/// `survivor` dir (components under the cache home; empty = the cache home itself) nor the
-/// sibling: whatever the id resolves to, the reclaim stays a leaf UNDER the registered roots.
-fn assert_a_hostile_spawn_id_spares_its_neighbours(
-    spawn_id: &str,
-    survivor: &[&str],
-    sibling: &[&str],
-) {
+/// Records a result for the hostile `spawn_id` in a live-run project whose run `agent-scratch`
+/// root already exists (it must exist on disk for the OS to resolve a path THROUGH it - an
+/// absent intermediate directory makes `remove_dir_all` fail closed regardless of any escape,
+/// passing for the wrong reason), beside a populated sibling dir under the cache home and a
+/// populated sibling spawn leaf under that root, and proves the reclaim deleted neither the
+/// cache home, the registered root, nor either sibling: whatever the id resolves to, the
+/// reclaim stays a leaf UNDER the registered root.
+fn assert_a_hostile_spawn_id_spares_its_neighbours(spawn_id: &str) {
     let dir = run_started_project();
     let root = dir.path();
     let cache_home = tempfile::tempdir().unwrap();
-    let under_cache = |parts: &[&str]| {
-        parts
-            .iter()
-            .fold(cache_home.path().to_path_buf(), |p, c| p.join(c))
-    };
-    let mutants_root = cache_home.path().join("rigger-mutants");
-    std::fs::create_dir_all(&mutants_root).unwrap();
-    std::fs::write(mutants_root.join("mutants-debris.out"), [0u8; 8]).unwrap();
-    let sibling = under_cache(sibling);
-    std::fs::create_dir_all(&sibling).unwrap();
-    std::fs::write(sibling.join("keep-me.txt"), b"do not delete").unwrap();
+    let run_scratch = agent_scratch_run_root(root, cache_home.path());
+    std::fs::create_dir_all(&run_scratch).unwrap();
+    std::fs::write(run_scratch.join("scratch-debris.out"), [0u8; 8]).unwrap();
+    let siblings = [
+        cache_home.path().join("some-other-tools-cache"),
+        run_scratch.join("v_2fimplementer_230"),
+    ];
+    for sibling in &siblings {
+        std::fs::create_dir_all(sibling).unwrap();
+        std::fs::write(sibling.join("keep-me.txt"), b"do not delete").unwrap();
+    }
 
     record_hostile_spawn_result(root, cache_home.path(), spawn_id);
 
-    let survivor = under_cache(survivor);
-    assert!(
-        survivor.exists(),
-        "{} must never be deleted by the reclaim of spawn id {spawn_id:?}",
-        survivor.display()
-    );
-    assert!(
-        sibling.exists() && sibling.join("keep-me.txt").exists(),
-        "spawn id {spawn_id:?} must never let the reclaim escape its own leaf and delete the \
-         live sibling {}",
-        sibling.display()
-    );
-}
-
-rigger::test_cases! {
-    /// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
-    /// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, and
-    /// `unit = spawn_id.split('/').next()` (main.rs, `reclaim_spawn_scratch`) can itself equal
-    /// `".."`- directly reachable as `rigger result ".." "<text>"`, no crafted event needed. Both
-    /// `spawn_scratch_path` and `mutation_scratch_path` used to derive `<root>.join(marker_filename(
-    /// id))` with `marker_filename` passing `.` through unchanged, so a `..` id resolved to the
-    /// PARENT of the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all`
-    /// deleted everything there - an unrelated sibling directory under the operator's real cache
-    /// home, included. Prove the fix holds end to end, through the real binary: a `..` spawn id
-    /// must reclaim only a `__`-named leaf UNDER the registered roots, never escape past them.
-    a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots:
-        assert_a_hostile_spawn_id_spares_its_neighbours("..", &[], &["some-other-tools-cache"]);
-    /// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): round
-    /// 3's fix only neutralized an all-dots `marker_filename` result; at the time, a spawn id
-    /// starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the `id`
-    /// positional carries no format validation beyond non-empty) made `reclaim_spawn_scratch`'s
-    /// OWN `unit = spawn_id.split('/').next()` extraction (main.rs) resolve to the EMPTY string,
-    /// and `mutation_scratch_path(cache_home, "")` then collapsed via the documented
-    /// `PathBuf::join("")` no-op to `cache_home/rigger-mutants` - the REGISTERED ROOT ITSELF, not a
-    /// per-unit leaf under it - so `reap_then_remove_dir`'s reap-then-`remove_dir_all` wiped every
-    /// OTHER unit's mutation scratch (and killed any of their still-running `cargo mutants`
-    /// subprocesses) alongside the reporting unit's.
-    ///
-    /// Round 8's spawn-scoped redesign (spec 77 Design "mutation scratch is spawn-scoped, never
-    /// unit-scoped") removes the whole `unit = ...` extraction step this class of bug lived in:
-    /// `reclaim_spawn_scratch` now feeds `mutation_scratch_path` the raw, always-non-empty
-    /// `spawn_id` directly (`"/foo"` itself, not a substring extracted from it), so the failure
-    /// mode this test regresses is now structurally unreachable through this call site, not merely
-    /// guarded. Kept as a live end-to-end pin anyway: a leading-slash spawn id must still reclaim
-    /// only its own distinct leaf, never the registered root itself.
-    a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root:
-        assert_a_hostile_spawn_id_spares_its_neighbours("/foo", &["rigger-mutants"], &["rigger-mutants", "v"]);
-}
-
-/// Sibling of `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, proving the SAME
-/// shared-authority fix (`liveness::marker_filename` neutralizing an all-dots result) also
-/// holds for the OTHER call `reclaim_spawn_scratch` makes on the identical, unvalidated
-/// `spawn_id` two lines earlier: the pre-existing spec-34 per-spawn `agent-scratch` reclaim
-/// (`spawn_scratch_path`). This is not a hypothetical: an independent re-enumeration during the
-/// review that produced the fix reproduced this exact escape live on the UNFIXED code (a `..`
-/// spawn id resolved `spawn_scratch_path` to the PARENT of the run's `agent-scratch` root, and
-/// `reap_then_remove_dir`'s bare `remove_dir_all` wiped every other unit's live scratch
-/// alongside it) - and warned that a fix scoped only to the newly-added mutation-scratch call
-/// site would leave this pre-existing call site equally exploitable by the identical `rigger
-/// result ".."` input. The fix commit's own regression test re-drives the binary for the
-/// mutation-scratch (cache-home) half only; this test closes the matching periphery gap for the
-/// agent-scratch half, proving a sibling unit's live scratch survives the same `..` id through
-/// the real CLI.
-#[test]
-fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() {
-    let dir = run_started_project();
-    let root = dir.path();
-
-    // A dedicated cache home, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
-    // always runs both halves) never touches the operator's real ~/.cache while this test
-    // drives the `..` id through both halves of the function at once - and so the agent-scratch
-    // root built below and the CHILD process (given the SAME override further down) resolve
-    // the identical default (spec 89, criterion 2: no longer nested under `<repo>/.rigger/tmp`).
-    let cache_home = tempfile::tempdir().unwrap();
-
-    // The run's agent-scratch root, laid out exactly as spec 34's own test:
-    // `<default scratch root>/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE
-    // scratch stands in for the "every other unit's scratch" the adversary showed a `..` id
-    // could wipe through this call, one line before the mutation-scratch call the fix's own
-    // test covers.
-    let run_scratch = rigger::worktree::cache_scratch_root_from(
-        root.to_str().unwrap(),
-        Some(cache_home.path().as_os_str().to_owned()),
-        None,
-    )
-    .expect("a non-empty repo with an explicit cache home always resolves")
-    .join("agent-scratch")
-    .join("r1");
-    let sibling = run_scratch.join("v_implementer_0");
-    std::fs::create_dir_all(&sibling).unwrap();
-    std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
-
-    record_hostile_spawn_result(root, cache_home.path(), "..");
-
-    assert!(
-        run_scratch.exists(),
-        "the run's agent-scratch root itself must never be deleted by a `..`-derived reclaim \
-         path"
-    );
-    assert!(
-        sibling.exists() && sibling.join("cargo-target-debris.rlib").exists(),
-        "a `..` spawn id must never let reclaim_spawn_scratch's pre-existing agent-scratch call \
-         walk up out of the run's agent-scratch root and delete a sibling unit's live scratch; \
-         {} was wrongly removed",
-        sibling.display()
-    );
-}
-
-/// Regression for the spec-77 review reject round 6 (ADJUDICATOR VERDICT u77c2 round 6), fixed
-/// per the round-7 spec Design decision `d77-injective-scratch-naming`: rounds 3 and 5 each
-/// substituted a FIXED placeholder for a degenerate `marker_filename` result (`"_empty_"` for
-/// empty, an all-dots result's own dots mapped to `_` for the walk-upward shape) - both wrong
-/// the same way, since the placeholder was drawn from the map's own reachable output alphabet,
-/// so it could never be proven disjoint from a REAL id's own mapped output (a real id literally
-/// named an underscore-run collided with either placeholder). Round 7 replaces the whole scheme
-/// with one INJECTIVE byte-hex encoding (every byte outside `[A-Za-z0-9-]`, `_` included,
-/// becomes `_` plus two lowercase hex digits) - collisions are closed by construction, not by a
-/// case-by-case guard. Round 8's spawn-scoped redesign feeds this encoding the raw spawn id
-/// directly (no unit/attempt extraction), so this test now drives it with a spawn id rather
-/// than a unit id, unchanged otherwise. Prove it end to end through the real binary: a real
-/// spawn id `"___"` (three underscores - the exact shape round 5's empty-sentinel and round
-/// 3's all-dots-to-underscore placeholders could each collide with) encodes to its own unique
-/// leaf (`_5f_5f_5f`) and keeps that leaf's live mutation-scratch dir untouched when an
-/// UNRELATED spawn reports with a degenerate id - an all-dots id of the identical length
-/// (`"..."`, the round-3 all-dots shape, which now encodes to the DIFFERENT leaf `_2e_2e_2e`)
-/// and, separately, a leading-slash id (the round-4/5 empty-unit shape, which resolves to its
-/// own distinct leaf rather than colliding with anything real).
-#[test]
-fn a_real_underscore_run_spawns_mutation_scratch_survives_an_unrelated_degenerate_spawn_id() {
-    let cases: &[(&str, &[&str])] = &[
-        (
-            "all-dots-same-length",
-            &["result", "...", "typo'd or hostile spawn id"],
-        ),
-        (
-            "leading-slash",
-            &["result", "/foo", "typo'd or hostile spawn id"],
-        ),
-    ];
-
-    for (label, args) in cases {
-        let dir = run_started_project();
-        let root = dir.path();
-
-        // A real spawn id literally three underscores, with a live mutation-scratch dir at the
-        // path `mutation_scratch_path` actually computes for it under the injective encoding
-        // (`_` escapes to `_5f`, so "___" -> "_5f_5f_5f") - exactly the shape round 5's
-        // "_empty_" placeholder and round 3's all-dots-to-underscore placeholder could each
-        // collide with under the OLD scheme.
-        let cache_home = tempfile::tempdir().unwrap();
-        let real_spawn_scratch = cache_home.path().join("rigger-mutants").join("_5f_5f_5f");
-        std::fs::create_dir_all(&real_spawn_scratch).unwrap();
-        std::fs::write(real_spawn_scratch.join("outcomes.json"), b"{}").unwrap();
-
-        let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), args);
+    for survivor in [cache_home.path(), run_scratch.as_path()] {
         assert!(
-            ok,
-            "[{label}] recording the result must still succeed (scratch reclaim is \
-             best-effort and never fails a recorded result); stdout: {out:?} stderr: {err}"
+            survivor.exists(),
+            "{} must never be deleted by the reclaim of spawn id {spawn_id:?}",
+            survivor.display()
         );
-
+    }
+    for sibling in &siblings {
         assert!(
-            real_spawn_scratch.exists() && real_spawn_scratch.join("outcomes.json").exists(),
-            "[{label}] a real spawn id literally an underscore-run must keep its live \
-             mutation-scratch dir untouched by an unrelated degenerate spawn id; {} was \
-             wrongly removed",
-            real_spawn_scratch.display()
+            sibling.exists() && sibling.join("keep-me.txt").exists(),
+            "spawn id {spawn_id:?} must never let the reclaim escape its own leaf and delete \
+             the live sibling {}",
+            sibling.display()
         );
     }
 }
 
-/// Regression for the spec-77 review reject round 7 (ADJUDICATOR VERDICT u77c2 round 7,
-/// upheld sdet-u77c2r7-mutation-scratch-key-collides-across-speculation-lanes and
-/// adv-u77c2r7-shared-lane-reap-sigkills-sibling-mutants-on-any-result), fixed per round 8's
-/// spec 77 Design amendment "mutation scratch is spawn-scoped, never unit-scoped":
-/// `speculation_width > 1` (spec 13, unit 3) runs K implementer candidates of the SAME unit
-/// CONCURRENTLY, each a DIFFERENT spawn `<unit>/implementer#<lane>` in its OWN worktree
-/// (`speculation_lane_worktree` suffixes the worktree `-spec{lane}` for exactly this reason).
-/// Before this fix `mutation_scratch_path` was keyed on the bare unit id alone, so every
-/// lane's `cargo mutants` TMPDIR (and `reclaim_spawn_scratch`'s reap target) collapsed onto
-/// ONE shared directory: the first lane to report its result reclaimed (and
-/// `reap_processes_rooted_under` SIGKILLed) a SIBLING lane's still-running mutation-testing
-/// tree out from under it - no malformed input needed, just two ordinary lanes of one
-/// speculating unit. Prove the fix through the real binary: lane 0 and lane 1 of the SAME
-/// unit `u` get DISTINCT registered mutation-scratch dirs (their own full spawn ids), and
-/// reporting lane 0's result reclaims ONLY lane 0's dir while lane 1's - still populated,
-/// standing in for a lane whose `cargo mutants` subprocess is still mid-build - survives
-/// untouched. This is the literal Done-when text ("a sibling spawn with no recorded result
-/// keeps its dir") for a sibling spawn of the SAME unit, not just a different unit.
-#[test]
-fn two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs() {
-    let dir = run_started_project();
-    let root = dir.path();
-
-    // Two lanes of unit `u` (spawn_id(unit, role, lane) - identical unit, different
-    // attempt/lane, so their FULL spawn ids differ only in the trailing digit), each with a
-    // populated mutation-scratch dir standing in for a real `cargo mutants` run in progress
-    // under this lane's own TMPDIR.
-    let cache_home = tempfile::tempdir().unwrap();
-    let [lane0_scratch, lane1_scratch] = populated_mutation_scratch(
-        cache_home.path(),
-        ["u_2fimplementer_230", "u_2fimplementer_231"],
-    );
-
-    // Lane 0 reports first - the fast-finishing candidate in a first-green-wins race.
-    let (out, err, ok) = run_rigger_with_cache_home(
-        root,
-        cache_home.path(),
-        &["result", "u/implementer#0", "did the work"],
-    );
-    assert!(
-        ok,
-        "recording lane 0's result must succeed; stdout: {out:?} stderr: {err}"
-    );
-
-    assert!(
-        !lane0_scratch.exists(),
-        "lane 0's own registered mutation-scratch dir must be reclaimed the moment its \
-         result is recorded; {} still exists",
-        lane0_scratch.display()
-    );
-    assert!(
-        lane1_scratch.exists() && lane1_scratch.join("mutants-debris.out").exists(),
-        "a SIBLING lane of the SAME unit, with no recorded result of its own, must keep its \
-         mutation-scratch dir untouched - reporting lane 0 must never reclaim (or SIGKILL a \
-         live process under) lane 1's still-in-progress scratch; {} was wrongly reclaimed",
-        lane1_scratch.display()
-    );
+rigger::test_cases! {
+    /// Regression for the spec-77 review reject (ADJUDICATOR VERDICT u77c2, diff d6aa314..b9dd0dd):
+    /// `cmd_result`'s positional spawn id carries NO format validation beyond non-empty, so it
+    /// can itself be `".."` - directly reachable as `rigger result ".." "<text>"`, no crafted
+    /// event needed. `spawn_scratch_path` used to derive `<root>.join(marker_filename(id))` with
+    /// `marker_filename` passing `.` through unchanged, so a `..` id resolved to the PARENT of
+    /// the registered scratch root, and `reap_then_remove_dir`'s bare `remove_dir_all` deleted
+    /// everything there. Prove the fix holds end to end, through the real binary: a `..` spawn
+    /// id must reclaim only its own hex-escaped leaf UNDER the registered root, never escape
+    /// past it.
+    a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots:
+        assert_a_hostile_spawn_id_spares_its_neighbours("..");
+    /// Regression for the spec-77 review reject round 4 (ADJUDICATOR VERDICT u77c2 round 4): a
+    /// spawn id starting with `/` (e.g. `rigger result "/foo" "text"`, directly reachable - the
+    /// `id` positional carries no format validation beyond non-empty) once collapsed the
+    /// reclaim's target to the REGISTERED ROOT ITSELF via the documented `PathBuf::join("")`
+    /// no-op. The reclaim now feeds the raw, always-non-empty `spawn_id` to the injective
+    /// encoding directly, so a leading-slash spawn id must still reclaim only its own distinct
+    /// leaf, never the registered root itself.
+    a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root:
+        assert_a_hostile_spawn_id_spares_its_neighbours("/foo");
 }
 
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
@@ -4939,6 +4677,27 @@ fn assert_the_solo_worktree_is_reclaimed(root: &Path, wt_dir: &Path, outcome: &s
     );
 }
 
+/// Plant a leftover leaf of `spawn_id` under the former `rigger-mutants` root of the cache
+/// home every `rigger` subprocess in this test resolves, holding one file; returns the leaf.
+fn plant_cache_home_leftover(spawn_id: &str) -> std::path::PathBuf {
+    let leaf = common::cache_home_mutants_leaf(&common::test_cache_home(), spawn_id);
+    std::fs::create_dir_all(&leaf).unwrap();
+    std::fs::write(leaf.join("keep"), [7u8; 32]).unwrap();
+    leaf
+}
+
+/// The leftover `leaf` [`plant_cache_home_leftover`] planted still holds its file byte for
+/// byte - `when` names the teardown that must not have touched it.
+fn assert_cache_home_leftover_intact(leaf: &Path, when: &str) {
+    assert_eq!(
+        std::fs::read(leaf.join("keep")).ok(),
+        Some(vec![7u8; 32]),
+        "{when} must never read, reap or remove anything under the cache home's former \
+         rigger-mutants root: {}",
+        leaf.display()
+    );
+}
+
 /// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
 /// existing test measures at the real binary boundary. The implementer's own regression
 /// (`a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate`,
@@ -4961,6 +4720,9 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
     // means the unit's own durable worktree is created right here, before the implementer
     // has produced any diff.
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    // Spec 113 criterion 7: a leftover of the spawn under the cache home's former
+    // `rigger-mutants` root, which neither the teardown nor its resume may touch.
+    let leftover = plant_cache_home_leftover("solo/implementer#0");
 
     // Write the implementer's "diff" directly into the worktree it was already handed - the
     // shape a real out-of-process agent takes - then record its result.
@@ -5004,6 +4766,15 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
         .is_none(),
         "a successfully integrated unit's branch must be deleted, not left on disk"
     );
+    assert_cache_home_leftover_intact(&leftover, "the integrate teardown");
+
+    // A later step resumes over the integrated unit (the branch-GC replay half).
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""done":true"#),
+        "the resumed step over the integrated unit must converge; stdout: {out:?} stderr: {err}"
+    );
+    assert_cache_home_leftover_intact(&leftover, "the resumed branch-GC over an integrated unit");
 }
 
 /// Spec 64, criterion 2's other half at the real binary boundary - the mirror image of
@@ -5026,6 +4797,9 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
 
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
+    // Spec 113 criterion 7: a leftover of the spawn under the cache home's former
+    // `rigger-mutants` root, which neither the teardown nor its resume may touch.
+    let leftover = plant_cache_home_leftover("solo/implementer#0");
 
     // The out-of-process courier reports the implementer's result.
     let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
@@ -5057,6 +4831,15 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
         .is_some(),
         "an escalated unit's branch must be RETAINED, not deleted alongside its worktree"
     );
+    assert_cache_home_leftover_intact(&leftover, "the escalation teardown");
+
+    // A later step resumes over the escalated unit.
+    let (out, err, ok) = run_rigger(root, &["step"]);
+    assert!(
+        ok && out.contains(r#""escalated":["solo"]"#),
+        "the resumed step must still report the escalated unit; stdout: {out:?} stderr: {err}"
+    );
+    assert_cache_home_leftover_intact(&leftover, "the resumed step over an escalated unit");
 }
 
 /// Spec 88, criterion 3's own Done-when, end to end through the compiled binary against
@@ -7864,113 +7647,15 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     );
 }
 
-/// Regression for the round-2/3 review reject (ADJUDICATOR VERDICT REJECT u77c2b, spec 77
-/// criterion 2 "MUTATION SCRATCH IS REAPED"): `liveness::sweep` records a hung spawn's fault
-/// via `spawn_store::record_result_if_absent` DIRECTLY, in-process (`crates/rigger-driver/src/liveness.rs`), never
-/// through `cmd_result` - so the ONLY production reclaim call site (`reclaim_spawn_scratch`,
-/// wired solely into `cmd_result`) never ran for it, leaking every hung spawn's registered
-/// mutation-scratch dir. The existing "for every outcome" test
-/// (`a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`)
-/// labels one of its four cases "liveness-fault" but drives it via a synthetic
-/// `rigger result ... --error --meta liveness_class:infra` CLI call - structurally identical
-/// to the death-courier path, NOT to the sweep's own in-process record call - so it could
-/// never catch this gap. THIS test drives the REAL sweep path end to end: a genuine stale
-/// marker plus a real second `rigger step` (mirroring
-/// `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt`'s own shape), proving
-/// the hung spawn's own registered mutation-scratch dir is reclaimed the moment the sweep
-/// records its fault, while an unrelated spawn's own dir is untouched.
-#[test]
-fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-
-    // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real ~/.cache.
-    let cache_home = tempfile::tempdir().unwrap();
-    let envs: &[(&str, &str)] = &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())];
-
-    // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
-    // carries the RESOLVED marker path the worker would touch - the single authority the
-    // sweep also reads, so the test plants the marker exactly where the sweep will look.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    let line = out.trim();
-    assert!(
-        line.contains(r#""id":"a/implementer#0""#),
-        "step 1 parks the implementer in-flight; got: {line:?}"
-    );
-    let marker_str =
-        json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
-    let marker = std::path::Path::new(&marker_str);
-
-    // Pre-populate the ABOUT-TO-HANG spawn's own registered mutation-scratch dir, standing in
-    // for a real `cargo mutants` run's build debris - and a DIFFERENT spawn's own dir (never
-    // parked by this run), which must stay untouched. Keyed by the injective byte-hex encoding
-    // (`/` -> `_2f`, `#` -> `_23`) `mutation_scratch_path` uses.
-    let [hung_scratch, other_scratch] = populated_mutation_scratch(
-        cache_home.path(),
-        ["a_2fimplementer_230", "z_2fimplementer_230"],
-    );
-
-    // Plant the SYNTHETIC STALE MARKER at the wire path (worker-write path == sweep-read path).
-    plant_stale_marker(marker);
-
-    // Step 2: the sweep finds the marker stale beyond the bound, classifies the spawn infra,
-    // and records the fault DIRECTLY via `record_result_if_absent` - never through
-    // `cmd_result` - exactly the path
-    // `step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt` already pins for the
-    // halt surfacing. THIS is also the moment the fix under test reclaims the hung spawn's
-    // own registered mutation-scratch dir.
-    let (out, err, ok) = run_rigger_envs(root, &["step"], envs);
-    assert!(
-        ok,
-        "a liveness-halted step still prints its result and exits 0; stderr: {err}"
-    );
-    let line = out.trim();
-    assert!(
-        line.contains(r#""halted":"#) && line.contains("a/implementer#0"),
-        "the hung spawn must be surfaced as a halt naming it; got: {line:?}"
-    );
-    // The sweep's OWN "liveness swept" notice fires exactly when it found a NON-EMPTY stale
-    // set (never when nothing was stale) - pinning the polarity of that guard directly, not
-    // just its downstream reclaim effect, so a flipped condition there (printing on the WRONG
-    // branch) cannot silently regress unnoticed.
-    assert!(
-        err.contains("liveness swept 1 hung spawn"),
-        "the sweep must report the hung spawn it just found; stderr: {err}"
-    );
-
-    assert!(
-        !hung_scratch.exists(),
-        "the hung spawn's own registered mutation-scratch dir must be reclaimed the moment the \
-         liveness sweep records its fault, exactly like every other outcome that reaches \
-         `cmd_result`; {} still exists",
-        hung_scratch.display()
-    );
-    assert!(
-        other_scratch.exists() && other_scratch.join("mutants-debris.out").exists(),
-        "an unrelated spawn's own mutation-scratch dir must be untouched; {} was wrongly \
-         reclaimed",
-        other_scratch.display()
-    );
-}
-
-/// Sibling of `step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault`,
-/// covering the OTHER half of the shared reclaim authority's contract:
-/// `reclaim_spawn_registered_scratch` reaps TWO categories per spawn - the plain per-spawn
-/// `agent-scratch` dir (`spawn_scratch_path`, spec 34 criterion 1) AND the registered
-/// mutation-testing scratch dir (`mutation_scratch_path`, spec 77 criterion 2) - and
-/// `cmd_step`'s liveness-sweep call site invokes it for every spawn the sweep just found
-/// stale. The sibling test above proves the mutation-scratch half at this real sweep call
-/// site; the existing "for every outcome" test
-/// (`a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`)
+/// `cmd_step`'s liveness-sweep call site invokes `reclaim_spawn_registered_scratch` for every
+/// spawn the sweep just found stale - the sweep records the fault in-process
+/// (`record_result_if_absent`), never through `cmd_result`. The existing "for every outcome"
+/// test (`a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`)
 /// proves agent-scratch reclaim for a "liveness-fault" outcome only via the SYNTHETIC
 /// `rigger result ... --error --meta liveness_class:infra` courier call - structurally the
-/// death-courier path, never the sweep's own in-process `record_result_if_absent` call - so
-/// neither test alone proves agent-scratch is ALSO reclaimed at the real sweep call site.
-/// THIS test drives the real sweep path end to end (mirroring the mutation-scratch sibling's
-/// own shape) and asserts on the plain agent-scratch dir instead, so the shared authority's
-/// full two-category contract is proven at this call site, not just one category of it.
+/// death-courier path, never the sweep's own in-process call - so THIS test drives the real
+/// sweep path end to end and asserts the hung spawn's agent-scratch dir is reclaimed at this
+/// call site too.
 #[test]
 fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fault() {
     let dir = temp_git_project_with_commit();
@@ -8443,6 +8128,53 @@ fn step_reclaims_orphaned_scratch_while_sparing_the_live_worker_area() {
     );
 }
 
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger step`'s orphan sweep reclaims a unit's `rigger-gate-<slug>` exactly as its
+/// per-unit cache. The first step records the run's live units `a` and `b`; the second step's
+/// sweep then reclaims the gate scratch root of a unit the run does not hold and spares the
+/// live unit `a`'s, and leaves a `cargo-mutants-<slug>` an earlier binary left untouched - the
+/// one reclaimed entry is the dead gate scratch root.
+#[test]
+fn step_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_units() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    seed_store(root);
+    let scratch = root.join("scratchroot");
+    let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the first step must succeed; stderr:\n{err}");
+
+    let live = scratch.join("rigger-gate-a");
+    let dead = scratch.join("rigger-gate-gone-unit");
+    let legacy = scratch.join("cargo-mutants-gone-unit");
+    for d in [&live, &dead, &legacy] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("rerun.list"), [0u8; 8]).unwrap();
+    }
+
+    let (_out, err, ok) = step_with_scratch_root(root, &scratch);
+    assert!(ok, "the second step must succeed; stderr:\n{err}");
+    assert!(
+        !dead.exists(),
+        "the gate scratch root of a unit the run does not hold is reclaimed; stderr:\n{err}"
+    );
+    assert!(
+        live.join("rerun.list").exists(),
+        "the live unit a's gate scratch root is spared; stderr:\n{err}"
+    );
+    assert!(
+        legacy.join("rerun.list").exists(),
+        "a cargo-mutants-<slug> an earlier binary left matches no arm; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "rigger step: reclaimed 1 orphaned scratch entry under {}",
+            scratch.display()
+        )),
+        "exactly one entry - the dead gate scratch root - is reclaimed; stderr:\n{err}"
+    );
+}
+
 /// Plant the run-LEVEL shared scratch areas the terminal-state teardown (spec 34 c3) owns under
 /// `scratch`: the SHARED build cache (`cargo-target` + `target` directly under the root - the
 /// driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak), `agent-scratch` (probe repos +
@@ -8832,772 +8564,6 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
     assert_run_level_scratch_reclaimed(
         &scratch,
         "the terminal state after a manual-review pause is integrated",
-    );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the RESUME half: `gc_integrated_branches` (spec
-/// 38 criterion 1 - proven by
-/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` in
-/// `src/conductor.rs`) reclaims a terminal unit's branch/worktree, then (round 3) calls the
-/// SAME `reclaim_terminal_unit_mutation_scratch` helper every fresh-path teardown site now
-/// drives too, reaping every REGISTERED mutation-scratch dir that unit's own spawns populated
-/// (spec 77 criterion 2's `rigger-mutants` root), while a LIVE sibling unit's own registered
-/// scratch is spared - gated on the EXISTING sweep-liveness authority (only an `Integrated`
-/// unit is touched), never a new liveness notion of its own. See
-/// `a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown`
-/// below for the DOMINANT fresh-path proof this test structurally cannot give, since "solo"
-/// integrates here via a hand-seeded `UnitIntegrated` event, never a real merge.
-///
-/// Mirrors `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`'s
-/// exact two-step shape (a real `rigger step` pauses "solo" for manual review, then a seeded
-/// `UnitIntegrated` lands and a second real `rigger step` folds it) so the reap fires through
-/// the REAL `gc_integrated_branches` seam, not a hand-called helper - plus a `sibling` unit
-/// seeded ONLY via events (no matching workflow stage, exactly like the in-process
-/// `branch_gc_reclaims_...` test's own "stuck" unit) that never integrates, so its own
-/// registered scratch must survive untouched.
-#[test]
-fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &MANUAL_REVIEW_WORKFLOW);
-
-    // Step 1: "solo" pauses for manual review (its only gate is manual autonomy).
-    let (_out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "the first step must pause the sole unit for manual review; stderr:\n{err}"
-    );
-
-    // The human approves "solo" (a real UnitIntegrated lands it), and a LIVE sibling unit -
-    // known to the ledger only through its own events, exactly like the in-process
-    // `branch_gc_reclaims_...` test's "stuck" unit - never integrates.
-    seed_run_events(
-        root,
-        &[
-            ("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#),
-            ("UnitStarted", r#"{"id":"sibling","agent":"worker"}"#),
-        ],
-    );
-
-    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
-    // XDG_CACHE_HOME never points at the operator's real ~/.cache.
-    let cache_home = tempfile::tempdir().unwrap();
-    let [solo_scratch, sibling_scratch] = populated_mutation_scratch(
-        cache_home.path(),
-        ["solo_2fimplementer_230", "sibling_2fimplementer_230"],
-    );
-
-    // Step 2: the resolved manual review folds to a clean fixpoint, running
-    // `gc_integrated_branches` over "solo" (now Integrated) and "sibling" (still not).
-    let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
-    assert!(
-        ok,
-        "the step after the manual review is integrated must still succeed; stdout: {out:?} \
-         stderr:\n{err}"
-    );
-
-    assert!(
-        !solo_scratch.exists(),
-        "the now-terminal (integrated) unit's registered mutation-scratch dir must be reaped \
-         by the SAME teardown that reclaims its worktree/branch; {} still exists",
-        solo_scratch.display()
-    );
-    assert!(
-        sibling_scratch.exists() && sibling_scratch.join("mutants-debris.out").exists(),
-        "a LIVE (non-terminal) sibling unit's own registered mutation-scratch must be spared \
-         by the sweep-liveness authority; {} was wrongly reclaimed",
-        sibling_scratch.display()
-    );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), the DOMINANT fresh-path proof, round 3 fix for
-/// `adv-u77c3-mutation-scratch-reap-only-fires-on-resume-never-on-a-clean-single-window-
-/// integrate` (UPHELD): the round-2 build wired the reap ONLY into `gc_integrated_branches`,
-/// whose one production call site runs at the very TOP of `run()` against the PRIOR window's
-/// `RunState`, before the current window's own units even exist - the documented REPLAY half
-/// of the branch-GC rule. The overwhelming majority of real unit-terminal transitions instead
-/// go through the FRESH half: `run_stage`'s own non-parked teardown (conductor.rs), and every
-/// speculation winner/loser teardown - NONE of which ever reached the reap, so a unit that
-/// integrated within a single, uninterrupted `rigger run`/`rigger step` window never had its
-/// registered mutation scratch reaped at all. This test proves the round-3 fix closes exactly
-/// that: unlike the sibling test above (which reaches `Integrated` via a hand-seeded
-/// `UnitIntegrated` event, so "solo"'s real teardown path is NEVER driven and the test
-/// structurally cannot see this gap), "solo" here reaches `Ok(true)` for REAL - a real park, a
-/// real `SpawnResult` (seeded directly rather than through `rigger result`, so the per-spawn
-/// reclaim, spec 34 c1, never runs for this spawn either - reproducing exactly the crash
-/// window criterion 3 backstops: "the record landed, the reclaim never ran"), a real pre-gate
-/// commit, a real `ok` gate pass, and a real merge - all within the SAME second `rigger step`
-/// process that also tears down its worktree via the real `run_stage` `Ok(true)` branch.
-///
-/// Mirrors the pre-existing
-/// `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`'s exact
-/// real-git-isolated, `on_pass: merge` shape (`REVIEWLESS_GIT_UNIT_WORKFLOW`), which
-/// already proves the worktree+branch ARE reclaimed on a clean single-window integrate; this
-/// test adds a registered mutation-scratch dir to that same real teardown and asserts it is
-/// ALSO gone.
-#[test]
-fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-
-    let scratch = root.join("scratchroot");
-    let tmp = scratch.to_str().unwrap();
-
-    // Step 1: "solo"'s implementer parks - a real, git-backed worktree exists now.
-    let (out, err, ok) = step_with_scratch_root(root, &scratch);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 must park the implementer; got: {out:?}"
-    );
-    let wt_dir = scratch.join("rigger-wt-solo");
-    assert!(
-        wt_dir.exists(),
-        "premise: a parked implementer must already have its unit worktree on disk: {}",
-        wt_dir.display()
-    );
-
-    // The implementer's own diff, written directly into the worktree it was already handed.
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-
-    // Register the mutation-testing scratch this spawn's OWN `cargo mutants` run would have
-    // populated (spec 77 c2), under a throwaway cache home. The `SpawnResult` is seeded
-    // DIRECTLY into the store (never through the real `rigger result` CLI, mirroring
-    // `step_prints_a_disjoint_two_spawn_wave_then_reports_done`'s own pattern) so the per-spawn
-    // reclaim (`cmd_result`'s own call) never runs for this spawn - the ONLY thing that can
-    // reap this scratch is the unit-terminal teardown this test exists to prove.
-    let cache_home = tempfile::tempdir().unwrap();
-    let mutation_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("solo_2fimplementer_230");
-    std::fs::create_dir_all(&mutation_scratch).unwrap();
-    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"solo/implementer#0","output":"implemented the unit"}"#,
-        )],
-    );
-
-    // Step 2: the seeded result replays, the pre-gate commit lands the written file, the `ok`
-    // gate passes inline, there is no review panel, and with `on_pass: merge` the stage reaches
-    // a genuine TERMINAL `Ok(true)` in THIS SAME process - the REAL `run_stage` teardown, never
-    // a fabricated `UnitIntegrated` event and never a later resume process.
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["step"],
-        &[
-            ("RIGGER_TMPDIR", tmp),
-            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
-        ],
-    );
-    assert!(ok, "the second step must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""done":true"#),
-        "every spawn now has a result and the stage integrates in this same step; got: {out:?}"
-    );
-
-    assert!(
-        !wt_dir.exists(),
-        "the unit's worktree must be reclaimed after a clean integrate: {}",
-        wt_dir.display()
-    );
-    assert!(
-        !mutation_scratch.exists(),
-        "the unit's own registered mutation-scratch dir must be reaped by the SAME real, \
-         single-window teardown that reclaims its worktree - not only on a later resume \
-         process; {} still exists",
-        mutation_scratch.display()
-    );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), an `isolation: none` unit has NO worktree at all
-/// (it runs inline in the project cwd), yet its implementer can still populate registered
-/// mutation scratch (mutation efficacy is independent of build isolation) - proving the round-3
-/// fix's UNCONDITIONAL placement in `run_stage` (never gated on `wt.is_some()`) actually
-/// matters: a worktree-teardown-triggered-only reap (the shape the cargo-target-cache reap
-/// uses) would silently miss this unit entirely, since it never reaches `Worktree::remove` on
-/// ANY path. Real single-window `Ok(true)` integrate, same seeded-`SpawnResult` shape as the
-/// sibling test above.
-#[test]
-fn an_isolation_none_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown(
-) {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    // A single `isolation: none` stage, `on_pass: none` (no merge to attempt - there is no
-    // worktree), mirroring `TWO_STAGE_WORKFLOW`'s own stage shape but with only ONE
-    // stage so no spawn-budget contention is in play.
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-stages:
-  a:
-    agent: worker
-    on_pass: none
-"#,
-    )
-    .unwrap();
-
-    // Step 1: "a" is ready and isolation:none, so its implementer parks with NO worktree.
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"a/implementer#0""#),
-        "step 1 must park a's implementer; got: {out:?}"
-    );
-
-    // Register the mutation-testing scratch "a"'s own spawn would have populated, then seed its
-    // result directly (never through `rigger result`, so the per-spawn reclaim never runs).
-    let cache_home = tempfile::tempdir().unwrap();
-    let mutation_scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("a_2fimplementer_230");
-    std::fs::create_dir_all(&mutation_scratch).unwrap();
-    std::fs::write(mutation_scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            r#"{"id":"a/implementer#0","output":"did a"}"#,
-        )],
-    );
-
-    // Step 2: "a" replays to its `on_pass: none` terminal (verified-but-unmerged) state - a
-    // real, single-window terminal outcome with NO worktree ever created for it.
-    let (_out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
-    assert!(ok, "the second step must succeed; stderr:\n{err}");
-
-    assert!(
-        !mutation_scratch.exists(),
-        "an isolation:none unit's own registered mutation-scratch dir must be reaped on its \
-         real single-window terminal teardown, even though it has no worktree to hook a reap \
-         onto: {}",
-        mutation_scratch.display()
-    );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): every terminal-teardown call site (round 3)
-/// drives the ONE shared `reclaim_terminal_unit_mutation_scratch` helper (`src/conductor.rs`),
-/// which resolves the registered-scratch-root `cache_home` via `cache_home_from(XDG_CACHE_
-/// HOME, HOME)` and only enters `reclaim_unit_mutation_scratch` behind `if let Some(cache_
-/// home)` - so a HOMELESS environment (neither var set) takes the `None` arm for EVERY
-/// terminal unit, every step. No test anywhere else drives this arm: the pure-fn unit tests
-/// (`crates/rigger-driver/src/driver/replay.rs`) never see an `Option` at all (they call
-/// `reclaim_unit_mutation_scratch` with a real `&Path` directly), the pre-existing
-/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` unit test
-/// (spec 38) never touches `HOME`/`XDG_CACHE_HOME` so it runs with whatever real home the
-/// test process inherits, and this file's own sibling tests above always seed a resolvable
-/// `XDG_CACHE_HOME`. A regression that swapped the `if let Some` guard for an `.unwrap()` (or
-/// any other panic-on-`None` shape) would pass every one of those and only surface here, in
-/// the one homeless environment none of them construct.
-///
-/// Mirrors the established homeless-environment integration-test shape
-/// (`a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`,
-/// `.env_remove` on the real spawned binary) rather than mutating process-global env vars
-/// in-process, which would race every other test in this shared test binary.
-///
-/// Non-vacuous: hand-verified by temporarily replacing the `if let Some(cache_home) = ...`
-/// guard in `src/conductor.rs::reclaim_terminal_unit_mutation_scratch` (round 3's shared
-/// helper) with an `.unwrap()`, confirming THIS test fails with a `None`-unwrap panic (`ok`
-/// false, a panic message on stderr) while every other test in this file's suite that reaches
-/// a unit-terminal teardown still passes (they all run with a resolvable real home), then
-/// reverting the change.
-#[test]
-fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &MANUAL_REVIEW_WORKFLOW);
-
-    // Step 1: "solo" pauses for manual review, exactly like the sibling test above - this
-    // step keeps the test process's own real HOME, so seeding the project is unaffected.
-    let (_out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "the first step must pause the sole unit for manual review; stderr:\n{err}"
-    );
-
-    // The human approves "solo" (a real UnitIntegrated lands it), matching the sibling test.
-    seed_run_events(
-        root,
-        &[("UnitIntegrated", r#"{"id":"solo","commit":"deadbeef"}"#)],
-    );
-
-    // Step 2: the SAME resolved-manual-review step as the sibling test, but the subprocess
-    // itself is made homeless (no HOME, no XDG_CACHE_HOME) so `gc_integrated_branches`'s own
-    // `cache_home` resolves to `None` for "solo", now Integrated. `XDG_STATE_HOME` is still
-    // redirected to a throwaway dir (matching `run_rigger_envs`'s own default) so the
-    // instance registry never touches the operator's real state home either.
-    let state = tempfile::tempdir().unwrap();
-    let out = common::rigger_courier()
-        .arg("step")
-        .current_dir(root)
-        .env_remove("HOME")
-        .env_remove("XDG_CACHE_HOME")
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .output()
-        .expect("failed to spawn the rigger binary");
-    let ok = out.status.success();
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        ok,
-        "a step that reclaims a terminal unit in a HOMELESS environment (no HOME, no \
-         XDG_CACHE_HOME) must still succeed - the registered-scratch reap has nowhere to \
-         look and must no-op, never panic; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("panicked"),
-        "the homeless registered-scratch reap must never panic even on success exit; \
-         stderr:\n{stderr}"
-    );
-}
-
-/// A REAL `rigger run` of a `speculation_width: 2` `solo` unit with `on_pass`, whose fake
-/// adjudicator answers `{"verdict":"<verdict>"}` for every candidate, with registered
-/// mutation-scratch seeded for BOTH lanes' own spawn ids before the run. The run exits 0 at the
-/// `exit` named, which `premise` confirms on the event log (or the test proves nothing about
-/// that exit's own reap call); that exit's ONE `reclaim_terminal_unit_mutation_scratch(&st.name)`
-/// call - keyed on the bare unit id every lane's own spawn id shares as its prefix - then reaps
-/// every lane's registered scratch together, not only the winner's.
-fn assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
-    on_pass: &str,
-    verdict: &str,
-    exit: &str,
-    premise: fn(&[rigger::eventstore::Event]) -> bool,
-) {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_agent(
-        root,
-        "worker",
-        "Read, Edit",
-        "RIGGERTEST_WORKER: do the unit.",
-    );
-    write_agent(
-        root,
-        "judge",
-        "Read",
-        "RIGGERTEST_ADJUDICATOR: adjudicate it.",
-    );
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        format!(
-            r#"defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: {{ run: "true" }}
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: {on_pass}
-    speculation_width: 2
-    review:
-      adjudicator: judge
-"#
-        ),
-    )
-    .unwrap();
-
-    let (_fakebin, path_env) = install_fake_claude(&format!(
-        r#"  *RIGGERTEST_ADJUDICATOR*)
-    echo '{{"verdict":"{verdict}"}}'
-    ;;
-  *RIGGERTEST_WORKER*)
-    echo "pub fn work() {{}}" > work.rs
-    ;;
-"#
-    ));
-
-    let cache_home = tempfile::tempdir().unwrap();
-    let lanes = populated_mutation_scratch(
-        cache_home.path(),
-        ["solo_2fimplementer_230", "solo_2fimplementer_231"],
-    );
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["run"],
-        &[
-            ("PATH", &path_env),
-            ("XDG_CACHE_HOME", cache_home.path().to_str().unwrap()),
-        ],
-    );
-    assert!(
-        ok,
-        "a speculation group reaching its {exit} must still exit 0; stderr: {err}\nstdout: {out}"
-    );
-
-    let events = read_run_events(root);
-    assert!(
-        premise(&events),
-        "premise: the speculation group must reach the {exit} for real, or this test proves \
-         nothing about that exit's own reap call; events: {events:?}"
-    );
-    for (lane, scratch) in lanes.iter().enumerate() {
-        assert!(
-            !scratch.exists(),
-            "lane {lane}'s own registered mutation-scratch dir must be reaped by the real {exit} \
-             teardown - it is keyed on the shared unit id, covering every lane at once: {}",
-            scratch.display()
-        );
-    }
-}
-
-/// Whether `events` records a unit of type `type_`.
-fn records(events: &[rigger::eventstore::Event], type_: &str) -> bool {
-    events.iter().any(|e| e.type_ == type_)
-}
-
-rigger::test_cases! {
-    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the round-3 mechanical re-enumeration of the
-    /// `reclaim_terminal_unit_mutation_scratch` call sites (`src/conductor.rs`) finds FOUR -
-    /// `run_stage`'s fresh-path teardown and `gc_integrated_branches`'s resume path (both proven
-    /// by the sibling tests above), plus `run_speculation`'s winner-integrate exit and its
-    /// escalation-tail exit, neither of which any existing test drives. This closes the
-    /// winner-integrate half: a REAL `speculation_width: 2` group (two real candidate implementer
-    /// spawns, an adjudicator that always approves) where lane 0 wins for real - a genuine
-    /// `on_pass: merge` merge through the compiled binary, never a hand-seeded `UnitIntegrated`.
-    /// Registered mutation-scratch is seeded for BOTH lanes' own spawn ids before the run, proving
-    /// the ONE call at the winner-integrate exit (`self.reclaim_terminal_unit_mutation_scratch(&st.
-    /// name)`, keyed on the bare unit id every lane's own spawn id shares as its prefix) reaps
-    /// every lane's own registered scratch together - not only the winner's.
-    a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown:
-        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
-            "merge",
-            "approve",
-            "winner-integrate",
-            |events| records(events, rigger::ledger::TYPE_UNIT_INTEGRATED),
-        );
-    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP): the escalation-tail half of the same
-    /// mechanical re-enumeration (see the winner-integrate sibling test above for the full
-    /// account). A REAL `speculation_width: 2` group where an adjudicator that always REJECTS
-    /// loses both candidates, so the unit ESCALATES rather than integrating - a legitimate
-    /// terminal fixpoint (mirrors
-    /// `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`'s
-    /// own exit-0-on-escalation contract). Registered mutation-scratch is seeded for both lanes
-    /// before the run, proving the escalation-tail's own call
-    /// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, right before `Ok(false)`) reaps a
-    /// group's registered scratch even when it NEVER integrates - a group that exhausts every
-    /// candidate is still unit-terminal, not merely a group that wins.
-    a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown:
-        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
-            "merge",
-            "reject",
-            "escalation-tail",
-            |events| records(events, rigger::ledger::TYPE_UNIT_ESCALATED),
-        );
-    /// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 4 fix for
-    /// `adj-u77c3r6-verdict-reject-onpassnone-speculation-leak` (REJECT, UPHELD): the round-3
-    /// mechanical re-enumeration named FOUR call sites but only wired three - the fresh-path
-    /// `run_stage` teardown, `gc_integrated_branches`'s resume path, and `run_speculation`'s
-    /// winner-INTEGRATE exit (all proven by the sibling tests above) - and silently left
-    /// `run_speculation`'s THIRD exit, the `!integrates(st)` (`on_pass: none`) branch, uncalled.
-    /// That branch is its own genuine unit-terminal fixpoint: the group settled on a winner
-    /// (verified + approved), no later lane is ever attempted, yet `emit_speculation_winner_status`
-    /// never emits `UnitIntegrated`, so the resume backstop in `gc_integrated_branches` (gated on
-    /// `Status::Integrated`) can never catch this leak on a later resume either - a genuine
-    /// permanent, unbounded leak, not merely a same-process gap.
-    ///
-    /// A REAL `speculation_width: 2`, `on_pass: none` group (two real candidate implementer
-    /// spawns, an adjudicator that always approves) where lane 0 wins for real through the
-    /// compiled binary. Registered mutation-scratch is seeded for BOTH lanes' own spawn ids
-    /// before the run, proving the `!integrates(st)` exit's own call
-    /// (`self.reclaim_terminal_unit_mutation_scratch(&st.name)`, immediately before its
-    /// `return Ok(false)`, mirroring the winner-integrate and escalation-tail siblings) reaps
-    /// every lane's own registered scratch together, exactly like its two siblings - even though
-    /// `on_pass: none` never merges and so never emits `UnitIntegrated`.
-    a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown:
-        assert_a_speculation_exit_reaps_every_lanes_mutation_scratch(
-            "none",
-            "approve",
-            "on_pass:none winner-exit",
-            // Reached through the `!integrates(st)` exit specifically: a confirmed, verified
-            // winner, never the escalation tail (both candidates losing) and never a merge
-            // (on_pass:none never integrates).
-            |events| {
-                events.iter().any(|e| {
-                    e.type_ == rigger::ledger::TYPE_UNIT_STATUS
-                        && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
-                }) && !records(events, rigger::ledger::TYPE_UNIT_ESCALATED)
-                    && !records(events, rigger::ledger::TYPE_UNIT_INTEGRATED)
-            },
-        );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP), round 5 fix for
-/// `adj-u77c3r7-verdict-reject-resume-backstop-integrated-only-gap`: `gc_integrated_branches`'s
-/// resume-time reap of registered mutation scratch previously gated its per-unit loop on
-/// `Status::Integrated` alone - the SAME condition the branch/worktree teardown beside it uses -
-/// so it could never reach an ESCALATED unit (terminal, but never `Integrated`) or an
-/// `on_pass: none` speculation winner (settles permanently at `Verified`/`Reviewed` -
-/// `emit_speculation_winner_status` never emits `TYPE_UNIT_INTEGRATED` - so `ledger::RunState::
-/// is_terminal` can never see it either). A process that crashed strictly between either
-/// unit's terminal event durably recording and the FRESH-path exit's own synchronous reclaim
-/// call a few lines later would strand that scratch forever: this resume backstop was the ONLY
-/// thing that could ever revisit it, and it never did. Mirrors
-/// `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume`'s exact shape
-/// (seed a prior-window unit's terminal event directly, with NO reclaim call ever having run
-/// for it, then assert a resume reaps it) - through the real binary (`seed_run_events`, never a
-/// hand-called helper) and widened to prove both new cases at once, PLUS a third unit proving
-/// the widened predicate is still narrow where it must be: `midflight` carries the workflow's
-/// default `on_pass` (integrates - a merge is still expected) and sits at `verified` too, but
-/// is neither terminal nor `on_pass: none`-settled, so its own registered scratch must survive
-/// the SAME resume step untouched (mutation efficacy round-5, killing the surviving
-/// `replace && with || in mutation_scratch_settled` mutant `outcomes.json` named: without this
-/// unit, nothing in the suite distinguishes the union's `&&` from an over-eager `||`, since
-/// `matches!(status, Verified|Reviewed) || (has a stage && !integrates)` would ALSO happen to
-/// reap both `stuck` and `solo` above - it takes a unit satisfying exactly ONE side of the `&&`
-/// to tell them apart).
-#[test]
-fn a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones(
-) {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-  autonomy: manual
-gates:
-  human: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [human]
-    on_pass: none
-  midflight:
-    agent: worker
-    needs: [solo]
-    gates: [human]
-"#,
-    )
-    .unwrap();
-
-    // Step 1: "solo" (the only READY stage, `on_pass: none`) pauses for manual review - a real
-    // `RunStarted` bootstrap, nothing terminal yet. "midflight" needs `solo` integrated, which
-    // never happens in this test (its `on_pass: none` guarantees it), so it is never scheduled
-    // and never interferes with the seeded state below.
-    let (_out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "the first step must pause the sole ready unit for manual review; stderr:\n{err}"
-    );
-
-    // Seed directly, exactly like the in-process `branch_gc_reclaims_...` test's own "stuck"
-    // unit: an ESCALATED unit ("stuck", no matching workflow stage at all - `is_terminal`
-    // needs no stage lookup, so a pure ledger artifact suffices), "solo" ITSELF settled
-    // `verified` (never `UnitIntegrated`) - the `on_pass: none` speculation-winner checkpoint's
-    // own final status, reached here directly rather than by racing real candidates (already
-    // proven reachable for real by
-    // `a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
-    // above - this test is about the RESUME backstop, not that exit's own call) - and
-    // "midflight" ALSO at `verified` (a real, ordinary mid-review checkpoint: implemented and
-    // gated, awaiting review/merge) to prove the widened predicate does not over-reach a
-    // same-status unit whose `on_pass` still integrates. None of the three events' own
-    // fresh-path reap ever ran, reproducing exactly the crash window this fix closes.
-    seed_run_events(
-        root,
-        &[
-            ("UnitEscalated", r#"{"id":"stuck"}"#),
-            ("UnitStatus", r#"{"id":"solo","status":"verified"}"#),
-            ("UnitStatus", r#"{"id":"midflight","status":"verified"}"#),
-        ],
-    );
-
-    // Registered mutation-scratch for a spawn of EACH unit, under a throwaway cache home so
-    // `XDG_CACHE_HOME` never points at the operator's real `~/.cache`.
-    let cache_home = tempfile::tempdir().unwrap();
-    let [stuck_scratch, solo_scratch, midflight_scratch] = populated_mutation_scratch(
-        cache_home.path(),
-        [
-            "stuck_2fimplementer_230",
-            "solo_2fimplementer_230",
-            "midflight_2fimplementer_230",
-        ],
-    );
-
-    // Step 2: the resume backstop (`gc_integrated_branches`, run at the top of `run()`,
-    // before any wave) folds the prior log and must reap `stuck` and `solo` - neither is
-    // `Integrated` - while sparing `midflight`, which is neither terminal nor `on_pass: none`-
-    // settled and so is still expected to progress toward a real merge in a later step.
-    let (out, err, ok) = run_rigger_with_cache_home(root, cache_home.path(), &["step"]);
-    assert!(
-        ok,
-        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
-    );
-
-    assert!(
-        !stuck_scratch.exists(),
-        "an ESCALATED (terminal, but never Integrated) unit's registered mutation-scratch dir \
-         must be reaped on resume too: {}",
-        stuck_scratch.display()
-    );
-    assert!(
-        !solo_scratch.exists(),
-        "an on_pass:none unit settled at `verified` (never Integrated, never caught by \
-         is_terminal either) must have its registered mutation-scratch dir reaped on resume: {}",
-        solo_scratch.display()
-    );
-    assert!(
-        midflight_scratch.exists() && midflight_scratch.join("mutants-debris.out").exists(),
-        "an ordinary on_pass:merge unit mid-review at `verified` (neither terminal nor \
-         on_pass:none-settled) must have its registered mutation-scratch SPARED by the widened \
-         resume predicate, not just by units that are already Integrated: {}",
-        midflight_scratch.display()
-    );
-}
-
-/// Spec 77, criterion 3 (UNIT-TERMINAL REAP): `gc_integrated_branches`'s own doc comment
-/// (round 5) claims moving its call site to AFTER the deterministic decomposition baseline
-/// expansion matters specifically because "this repo's own implementer/sdet units are
-/// themselves baseline units" - a SPEC-DRIVEN run (`deps.criteria` non-empty), where
-/// `stages` starts the window with only the fan-out TEMPLATE stage and the real
-/// per-criterion baseline unit (carrying the template's `on_pass` value) is synthesized
-/// into `stages` only once `baseline_units` runs. Every sibling test proving
-/// `mutation_scratch_settled`'s `on_pass:none` arm
-/// (`a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
-/// and `a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones`
-/// above) authors its `on_pass: none` unit directly as a hand-written workflow STAGE with
-/// an empty `--spec` (so `deps.criteria` is empty and the baseline-expansion block is a
-/// no-op) - none of them exercises a baseline unit AT ALL, so none of them can tell the
-/// documented call-site reorder apart from a version that never moved it: `stages.get(id)`
-/// would already have resolved either way. This test drives a REAL `--spec`-carrying run
-/// (a fan-out `implement` template, `on_pass: none`, one Done-when criterion) through TWO
-/// real `rigger step --spec ...` invocations - crossing an actual process boundary between
-/// them, exactly like the resume backstop's own production call site - and proves the
-/// SYNTHESIZED baseline unit's registered mutation-scratch is reaped on the second (resume)
-/// step, not silently exempted by `mutation_scratch_settled`'s conservative
-/// `stages.get(&u.id)` miss branch (which resolves a stage-less id's `integrates` to `true`,
-/// i.e. NOT reaped) the way it would be if the call still ran before expansion.
-#[test]
-fn a_resumed_spec_driven_runs_baseline_on_pass_none_unit_has_its_registered_mutation_scratch_reaped_too(
-) {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-  autonomy: manual
-gates:
-  human: { run: "true", kind: core }
-stages:
-  implement:
-    agent: worker
-    strategy: fan-out
-    gates: [human]
-    on_pass: none
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("spec.md"),
-        "# Spec\n\n## Done when\n\n- [ ] widget\n",
-    )
-    .unwrap();
-
-    // Step 1: `deps.criteria` is non-empty (`--spec spec.md`), so the conductor synthesizes
-    // exactly ONE baseline unit from the fan-out `implement` template for the sole criterion
-    // ("widget" slugs deterministically to `unit-1-widget`, per `unit_slug`), inheriting the
-    // template's `on_pass: none`. `autonomy: manual` means this step never launches a real
-    // agent process for it - it parks the baseline unit as a `ManualReview`, a real bootstrap
-    // through the compiled binary, nothing terminal yet.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "the first spec-driven step must synthesize and pause the sole baseline unit for \
-         manual review; stderr:\n{err}\nstdout:\n{out}"
-    );
-    {
-        use rigger::eventstore::namespace::Namespaced;
-        use rigger::eventstore::sqlite::Store;
-        use rigger::eventstore::{Direction, EventStore};
-        let backend =
-            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-        let store = Namespaced::new(&backend, &run_stream_identity(root));
-        let events = store
-            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == "UnitStarted"
-                && String::from_utf8_lossy(&e.data).contains(r#""id":"unit-1-widget""#)),
-            "premise: the criterion must decompose to the deterministic baseline id \
-             `unit-1-widget`, or this test proves nothing about a SYNTHESIZED unit \
-             specifically; events: {events:?}"
-        );
-    }
-
-    // Seed the baseline unit's terminal `on_pass:none` checkpoint directly - exactly the
-    // sibling resume test's shape - reproducing a crash strictly between that event durably
-    // recording and the fresh-path exit's own synchronous reclaim call: no reclaim has run
-    // for this unit yet.
-    seed_run_events(
-        root,
-        &[(
-            "UnitStatus",
-            r#"{"id":"unit-1-widget","status":"verified"}"#,
-        )],
-    );
-
-    // Registered mutation-scratch for the baseline unit's own implementer spawn, under a
-    // throwaway cache home so `XDG_CACHE_HOME` never points at the operator's real
-    // `~/.cache`.
-    let cache_home = tempfile::tempdir().unwrap();
-    let scratch = cache_home
-        .path()
-        .join("rigger-mutants")
-        .join("unit-1-widget_2fimplementer_230");
-    std::fs::create_dir_all(&scratch).unwrap();
-    std::fs::write(scratch.join("mutants-debris.out"), [0u8; 32]).unwrap();
-
-    // Step 2: the SAME `--spec spec.md` is supplied again (a real resume re-supplies the
-    // spec exactly as the first step did), so the conductor re-synthesizes the identical
-    // baseline unit into `stages` BEFORE the resume backstop runs - the ordering the round-5
-    // doc comment claims is load-bearing for this exact case.
-    let (out, err, ok) =
-        run_rigger_with_cache_home(root, cache_home.path(), &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "the resume step must still succeed; stdout: {out:?} stderr:\n{err}"
-    );
-    assert!(
-        !scratch.exists(),
-        "a SPEC-DRIVEN baseline unit's own registered mutation-scratch dir must be reaped on \
-         resume exactly like a hand-authored stage's would - the baseline unit only carries \
-         its real `on_pass: none` into `stages` once `baseline_units` has run, so the resume \
-         backstop must observe `stages` AFTER that expansion, not before: {}",
-        scratch.display()
     );
 }
 
@@ -11778,19 +10744,14 @@ fn write_fake_executable(bindir: &Path, name: &str) {
 /// known build-cache wrapper (`sccache`/`ccache`) is reachable, regardless of what the real
 /// machine running this test happens to have installed (some systems co-locate `ccache`
 /// with `git` in the same `/usr/bin`, which a directory-denylist filter could not tell
-/// apart) - PLUS a fake `cargo-mutants` staged under `root` (spec 91: every fresh `rigger
-/// init` scaffold now declares `gates.mutation`, so `Config::validate` requires the binary
-/// resolvable regardless of what a wrapper-focused test is actually exercising; distinct
-/// from [`path_with_no_cargo_mutants`] below, which deliberately omits it).
-fn path_with_no_known_wrapper(root: &Path) -> String {
-    let bindir = root.join("fake-cargo-mutants-only-bin");
-    write_fake_executable(&bindir, "cargo-mutants");
-    format!("{}:{}", bindir.display(), real_path_dir_of("git"))
+/// apart). Takes the project root only to share [`path_with_fake_wrapper`]'s shape.
+fn path_with_no_known_wrapper(_: &Path) -> String {
+    real_path_dir_of("git")
 }
 
 /// [`path_with_no_known_wrapper`] with a fake `name` executable ALSO staged in its own fresh
 /// bin dir under `root` and prepended, so `name` resolves unambiguously as the only
-/// wrapper-shaped binary on this synthetic `PATH` while `cargo-mutants` still resolves too.
+/// wrapper-shaped binary on this synthetic `PATH`.
 fn path_with_fake_wrapper(root: &Path, name: &str) -> String {
     let bindir = root.join("fake-wrapper-bin");
     write_fake_executable(&bindir, name);
@@ -11844,44 +10805,6 @@ rigger::test_cases! {
     /// that the real compiled binary's `config::load` path enforces it too.
     validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end:
         assert_validate_fails_naming("build:\n  mutation: on\n", None, &["build.mutation", "91"]);
-    /// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91:
-    /// `gates.mutation` + `stages.checkin` are shipped in `SCAFFOLD_WORKFLOW`) - so `Config::
-    /// validate` requires `cargo-mutants` resolvable on PATH at run start with NO
-    /// `build.mutation` override needed at all, unlike spec 73's retired switch which required
-    /// an explicit `on`. A configured-explicit failure, never a silent skip. Mirrors
-    /// `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path` above.
-    validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path:
-        assert_validate_fails_naming(
-            "",
-            Some(path_with_no_cargo_mutants()),
-            &["cargo-mutants", "mutation"],
-        );
-}
-
-/// The cross-module seam (spec 91, moved from spec 73's retired switch): `Config::validate`
-/// (`config.rs`) and `cmd_validate`'s own reporting call (`main.rs`) both read the SAME
-/// gates-list-driven `mutation_gate_binary_on_path` resolution - "never a second,
-/// independently re-derived check" (per the doc comments at both call sites). A black-box
-/// exit-code-and-stderr check alone cannot tell WHICH of the two calls actually produced the
-/// failure: `cmd_validate` prints the version line and a "config valid: ..." line to stdout
-/// BEFORE it ever reaches its own report, so if `Config::validate` ever stopped gating this
-/// (leaving only `cmd_validate`'s local report as a redundant backstop), this same scenario
-/// would still exit non-zero and still name the binary and the gate id - but only AFTER
-/// that partial stdout had already printed. Asserting stdout is EMPTY here proves the
-/// failure truly originates in `config::load`'s `Config::validate` call, before
-/// `cmd_validate`'s body runs at all - the single-authority guarantee that also makes every
-/// OTHER `config::load` caller (not just `validate`) fail at run start, not merely this one
-/// command's own report.
-#[test]
-fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants() {
-    let out = assert_validate_fails_naming("", Some(path_with_no_cargo_mutants()), &[]);
-    assert!(
-        out.is_empty(),
-        "the failure must originate in Config::validate (config::load), before cmd_validate \
-         prints anything - a non-empty stdout means some OTHER, later check caught this \
-         instead, which would leave every non-validate config::load caller unprotected; \
-         stdout:\n{out}"
-    );
 }
 
 /// `rigger validate` over an initialized project with `build_block(root)` appended to its
@@ -11992,14 +10915,6 @@ rigger::test_cases! {
             },
             path_with_fake_sccache,
             |_| vec!["build wrapper: none".to_string()],
-        );
-    /// A declared `mutation` gate with `cargo-mutants` resolvable on PATH must not fail
-    /// validate, and `rigger validate` must report it as declared through its output.
-    validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable:
-        assert_validate_reports(
-            |_| String::new(),
-            |root| path_with_fake_wrapper(root, "cargo-mutants"),
-            |_| vec!["mutation gate (\"mutation\"): declared".to_string()],
         );
 }
 
@@ -12262,46 +11177,309 @@ fn a_workflow_without_max_parallel_units_still_validates_through_the_binary() {
 }
 
 // ---------------------------------------------------------------------------
-// `rigger validate` mutation-gate resolution (spec 91: gates-list-driven, moved from the
-// retired per-round `build.mutation` switch spec 73 introduced)
+// `rigger validate` gate requirement resolution (spec 113, A GATE DECLARES WHAT IT REQUIRES)
 // ---------------------------------------------------------------------------
 
-/// A `PATH` that genuinely lacks `cargo-mutants` (unlike every other helper above, which
-/// stages a fake one so a wrapper-focused test is never incidentally blocked by the also-
-/// mandatory scaffolded `mutation` gate): the plain git-only directory, asserted
-/// (rather than merely reasoned in a doc comment) to really lack the tool, so a coincidental
-/// co-location could never silently turn this into a false pass. This repo's own real
-/// ambient PATH genuinely has `cargo-mutants` installed, so this git-only directory is the
-/// only way to exercise the absent-binary direction.
-fn path_with_no_cargo_mutants() -> String {
-    let dir = real_path_dir_of("git");
-    assert!(
-        !Path::new(&dir).join("cargo-mutants").exists(),
-        "the git-only directory {dir:?} unexpectedly also carries a cargo-mutants binary; \
-         this test needs a PATH that genuinely lacks the tool"
+/// The executable the fixture `sweep` gate requires: a name no real machine carries, so only
+/// a stub a test stages resolves it.
+const SWEEP_TOOL: &str = "rigger-fixture-sweep-tool";
+
+/// Replace a scaffolded project's workflow with a fixture declaring only `gates` (the body of
+/// its `gates:` block) - the test's own gates, never the scaffold's, and no stage.
+fn write_gates_only_workflow(root: &Path, gates: &str) {
+    common::workflow_probe::write_workflow(&root.join(".rigger"), &format!("gates:\n{gates}"));
+}
+
+/// A scaffolded project whose workflow declares the gate `build`, requiring nothing, and the
+/// gate `sweep`, requiring [`SWEEP_TOOL`].
+fn project_with_a_sweep_gate_requiring_a_tool() -> tempfile::TempDir {
+    let dir = initialized_project();
+    write_gates_only_workflow(
+        dir.path(),
+        &format!(
+            "  build: {{ run: \"true\", kind: core }}\n  \
+             sweep: {{ run: \"true\", kind: core, requires: [{SWEEP_TOOL}] }}\n"
+        ),
     );
     dir
 }
 
-/// A fresh `rigger init` scaffold DECLARES the `mutation` gate by default (spec 91) - on
-/// this test suite's own real ambient PATH (which genuinely has `cargo-mutants` installed,
-/// per this repo's own committed gate), `rigger validate` must succeed and report it
-/// declared, never the retired switch's "on"/"off" vocabulary.
-#[test]
-fn validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold() {
-    let dir = initialized_project();
-    let root = dir.path();
+/// The `gate <id>:` lines `rigger validate` printed, each asserted to follow the `build
+/// budget:` line directly, in order.
+fn validate_gate_lines(out: &str) -> Vec<String> {
+    let lines: Vec<&str> = out.lines().collect();
+    let budget = lines
+        .iter()
+        .position(|l| l.starts_with("build budget: "))
+        .unwrap_or_else(|| panic!("validate must print its build budget line; stdout:\n{out}"));
+    let after_budget: Vec<String> = lines[budget + 1..]
+        .iter()
+        .take_while(|l| l.starts_with("gate "))
+        .map(|l| (*l).to_string())
+        .collect();
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("gate ")).count(),
+        after_budget.len(),
+        "every gate line follows the build budget line directly; stdout:\n{out}"
+    );
+    after_budget
+}
 
-    let (out, err, ok) = run_rigger(root, &["validate"]);
+/// A fixture gate whose `requires` names a stub executable first on `PATH` (a second stub of
+/// the same name sits later on it) validates, and `rigger validate` reports one line per
+/// declared gate in gate-id order: the gate requiring nothing, then the requirement resolved
+/// at the FIRST `PATH` directory holding it.
+#[test]
+fn validate_reports_each_gate_requirement_resolved_on_path() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    let first = root.join("first-bin");
+    let later = root.join("later-bin");
+    write_fake_executable(&first, SWEEP_TOOL);
+    write_fake_executable(&later, SWEEP_TOOL);
+    let path = format!(
+        "{}:{}:{}",
+        first.display(),
+        later.display(),
+        real_path_dir_of("git")
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         ok,
-        "a fresh scaffold must validate on the real ambient PATH; stdout:\n{out}\nstderr:\n{err}"
+        "a resolvable requirement validates; stdout:\n{out}\nstderr:\n{err}"
     );
+    assert_eq!(
+        validate_gate_lines(&out),
+        vec![
+            "gate build: requires nothing".to_string(),
+            format!(
+                "gate sweep: requires {SWEEP_TOOL} at {}",
+                first.join(SWEEP_TOOL).display()
+            ),
+        ]
+    );
+}
+
+/// Without the stub, the same fixture refuses at the load, before `rigger validate` prints
+/// anything, with the one requirement message naming the gate, the executable and
+/// `gates.sweep.requires` - so every other `config_store::load` caller refuses it too.
+#[test]
+fn validate_refuses_before_any_output_when_a_gate_requirement_is_not_on_path() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    let git_only = real_path_dir_of("git");
     assert!(
+        !Path::new(&git_only).join(SWEEP_TOOL).exists(),
+        "precondition: {git_only:?} must not carry {SWEEP_TOOL}"
+    );
+    assert_refuses_before_output(root, &["validate"], &git_only, &sweep_tool_refusal());
+}
+
+/// A fixture gate named `mutation` that declares nothing validates with no `cargo-mutants`
+/// anywhere on `PATH`: a gate needs only what its own `requires` names, whatever its id.
+#[test]
+fn validate_accepts_a_gate_named_mutation_that_declares_nothing_with_no_cargo_mutants_on_path() {
+    let dir = initialized_project();
+    let root = dir.path();
+    write_gates_only_workflow(root, "  mutation: { run: \"true\", kind: core }\n");
+    let git_only = real_path_dir_of("git");
+    assert!(
+        !Path::new(&git_only).join("cargo-mutants").exists(),
+        "precondition: {git_only:?} must not carry cargo-mutants"
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &git_only)]);
+    assert!(
+        ok,
+        "a gate requiring nothing validates; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        validate_gate_lines(&out),
+        vec!["gate mutation: requires nothing".to_string()]
+    );
+}
+
+/// The one requirement refusal `rigger` prints for the fixture `sweep` gate missing
+/// [`SWEEP_TOOL`].
+fn sweep_tool_refusal() -> String {
+    format!(
+        "gate \"sweep\" requires \"{SWEEP_TOOL}\", which is not an executable on PATH \
+         (config key: gates.sweep.requires)"
+    )
+}
+
+/// `rigger <args>` in `root` on `path` refuses before any output, carrying `refusal` on stderr
+/// exactly once.
+fn assert_refuses_before_output(root: &Path, args: &[&str], path: &str, refusal: &str) {
+    let (out, err, ok) = run_rigger_envs(root, args, &[("PATH", path)]);
+    assert!(
+        !ok,
+        "rigger {args:?} on PATH {path:?} must refuse; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(out, "", "the refusal comes before any output");
+    assert_eq!(
+        err.matches(refusal).count(),
+        1,
+        "the refusal must carry {refusal:?} once; stderr:\n{err}"
+    );
+}
+
+/// Given a gate whose block-list `requires` names two stubs, the first a symlink to an
+/// executable elsewhere, when the operator runs `rigger validate`, then the gate's line names
+/// each requirement in its LIST order (not name order) at the PATH directory that holds it -
+/// the symlink at its own path, never its target - joined by `, `.
+#[test]
+fn validate_reports_a_block_list_requirement_set_in_list_order_with_a_symlink_at_its_own_path() {
+    let dir = initialized_project();
+    let root = dir.path();
+    const SECOND_TOOL: &str = "rigger-fixture-second-tool";
+    write_gates_only_workflow(
+        root,
+        &format!(
+            "  sweep:\n    run: \"true\"\n    kind: core\n    requires:\n      - {SWEEP_TOOL}\n      \
+             - {SECOND_TOOL}\n"
+        ),
+    );
+    let targets = root.join("real-tools");
+    write_fake_executable(&targets, "actual-tool");
+    let first = root.join("first-bin");
+    std::fs::create_dir_all(&first).unwrap();
+    std::os::unix::fs::symlink(targets.join("actual-tool"), first.join(SWEEP_TOOL)).unwrap();
+    let later = root.join("later-bin");
+    write_fake_executable(&later, SECOND_TOOL);
+    let path = format!(
+        "{}:{}:{}",
+        first.display(),
+        later.display(),
+        real_path_dir_of("git")
+    );
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "both requirements resolve; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        validate_gate_lines(&out),
+        vec![format!(
+            "gate sweep: requires {SWEEP_TOOL} at {}, {SECOND_TOOL} at {}",
+            first.join(SWEEP_TOOL).display(),
+            later.join(SECOND_TOOL).display()
+        )]
+    );
+}
+
+/// Given the `sweep` gate's stub reachable through `component` (resolved against the
+/// project root, where `rigger` runs) but staged in `stub_dir`, when `rigger validate` runs on
+/// `<component>:<git dir>` it refuses before any output, while the same stub named by its
+/// absolute directory validates - so the refusal is the skipped component, not the stub.
+fn assert_requirement_unreachable_through_component(component: &str, stub_dir: &str) {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    let stubs = root.join(stub_dir);
+    write_fake_executable(&stubs, SWEEP_TOOL);
+    let git = real_path_dir_of("git");
+    let absolute = format!("{}:{git}", stubs.display());
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &absolute)]);
+    assert!(
+        ok,
+        "control: the stub's absolute directory resolves it; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_refuses_before_output(
+        root,
+        &["validate"],
+        &format!("{component}:{git}"),
+        &sweep_tool_refusal(),
+    );
+}
+
+rigger::test_cases! {
+    /// A relative `PATH` component is skipped, so a stub only it reaches resolves missing.
+    validate_refuses_a_requirement_reachable_only_through_a_relative_path_component:
+        assert_requirement_unreachable_through_component("rel-bin", "rel-bin");
+    /// An empty `PATH` component (the working directory) is skipped the same way.
+    validate_refuses_a_requirement_reachable_only_through_an_empty_path_component:
+        assert_requirement_unreachable_through_component("", ".");
+}
+
+/// The wrapper probe answers through the same lookup as the requirement resolver: given a
+/// named `build.wrapper` reachable only through a relative `PATH` component, `rigger validate`
+/// refuses it as not on `PATH` before any output, while its absolute directory validates and
+/// reports it.
+#[test]
+fn validate_refuses_a_named_wrapper_reachable_only_through_a_relative_path_component() {
+    const WRAPPER: &str = "rigger-fixture-wrapper";
+    let dir = initialized_project();
+    let root = dir.path();
+    common::workflow_probe::write_workflow(
+        &root.join(".rigger"),
+        &format!(
+            "build:\n  wrapper: {WRAPPER}\ngates:\n  build: {{ run: \"true\", kind: core }}\n"
+        ),
+    );
+    write_fake_executable(&root.join("rel-bin"), WRAPPER);
+    let git = real_path_dir_of("git");
+    let absolute = format!("{}:{git}", root.join("rel-bin").display());
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &absolute)]);
+    assert!(
+        ok,
+        "control: the wrapper's absolute directory resolves it; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
         out.lines()
-            .any(|l| l == "mutation gate (\"mutation\"): declared"),
-        "a fresh scaffold's default-declared mutation gate must report declared through \
-         validate; stdout:\n{out}"
+            .filter(|l| l.starts_with("build wrapper: "))
+            .collect::<Vec<_>>(),
+        vec![format!("build wrapper: {WRAPPER}").as_str()]
+    );
+    assert_refuses_before_output(
+        root,
+        &["validate"],
+        &format!("rel-bin:{git}"),
+        &format!("build.wrapper \"{WRAPPER}\" is not on PATH (config key: build.wrapper)"),
+    );
+}
+
+/// Every validating load refuses a missing requirement, not only `rigger validate`'s: given
+/// the `sweep` gate's tool absent, when the operator runs `rigger critique` (which loads the
+/// config through `config_store::load` before it reads its spec), then it refuses before any
+/// output with the same one requirement message.
+#[test]
+fn critique_refuses_a_gate_requirement_missing_from_path_through_the_validating_load() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    assert_refuses_before_output(
+        dir.path(),
+        &["critique", "specs/absent.md"],
+        &real_path_dir_of("git"),
+        &sweep_tool_refusal(),
+    );
+}
+
+/// `rigger status` reads its `defaults:` without validating, so it never checks a requirement:
+/// given the `sweep` gate's tool absent (which `rigger validate` refuses on the same `PATH`),
+/// when the operator runs `rigger status` over an initialized store, then it answers and its
+/// output carries no requirement refusal.
+#[test]
+fn status_never_checks_a_gate_requirement() {
+    let dir = project_with_a_sweep_gate_requiring_a_tool();
+    let root = dir.path();
+    common::cli::init_event_log(root);
+    let git = real_path_dir_of("git");
+    assert_refuses_before_output(root, &["validate"], &git, &sweep_tool_refusal());
+    let (out, err, ok) = run_rigger_envs(root, &["status"], &[("PATH", &git)]);
+    assert!(
+        ok,
+        "status answers despite the missing requirement; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        (
+            out.matches("requires").count(),
+            err.matches("requires").count()
+        ),
+        (0, 0),
+        "status names no requirement; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        out.lines().nth(1),
+        Some("needs you:"),
+        "status prints its report; stdout:\n{out}"
     );
 }
 
@@ -12596,8 +11774,8 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
     )
     .unwrap();
 
-    // Point the scratch root and the mutation-scratch cache home at dirs this test controls,
-    // so the scan is hermetic (never touches the operator's real `~/.cache/rigger-mutants`).
+    // Point the scratch root and the cache home at dirs this test controls, so the scan is
+    // hermetic (never touches the operator's real `~/.cache`).
     let (scratch, cache_home) = footprint_roots(root);
 
     // Seed the SHARED build cache directly under the scratch root - a pure cache, so its
@@ -12645,43 +11823,6 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
     );
 }
 
-/// Spec 77 criterion 6's "registered scratch roots" category is wired to the NEW public
-/// `driver::replay::mutation_scratch_root` (`<cache_home>/rigger-mutants`) rather than a
-/// second, independently-typed root literal - the sibling test above never puts any bytes
-/// under that specific subdir, so it cannot tell a correctly-wired root from one that
-/// silently measured the wrong directory (or nothing at all). This test seeds real content
-/// one level under the SAME cache-home/`rigger-mutants` shape the production leaf-naming
-/// (`mutation_scratch_path`) nests every spawn's tree under, and proves the reported total
-/// reflects it exactly - driving the real binary end to end, the pure size-measuring
-/// function being unit-tested in `src/main.rs`.
-#[test]
-fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root() {
-    let dir = committed_scaffold_project();
-    let root = dir.path();
-
-    let scratch = root.join("scratchroot");
-    let cache_home = root.join("cachehome");
-    std::fs::create_dir_all(&scratch).unwrap();
-
-    // A stand-in mutation-scratch leaf, one level under `<cache_home>/rigger-mutants` -
-    // exactly the nesting `mutation_scratch_root`'s own doc comment names ("every spawn's
-    // leaf nests under this"). The leaf's exact NAME is irrelevant to this test (that
-    // encoding contract is pinned elsewhere); only its total size, and that it lives under
-    // the root the crate's own path authority computes, matters here.
-    let mutation_root = cache_home.join("rigger-mutants");
-    seed_bytes(mutation_root.join("some-spawn-leaf").join("x.tmp"), 777);
-
-    let (out, err, ok) = validate_with_scratch_and_cache_home(root, &scratch, &cache_home);
-    assert!(ok, "validate must exit 0; stderr:\n{err}");
-    assert!(
-        out.contains("footprint: registered scratch roots 777B"),
-        "the 777 bytes seeded under the real mutation_scratch_root path must be measured \
-         exactly - a wrong or unwired root would report 0B here even though the pure \
-         footprint_report function is separately unit-tested against a fixture path; \
-         stdout:\n{out}"
-    );
-}
-
 /// Spec 77 criterion 6 round 2 (`adj-u77c6-verdict-reject-unflaggable-highest-stakes-
 /// category`): "registered scratch roots" - the ONE category the spec's own Problem
 /// statement names as the worst observed leak - must be able to flag a dead-share breach
@@ -12691,8 +11832,8 @@ fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratc
 /// exercises - a genuine event STORE (`spawn::recorded`/`spawn::result_of` reading real
 /// `SpawnRequested`/`SpawnResult` rows through `runscope::current_run` scoping) driving real
 /// `rigger validate` stdout/stderr, over real fixture bytes written at the SAME paths
-/// production assigns via the crate's own path authorities (`spawn_scratch_path`,
-/// `mutation_scratch_path` - never a hand-encoded literal). Three spawns, mirroring exactly
+/// production assigns via the crate's own path authority (`spawn_scratch_path` - never a
+/// hand-encoded literal). Three spawns, mirroring exactly
 /// the distinctions `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_
 /// current_run` pins at the fold level:
 /// - a LIVE spawn (requested in the current run, still unanswered) - spared;
@@ -12703,83 +11844,50 @@ fn validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratc
 ///   (`adv-u77c2r8-mutation-scratch-orphan-on-never-reported-spawn`).
 #[test]
 fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store() {
-    use rigger::driver::replay::mutation_scratch_path;
-
-    let dir = committed_scaffold_project();
-    let root = dir.path();
-    seed_store(root);
-
     let live_id = "u-live/implementer#0";
     let answered_id = "u-answered/implementer#0";
     let prior_id = "u-prior/implementer#0";
-    seed_run_events(
-        root,
-        &[
-            // A PRIOR run, closed off by the CURRENT run's own later `RunStarted` -
-            // `u-prior`'s request sits outside the current run's scope even though no
-            // result was ever recorded for it (the hung/abandoned-run shape).
-            ("RunStarted", r#"{"run":"r1","criteria":["old"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"u-prior/implementer#0","unit":"u-prior","stage":"impl","prompt":"p"}"#,
-            ),
-            ("RunStarted", r#"{"run":"r2","criteria":["new"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
-            ),
-            (
-                "SpawnRequested",
-                r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
-            ),
-            (
-                "SpawnResult",
-                r#"{"id":"u-answered/implementer#0","output":"done"}"#,
-            ),
-        ],
-    );
+    let (dir, scratch, cache_home) = footprint_project(&[
+        // A PRIOR run, closed off by the CURRENT run's own later `RunStarted` -
+        // `u-prior`'s request sits outside the current run's scope even though no
+        // result was ever recorded for it (the hung/abandoned-run shape).
+        ("RunStarted", r#"{"run":"r1","criteria":["old"]}"#),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-prior/implementer#0","unit":"u-prior","stage":"impl","prompt":"p"}"#,
+        ),
+        ("RunStarted", r#"{"run":"r2","criteria":["new"]}"#),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnResult",
+            r#"{"id":"u-answered/implementer#0","output":"done"}"#,
+        ),
+    ]);
+    let root = dir.path();
 
-    let (scratch, cache_home) = footprint_roots(root);
-
-    // The LIVE spawn's own scratch, in both registered roots - spared.
+    // The LIVE spawn's own scratch - spared.
     seed_spawn_scratch(&scratch, "r2", live_id, "x", 30);
-    seed_bytes(
-        mutation_scratch_path(&cache_home, live_id)
-            .unwrap()
-            .join("x"),
-        10,
-    );
     // The ANSWERED spawn's own scratch - dead the moment its result landed.
     seed_spawn_scratch(&scratch, "r2", answered_id, "x", 60);
-    seed_bytes(
-        mutation_scratch_path(&cache_home, answered_id)
-            .unwrap()
-            .join("x"),
-        20,
-    );
     // The PRIOR run's own orphaned spawn scratch - dead, never answered, never in scope.
     seed_spawn_scratch(&scratch, "r1", prior_id, "x", 90);
-    seed_bytes(
-        mutation_scratch_path(&cache_home, prior_id)
-            .unwrap()
-            .join("x"),
-        30,
-    );
 
-    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
-
-    // Every seeded byte, live and dead together, across both registered roots.
-    assert!(
-        out.contains("footprint: registered scratch roots 240B"),
-        "stdout:\n{out}"
-    );
-    // Only the answered spawn's (60+20) and the prior run's orphaned spawn's (90+30) bytes
-    // count dead (200 of 240 = 83%) - the still-live spawn's 40 bytes (30+10) are spared,
-    // proving the dead-share classification is scoped by REAL spawn liveness read off the
-    // store, not the unit-liveness `scratch_footprint` already uses for the other categories.
-    assert!(
-        err.contains("registered scratch roots is 83% dead (200B of 240B reclaimable)"),
-        "stderr:\n{err}"
+    // Only the answered spawn's 60 and the prior run's orphaned spawn's 90 bytes count dead
+    // (150 of 180 = 83%) - the still-live spawn's 30 bytes are spared, proving the dead-share
+    // classification is scoped by REAL spawn liveness read off the store, not the
+    // unit-liveness `scratch_footprint` already uses for the other categories.
+    let err = assert_registered_scratch_roots_dead(
+        root,
+        (&scratch, &cache_home),
+        (180, 150, 83),
+        "only the answered and the prior-run spawns' bytes count dead",
     );
     assert!(
         err.contains("`rigger reset --build-cache` reclaims it now")
@@ -12811,40 +11919,29 @@ fn validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liven
 #[test]
 fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id(
 ) {
-    let dir = committed_scaffold_project();
-    let root = dir.path();
-    seed_store(root);
-
     // The self-hosting re-proposal shape: both runs' spawns carry the IDENTICAL unit/attempt
     // id, so they encode to the SAME agent-scratch leaf name.
     let reused_id = "u-reused/implementer#2";
-    seed_run_events(
-        root,
-        &[
-            // The OLD run, abandoned (killed) before this spawn was ever answered - the
-            // hung/never-retried orphan this category exists to surface.
-            (
-                "RunStarted",
-                r#"{"run":"r-old-abandoned","criteria":["old"]}"#,
-            ),
-            (
-                "SpawnRequested",
-                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
-            ),
-            // The CURRENT run begins, RE-PROPOSING the identical spawn id - still
-            // unanswered, genuinely in flight.
-            ("RunStarted", r#"{"run":"r-current","criteria":["new"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
-            ),
-        ],
-    );
-
-    // An empty, hermetic cache-home - mirroring the sibling test above - so the mutation-
-    // scratch root the operator's REAL `$HOME/.cache/rigger-mutants` might hold never bleeds
-    // into this test's byte-exact assertions.
-    let (scratch, cache_home) = footprint_roots(root);
+    let (dir, scratch, cache_home) = footprint_project(&[
+        // The OLD run, abandoned (killed) before this spawn was ever answered - the
+        // hung/never-retried orphan this category exists to surface.
+        (
+            "RunStarted",
+            r#"{"run":"r-old-abandoned","criteria":["old"]}"#,
+        ),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+        ),
+        // The CURRENT run begins, RE-PROPOSING the identical spawn id - still
+        // unanswered, genuinely in flight.
+        ("RunStarted", r#"{"run":"r-current","criteria":["new"]}"#),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-reused/implementer#2","unit":"u-reused","stage":"impl","prompt":"p"}"#,
+        ),
+    ]);
+    let root = dir.path();
 
     // The OLD run's own orphaned scratch, under the OLD run's own run-id subdir.
     seed_spawn_scratch(&scratch, "r-old-abandoned", reused_id, "orphan", 500);
@@ -12853,22 +11950,62 @@ fn validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the
     // in-flight resource that must be spared.
     seed_spawn_scratch(&scratch, "r-current", reused_id, "live", 5);
 
-    let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
-
-    // Every seeded byte, old orphan and current-run live spawn together.
-    assert!(
-        out.contains("footprint: registered scratch roots 505B"),
-        "stdout:\n{out}"
-    );
     // Only the OLD run's orphaned 500 bytes count dead (99% of 505) - the CURRENT run's
     // live spawn's 5 bytes are spared even though its leaf name is IDENTICAL to the dead
     // orphan's. Before the round-3 fix this reported 0% dead (dead_bytes 0), the exact
     // regression this test pins.
-    assert!(
-        err.contains("registered scratch roots is 99% dead (500B of 505B reclaimable)"),
+    assert_registered_scratch_roots_dead(
+        root,
+        (&scratch, &cache_home),
+        (505, 500, 99),
         "the prior abandoned run's orphan must be flagged dead even though a later run \
          reuses the identical spawn id - classification must key off (run_id, leaf), never \
-         leaf name alone; stderr:\n{err}"
+         leaf name alone",
+    );
+}
+
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), as operator-visible
+/// behavior: given a live and an answered spawn, each with agent scratch AND a leftover leaf
+/// of its own id under the cache home's former `rigger-mutants` root, when the operator runs
+/// `rigger validate`, then "registered scratch roots" totals and flags the agent-scratch bytes
+/// alone - the cache-home bytes are neither measured nor offered for reclaim.
+#[test]
+fn validate_measures_registered_scratch_roots_from_agent_scratch_alone_never_the_cache_home() {
+    let live_id = "u-live/implementer#0";
+    let answered_id = "u-answered/implementer#0";
+    let (dir, scratch, cache_home) = footprint_project(&[
+        ("RunStarted", r#"{"run":"r1","criteria":["c"]}"#),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-live/implementer#0","unit":"u-live","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnRequested",
+            r#"{"id":"u-answered/implementer#0","unit":"u-answered","stage":"impl","prompt":"p"}"#,
+        ),
+        (
+            "SpawnResult",
+            r#"{"id":"u-answered/implementer#0","output":"done"}"#,
+        ),
+    ]);
+    seed_spawn_scratch(&scratch, "r1", live_id, "x", 40);
+    seed_spawn_scratch(&scratch, "r1", answered_id, "x", 60);
+    for (id, n) in [(live_id, 1_000), (answered_id, 3_000)] {
+        seed_bytes(
+            common::cache_home_mutants_leaf(&cache_home, id).join("w"),
+            n,
+        );
+    }
+
+    let err = assert_registered_scratch_roots_dead(
+        dir.path(),
+        (&scratch, &cache_home),
+        (100, 60, 60),
+        "only the answered spawn's agent scratch counts dead; no cache-home byte is measured",
+    );
+    assert!(
+        !err.contains("rigger-mutants"),
+        "no cache-home path may be offered for reclaim; stderr:\n{err}"
     );
 }
 
@@ -13038,6 +12175,157 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
         "the unit-scoped reclaim hint must be named for the flagged worktrees/per-unit-caches \
          advisories; stderr:\n{err}"
     );
+}
+
+/// A committed project whose store holds a PRIOR run's abandoned `unit-old` and the CURRENT
+/// run's in-flight `unit-new`, with a hermetic `(scratch root, cache home)` holding each unit's
+/// worktree, build cache and gate scratch root (spec 113, THE GATE SCRATCH ROOT HAS ONE
+/// LIFECYCLE), a `cargo-mutants-unit-old` an earlier binary left, a nested `events.db` inside
+/// the live gate scratch root, and a standalone shadow store under `probe/`. Bytes: dead
+/// worktree 400, live worktree 20; dead cache 300, live cache 10; dead gate scratch root 150,
+/// live gate scratch root 30 + a 10-byte nested `events.db`; the legacy mutants root 5.
+fn gate_scratch_lifecycle_project() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let dir = committed_scaffold_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("RunStarted", r#"{"run":"r0","criteria":["prior spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#,
+            ),
+            ("RunStarted", r#"{"run":"r1","criteria":["current spec"]}"#),
+            (
+                "UnitStarted",
+                r#"{"id":"unit-new","branch":"rigger/u/unit-new"}"#,
+            ),
+        ],
+    );
+    let (scratch, cache_home) = footprint_roots(root);
+    seed_bytes(scratch.join("rigger-wt-unit-old").join("payload.bin"), 400);
+    seed_bytes(scratch.join("rigger-wt-unit-new").join("payload.bin"), 20);
+    seed_bytes(scratch.join("cargo-target-unit-old").join("lib.rlib"), 300);
+    seed_bytes(scratch.join("cargo-target-unit-new").join("lib.rlib"), 10);
+    seed_bytes(scratch.join("rigger-gate-unit-old").join("rerun.list"), 150);
+    seed_bytes(scratch.join("rigger-gate-unit-new").join("rerun.list"), 30);
+    seed_bytes(
+        scratch
+            .join("rigger-gate-unit-new")
+            .join("copy")
+            .join(".rigger")
+            .join("events.db"),
+        10,
+    );
+    seed_bytes(
+        scratch.join("cargo-mutants-unit-old").join("outcomes.json"),
+        5,
+    );
+    seed_bytes(scratch.join("probe").join(".rigger").join("events.db"), 2);
+    (dir, scratch, cache_home)
+}
+
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger validate` classifies a unit's `rigger-gate-<slug>` exactly as its per-unit
+/// cache at every walk it reads. The residue report names the DEAD unit's gate scratch root
+/// among the orphaned build caches and never the LIVE unit's; the shadow-store walk prunes a
+/// gate scratch root (its nested `events.db` is not reported) while still finding the
+/// standalone one; and the footprint's per-unit caches total counts both units' gate scratch
+/// roots while its dead share counts only the dead one's. A `cargo-mutants-<slug>` an earlier
+/// binary left is none of these: never reported, never counted.
+#[test]
+fn validate_classifies_a_gate_scratch_root_as_its_units_per_unit_cache_through_the_binary() {
+    let (dir, scratch, cache_home) = gate_scratch_lifecycle_project();
+    let (out, err, ok) = validate_with_scratch_and_cache_home(dir.path(), &scratch, &cache_home);
+    assert!(
+        ok,
+        "validate only WARNS about residue and footprint, still exits 0; stderr:\n{err}"
+    );
+
+    // Residue: the dead unit's gate scratch root beside its cache, the live unit's never.
+    assert!(
+        err.contains("\n  orphaned build cache: cargo-target-unit-old (300B)"),
+        "control: the dead unit's build cache is residue; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("\n  orphaned build cache: rigger-gate-unit-old (150B)"),
+        "the dead unit's gate scratch root is residue, sized like its cache; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("rigger-gate-unit-new"),
+        "the live unit's gate scratch root is never residue, and the shadow-store walk never \
+         descends it; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("cargo-mutants-unit-old"),
+        "a cargo-mutants-<slug> an earlier binary left matches no arm; stderr:\n{err}"
+    );
+    // Shadow stores: the standalone one is found, so the prune above is not a dead walk.
+    assert!(
+        err.contains("\n  shadow store: probe/.rigger/events.db (2B)"),
+        "control: the shadow-store walk still finds a standalone store; stderr:\n{err}"
+    );
+    assert_eq!(
+        err.matches("\n  shadow store: ").count(),
+        1,
+        "exactly one shadow store: the gate scratch root's nested events.db is pruned; \
+         stderr:\n{err}"
+    );
+
+    // Footprint: total = 300 + 10 + 150 + 40 = 500 (the legacy mutants root's 5 bytes are in
+    // no category); dead = 300 + 150 = 450, so 90%.
+    assert!(
+        out.contains("footprint: per-unit caches 500B"),
+        "the per-unit caches total counts both units' gate scratch roots and not the legacy \
+         mutants root; stdout:\n{out}"
+    );
+    assert!(
+        err.contains("per-unit caches is 90% dead (450B of 500B reclaimable)"),
+        "the dead share counts only the dead unit's cache and gate scratch root; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("footprint: worktrees 420B"),
+        "control: the worktrees category is unchanged by the gate scratch roots; stdout:\n{out}"
+    );
+}
+
+/// SDET periphery (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), through the compiled
+/// binary: `rigger reset --build-cache` reclaims the footprint's dead per-unit caches entry by
+/// entry, so the DEAD unit's gate scratch root goes with its build cache - one line, two dead
+/// entries, their exact bytes - while the LIVE unit's gate scratch root and cache and the
+/// legacy `cargo-mutants-<slug>` stay on disk.
+#[test]
+fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_units() {
+    let (dir, scratch, cache_home) = gate_scratch_lifecycle_project();
+    let (out, err, ok) = run_rigger_envs(
+        dir.path(),
+        &["reset", "--build-cache"],
+        &[
+            ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+            ("XDG_CACHE_HOME", cache_home.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "reset --build-cache must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(
+            "--build-cache: reclaimed 450B (450 byte(s)) from per-unit caches (2 dead entries)"
+        ),
+        "the dead unit's cache and gate scratch root are the two reclaimed entries; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert!(!scratch.join("rigger-gate-unit-old").exists());
+    assert!(!scratch.join("cargo-target-unit-old").exists());
+    for kept in [
+        "rigger-gate-unit-new",
+        "cargo-target-unit-new",
+        "cargo-mutants-unit-old",
+    ] {
+        assert!(
+            scratch.join(kept).exists(),
+            "{kept} must stay on disk; stdout:\n{out}"
+        );
+    }
 }
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
@@ -23801,158 +23089,15 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     );
 }
 
-/// Spec 91 (THE CHECK-IN STAGE IS DEFINITION, criterion 2): the committed `.rigger/
-/// workflow.yml` must define the `checkin` stage and its `mutation` gate, and must NAME
-/// this spec in the definition's own prose - superseding
-/// `rust_engineer_persona_pins_the_mutation_accounting_contract` (spec 73's persona pin,
-/// retired here per `plan-u91-shared-spec-lint-file-blast-radius`): the kill-or-justify
-/// accounting contract that pin checked now lives in the `checkin` stage's task text
-/// (criterion 3's own new pin on the `rust-engineer` persona), not unconditionally in every
-/// implementer round.
+/// The content script checks the whole spec diff when handed a base and only the branch's own
+/// changes without one. Run with `$RIGGER_RUN_BASE` on a check-in branch cut from the run branch
+/// after an operator commit landed there directly, each check fails on that commit's em dash or
+/// process-ending shell-out, though the check-in branch's own commit is clean. Run with no base on
+/// the very same tree - a unit's shape - it keeps the run branch as its base, judges only the
+/// branch's own clean commit and passes.
 #[test]
-fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91() {
-    let text = normalize_ws(&repo_text(".rigger/workflow.yml"));
-
-    assert!(
-        text.contains("checkin:"),
-        ".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"
-    );
-    assert!(
-        text.contains("mutation:") && text.contains("cargo mutants"),
-        ".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
-         (spec 91): {text:?}"
-    );
-    assert!(
-        text.contains("spec 91"),
-        ".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
-         so drift in the committed workflow fails this suite instead of silently diverging \
-         from the spec it satisfies: {text:?}"
-    );
-}
-
-/// SDET periphery (spec 91 criterion 2, THE CHECK-IN STAGE IS DEFINITION): the STRUCTURAL
-/// counterpart of `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_
-/// to_spec_91` above.
-///
-/// WHAT THE TEXT PIN IS STRUCTURALLY BLIND TO: a substring check on raw YAML text passes
-/// identically whether `checkin:` is wired correctly or is a hollow stub that merely
-/// CONTAINS the right words - `needs: []` instead of `needs: [implement]`, a `max_retries`
-/// of `9` instead of `1`, or a `mutation` gate `run:` string that mentions "cargo mutants"
-/// only inside an adjacent comment and never actually invokes it, would all still satisfy
-/// every substring the sibling test asserts. This test instead LOADS the real committed
-/// file through the production parser (`rigger::config::load`, the exact function `rigger
-/// step`/`rigger validate` use - never a second, hand-rolled YAML read) and asserts on the
-/// resulting TYPED `Stage`/`Gate` structs - the same struct-level shape
-/// `main.rs::tests::scaffold_workflow_...` (grep `checkin.needs`) already proves for the
-/// SCAFFOLD template, mirrored here for the repository's own real, operative definition
-/// that this project's own loop actually runs itself with.
-#[test]
-fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_91_shape() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let cfg = rigger::config_store::load(root).unwrap_or_else(|e| {
-        panic!("this repository's own .rigger/workflow.yml and agents must load: {e}")
-    });
-
-    let checkin = cfg
-        .workflow
-        .stages
-        .get("checkin")
-        .expect(".rigger/workflow.yml must define a `checkin` stage (spec 91)");
-    assert_eq!(
-        checkin.needs,
-        vec!["implement".to_string()],
-        "checkin must need the fan-out `implement` TEMPLATE by name (satisfied once every \
-         unit it expanded into has integrated, per u91c1's generic conductor rule), not a \
-         specific unit: {:?}",
-        checkin.needs
-    );
-    assert_eq!(
-        checkin.max_retries, 2,
-        "checkin overrides the run default with an ATTEMPT bound of 2 - the gates, exactly \
-         one remediation round for the whole spec diff, the gates again; a value of 1 \
-         escalates on the first red gate (spec 91)"
-    );
-    // The `mutation` gate stays declared (asserted below) but is unwired from check-in until
-    // issue #32 lands, so neither the gate list nor the check-in unit's criterion names it.
-    assert!(
-        !checkin.gates.iter().any(|g| g == "mutation"),
-        "checkin must not list the `mutation` gate until issue #32 lands, got: {:?}",
-        checkin.gates
-    );
-    assert!(
-        !checkin.coverage.contains("mutation"),
-        "checkin's coverage is its unit's criterion, so it must not claim a mutation sweep \
-         the stage no longer runs, got: {:?}",
-        checkin.coverage
-    );
-    assert_eq!(
-        checkin.on_pass, "merge",
-        "checkin integrates the whole spec diff on a green gate suite, exactly like every \
-         other stage's on_pass: merge"
-    );
-    assert!(
-        !checkin.agent.is_empty(),
-        "checkin must name a real agent to remediate a red gate"
-    );
-
-    let mutation_gate = cfg
-        .workflow
-        .gates
-        .get("mutation")
-        .expect(".rigger/workflow.yml must define a `mutation` gate (spec 91)");
-    // The gate's command runs the shipped script; the script is what must invoke the sweep.
-    let script_rel = mutation_gate.run.strip_prefix("sh ").unwrap_or_else(|| {
-        panic!(
-            "the mutation gate runs a shipped script: {:?}",
-            mutation_gate.run
-        )
-    });
-    let script = repo_text(script_rel);
-    assert!(
-        script.contains("cargo mutants"),
-        "the mutation gate's script must actually invoke cargo mutants, not merely \
-         mention it in a comment: {script_rel}"
-    );
-    assert!(
-        script.contains("$MUTANTS"),
-        "the mutation gate's script must read the unit-keyed $MUTANTS root the conductor \
-         exports (THE GATE ENVIRONMENT) - never an ambient/shared TMPDIR: {script_rel}"
-    );
-
-    // The real ambient PATH on a correctly-provisioned machine has cargo-mutants installed
-    // (the same precondition every other real-PATH mutation test in this file already
-    // documents) - proving the committed definition does not merely parse, but actually
-    // VALIDATES, closing the loop the text-only pin above cannot: a structurally broken
-    // `checkin`/`mutation` definition could still contain every required substring.
-    assert!(
-        cfg.validate().is_ok(),
-        "this repository's own committed .rigger/workflow.yml must pass Config::validate \
-         on a correctly-provisioned machine (cargo-mutants installed)"
-    );
-}
-
-/// The check-in stage's content gates (the `style` and `no-os-kill` families) check the whole
-/// spec diff from `$RIGGER_RUN_BASE`, the run branch's tip when the run started, which the
-/// conductor exports to every gate. Run on a check-in branch cut from the run branch after an
-/// operator commit landed there directly, each fails on that commit's em dash or process-ending
-/// shell-out, though the check-in branch's own commit is clean. The implement stage's content
-/// gates keep the run branch as their base: on the very same tree - a unit's shape - they judge
-/// only the branch's own clean commit and pass.
-#[test]
-fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_gates_keep_the_run_branch(
-) {
+fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_without_one() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let cfg = rigger::config_store::load(root.to_str().unwrap())
-        .unwrap_or_else(|e| panic!("this repository's own workflow must load: {e}"));
-    let content_gates = |stage: &str| -> Vec<(String, String)> {
-        cfg.workflow.stages[stage]
-            .gates
-            .iter()
-            .filter(|id| id.starts_with("style") || id.starts_with("no-os-kill"))
-            .map(|id| (id.clone(), cfg.workflow.gates[id].run.clone()))
-            .collect()
-    };
-
     // The repository's gate scripts sit in the run's base commit, as in every unit worktree.
     let dir = temp_git_project_with_commit();
     let repo = dir.path();
@@ -24001,27 +23146,19 @@ fn the_checkin_content_gates_diff_the_whole_spec_from_the_run_base_while_unit_ga
         );
         (out.status.success(), text)
     };
-    let checkin = content_gates("checkin");
-    assert_eq!(
-        checkin.len(),
-        2,
-        "a style and a no-os-kill gate: {checkin:?}"
-    );
-    for (id, run) in &checkin {
-        let (passed, out) = run_gate(run);
+    for check in ["style", "no-os-kill"] {
+        let (passed, out) = run_gate(&format!(
+            "sh .rigger/gates/content.sh {check} \"$RIGGER_RUN_BASE\""
+        ));
         assert!(
             !passed && out.contains("gate FAILED"),
-            "check-in gate `{id}` must find the operator commit's shape in the whole spec diff: \
-             {out}"
+            "`{check}` handed the run base must find the operator commit's shape in the whole \
+             spec diff: {out}"
         );
-    }
-    let unit = content_gates("implement");
-    assert_eq!(unit.len(), 2, "a style and a no-os-kill gate: {unit:?}");
-    for (id, run) in &unit {
-        let (passed, out) = run_gate(run);
+        let (passed, out) = run_gate(&format!("sh .rigger/gates/content.sh {check}"));
         assert!(
             passed,
-            "unit gate `{id}` must judge only the branch's own clean commit: {out}"
+            "`{check}` with no base must judge only the branch's own clean commit: {out}"
         );
     }
 }

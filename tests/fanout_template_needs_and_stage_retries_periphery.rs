@@ -395,6 +395,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert(

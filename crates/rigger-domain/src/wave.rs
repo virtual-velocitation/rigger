@@ -141,6 +141,16 @@ pub fn is_producer(st: &Stage) -> bool {
     !st.produces.is_empty()
 }
 
+/// Whether the run loop reviews a stage's units through its effective review panel
+/// ([`Workflow::effective_review_panel`]): every stage but a standalone review stage
+/// ([`is_fan_out`], reviewed by its own lenses and fields) and a producer ([`is_producer`], which
+/// emits a DAG, never a diff to review). Gates play no part: the run reviews an ungated unit as
+/// it reviews a gated one, so the workflow-definition graph reads this one rule to say who
+/// reviews a stage.
+pub fn reviews_through_panel(st: &Stage) -> bool {
+    !is_fan_out(st) && !is_producer(st)
+}
+
 /// The name of the plan-critique gate stage, if the workflow wires one (Unit 1, spec
 /// 10). The gate is recognized by ROLE, not by a hard-coded name: it is the review-only
 /// stage (no `agent` - it critiques the DAG, it does not implement) that carries an

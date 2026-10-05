@@ -35,6 +35,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use common::assert_names;
 use common::cli::now_nanos;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
@@ -56,11 +57,6 @@ fn watch_once(root: &Path, why: &str) -> Vec<String> {
         .filter(|l| !l.is_empty())
         .map(str::to_string)
         .collect()
-}
-
-/// Asserts the reported `line` names every one of `parts` together (`why` naming the line).
-fn assert_names(line: &str, parts: &[&str], why: &str) {
-    assert!(parts.iter().all(|p| line.contains(p)), "{why}: {line}");
 }
 
 /// A streaming `rigger watch --interval 1` in `root`, its stdout and stderr piped.

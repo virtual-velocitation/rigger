@@ -465,7 +465,7 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-781b5348543b",
+    "id": "dup-582bf6d9907e",
     "disposition": "not-a-duplicate",
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
@@ -515,7 +515,7 @@
     "reason": "`is_empty`/`is_any` report emptiness of four different types (a config section, a failure filter, a CLI selection, a run's unended spawns) over their own fields."
   },
   {
-    "id": "dup-619325cc4dc0",
+    "id": "dup-af8b91bc2b2a",
     "disposition": "not-a-duplicate",
     "reason": "Three word-character predicates with different domains: a byte-level config scanner, a char-level alphabetic-only kill-word audit, and a char-level identifier test that also admits digits."
   },
@@ -800,7 +800,7 @@
     "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
   },
   {
-    "id": "dup-82f5fd8ce76a",
+    "id": "dup-b2e626ed7495",
     "disposition": "not-a-duplicate",
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
@@ -1020,8 +1020,18 @@
     "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
   },
   {
-    "id": "dup-d0dab916f0d7",
+    "id": "dup-285c043f6562",
     "disposition": "not-a-duplicate",
-    "reason": "Two one-line `format!` builders of different values: the workflow file's path under the rigger directory, and the unit size cap's sentence the plan protocol and the DAG critique share; they share only the one-interpolation token shape."
+    "reason": "Four one-call `format!` builders of different values: the workflow file's path under the rigger directory, the unit size cap's sentence the plan protocol and the DAG critique share, the test-side requirement refusal expected for the fixture `sweep` gate, and the gate scratch periphery's recording gate command; they share only the single-format-call token shape."
+  },
+  {
+    "id": "dup-64eda8b7ffd5",
+    "disposition": "not-a-duplicate",
+    "reason": "Each is a test-module fixture constructor of a different two-field type (`instructions::Instruction`'s name and body vs `gate::RequirementUnavailable`'s gate and requirement); the shared token shape is one struct literal, and no logic is repeated."
+  },
+  {
+    "id": "dup-8fb3e9b78321",
+    "disposition": "not-a-duplicate",
+    "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
   }
 ]

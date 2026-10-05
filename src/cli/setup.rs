@@ -97,9 +97,14 @@ struct ScaffoldReport {
     minted_id: Option<String>,
     /// True when this run newly wrote `.rigger/instructions/README.md` (it was absent).
     wrote_instructions_readme: bool,
-    /// Gate scripts this run newly wrote under `.rigger/gates/` (empty when each already
-    /// existed).
-    new_gate_files: Vec<String>,
+    /// The key of the gate template set this project matched, or `None` when no set's
+    /// `detect` marker is a file at the project root.
+    gate_set: Option<String>,
+    /// Every gate template set this run was handed, in catalogue order: its key and its
+    /// `detect` markers - the parenthetical of the no-set line.
+    set_catalogue: Vec<(String, Vec<String>)>,
+    /// The matched set's listed paths this run newly wrote (empty when each already existed).
+    new_set_files: Vec<String>,
 }
 
 impl ScaffoldReport {
@@ -113,33 +118,48 @@ impl ScaffoldReport {
             || !self.gitignore_added.is_empty()
             || self.minted_id.is_some()
             || self.wrote_instructions_readme
-            || !self.new_gate_files.is_empty()
+            || !self.new_set_files.is_empty()
     }
 }
 
 /// Scaffold a project idempotently, returning a [`ScaffoldReport`] of what actually
 /// changed. Every step is a no-op when its artifact already exists and matches, so a
 /// rerun on an initialized project changes nothing and reports `changed: false`.
-fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
+///
+/// The workflow's gates come from the first of `sets` (handed in key order: the embedded
+/// [`TEMPLATE_SETS`] in production) any of whose `detect` markers is a file at `root`; with
+/// none, the workflow declares no gates. Every set is parsed before the first write, so a
+/// set that fails [`parse_template_set`] refuses naming its key and writes nothing.
+fn init_project(
+    root: &Path,
+    sets: &[TemplateSet],
+) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
+    let parsed = sets
+        .iter()
+        .map(|set| parse_template_set(set).map(|spec| (set, spec)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let set_catalogue = parsed
+        .iter()
+        .map(|(set, spec)| (set.key.to_string(), spec.detect.clone()))
+        .collect();
+    let matched = parsed
+        .iter()
+        .find(|(_, spec)| spec.detect.iter().any(|marker| root.join(marker).is_file()));
+
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
     let agents_dir = rigger_dir.join("agents");
     std::fs::create_dir_all(&agents_dir)?;
-    let wrote_workflow = write_if_absent(&rigger_dir.join("workflow.yml"), SCAFFOLD_WORKFLOW)?;
+    let wrote_workflow = write_if_absent(
+        &rigger_dir.join("workflow.yml"),
+        &scaffold_workflow(matched.map(|(_, spec)| spec)),
+    )?;
     let instructions_dir = rigger_dir.join("instructions");
     std::fs::create_dir_all(&instructions_dir)?;
     let wrote_instructions_readme = write_if_absent(
         &instructions_dir.join(config_store::INSTRUCTIONS_README),
         SCAFFOLD_INSTRUCTIONS_README,
     )?;
-    let gates_dir = rigger_dir.join("gates");
-    std::fs::create_dir_all(&gates_dir)?;
-    let mut new_gate_files = Vec::new();
-    for (file, content) in SCAFFOLD_GATE_FILES {
-        if write_if_absent(&gates_dir.join(file), content)? {
-            new_gate_files.push(file.to_string());
-        }
-    }
 
     // 1b. Mint the durable project identity when absent (spec 09, Gap 20): a tracked
     // `.rigger/project.id` line so the identity survives directory renames and machine
@@ -255,6 +275,19 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         }
     }
 
+    // 5. Write the matched set's files when absent, LAST: after every file this function
+    // writes or merges itself, so its own write wins at a path a set also lists.
+    let mut new_set_files = Vec::new();
+    for (path, content) in matched.map_or(&[][..], |(set, _)| set.files) {
+        let target = root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if write_if_absent(&target, content)? {
+            new_set_files.push(path.to_string());
+        }
+    }
+
     Ok(ScaffoldReport {
         wrote_workflow,
         new_agents,
@@ -263,7 +296,9 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
         gitignore_added,
         minted_id,
         wrote_instructions_readme,
-        new_gate_files,
+        gate_set: matched.map(|(set, _)| set.key.to_string()),
+        set_catalogue,
+        new_set_files,
     })
 }
 
@@ -423,13 +458,31 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
         ));
     }
     if report.wrote_workflow {
-        lines.push("scaffolded .rigger/workflow.yml".to_string());
+        match &report.gate_set {
+            Some(key) => lines.push(format!(
+                "scaffolded .rigger/workflow.yml (gate template set: {key})"
+            )),
+            None => {
+                lines.push("scaffolded .rigger/workflow.yml".to_string());
+                let catalogue = report
+                    .set_catalogue
+                    .iter()
+                    .map(|(key, detect)| format!("{key}: {}", detect.join(" or ")))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                lines.push(format!(
+                    "no gate template set matches this project ({catalogue} at the project \
+                     root), so .rigger/workflow.yml declares no gates - declare your own under \
+                     gates:"
+                ));
+            }
+        }
     }
     if report.wrote_instructions_readme {
         lines.push("scaffolded .rigger/instructions/README.md".to_string());
     }
-    for file in &report.new_gate_files {
-        lines.push(format!("scaffolded .rigger/gates/{file}"));
+    for path in &report.new_set_files {
+        lines.push(format!("scaffolded {path}"));
     }
     if !report.new_agents.is_empty() {
         lines.push(format!(
@@ -460,7 +513,7 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 }
 
 pub(crate) fn cmd_init() -> Res {
-    let report = init_project(Path::new("."))?;
+    let report = init_project(Path::new("."), TEMPLATE_SETS)?;
     let lines = scaffold_summary_lines(&report);
     if lines.is_empty() {
         // Re-runnable: an already-initialized project is a silent no-op with a plain
@@ -642,7 +695,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted workflow and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = init_project(root)?;
+    let scaffold = init_project(root, TEMPLATE_SETS)?;
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds: the only command that rebuilds it, because it is the verb
     // every install already runs.
@@ -1349,17 +1402,20 @@ These files are part of a run's definition pin: editing one mid-run halts the ne
 as a definition drift. Edit them between runs, or continue with `--rebase-definition`.
 ";
 
-/// The scaffolded workflow (§3.2): a worked plan -> implement pipeline where the
+/// The scaffolded workflow template (§3.2): a worked plan -> implement pipeline where the
 /// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
 /// (autonomy + grounder + the three-tier `review` panel), a reusable `gates:`
 /// library, and an implement stage that runs each unit's complete lifecycle
-/// (implement -> gates -> three-tier review of THIS unit -> integrate). It loads
-/// through `config::load` against the agents scaffolded alongside it.
+/// (implement -> gates -> three-tier review of THIS unit -> integrate). Its three
+/// placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@` and `@CHECKIN_GATES@` -
+/// are filled by [`scaffold_workflow`] from the matched gate template set; every rendering
+/// loads through `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
-# Replace the gate commands with your own.\n\
+# Its gates come from the gate template set matching this project's language; with\n\
+# none, it declares no gates.\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
@@ -1393,31 +1449,8 @@ adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n
 build:\n  \
 wrapper: auto\n\
 \n\
-gates:                    # a reusable library of commands, referenced by name\n  \
-build: { run: \"echo build ok; true\", kind: core }\n  \
-test:  { run: \"echo test ok; true\",  kind: core }\n  \
-lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
-# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\n  \
-# unit has integrated - never per implementer round. For a Rust project, run the\n  \
-# sweep `rigger init` wrote beside this file: `run: \"sh .rigger/gates/mutation.sh\"`\n  \
-# (diff-scoped, in its own memory-bounded scope; its header explains each clause).\n  \
-# Declaring a gate under this exact id requires `cargo-mutants` on PATH (rigger\n  \
-# validate checks at run start).\n  \
-mutation: { run: \"echo mutation ok; true\", kind: core }\n\
-# The boundary gate: Clean Architecture made mechanical. Replace with your\n  \
-# project's own check that dependencies point inward and adapters are constructed\n  \
-# only in the composition root (see this crate's tests/boundary_audit.rs for the\n  \
-# worked example). A red boundary gate is non-negotiable: the adjudicator\n  \
-# rejects, never balances it against other evidence.\n  \
-boundary: { run: \"echo boundary ok; true\", kind: core }\n\
-# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\n  \
-# duplication and dead-code check; if it keeps a generated catalog, regenerate it\n  \
-# before asserting so a unit is never red on a stale catalog alone.\n  \
-audit: { run: \"echo audit ok; true\", kind: core }\n\
-# The red-before-green gate: TDD made mechanical. Replace with a check that a\n  \
-# unit's first source commit is preceded by (or carries) a test change (see this\n  \
-# crate's .rigger/gates/red-before-green.sh for the worked example).\n  \
-red-before-green: { run: \"echo red-before-green ok; true\", kind: core }\n\
+# A reusable library of gate commands, referenced by name from the stages below.\n\
+@GATES@\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -1448,7 +1481,7 @@ needs: [plan-critique]\n    \
 agent: rust-engineer\n    \
 strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    \
 partition: by-blast-radius\n    \
-gates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\n    \
+gates: @IMPLEMENT_GATES@\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
 coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 \n  \
@@ -1456,30 +1489,89 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 # `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\n  \
 # every unit it expanded into has integrated - never per implementer round, and\n  \
 # never before every unit has landed. Re-verifies the whole gate suite against\n  \
-# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\n  \
-# then integrate or escalate with the accounting already on record.\n  \
+# the merged tree; one remediation round (max_retries: 2), then integrate or\n  \
+# escalate with the accounting already on record.\n  \
 checkin:\n    \
 needs: [implement]\n    \
 agent: rust-engineer\n    \
-max_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\n    \
-gates: [build, audit, test, lint, boundary, mutation]\n    \
+max_retries: 2          # attempt bound: the gates, one remediation round, the gates again\n    \
+gates: @CHECKIN_GATES@\n    \
 on_pass: merge\n    \
-coverage: \"mutation efficacy of the whole spec diff\"\n";
+coverage: \"the whole spec diff passes every gate on the merged tree\"\n";
 
-/// The gate scripts `rigger init` writes into `.rigger/gates/`: this repository's own files,
-/// included verbatim so the gates a consumer runs are the ones this repository runs (one home -
-/// `tests/principle_gates_wiring.rs` pins each identical). The check-in mutation sweep sources
-/// the container runtime snippet from beside itself, so the two ship together.
-const SCAFFOLD_GATE_FILES: &[(&str, &str)] = &[
-    (
-        "mutation.sh",
-        include_str!("../../.rigger/gates/mutation.sh"),
-    ),
-    (
-        "container-env.sh",
-        include_str!("../../.rigger/gates/container-env.sh"),
-    ),
-];
+/// One gate template set as the build script embeds it (`build/template_sets.rs`): its key
+/// (the `scaffold/<key>/` directory name), its `set.yml` text, and each listed file as
+/// `(repository-relative path, bytes)`. The bytes are data `rigger init` copies; nothing here
+/// names a gate.
+struct TemplateSet {
+    key: &'static str,
+    set: &'static str,
+    files: &'static [(&'static str, &'static str)],
+}
+
+// The embedded `TEMPLATE_SETS`, one per `scaffold/<key>/` in key order, generated by build.rs.
+include!(concat!(env!("OUT_DIR"), "/template_sets.rs"));
+
+/// A gate template set's `set.yml`: the marker file names whose presence at the project root
+/// selects it, the text of its `gates:` block (comments kept), and the two stages' gate lists.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetSpec {
+    detect: Vec<String>,
+    gates: String,
+    implement: Vec<String>,
+    checkin: Vec<String>,
+}
+
+/// Parse a gate template set: its `set.yml`, then its `gates` text as a mapping whose keys are
+/// the declared gate ids. A `gates` text declaring nothing (empty or comments only) comes back
+/// empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to parse and a
+/// stage list naming a gate id the `gates` text does not declare.
+fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
+    let refuse = |why: String| format!("gate template set {}: {why}", set.key);
+    let mut spec: SetSpec = serde_yaml::from_str(set.set).map_err(|e| refuse(e.to_string()))?;
+    let declared: Option<std::collections::BTreeMap<String, config::Gate>> =
+        serde_yaml::from_str(&spec.gates).map_err(|e| refuse(format!("gates: {e}")))?;
+    let declared = declared.unwrap_or_default();
+    for (stage, ids) in [("implement", &spec.implement), ("checkin", &spec.checkin)] {
+        if let Some(id) = ids.iter().find(|id| !declared.contains_key(*id)) {
+            return Err(refuse(format!(
+                "{stage} lists gate {id}, which its gates text does not declare"
+            )));
+        }
+    }
+    if declared.is_empty() {
+        spec.gates.clear();
+    }
+    Ok(spec)
+}
+
+/// Render [`SCAFFOLD_WORKFLOW`] for `set`: its `gates` text under `gates:`, indented two spaces
+/// (`gates: {}` when it declares nothing), and its two stage lists as YAML flow sequences; with
+/// no set, `gates: {}` and `[]` for both lists.
+fn scaffold_workflow(set: Option<&SetSpec>) -> String {
+    let gates = match set.filter(|spec| !spec.gates.is_empty()) {
+        Some(spec) => {
+            let body: Vec<String> = spec
+                .gates
+                .trim_end()
+                .lines()
+                .map(|line| match line {
+                    "" => String::new(),
+                    _ => format!("  {line}"),
+                })
+                .collect();
+            format!("gates:\n{}", body.join("\n"))
+        }
+        None => "gates: {}".to_string(),
+    };
+    let list =
+        |pick: fn(&SetSpec) -> &[String]| format!("[{}]", set.map_or(&[][..], pick).join(", "));
+    SCAFFOLD_WORKFLOW
+        .replace("@GATES@", &gates)
+        .replace("@IMPLEMENT_GATES@", &list(|spec| &spec.implement))
+        .replace("@CHECKIN_GATES@", &list(|spec| &spec.checkin))
+}
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
@@ -1573,7 +1665,7 @@ You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lens
 against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\
 on design / architecture / ADR adherence: any deviation or cut corner is a reject,\n\
 no matter which side flagged it. When you reject, say exactly what must change.\n\
-A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.\n\
+A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.\n\
 End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
 blocks integration no matter what the static gates say.\n",
@@ -1693,102 +1785,465 @@ mod tests {
         assert_eq!(begins, 1, "the managed block is never duplicated");
     }
 
-    /// Write the scaffold constants into a temp `.rigger/` (the same bytes
-    /// `rigger init` emits) and load them through `config::load`: the scaffold must
-    /// be a valid, referentially-complete config demonstrating the full DAG shape.
-    #[test]
-    fn scaffold_parses_into_a_valid_config() {
+    /// Write `workflow` and the scaffolded agent seeds into a fresh project's `.rigger/` (the
+    /// bytes `rigger init` emits) and load them through `config_store::load`, which validates.
+    fn load_scaffold(workflow: &str) -> config::Config {
         let dir = tempfile::tempdir().unwrap();
         let rigger = dir.path().join(RIGGER_DIR);
         let agents = rigger.join("agents");
         std::fs::create_dir_all(&agents).unwrap();
-        std::fs::write(rigger.join("workflow.yml"), SCAFFOLD_WORKFLOW).unwrap();
+        std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
         for (file, content) in SCAFFOLD_AGENTS {
             std::fs::write(agents.join(file), content).unwrap();
         }
+        config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
+            panic!("the scaffolded config must load and validate: {e}\n{workflow}")
+        })
+    }
 
-        let cfg = config_store::load(dir.path().to_str().unwrap())
-            .expect("the scaffolded config must load and validate");
+    /// Every workflow `rigger init` can write, as `(label, text)`: each embedded set's rendering,
+    /// then the no-set one.
+    fn every_rendering() -> Vec<(String, String)> {
+        let mut renderings: Vec<(String, String)> = TEMPLATE_SETS
+            .iter()
+            .map(|set| {
+                let spec = parse_template_set(set).unwrap_or_else(|e| panic!("{e}"));
+                (set.key.to_string(), scaffold_workflow(Some(&spec)))
+            })
+            .collect();
+        renderings.push(("no set".to_string(), scaffold_workflow(None)));
+        renderings
+    }
 
-        // Six CANONICAL agents: planner, rust-engineer, the two reviewer lenses
-        // (architecture-reviewer + sdet), the adversary, the adjudicator. Integration is
-        // folded into the unit lifecycle (no integrator). None of the four generic
-        // placeholder personas is seeded.
-        assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
-        // Four stages: plan -> plan-critique -> implement -> checkin. The plan-critique
-        // gate (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases; the
-        // checkin stage (spec 91) runs the mutation sweep once, after every implement unit
-        // has integrated.
-        assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
-        // Seven gates in the reusable library, including the checkin stage's `mutation` gate,
-        // the `boundary` and `audit` gates both unit stages carry and the implement stage's
-        // `red-before-green` gate.
-        assert_eq!(cfg.workflow.gates.len(), 7, "scaffold gate count");
+    /// A gate command that verifies nothing: empty, `true`, `:` or ending in `; true`.
+    fn is_placeholder(run: &str) -> bool {
+        let run = run.trim();
+        run.is_empty() || run == "true" || run == ":" || run.ends_with("; true")
+    }
 
-        // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
-        // between plan and implement, a fan-out implement stage that integrates on_pass:
-        // merge, and a three-tier review panel declared once on defaults.review.
-        let plan = &cfg.workflow.stages["plan"];
-        assert_eq!(plan.produces, "dag");
-        // The plan-critique gate: review-only (no agent), needs plan, its adversary +
-        // adjudicator gate the fan-out.
-        let critique = &cfg.workflow.stages["plan-critique"];
-        assert!(critique.agent.is_empty(), "the gate implements nothing");
-        assert_eq!(critique.needs, ["plan"]);
-        assert_eq!(critique.adversary, "adversary");
-        assert_eq!(critique.adjudicator, "adjudicator");
-        let implement = &cfg.workflow.stages["implement"];
-        assert_eq!(implement.strategy, "fan-out");
+    /// The four placeholder spellings are placeholders, and a real command is not.
+    #[test]
+    fn is_placeholder_names_the_four_stand_in_commands() {
         assert_eq!(
-            implement.needs,
-            ["plan-critique"],
-            "the fan-out releases only after the plan-critique gate approves"
+            [
+                "",
+                " ",
+                "true",
+                ":",
+                "echo ok; true",
+                "cargo test",
+                "true-ish"
+            ]
+            .map(is_placeholder),
+            [true, true, true, true, true, false, false]
         );
-        assert_eq!(implement.on_pass, "merge");
-        // The checkin stage (spec 91): needs the fan-out implement TEMPLATE (satisfied once
-        // every unit it expanded into has integrated - u91c1's generic conductor rule), runs
-        // the mutation gate exactly once, remediates once, and integrates on pass.
-        let checkin = &cfg.workflow.stages["checkin"];
-        assert_eq!(checkin.needs, ["implement"]);
-        assert_eq!(
-            checkin.max_retries, 2,
-            "an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, \
-             the sweep again - a value of 1 escalates on the first miss (spec 91)"
-        );
-        assert_eq!(
-            checkin.gates,
-            ["build", "audit", "test", "lint", "boundary", "mutation"],
-            "checkin re-verifies the whole gate suite, THEN sweeps mutants"
-        );
-        assert_eq!(checkin.on_pass, "merge");
-        // A placeholder command, like the scaffold's other gates ("Replace the gate
-        // commands with your own") - the SHAPE (a `mutation`-id gate the checkin stage
-        // lists) is what this test proves, not a live cargo-mutants invocation.
-        let mutation_gate = &cfg.workflow.gates["mutation"];
-        assert_eq!(mutation_gate.kind, "core");
-        let review = &cfg.workflow.defaults.review;
-        assert_eq!(
-            review.lenses,
-            ["architecture-reviewer", "sdet"],
-            "tier 1: the two canonical expert lenses"
-        );
-        assert_eq!(review.adversary, "adversary", "tier 2: refutes the lenses");
-        assert_eq!(
-            review.adjudicator, "adjudicator",
-            "tier 3: the neutral adjudicator gates"
-        );
-        // The scaffold sets symbols EXPLICITLY (visible, not implicit) - it is the
-        // default grounder (the structural symbol index), so a fresh `rigger init`
-        // config grounds and reindexes without hitting the retired-grounder error.
-        assert_eq!(cfg.workflow.defaults.grounder, "symbols");
-        // FIX 3: the scaffold ships a NON-ZERO spawn budget so an unattended `rigger
-        // run` cannot spawn unboundedly - 0 would be unlimited.
+    }
+
+    /// Every embedded gate template set parses, every rendering (each set's and the no-set one)
+    /// loads and validates as a referentially-complete config of the full DAG shape, no rendered
+    /// gate command is a placeholder, and every gate a stage lists is declared. `init_project`
+    /// on a fresh project holding only the first `detect` marker of each embedded set that has
+    /// one reports that set as its `gate_set` and writes exactly the paths the set lists - so a
+    /// set listing a path `init_project` writes itself fails here, naming the path.
+    #[test]
+    fn scaffold_parses_into_a_valid_config() {
+        for (label, workflow) in every_rendering() {
+            let cfg = load_scaffold(&workflow);
+            // Six CANONICAL agents: planner, rust-engineer, the two reviewer lenses
+            // (architecture-reviewer + sdet), the adversary, the adjudicator.
+            assert_eq!(cfg.agents.len(), 6, "{label}: scaffold agent count");
+            // Four stages: plan -> plan-critique -> implement -> checkin.
+            assert_eq!(
+                cfg.workflow.stages.len(),
+                4,
+                "{label}: scaffold stage count"
+            );
+            for (id, gate) in &cfg.workflow.gates {
+                assert!(
+                    !is_placeholder(&gate.run),
+                    "{label}: gate {id} runs the placeholder {:?}",
+                    gate.run
+                );
+            }
+            for (name, stage) in &cfg.workflow.stages {
+                for id in &stage.gates {
+                    assert!(
+                        cfg.workflow.gates.contains_key(id),
+                        "{label}: stage {name} lists the undeclared gate {id}"
+                    );
+                }
+            }
+            let plan = &cfg.workflow.stages["plan"];
+            assert_eq!(plan.produces, "dag", "{label}");
+            // The plan-critique gate: review-only (no agent), needs plan, its adversary +
+            // adjudicator gate the fan-out.
+            let critique = &cfg.workflow.stages["plan-critique"];
+            assert!(
+                critique.agent.is_empty(),
+                "{label}: the gate implements nothing"
+            );
+            assert_eq!(critique.needs, ["plan"], "{label}");
+            assert_eq!(critique.adversary, "adversary", "{label}");
+            assert_eq!(critique.adjudicator, "adjudicator", "{label}");
+            let implement = &cfg.workflow.stages["implement"];
+            assert_eq!(implement.strategy, "fan-out", "{label}");
+            assert_eq!(implement.needs, ["plan-critique"], "{label}");
+            assert_eq!(implement.on_pass, "merge", "{label}");
+            // The checkin stage (spec 91): needs the fan-out implement TEMPLATE, remediates
+            // once, and integrates on pass.
+            let checkin = &cfg.workflow.stages["checkin"];
+            assert_eq!(checkin.needs, ["implement"], "{label}");
+            assert_eq!(
+                checkin.max_retries, 2,
+                "{label}: an ATTEMPT bound like defaults.max_retries: the gates, one remediation \
+                 round, the gates again"
+            );
+            assert_eq!(checkin.on_pass, "merge", "{label}");
+            let review = &cfg.workflow.defaults.review;
+            assert_eq!(review.lenses, ["architecture-reviewer", "sdet"], "{label}");
+            assert_eq!(review.adversary, "adversary", "{label}");
+            assert_eq!(review.adjudicator, "adjudicator", "{label}");
+            // The default grounder, set explicitly.
+            assert_eq!(cfg.workflow.defaults.grounder, "symbols", "{label}");
+            // A NON-ZERO spawn budget so an unattended `rigger run` cannot spawn unboundedly.
+            assert_eq!(
+                cfg.workflow.defaults.budget, 60,
+                "{label}: scaffold default budget"
+            );
+        }
+        for set in TEMPLATE_SETS {
+            let spec = parse_template_set(set).unwrap_or_else(|e| panic!("{e}"));
+            let Some(marker) = spec.detect.first() else {
+                continue;
+            };
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(marker), "").unwrap();
+            let report = init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
+            assert_eq!(report.gate_set.as_deref(), Some(set.key), "{}", set.key);
+            assert_eq!(
+                report.new_set_files,
+                set.files
+                    .iter()
+                    .map(|(path, _)| path.to_string())
+                    .collect::<Vec<_>>(),
+                "set {}: init writes exactly the listed paths",
+                set.key
+            );
+        }
+    }
+
+    /// A synthetic gate template set whose `set.yml` is `set`.
+    fn synthetic(set: &'static str) -> TemplateSet {
+        TemplateSet {
+            key: "synthetic",
+            set,
+            files: &[],
+        }
+    }
+
+    /// `parse_template_set` refuses, naming the set key, a `set.yml` that fails to parse, a
+    /// `gates` text that fails to parse, and a stage list naming a gate the `gates` text does
+    /// not declare.
+    #[test]
+    fn parse_template_set_refuses_naming_the_set_key() {
+        let refusal = |set| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
+        let bad_set_yml = refusal("detect: [a]\nimplement: []\nchecking: []\ngates: \"\"\n");
         assert!(
-            cfg.workflow.defaults.budget > 0,
-            "the scaffold must ship a non-zero default spawn budget; was {}",
-            cfg.workflow.defaults.budget
+            bad_set_yml.starts_with("gate template set synthetic: ")
+                && bad_set_yml.contains("checking"),
+            "{bad_set_yml}"
         );
-        assert_eq!(cfg.workflow.defaults.budget, 60, "scaffold default budget");
+        let bad_gates =
+            refusal("detect: []\ngates: \"unit-check: [\"\nimplement: []\ncheckin: []\n");
+        assert!(
+            bad_gates.starts_with("gate template set synthetic: "),
+            "{bad_gates}"
+        );
+        assert_eq!(
+            refusal(
+                "detect: []\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
+                 implement: [unit-check]\ncheckin: [unit-check, sweep]\n"
+            ),
+            "gate template set synthetic: checkin lists gate sweep, which its gates text does not \
+             declare"
+        );
+        assert_eq!(
+            refusal("detect: []\ngates: \"\"\nimplement: [unit-check]\ncheckin: []\n"),
+            "gate template set synthetic: implement lists gate unit-check, which its gates text \
+             does not declare"
+        );
+    }
+
+    /// `init_project` parses every set it is handed before its first write: one whose `set.yml`
+    /// fails to parse refuses naming the set key and leaves the project root without `.rigger`.
+    #[test]
+    fn init_project_refuses_an_unparseable_set_naming_its_key_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sets = [synthetic("detect: [\n")];
+        let err = init_project(dir.path(), &sets)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("gate template set synthetic: "), "{err}");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing is written - no .rigger, no .claude, no .gitignore"
+        );
+    }
+
+    /// A `gates` text holding only a comment declares no gate: the set parses with its `gates`
+    /// empty, renders `gates: {}` and the rendering loads with no gate on either stage.
+    #[test]
+    fn scaffold_workflow_renders_a_comment_only_gates_text_as_an_empty_mapping() {
+        let set = synthetic("detect: []\ngates: |\n  # nothing yet\nimplement: []\ncheckin: []\n");
+        let spec = parse_template_set(&set).expect("a comment-only gates text parses");
+        assert_eq!(spec.gates, "");
+        let workflow = scaffold_workflow(Some(&spec));
+        assert!(workflow.lines().any(|l| l == "gates: {}"), "{workflow}");
+        let cfg = load_scaffold(&workflow);
+        assert!(cfg.workflow.gates.is_empty());
+        assert!(cfg.workflow.stages["implement"].gates.is_empty());
+        assert!(cfg.workflow.stages["checkin"].gates.is_empty());
+    }
+
+    /// A set's `gates` text renders under `gates:` indented two spaces, a blank line kept blank,
+    /// and its stage lists render as YAML flow sequences in their order.
+    #[test]
+    fn scaffold_workflow_indents_the_gates_text_and_renders_the_lists_in_order() {
+        let set = synthetic(
+            "detect: []\ngates: |\n  # checks\n  unit-check: { run: \"make check\", kind: core }\n\n  \
+             sweep: { run: \"make sweep\", kind: core }\nimplement: [unit-check, sweep]\n\
+             checkin: [sweep]\n",
+        );
+        let workflow = scaffold_workflow(Some(&parse_template_set(&set).unwrap()));
+        assert!(
+            workflow.contains(
+                "\ngates:\n  # checks\n  unit-check: { run: \"make check\", kind: core }\n\n  \
+                 sweep: { run: \"make sweep\", kind: core }\n\n"
+            ),
+            "{workflow}"
+        );
+        let cfg = load_scaffold(&workflow);
+        assert_eq!(
+            cfg.workflow.stages["implement"].gates,
+            ["unit-check", "sweep"]
+        );
+        assert_eq!(cfg.workflow.stages["checkin"].gates, ["sweep"]);
+        assert_eq!(cfg.workflow.gates["unit-check"].run, "make check");
+    }
+
+    /// `init_project` beside no set's marker reports no gate set, writes a workflow that loads
+    /// declaring no gate with `[]` on both unit stages and no set file, and the summary carries
+    /// the no-set line naming every set's markers.
+    #[test]
+    fn init_project_matching_no_set_writes_a_gateless_workflow_and_the_no_set_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
+        assert_eq!(report.gate_set, None);
+        assert!(
+            report.new_set_files.is_empty(),
+            "{:?}",
+            report.new_set_files
+        );
+        let workflow =
+            std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
+        assert_eq!(workflow, scaffold_workflow(None));
+        let cfg = config_store::load(dir.path().to_str().unwrap()).expect("the workflow loads");
+        assert!(cfg.workflow.gates.is_empty());
+        assert!(cfg.workflow.stages["implement"].gates.is_empty());
+        assert!(cfg.workflow.stages["checkin"].gates.is_empty());
+        let lines = scaffold_summary_lines(&report);
+        assert!(
+            lines.contains(&"scaffolded .rigger/workflow.yml".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(
+                &"no gate template set matches this project (rust: Cargo.toml at the project \
+                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"
+                    .to_string()
+            ),
+            "{lines:?}"
+        );
+        assert!(
+            !dir.path().join(RIGGER_DIR).join("gates").exists(),
+            "a project matching no set gets no gate script"
+        );
+    }
+
+    /// The summary names the matched set on the workflow line, prints one line per written set
+    /// file, and prints neither the set nor the no-set line when the workflow was kept.
+    #[test]
+    fn scaffold_summary_names_the_matched_set_and_each_written_set_file() {
+        let report = ScaffoldReport {
+            wrote_workflow: true,
+            gate_set: Some("demo".to_string()),
+            set_catalogue: vec![("demo".to_string(), vec!["a".to_string(), "b".to_string()])],
+            new_set_files: vec!["x/one.sh".to_string(), "two.sh".to_string()],
+            ..ScaffoldReport::default()
+        };
+        assert_eq!(
+            scaffold_summary_lines(&report),
+            [
+                "scaffolded .rigger/workflow.yml (gate template set: demo)",
+                "scaffolded x/one.sh",
+                "scaffolded two.sh",
+            ]
+        );
+        assert!(report.changed());
+        let kept = ScaffoldReport {
+            set_catalogue: vec![("demo".to_string(), vec!["a".to_string(), "b".to_string()])],
+            ..ScaffoldReport::default()
+        };
+        assert!(scaffold_summary_lines(&kept).is_empty());
+        assert!(!kept.changed());
+        let files_only = ScaffoldReport {
+            new_set_files: vec!["two.sh".to_string()],
+            ..ScaffoldReport::default()
+        };
+        assert!(files_only.changed(), "a written set file is a change");
+        let unmatched = ScaffoldReport {
+            wrote_workflow: true,
+            set_catalogue: vec![
+                ("demo".to_string(), vec!["a".to_string(), "b".to_string()]),
+                ("other".to_string(), vec!["c".to_string()]),
+            ],
+            ..ScaffoldReport::default()
+        };
+        assert_eq!(
+            scaffold_summary_lines(&unmatched),
+            [
+                "scaffolded .rigger/workflow.yml",
+                "no gate template set matches this project (demo: a or b; other: c at the project \
+                 root), so .rigger/workflow.yml declares no gates - declare your own under gates:",
+            ]
+        );
+    }
+
+    /// The catalogue carries each set's key and its markers, in order; detection picks the first
+    /// set in order any of whose markers is a file at the root, and writes that set's files when
+    /// absent, creating their parent directories. A set file at a path `init_project` writes
+    /// itself is never written: the scaffold's own rendering wins.
+    #[test]
+    fn init_project_detects_the_first_matching_set_and_writes_its_files_when_absent() {
+        const FIRST: TemplateSet = TemplateSet {
+            key: "first",
+            set: "detect: [first.marker, both.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n",
+            files: &[
+                (
+                    ".rigger/workflow.yml",
+                    "stages:\n  stand-in:\n    agent: planner\n",
+                ),
+                ("deep/dir/one.sh", "one\n"),
+            ],
+        };
+        const SECOND: TemplateSet = TemplateSet {
+            key: "second",
+            set: "detect: [second.marker]\ngates: \"\"\nimplement: []\ncheckin: []\n",
+            files: &[("two.sh", "two\n")],
+        };
+        let sets = [FIRST, SECOND];
+        let only_second = tempfile::tempdir().unwrap();
+        std::fs::write(only_second.path().join("second.marker"), "").unwrap();
+        let report = init_project(only_second.path(), &sets).unwrap();
+        assert_eq!(report.gate_set.as_deref(), Some("second"));
+        assert_eq!(report.new_set_files, ["two.sh"]);
+        assert_eq!(
+            report.set_catalogue,
+            [
+                (
+                    "first".to_string(),
+                    vec!["first.marker".to_string(), "both.marker".to_string()]
+                ),
+                ("second".to_string(), vec!["second.marker".to_string()]),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(only_second.path().join("two.sh")).unwrap(),
+            "two\n"
+        );
+        assert!(!only_second.path().join("deep").exists());
+
+        let both = tempfile::tempdir().unwrap();
+        std::fs::write(both.path().join("both.marker"), "").unwrap();
+        std::fs::write(both.path().join("second.marker"), "").unwrap();
+        let report = init_project(both.path(), &sets).unwrap();
+        assert_eq!(
+            report.gate_set.as_deref(),
+            Some("first"),
+            "the first set in order wins"
+        );
+        assert_eq!(
+            report.new_set_files,
+            ["deep/dir/one.sh"],
+            "a set file at a path init_project writes itself is never written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(both.path().join(RIGGER_DIR).join("workflow.yml")).unwrap(),
+            scaffold_workflow(Some(&parse_template_set(&FIRST).unwrap())),
+            "the workflow on disk is the scaffold's rendering, not the set's stand-in"
+        );
+        assert_eq!(
+            std::fs::read_to_string(both.path().join("deep/dir/one.sh")).unwrap(),
+            "one\n"
+        );
+        // A deleted set file is written again; a present one is kept and not reported.
+        std::fs::remove_file(both.path().join("deep/dir/one.sh")).unwrap();
+        assert_eq!(
+            init_project(both.path(), &sets).unwrap().new_set_files,
+            ["deep/dir/one.sh"]
+        );
+        std::fs::write(both.path().join("deep/dir/one.sh"), "mine\n").unwrap();
+        assert!(init_project(both.path(), &sets)
+            .unwrap()
+            .new_set_files
+            .is_empty());
+        assert_eq!(
+            std::fs::read_to_string(both.path().join("deep/dir/one.sh")).unwrap(),
+            "mine\n"
+        );
+
+        // A marker that is a directory is not a file at the root.
+        let dir_marker = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir_marker.path().join("first.marker")).unwrap();
+        assert_eq!(
+            init_project(dir_marker.path(), &sets).unwrap().gate_set,
+            None
+        );
+    }
+
+    /// A project whose workflow already exists keeps it, gets no gate added, and still gets the
+    /// matched set's absent files.
+    #[test]
+    fn init_project_keeps_an_existing_workflow_and_writes_the_matched_sets_absent_files() {
+        const SET: TemplateSet = TemplateSet {
+            key: "only",
+            set: "detect: [m]\ngates: |\n  unit-check: { run: \"make check\", kind: core }\n\
+                  implement: [unit-check]\ncheckin: []\n",
+            files: &[("s.sh", "s\n")],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("m"), "").unwrap();
+        let rigger = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger).unwrap();
+        let mine = "stages:\n  plan:\n    agent: planner\n";
+        std::fs::write(rigger.join("workflow.yml"), mine).unwrap();
+        let report = init_project(dir.path(), &[SET]).unwrap();
+        assert!(!report.wrote_workflow);
+        assert_eq!(report.gate_set.as_deref(), Some("only"));
+        assert_eq!(report.new_set_files, ["s.sh"]);
+        assert_eq!(
+            std::fs::read_to_string(rigger.join("workflow.yml")).unwrap(),
+            mine
+        );
+        assert_eq!(
+            scaffold_summary_lines(&report)
+                .into_iter()
+                .filter(|l| l.contains("workflow.yml") || l.contains("gate template set"))
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -1913,7 +2368,8 @@ mod tests {
     fn init_project_is_idempotent_reporting_new_work_only_once() {
         let dir = tempfile::tempdir().unwrap();
 
-        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        let first =
+            init_project(dir.path(), TEMPLATE_SETS).expect("first init scaffolds the project");
         assert!(
             first.changed(),
             "the first init on an empty project must change the tree"
@@ -1923,7 +2379,7 @@ mod tests {
             "the first init scaffolds the workflow's referenced agents"
         );
 
-        let second = init_project(dir.path()).expect("a rerun must succeed");
+        let second = init_project(dir.path(), TEMPLATE_SETS).expect("a rerun must succeed");
         assert!(
             !second.changed(),
             "a rerun on an initialized project must change nothing"
@@ -1947,7 +2403,8 @@ mod tests {
 
         // First init scaffolds everything AND appends the machine-local .gitignore
         // entries (a non-git temp dir is untracked, so the entries are written).
-        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        let first =
+            init_project(dir.path(), TEMPLATE_SETS).expect("first init scaffolds the project");
         assert!(
             first.wrote_workflow && !first.new_agents.is_empty() && first.wrote_hook,
             "the first init writes workflow.yml, the agents, and the hook"
@@ -1961,7 +2418,8 @@ mod tests {
         // scaffold artifact is still present and byte-identical.
         std::fs::remove_file(dir.path().join(".gitignore")).unwrap();
 
-        let repair = init_project(dir.path()).expect("a gitignore-only repair must succeed");
+        let repair =
+            init_project(dir.path(), TEMPLATE_SETS).expect("a gitignore-only repair must succeed");
         assert!(
             !repair.wrote_workflow,
             "workflow.yml already exists; it must NOT be reported as scaffolded"
@@ -2006,10 +2464,11 @@ mod tests {
     /// entry (reporting each), and a rerun appends none of them again - no duplicate accrues.
     fn assert_init_gitignores_idempotently(patterns: &[&str]) {
         let dir = tempfile::tempdir().unwrap();
-        let first = init_project(dir.path()).expect("first init scaffolds the project");
+        let first =
+            init_project(dir.path(), TEMPLATE_SETS).expect("first init scaffolds the project");
         let gitignore = dir.path().join(".gitignore");
         let content = std::fs::read_to_string(&gitignore).unwrap();
-        let second = init_project(dir.path()).expect("a rerun must succeed");
+        let second = init_project(dir.path(), TEMPLATE_SETS).expect("a rerun must succeed");
         let after = std::fs::read_to_string(&gitignore).unwrap();
         for pattern in patterns {
             assert!(
@@ -2077,7 +2536,7 @@ mod tests {
         // The consumer's own repo already ignores the entire runtime dir through a broad rule.
         std::fs::write(dir.path().join(".gitignore"), ".rigger/\n").unwrap();
 
-        let report = init_project(dir.path()).expect("init must scaffold");
+        let report = init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
         assert!(
             report
                 .gitignore_added
@@ -2105,7 +2564,7 @@ mod tests {
 
         // Idempotent: a rerun re-appends nothing (the exact lines are already present), so the
         // redundant-but-correct lines never accrue a duplicate.
-        let second = init_project(dir.path()).expect("a rerun must succeed");
+        let second = init_project(dir.path(), TEMPLATE_SETS).expect("a rerun must succeed");
         assert!(
             !second
                 .gitignore_added
@@ -2131,12 +2590,20 @@ mod tests {
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id the scaffolded workflow references.
-        let wf: config::Workflow =
-            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
-        let mut referenced: BTreeSet<String> = wf.defaults.review.agent_ids().into_iter().collect();
-        for stage in wf.stages.values() {
-            referenced.extend(stage.agent_ids());
+        // Every agent id a scaffolded workflow references, identical for every rendering.
+        let referenced_by = |workflow: &str| -> BTreeSet<String> {
+            let wf: config::Workflow =
+                serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
+            let mut referenced: BTreeSet<String> =
+                wf.defaults.review.agent_ids().into_iter().collect();
+            for stage in wf.stages.values() {
+                referenced.extend(stage.agent_ids());
+            }
+            referenced
+        };
+        let referenced = referenced_by(&scaffold_workflow(None));
+        for (label, workflow) in every_rendering() {
+            assert_eq!(referenced_by(&workflow), referenced, "{label}");
         }
 
         // Every agent id the scaffold seeds.
@@ -2212,7 +2679,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = init_project(root).expect("init must scaffold the referenced agents");
+        let report =
+            init_project(root, TEMPLATE_SETS).expect("init must scaffold the referenced agents");
 
         assert!(
             agents.join("planner.md").exists(),
@@ -2274,7 +2742,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = init_project(root).expect_err(
+        let err = init_project(root, TEMPLATE_SETS).expect_err(
             "a workflow.yml carrying an unknown key must fail init, not silently \
                           re-scaffold the default fleet",
         );
@@ -2307,7 +2775,7 @@ mod tests {
         let root = dir.path();
         let rigger = root.join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger).unwrap();
-        std::fs::write(rigger.join("workflow.yml"), SCAFFOLD_WORKFLOW).unwrap();
+        std::fs::write(rigger.join("workflow.yml"), scaffold_workflow(None)).unwrap();
 
         let ids = get_referenced_agent_ids(root).unwrap();
         let want: std::collections::HashSet<String> = [
@@ -2435,7 +2903,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         // A valid project to validate against (workflow + the default fleet).
-        init_project(root).unwrap();
+        init_project(root, TEMPLATE_SETS).unwrap();
 
         // A foreign collection whose agents use `name:` as their identity field (the
         // Claude Code / agency-agents shape), plus an extra unknown frontmatter key.
@@ -2485,7 +2953,7 @@ mod tests {
     fn import_agents_refuses_to_overwrite_an_existing_agent() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        init_project(root).unwrap();
+        init_project(root, TEMPLATE_SETS).unwrap();
 
         // `planner.md` already exists (scaffolded by init_project). Capture it.
         let existing_path = root.join(".rigger/agents/planner.md");
@@ -2526,7 +2994,7 @@ mod tests {
     fn assert_import_refused(files: &[(&str, &str)], why: &str) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        init_project(root).unwrap();
+        init_project(root, TEMPLATE_SETS).unwrap();
         let src = root.join("collection");
         std::fs::create_dir_all(&src).unwrap();
         for (name, content) in files {
@@ -2594,7 +3062,7 @@ mod tests {
     fn import_agents_runs_full_validation_and_rejects_a_broken_project() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        init_project(root).unwrap();
+        init_project(root, TEMPLATE_SETS).unwrap();
         // Break a workflow agent reference so the whole-project load fails referentially.
         let wf_path = root.join(".rigger/workflow.yml");
         let wf = std::fs::read_to_string(&wf_path).unwrap();
@@ -2652,12 +3120,13 @@ mod tests {
     /// machine's already-installed compilation-cache wrapper with no further config.
     #[test]
     fn scaffold_workflow_declares_build_wrapper_auto() {
-        let wf: config::Workflow =
-            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
-        assert_eq!(
-            wf.build.wrapper, "auto",
-            "a freshly scaffolded workflow.yml must default build.wrapper to auto"
-        );
+        for (label, workflow) in every_rendering() {
+            assert_eq!(
+                load_scaffold(&workflow).workflow.build.wrapper,
+                "auto",
+                "{label}: a freshly scaffolded workflow.yml must default build.wrapper to auto"
+            );
+        }
     }
 
     /// Spec 102 criterion 2 (THE SCAFFOLD WRITES THE KEY): `rigger init`/`setup` scaffold
@@ -2667,18 +3136,21 @@ mod tests {
     /// file-write path is covered separately below.
     #[test]
     fn scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment() {
-        let wf: config::Workflow =
-            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
-        assert_eq!(
-            wf.defaults.max_parallel_units, 2,
-            "a freshly scaffolded workflow.yml must default max_parallel_units to 2"
-        );
-        assert!(
-            SCAFFOLD_WORKFLOW.contains("build cache")
-                && SCAFFOLD_WORKFLOW.contains("max_parallel_units: 2"),
-            "the scaffold must carry a sizing comment (explaining the per-unit build-cache \
-             cost) next to max_parallel_units, not a bare number"
-        );
+        for (label, workflow) in every_rendering() {
+            assert_eq!(
+                load_scaffold(&workflow)
+                    .workflow
+                    .defaults
+                    .max_parallel_units,
+                2,
+                "{label}: a freshly scaffolded workflow.yml must default max_parallel_units to 2"
+            );
+            assert!(
+                workflow.contains("build cache") && workflow.contains("max_parallel_units: 2"),
+                "{label}: the scaffold must carry a sizing comment (explaining the per-unit \
+                 build-cache cost) next to max_parallel_units, not a bare number"
+            );
+        }
     }
 
     /// Spec 102 criterion 2: `rigger init` on a FRESH project actually WRITES
@@ -2687,7 +3159,7 @@ mod tests {
     #[test]
     fn init_project_writes_max_parallel_units_with_its_sizing_comment() {
         let dir = tempfile::tempdir().unwrap();
-        init_project(dir.path()).expect("a fresh project must scaffold cleanly");
+        init_project(dir.path(), TEMPLATE_SETS).expect("a fresh project must scaffold cleanly");
         let workflow_path = dir.path().join(RIGGER_DIR).join("workflow.yml");
         let written = std::fs::read_to_string(&workflow_path).unwrap();
         assert!(
@@ -2713,7 +3185,8 @@ mod tests {
         let workflow_path = rigger_dir.join("workflow.yml");
         std::fs::write(&workflow_path, "build:\n  wrapper: off\n").unwrap();
 
-        init_project(dir.path()).expect("a rerun over an existing project must succeed");
+        init_project(dir.path(), TEMPLATE_SETS)
+            .expect("a rerun over an existing project must succeed");
 
         let after = std::fs::read_to_string(&workflow_path).unwrap();
         assert_eq!(
@@ -3029,7 +3502,7 @@ mod tests {
     #[test]
     fn init_scaffolds_the_fan_out_helpers_byte_identical_to_the_committed_files() {
         let dir = tempfile::tempdir().unwrap();
-        init_project(dir.path()).expect("init must scaffold");
+        init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
         for (file, model) in [
             ("lookup.md", "model: haiku"),
             ("verify.md", "model: sonnet"),
@@ -3046,7 +3519,7 @@ mod tests {
             );
             assert!(committed.contains(model), "{file} runs on {model}");
         }
-        let rerun = init_project(dir.path()).expect("a rerun must succeed");
+        let rerun = init_project(dir.path(), TEMPLATE_SETS).expect("a rerun must succeed");
         assert!(!rerun.changed(), "a rerun rewrites no helper");
     }
 

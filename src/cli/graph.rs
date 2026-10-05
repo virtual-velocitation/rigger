@@ -47,7 +47,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     if around.is_empty() {
         return Err("graph: --around <id> or --show <entity> is required".into());
     }
-    let gp = open_graph_to_read(&db_path("graph.db"), &project_identity())?;
+    let gp = owning_graph_to_read()?;
     let g = contextgraph::around(&gp, &[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &around);
@@ -176,7 +176,7 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
 fn cmd_graph_show(entity: &str) -> Res {
-    let gp = open_graph_to_read(&db_path("graph.db"), &project_identity())?;
+    let gp = owning_graph_to_read()?;
     match gp.locate(entity)? {
         Located::None => {
             println!(

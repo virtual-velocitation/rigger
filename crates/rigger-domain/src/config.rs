@@ -220,6 +220,12 @@ pub struct Gate {
     /// segment), and `?` (one non-`/` char), matched against repo-relative paths.
     #[serde(default)]
     pub inputs: Vec<String>,
+    /// The executables this gate's command runs (spec 113, `gates.<id>.requires`): each entry
+    /// is a file name looked up in the absolute `PATH` directories. Every validating load
+    /// refuses a declared gate whose entry resolves to no executable there, so a missing tool
+    /// fails at load, never mid-run. Empty (the default) requires nothing.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// One registered REGENERABLE artifact rule (spec 88, criterion 1): `paths` names the glob
@@ -855,10 +861,9 @@ pub struct BuildConfig {
     pub max_concurrent: u32,
     /// RETIRED (spec 91): the implementer's diff-scoped per-round mutation-efficacy switch
     /// spec 73 introduced. [`Config::validate`] now REJECTS any explicit value naming spec
-    /// 91 - mutation testing runs ONCE, at a workflow's own `checkin` stage via a `mutation`
-    /// gate, never per implementer round; that stage requiring the `cargo-mutants` binary on
-    /// PATH is now driven by whether the workflow DECLARES a gate named `mutation`
-    /// ([`crate::gate::MUTATION_GATE_ID`]), not by this field. Kept as a `String` field
+    /// 91, because nothing reads it; the executables a gate needs on PATH are the ones that
+    /// gate declares under its own `requires` ([`Gate::requires`]), which the load's
+    /// requirement check resolves, never this field. Kept as a `String` field
     /// (never removed from the struct) purely so a workflow still authored against the
     /// retired switch parses far enough for `validate` to name it in its rejection, rather
     /// than failing with an opaque serde "unknown field" error.

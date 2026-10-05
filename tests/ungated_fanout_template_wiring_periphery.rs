@@ -222,6 +222,7 @@ fn a_genuinely_new_unmatched_proposal_under_a_gated_template_spawns_gated_via_in
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert(

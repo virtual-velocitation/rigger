@@ -30,7 +30,7 @@
 //! directory before handing it back - the one store-resolution authority every courier
 //! funnels through, so the fix covers `emit`/`result`/`peers`/`reported`/`prompt` uniformly).
 //!
-//! Nine tests, eight driving the REAL compiled `rigger` binary as a REAL OS subprocess through
+//! Ten tests, nine driving the REAL compiled `rigger` binary as a REAL OS subprocess through
 //! the REAL `gate::ExecRunner` - never a fake Runner (test 7 additionally drives the full
 //! `conductor::run` orchestration around that same real `ExecRunner`, rather than calling it
 //! directly, with only its one agent spawn faked - the gate side stays 100% real throughout);
@@ -151,6 +151,10 @@
 //!    a real machine. This test pins that capture/restore round-trip directly, in isolation,
 //!    rather than trusting tests 2 and 8 to notice a silently missing environment variable as
 //!    a side effect of some later, unrelated test.
+//! 10. `a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph` (beside
+//!     test 1): a graph read (`rigger graph --show`) a fenced gate runs opens the graph inside
+//!     the fence, never the repository's live graph, which holds the entity the read is asked
+//!     for.
 //!
 //! Both cwd and target_dir are passed to `ExecRunner::run` explicitly for every call in this
 //! file - never left empty to "inherit the ambient cwd" - so the only variable that ever
@@ -172,6 +176,8 @@ use rigger::gate::{
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::cli::open_graph;
+use common::fixtures::apply_code_entity;
 use common::fixtures::registry_entries;
 use common::git::git_init_quiet;
 use common::git::temp_git_project_with_commit;
@@ -382,6 +388,45 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         live_before, live_after,
         "the repo's live store must be byte-identical before and after two real fenced \
          courier subprocesses"
+    );
+}
+
+/// A graph read a fenced gate runs (`rigger graph --show`) resolves its graph inside the fence,
+/// never the repository's live graph, so a gated test process can neither read nor write the
+/// live graph through a graph verb.
+#[test]
+fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
+    let topo = build_topology();
+    let root = topo.live_events.parent().unwrap().parent().unwrap();
+    {
+        let live_graph = open_graph(root);
+        apply_code_entity(&live_graph, 1, "a.rs", "alpha", "function", 1, "rust");
+    }
+    let target_dir = topo.target_dir.to_string_lossy().into_owned();
+    let gate = Gate {
+        id: "fence-graph-read".into(),
+        run: format!("{} graph --show alpha", rigger_bin().display()),
+        kind: Kind::Core,
+        autonomy: Autonomy::Manual,
+        history: vec![],
+    };
+    let result = ExecRunner.run(
+        &gate,
+        &topo.worktree.to_string_lossy(),
+        &target_dir,
+        "",
+        "",
+        "",
+        "",
+        &BuildEnv::default(),
+        &BuildBudget::default(),
+    );
+    let fence_graph = Path::new(&format!("{target_dir}{STORE_FENCE_SUFFIX}")).join("graph.db");
+    assert!(
+        result.pass && result.evidence.contains("no such entity") && fence_graph.is_file(),
+        "a fenced graph read must answer from a graph inside the fence ({}), never the live \
+         graph that holds `alpha`: {result:?}",
+        fence_graph.display()
     );
 }
 
@@ -785,6 +830,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
             ),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert(

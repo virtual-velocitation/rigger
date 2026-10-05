@@ -3,8 +3,7 @@
 //! `DocConceptExtracted` / `DocLinkExtracted` events - REUSING the exact events and fold the
 //! design-intent pass (spec 29b) uses, never a second entity/edge-fold authority (see
 //! `crate::contextgraph`'s fold-arm doc) - so the workflow definition becomes graph entities
-//! (`stage:<name>`, `gate:<name>`, `agent:<name>`, matching the Design text's own
-//! `stage:implement` / `gate:mutation` / `agent:rust-engineer` example) with `needs` / `runs` /
+//! (`stage:<name>`, `gate:<name>`, `agent:<name>`) with `needs` / `runs` /
 //! `reviews` relations - the last split into a plain edge for a panel's full-only roster and a
 //! distinctly-tagged one for its opt-in `tiers.light` roster (see `reviewers_of`'s own doc for
 //! why the two are never unioned). This is the emit half; the fold half lives in
@@ -19,6 +18,7 @@ use crate::contextgraph::{
     REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
 use crate::eventstore::Event;
+use rigger_domain::wave::reviews_through_panel;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -58,10 +58,11 @@ type LinkTuple = (String, &'static str, String);
 /// (the stage runs under this implementer). `agent --REVIEWS--> stage` comes from whichever
 /// source the stage actually declares: a standalone stage's own `adversary:` / `adjudicator:`
 /// fields when set (`plan-critique`'s shape), plus any `review:` override's roster; and ONLY when
-/// neither of those names anyone AND the stage runs at least one gate (the signal its units go
-/// through review) does it fall back to [`Workflow::effective_review_panel`] - the workflow's
-/// `defaults.review`, unless the stage overrides it - so a gate-less, review-less stage like
-/// `plan` never wrongly inherits the workflow-wide panel.
+/// neither of those names anyone AND the run reviews the stage's units through the panel
+/// ([`reviews_through_panel`], gated or not) does it fall back to
+/// [`Workflow::effective_review_panel`] - the workflow's `defaults.review`, unless the stage
+/// overrides it - so the producer `plan`, whose units the run never reviews, never wrongly
+/// inherits the workflow-wide panel.
 ///
 /// Every declared gate (`workflow.gates`, whether or not any stage runs it) and every agent role
 /// named anywhere above becomes its own concept too, so "gates... become graph entities" holds
@@ -134,7 +135,8 @@ fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
 
 /// The reviewer agent ids a stage's `REVIEWS` / `REVIEWS_LIGHT` edges are drawn from, split by
 /// which relation each belongs on - see [`extract`]'s own doc for the source-selection rule (a
-/// stage's own direct fields/review panel, else - when gated - the workflow's `defaults.review`).
+/// stage's own direct fields/review panel, else - when the run reviews the stage's units through
+/// the panel - the workflow's `defaults.review`).
 /// `.0` feeds the plain [`REL_REVIEWS`] edge: a stage's own direct `adversary:`/`adjudicator:`
 /// fields (which carry no tiers concept of their own) plus the resolved panel's FULL-only roster
 /// ([`ReviewPanel::full_roster`]). `.1` feeds the distinctly-tagged [`REL_REVIEWS_LIGHT`] edge: the SAME
@@ -151,7 +153,7 @@ fn reviewers_of(workflow: &Workflow, stage: &Stage) -> (Vec<String>, Vec<String>
     push_reviewers(&mut full, &stage.adversary, &stage.adjudicator);
     full.extend(stage.review.full_roster());
     light.extend(light_reviewers_of(&stage.review));
-    if full.is_empty() && light.is_empty() && !stage.gates.is_empty() {
+    if full.is_empty() && light.is_empty() && reviews_through_panel(stage) {
         let panel = workflow.effective_review_panel(stage);
         full.extend(panel.full_roster());
         light.extend(light_reviewers_of(panel));
@@ -237,7 +239,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// A small fixture workflow mirroring this project's OWN `.rigger/workflow.yml` shape closely
-    /// enough to exercise every relation source: `plan` (agent only, no gates - no REVIEWS),
+    /// enough to exercise every relation source: `plan` (the producer: agent, `produces`, no
+    /// gates - no REVIEWS),
     /// `plan-critique` (no agent, direct adversary/adjudicator - REVIEWS from those), `implement`
     /// (agent + gates, no direct review fields - REVIEWS falls back to `defaults.review`), and
     /// `checkin` (needs implement, its own gate).
@@ -249,14 +252,16 @@ mod tests {
                 run: "cargo fmt --check".to_string(),
                 kind: "core".to_string(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
         gates.insert(
-            "mutation".to_string(),
+            "sweep".to_string(),
             Gate {
-                run: "cargo mutants".to_string(),
+                run: "sh sweep.sh".to_string(),
                 kind: "core".to_string(),
                 inputs: Vec::new(),
+                requires: Vec::new(),
             },
         );
 
@@ -266,6 +271,7 @@ mod tests {
             Stage {
                 name: "plan".to_string(),
                 agent: "planner".to_string(),
+                produces: "dag".to_string(),
                 ..Default::default()
             },
         );
@@ -295,7 +301,7 @@ mod tests {
                 name: "checkin".to_string(),
                 needs: vec!["implement".to_string()],
                 agent: "rust-engineer".to_string(),
-                gates: vec!["fmt".to_string(), "mutation".to_string()],
+                gates: vec!["fmt".to_string(), "sweep".to_string()],
                 ..Default::default()
             },
         );
@@ -320,9 +326,9 @@ mod tests {
     fn stages_gates_and_agents_all_become_concepts() {
         let (concepts, _links) = extract(&fixture());
         let has = |kind: &str, id: &str| concepts.iter().any(|(k, i, _)| *k == kind && i == id);
-        // The Design text's own example triple, matching this workflow's real shape.
+        // One stage, one gate and one agent entity.
         assert!(has(KIND_STAGE, "stage:implement"), "got {concepts:?}");
-        assert!(has(KIND_GATE, "gate:mutation"), "got {concepts:?}");
+        assert!(has(KIND_GATE, "gate:sweep"), "got {concepts:?}");
         assert!(has(KIND_AGENT, "agent:rust-engineer"), "got {concepts:?}");
         // Every declared gate becomes an entity, even `fmt` which every stage runs - and a gate
         // NO stage runs would too (the loop covers `workflow.gates` independent of stage refs).
@@ -367,7 +373,7 @@ mod tests {
             "got {links:?}"
         );
         assert!(
-            has("stage:checkin", REL_RUNS, "gate:mutation"),
+            has("stage:checkin", REL_RUNS, "gate:sweep"),
             "got {links:?}"
         );
         assert!(has("stage:checkin", REL_RUNS, "gate:fmt"), "got {links:?}");
@@ -382,7 +388,8 @@ mod tests {
     }
 
     #[test]
-    fn reviews_edges_prefer_a_stages_own_fields_and_fall_back_to_defaults_review_only_when_gated() {
+    fn reviews_edges_prefer_a_stages_own_fields_and_fall_back_to_defaults_review_only_where_the_run_reviews(
+    ) {
         let (_concepts, links) = extract(&fixture());
         let has = |from: &str, to: &str| {
             links
@@ -398,22 +405,54 @@ mod tests {
             has("agent:adjudicator", "stage:plan-critique"),
             "got {links:?}"
         );
-        // implement/checkin declare no adversary/adjudicator/review of their own but DO run
-        // gates, so they inherit the workflow's defaults.review panel (lenses + adversary +
-        // adjudicator).
+        // implement/checkin declare no adversary/adjudicator/review of their own and the run
+        // reviews their units, so they inherit the workflow's defaults.review panel (lenses +
+        // adversary + adjudicator).
         for stage in ["stage:implement", "stage:checkin"] {
             assert!(has("agent:architecture-reviewer", stage), "got {links:?}");
             assert!(has("agent:sdet", stage), "got {links:?}");
             assert!(has("agent:adversary", stage), "got {links:?}");
             assert!(has("agent:adjudicator", stage), "got {links:?}");
         }
-        // plan runs no gates and declares no review of its own: it must NOT wrongly inherit
-        // defaults.review - the false-positive this guard exists to prevent.
+        // plan is the producer and declares no review of its own: the run never reviews its
+        // units, so it must NOT wrongly inherit defaults.review.
         assert!(
             !links
                 .iter()
                 .any(|(_, r, t)| *r == REL_REVIEWS && t == "stage:plan"),
-            "a gate-less, review-less stage must get no REVIEWS edge at all, got {links:?}"
+            "the review-less producer stage must get no REVIEWS edge at all, got {links:?}"
+        );
+    }
+
+    /// The run reviews an ungated implement stage's units through the effective panel exactly as
+    /// it reviews a gated one's, so such a stage carries the defaults panel's REVIEWS edges; the
+    /// producer stage, whose units the run never reviews, still carries none.
+    #[test]
+    fn an_ungated_implement_stage_inherits_the_defaults_panel_and_the_producer_gets_none() {
+        let mut wf = fixture();
+        wf.stages.get_mut("implement").unwrap().gates.clear();
+        let (_concepts, links) = extract(&wf);
+        let has = |from: &str, to: &str| {
+            links
+                .iter()
+                .any(|(f, r, t)| f == from && *r == REL_REVIEWS && t == to)
+        };
+        for reviewer in [
+            "agent:architecture-reviewer",
+            "agent:sdet",
+            "agent:adversary",
+            "agent:adjudicator",
+        ] {
+            assert!(
+                has(reviewer, "stage:implement"),
+                "{reviewer}: got {links:?}"
+            );
+        }
+        assert!(
+            !links.iter().any(
+                |(_, r, t)| (*r == REL_REVIEWS || *r == REL_REVIEWS_LIGHT) && t == "stage:plan"
+            ),
+            "the producer stage gets no REVIEWS edge, got {links:?}"
         );
     }
 
@@ -559,7 +598,8 @@ run: cargo fmt --check\n";
     #[test]
     fn project_events_reads_this_projects_own_real_workflow_yml() {
         // The strongest proof of THE WHOLE PRODUCT IS COVERED: indexing the REAL, committed
-        // `.rigger/workflow.yml` (not a fixture) yields the Design text's own example triple.
+        // `.rigger/workflow.yml` (not a fixture) yields its stage and agent concepts; its gates are
+        // the operator's to change, so no assertion reads them.
         // `CARGO_MANIFEST_DIR` (not `.`), so this resolves the crate root regardless of the
         // process's own working directory.
         let events = project_events(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
@@ -577,7 +617,6 @@ run: cargo fmt --check\n";
             })
         };
         assert!(has_concept(KIND_STAGE, "stage:implement"));
-        assert!(has_concept(KIND_GATE, "gate:mutation"));
         assert!(has_concept(KIND_AGENT, "agent:rust-engineer"));
     }
 }

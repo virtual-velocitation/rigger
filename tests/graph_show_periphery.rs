@@ -4,6 +4,8 @@
 //! `rigger` binary against the show surface's honesty and graceful-degrade contract:
 //!
 //!   - NONE: an unknown query prints a not-found note and NO body, and EXITS SUCCESS (never errors).
+//!   - NO STORE: a project with a `.rigger/` but no event log answers both graph verbs with their
+//!     not-found note and EXITS SUCCESS, never a "no rigger store found" refusal.
 //!   - DEGRADE: when the recorded graph location no longer resolves to source (the file is missing,
 //!     the line is past end-of-file, or the recorded line is 0 - a location that never named a real
 //!     source line), the site header is still printed with a stale-location note in place of a body,
@@ -84,6 +86,29 @@ fn graph_show_unknown_entity_reports_not_found() {
     assert!(
         !out.contains(" | "),
         "an unknown entity prints NO line-numbered body; got:\n{out}"
+    );
+}
+
+/// NO STORE face: a project set up before any run exists (a `.rigger/` but no event log) is not an
+/// error either - both graph verbs answer from the project's own `.rigger/`, print their
+/// not-found note and EXIT SUCCESS, never a "no rigger store found" refusal.
+#[test]
+fn graph_show_and_around_with_no_store_print_the_not_found_note() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "alpha"]);
+    assert!(ok, "--show with no store exits SUCCESS; stderr: {err}");
+    assert!(
+        out.contains("no such entity") && out.contains("rigger graph build"),
+        "--show with no store prints the not-found note naming `rigger graph build`; got:\n{out}"
+    );
+    let (out, err, ok) = run_rigger(root, &["graph", "--around", "a.rs"]);
+    assert!(ok, "--around with no store exits SUCCESS; stderr: {err}");
+    assert!(
+        out.contains("nothing found"),
+        "--around with no store prints its not-found note; got:\n{out}"
     );
 }
 

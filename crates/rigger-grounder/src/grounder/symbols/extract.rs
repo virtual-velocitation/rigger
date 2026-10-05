@@ -559,7 +559,7 @@ fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
 /// EXCLUSIVELY from `test`/`not`/`all`/`any`, naming no other cfg atom (a feature flag,
 /// `target_os`, a bare `debug_assertions`, ...) anywhere in it. Computed TOGETHER in one minimal
 /// recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) | any(P, ...)`,
-/// never as two separate walks over the identical shape (a round-6 `cargo mutants` finding /
+/// never as two separate walks over the identical shape (a round-6 mutation testing finding /
 /// `docs/audit`'s own duplication scan: an earlier version of this fix shipped "names test" and
 /// "is pure" as two near-identical functions, exactly the duplicate-implementation shape this
 /// repo's own audit exists to catch) - `not(P)`'s "names test" answer can only be obtained by
@@ -1199,7 +1199,7 @@ struct RealConfig;
                     ),
                 ],
             );
-        /// Round-6 `cargo mutants` finding: `predicate_group_facts`'s `not` arm used to (in an
+        /// Round-6 mutation testing finding: `predicate_group_facts`'s `not` arm used to (in an
         /// earlier version of this fix) invert its inner predicate's answer UNCONDITIONALLY -
         /// sound only when the inner predicate is built purely from `test` (a
         /// `not(test)`/`not(not(test))`/... chain), but wrongly also applied to a `not(P)`

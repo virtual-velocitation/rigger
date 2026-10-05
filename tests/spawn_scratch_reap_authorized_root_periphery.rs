@@ -7,11 +7,10 @@
 //!
 //! `tests/cli.rs` already drives THIS exact call chain through the real compiled binary
 //! repeatedly (spec 77's `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`,
-//! `..._the_pre_existing_agent_scratch_root_either`, `a_leading_slash_spawn_id_never_collapses_
-//! the_reclaim_to_its_registered_root`, `two_speculation_lanes_of_the_same_unit_get_distinct_
-//! mutation_scratch_dirs`, and others) - but every one of them plants only FILES and asserts an
-//! UNRELATED SIBLING's files survive. None of them plants a live process and asserts the
-//! TARGET's own process actually dies. That is a structural blind spot, not an oversight: this
+//! `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root`, and others) -
+//! but every one of them plants only FILES and asserts an UNRELATED SIBLING's files survive.
+//! None of them plants a live process and asserts the TARGET's own process actually dies. That is a
+//! structural blind spot, not an oversight: this
 //! module's `reap_then_remove_dir` always calls `std::fs::remove_dir_all` unconditionally,
 //! regardless of whether the reap that precedes it was a genuine kill or a silent no-op - so a
 //! file-survival assertion passes IDENTICALLY either way. It cannot see the exact defect class
@@ -20,16 +19,12 @@
 //! (`adj-u78c2-verdict-reject-reap-authority-conflict`) - the dir still gets removed either
 //! way, only the LIVE PROCESS inside it tells the two cases apart.
 //!
-//! `mutation_scratch_reap_base_guard_periphery.rs` and
-//! `worktree_remove_relocated_scratch_base_guard_periphery.rs` already close this blind spot
-//! for `reclaim_unit_mutation_scratch` (spec 77 criterion 3, the unit-terminal backstop) and
-//! `Worktree::remove` (the worktree-teardown path) respectively - both by calling the guarded
-//! function DIRECTLY. This file closes it for the THIRD, busiest call chain neither of those
-//! reaches: `cmd_result`'s per-SPAWN reclaim, driven through the compiled binary exactly as a
+//! `worktree_remove_relocated_scratch_base_guard_periphery.rs` already closes this blind spot
+//! for `Worktree::remove` (the worktree-teardown path) by calling the guarded function
+//! DIRECTLY. This file closes it for `cmd_result`'s per-SPAWN reclaim of the spawn's
+//! `agent-scratch` dir (spec 34 criterion 1), driven through the compiled binary exactly as a
 //! real `rigger result` invocation would (an implementer, reviewer, or adjudicator spawn
-//! reporting its outcome), covering BOTH scratch roots `reclaim_spawn_registered_scratch`
-//! reaps - the per-spawn `agent-scratch` dir (spec 34 criterion 1) and the registered
-//! mutation-scratch dir (spec 77 criterion 2, the exact root round 1's reject was about).
+//! reporting its outcome).
 
 use std::path::Path;
 
@@ -44,7 +39,7 @@ use common::fixtures::cleanup;
 use common::fixtures::sigterm_ignorer_in;
 use common::wait_until;
 
-use rigger::driver::replay::{mutation_scratch_path, spawn_scratch_path};
+use rigger::driver::replay::spawn_scratch_path;
 use rigger::reap::processes_rooted_under;
 
 /// Seed a `RunStarted` event into the namespaced run stream, mirroring
@@ -73,9 +68,9 @@ fn seed_run_started(root: &Path, run_id: &str) {
 }
 
 /// A throwaway project with a seeded store and a started run `r1`, plus a dedicated, empty cache
-/// home: the reclaim's mutation-scratch half never touches the operator's real ~/.cache, and the
+/// home: the default agent-scratch root never lands in the operator's real ~/.cache, and the
 /// fixture and the child `rigger result` process (handed the SAME `XDG_CACHE_HOME`) resolve the
-/// identical scratch roots.
+/// identical scratch root.
 struct ReapProject {
     dir: tempfile::TempDir,
     cache_home: tempfile::TempDir,
@@ -170,34 +165,6 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir
     );
 }
 
-#[test]
-fn rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir() {
-    let project = ReapProject::new();
-    let spawn_id = "u-periphery-cli-live-reap-mutation/implementer#0";
-    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
-        .expect("a well-formed spawn id must encode to a real path");
-    let mut child = live_child_in(&leaf, "mutation-scratch", "before `rigger result` runs");
-
-    let (out, err, ok) = project.result(spawn_id, "done");
-    assert!(
-        ok,
-        "recording the result must succeed; stdout: {out:?} stderr: {err}"
-    );
-    assert_reaped(
-        &mut child,
-        "`rigger result` must reap a live process still rooted in the spawn's own registered \
-         mutation-scratch dir (spec 77 criterion 2 - the EXACT root spec 78 round 1's reject \
-         named, adj-u78c2-verdict-reject-reap-authority-conflict) before removing it, through \
-         the real reclaim_spawn_registered_scratch call chain (spec 78 round 2 fix, decision \
-         u78c2r2-authorized-root-caller-supplied) - a SIGTERM-ignoring process here must still \
-         be SIGKILLed. This is a DIFFERENT call chain than reclaim_unit_mutation_scratch \
-         (already proven directly in mutation_scratch_reap_base_guard_periphery.rs): this one \
-         is keyed on ONE reporting spawn's own id via cmd_result, not a unit-terminal \
-         enumeration, and every pre-existing regression test for it (tests/cli.rs) only plants \
-         files, never a live process.",
-    );
-}
-
 /// A DIFFERENT axis of `reclaim_spawn_scratch`'s own boundary than the rest of this file
 /// (spec 83 criterion 2 round 2, not spec 78): WHICH ROOT it reaps under. `reclaim_spawn_
 /// scratch`'s round-2 fix (the reject's own required follow-up to a half-applied round-1 fix)
@@ -266,7 +233,7 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
          agent-scratch dir (under the CONFIGURED workdir) before `rigger result` runs"
     );
 
-    // A dedicated, empty cache home for the mutation-scratch half of the same call, and
+    // A dedicated, empty cache home so the call never reads the operator's real ~/.cache, and
     // `RIGGER_TMPDIR` explicitly cleared so this test's outcome cannot depend on whatever
     // scratch relocation the surrounding gate/CI happens to be running under - the same
     // env-override-free precedence rung the fixture above assumes.
@@ -302,103 +269,69 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
     );
 }
 
-/// The literal refusal text `is_reapable_base` prints to stderr (`src/reap.rs`) when it
-/// refuses a base - the ONE string every assertion below checks is ABSENT, since spec 89
-/// criterion 3's whole point is that a gone-but-under-root target is authorized silently, not
-/// refused loudly.
+/// The `agent-scratch` leaf `rigger result` reclaims for `spawn_id` in `project`'s run `r1`.
+fn agent_scratch_leaf(project: &ReapProject, spawn_id: &str) -> std::path::PathBuf {
+    spawn_scratch_path(
+        project.agent_scratch_root().to_str().unwrap(),
+        "r1",
+        spawn_id,
+    )
+    .expect("a well-formed spawn id must encode to a real path")
+}
+
+/// The literal refusal text `is_reapable_base` prints to stderr when it refuses a base - every
+/// assertion below checks it is ABSENT, since a gone-but-under-root target is authorized
+/// silently (spec 89 criterion 3), never refused loudly.
 const REAP_REFUSED_TEXT: &str = "not strictly under";
 
-/// Spec 89 criterion 3 (THE RECLAIM GUARD COMPARES PATHS), extending this file's own real
-/// per-spawn `cmd_result` call chain to the exact production incident the criterion closes.
-///
-/// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
-///
-/// `src/reap.rs`'s own unit tests (`is_reapable_base_authorizes_a_gone_target_...`,
-/// `reap_kills_a_process_whose_base_dir_was_already_removed_before_the_reap_call`) prove the
-/// fix entirely through a bare `FakeRepo` fixture calling the private `is_reapable_base` and
-/// the pub `reap_processes_rooted_under` directly - never through `rigger result`, so they
-/// cannot see whether the fix actually reaches the ONE real caller that ever hands a
-/// POSSIBLY-NONEXISTENT path to the reap without first checking: `main.rs::
-/// reclaim_spawn_registered_scratch` (this file's own header doc comment already names it the
-/// "HIGHEST-TRAFFIC real entry point"). `reclaim_unit_mutation_scratch` (closed by
-/// `mutation_scratch_reap_base_guard_periphery.rs`) cannot reach this case either - it only
-/// ever reaps entries its own `read_dir` enumeration found, which by construction exist at
-/// reap time. This test reproduces spec 89's own cited incident (spec 80: a mutant test
-/// binary looped for eight days after `cargo-mutants` removed its tree out from under it)
-/// through the REAL per-spawn reclaim: the registered mutation-scratch dir is deleted out
-/// from under a still-running process BEFORE `rigger result` ever runs, mirroring `cargo-
-/// mutants`' own cleanup racing the courier that reports the spawn's outcome.
+/// Spec 89 criterion 3 (THE RECLAIM GUARD COMPARES PATHS) through the real per-spawn
+/// `cmd_result` reclaim, on the one root it reclaims: a process still rooted in the spawn's
+/// `agent-scratch` dir after that dir was removed out from under it (a worker's own cleanup
+/// racing the courier that reports its outcome) must still be found and killed, with no
+/// refusal logged - the inside-out `is_reapable_base` tests never reach this caller, the one
+/// that hands the reap a possibly-nonexistent path without checking.
 #[test]
-fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call(
-) {
+fn rigger_result_reaps_a_live_process_whose_agent_scratch_dir_was_already_removed_before_the_call()
+{
     let project = ReapProject::new();
-    let spawn_id = "u-periphery-cli-gone-mutation-scratch/implementer#0";
-    // The agent-scratch ROOT exists (the everyday shape), so only the mutation-scratch half of
-    // the reclaim meets a gone base.
-    std::fs::create_dir_all(project.agent_scratch_root()).unwrap();
-    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
-        .expect("a well-formed spawn id must encode to a real path");
-    let mut child = live_child_in(
-        &leaf,
-        "mutation-scratch",
-        "before it is removed out from under it",
-    );
+    let spawn_id = "u-periphery-cli-gone-agent-scratch/implementer#0";
+    let leaf = agent_scratch_leaf(&project, spawn_id);
+    let mut child = live_child_in(&leaf, "agent-scratch", "before it is removed under it");
 
-    // `cargo-mutants`' own cleanup racing the courier that reports the spawn's outcome.
     std::fs::remove_dir_all(&leaf).expect("remove the leaf out from under the live process");
 
     let (out, err, ok) = project.result(spawn_id, "done");
     assert!(
         ok,
-        "recording the result must succeed even though its own mutation-scratch dir is \
-         already gone; stdout: {out:?} stderr: {err}"
+        "recording the result must succeed even though its agent-scratch dir is already gone; \
+         stdout: {out:?} stderr: {err}"
     );
     assert!(
         !err.contains(REAP_REFUSED_TEXT),
-        "spec 89 criterion 3: a base that resolves strictly under the registered mutation-\
-         scratch root but no longer exists is ALREADY RECLAIMED, never a logged refusal - got \
-         a refusal on stderr: {err}"
+        "a base strictly under the agent-scratch root that no longer exists is already \
+         reclaimed, never a logged refusal; stderr: {err}"
     );
     assert_reaped(
         &mut child,
-        "spec 89 criterion 3 / spec 80's 8-day-hang incident, reproduced through the real \
-         per-spawn `cmd_result` reclaim chain: a process still rooted in a registered \
-         mutation-scratch dir that was REMOVED out from under it before `rigger result` ran \
-         must still be found (via the kernel's \" (deleted)\" cwd suffix) and SIGKILLed, not \
-         silently left running forever because the now-gone base was refused as \"not \
-         strictly under\" its root.",
+        "a process still rooted in an agent-scratch dir removed before `rigger result` ran must \
+         still be found (through the kernel's deleted-cwd suffix) and killed, not left running \
+         because the gone base was refused",
     );
 }
 
-/// Sibling of the test above, proving spec 89 criterion 3's OTHER named production instance:
-/// a role that never runs `cargo mutants` at all (any reviewer - lens, adversary,
-/// adjudicator, sdet-author) reports through the identical `cmd_result` reclaim chain on
-/// EVERY round, and its own mutation-scratch leaf was never created in the first place, not
-/// merely removed after the fact. Before this fix `is_reapable_base` required `base_dir.
-/// canonicalize()` to succeed, so a role that never populated its leaf refused - LOGGED - on
-/// every single `rigger result` (`adj-u91c4-reclaim-refusal-corroborates-orphan-finding`,
-/// spec 89's own Problem statement: "every reviewer re-reproduces and rules that out every
-/// round"). `tests/cli.rs::a_reviewers_result_never_reclaims_the_implementers_mutation_
-/// scratch` already proves the SIBLING implementer leaf survives untouched, but asserts
-/// nothing about the reporting reviewer's OWN (never-created) leaf or about stderr - it
-/// cannot see the noise this fix silences.
+/// Spec 89 criterion 3's other production instance on the remaining root: a reviewer spawn
+/// that never created its own `agent-scratch` leaf reports through the same reclaim on every
+/// round, and must log no refusal for the leaf that never existed while the run's
+/// `agent-scratch` root does.
 #[test]
-fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutation_scratch_dir() {
+fn rigger_result_logs_no_false_refusal_for_a_reviewers_never_created_agent_scratch_dir() {
     let project = ReapProject::new();
-    // The registered mutation-scratch ROOT already exists (some other spawn's leaf populated
-    // it earlier in the run - the everyday shape), but THIS reviewer spawn's own leaf never
-    // was and never will be: reviewers never run `cargo mutants`. The agent-scratch ROOT also
-    // already exists.
-    std::fs::create_dir_all(project.cache_home.path().join("rigger-mutants")).unwrap();
-    std::fs::create_dir_all(project.agent_scratch_root()).unwrap();
-
-    let spawn_id = "u-periphery-cli-reviewer-never-created-mutation-scratch/adversary#0";
-    let leaf = mutation_scratch_path(project.cache_home.path(), spawn_id)
-        .expect("a well-formed spawn id must encode to a real path");
+    let spawn_id = "u-periphery-cli-reviewer-never-created-agent-scratch/adversary#0";
+    let leaf = agent_scratch_leaf(&project, spawn_id);
+    std::fs::create_dir_all(leaf.parent().unwrap()).unwrap();
     assert!(
         !leaf.exists(),
-        "fixture bug: this test requires the reviewer's own mutation-scratch leaf to never \
-         have been created"
+        "fixture bug: the reviewer's own agent-scratch leaf must never have been created"
     );
 
     let (out, err, ok) = project.result(spawn_id, "no blocking findings");
@@ -408,9 +341,59 @@ fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutatio
     );
     assert!(
         !err.contains(REAP_REFUSED_TEXT),
-        "spec 89 criterion 3: a reviewer role's own mutation-scratch leaf, never created \
-         because reviewers never run `cargo mutants`, resolves strictly under the registered \
-         root and must be treated as ALREADY RECLAIMED - never a logged refusal on every \
-         single `rigger result`; got: {err}"
+        "a never-created agent-scratch leaf under the run's root is already reclaimed, never a \
+         logged refusal on every `rigger result`; stderr: {err}"
+    );
+    assert!(
+        leaf.parent().unwrap().is_dir(),
+        "the run's agent-scratch root must survive the reclaim of a leaf that never existed"
+    );
+}
+
+/// Spec 113 criterion 7 (THE SPAWN-KEYED CACHE-HOME ROOT IS DELETED), as operator-visible
+/// behavior: given a spawn with both an `agent-scratch` leaf and a leftover leaf of its own id
+/// under the cache home's former `rigger-mutants` root - each holding a file and a live process -
+/// when `rigger result` records that spawn's outcome, then only the `agent-scratch` leaf is
+/// reclaimed (its process killed, its dir gone) and the cache-home leaf is neither reaped nor
+/// removed: `rigger result` reclaims the reporting spawn's agent scratch and nothing else.
+#[test]
+fn rigger_result_reclaims_only_the_reporting_spawns_agent_scratch_never_a_cache_home_leaf() {
+    let project = ReapProject::new();
+    let spawn_id = "u-periphery-cli-agent-scratch-only/implementer#0";
+    let agent_leaf = agent_scratch_leaf(&project, spawn_id);
+    let cache_home_leaf = common::cache_home_mutants_leaf(project.cache_home.path(), spawn_id);
+    let mut agent_child = live_child_in(&agent_leaf, "agent-scratch", "before `rigger result`");
+    let mut cache_home_child = live_child_in(
+        &cache_home_leaf,
+        "cache-home leftover",
+        "before `rigger result`",
+    );
+    std::fs::write(cache_home_leaf.join("keep"), [7u8; 32]).unwrap();
+
+    let (out, err, ok) = project.result(spawn_id, "done");
+    let cache_home_child_alive = matches!(cache_home_child.try_wait(), Ok(None));
+    cleanup(&mut cache_home_child);
+    assert!(
+        ok,
+        "recording the result must succeed; stdout: {out:?} stderr: {err}"
+    );
+    assert_reaped(
+        &mut agent_child,
+        "the reporting spawn's agent-scratch process must be reaped",
+    );
+    assert!(
+        !agent_leaf.exists(),
+        "the reporting spawn's agent-scratch leaf must be removed: {}",
+        agent_leaf.display()
+    );
+    assert!(
+        cache_home_child_alive,
+        "`rigger result` must never reap a process under the cache home's former \
+         rigger-mutants root - it reclaims only agent scratch"
+    );
+    assert_eq!(
+        std::fs::read(cache_home_leaf.join("keep")).unwrap(),
+        vec![7u8; 32],
+        "`rigger result` must never remove the cache home's former rigger-mutants leaf"
     );
 }

@@ -134,6 +134,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     // Three INDEPENDENT stages (`needs` empty on all three): `wave_ready` offers every one

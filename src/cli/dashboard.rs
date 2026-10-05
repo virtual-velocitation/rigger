@@ -84,7 +84,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // already answers correctly with no git repo at all (its own first match arm checks the
         // override before ever consulting `repo`) - a `rigger dash` launched from a directory
         // with no git repository above it is not exotic: a whole-tree copy that excludes `.git`
-        // (this project's own `cargo mutants --in-diff` scratch-tree build, spec 78's
+        // (this project's own mutation sweep's scratch-tree build, spec 78's
         // mutation-efficacy step) produces exactly that cwd, and silently dropping an explicit
         // `RIGGER_TMPDIR` there blinds the self-reap watcher (spec 62, criterion 5) to this
         // project's own agent-liveness marker. Only when NEITHER signal is present (no repo, no
@@ -820,10 +820,12 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&grounder_name);
-    // Opened as it stands: an emit this server serves appends whether or not the graph owes its
-    // rebuild (the fold refuses while it does), and the graph and grounding tools, which depend
-    // on the fold, refuse naming `rigger setup` until it is paid (spec 101).
-    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    // The resolved store's own graph, so a server started in a linked worktree serves and folds
+    // into the owning repository's graph, never one opened in the worktree. Opened as it stands:
+    // an emit this server serves appends whether or not the graph owes its rebuild (the fold
+    // refuses while it does), and the graph and grounding tools, which depend on the fold,
+    // refuse naming `rigger setup` until it is paid (spec 101).
+    let graph = loc.graph()?;
     let driver = rigger::driver::workflow::Driver::new();
 
     // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
@@ -847,7 +849,8 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         String::new()
     };
 
-    let mut server = mcpserver::Server::new(&driver, &store, conductor::STREAM).with_graph(&graph);
+    let mut server =
+        mcpserver::Server::new(&driver, &store, conductor::STREAM).with_graph(graph.as_ref());
     server = server.with_grounder(match &grounder {
         Ok(g) => Ok(g.as_ref()),
         Err(e) => Err(e.to_string()),

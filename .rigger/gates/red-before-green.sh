@@ -1,13 +1,14 @@
 #!/bin/sh
 # The red-before-green gate (TDD, workspace split step 0): on a unit branch, the first commit
-# that touches source (`src/` or `crates/<name>/src/`) must be preceded by, or itself be, a
-# commit that adds or changes a test. A test is a file under a `tests` directory or named
-# `tests.rs`, or a hunk in a Rust source file that adds a `#[test]` item or reaches the file's
-# test module. That module runs from the first column-0 `#[cfg(test)]` whose next
-# non-attribute, non-comment, non-blank line opens a `mod` body (`mod`, `pub mod` or
-# `pub(crate) mod` with its `{`) to the end of the file; a `#[cfg(test)]` on a `use`, `const`,
-# `fn`, `impl`, `static` or a bodiless `mod name;` opens none, and a file without one has no
-# test hunk by position.
+# that touches source must be preceded by, or itself be, a commit that adds or changes a test.
+# Source is any file with a `src/` path component (`src/...`, `crates/<name>/src/...`,
+# `tools/<name>/src/...`), so the rule holds wherever a workspace keeps its members. A test is
+# a file under a `tests` directory or named `tests.rs`, or a hunk in a Rust source file that
+# adds a `#[test]` item or reaches the file's test module. That module runs from the first
+# column-0 `#[cfg(test)]` whose next non-attribute, non-comment, non-blank line opens a `mod`
+# body (`mod`, `pub mod` or `pub(crate) mod` with its `{`) to the end of the file; a
+# `#[cfg(test)]` on a `use`, `const`, `fn`, `impl`, `static` or a bodiless `mod name;` opens
+# none, and a file without one has no test hunk by position.
 #
 # Usage: sh .rigger/gates/red-before-green.sh [run-branch]   (default: rigger-run, then
 # origin/main). The unit's commits are those since its merge base with the run branch, oldest
@@ -29,7 +30,7 @@ is_test_path() {
 
 is_source_path() {
     case "$1" in
-        src/* | crates/*/src/*) return 0 ;;
+        src/* | */src/*) return 0 ;;
     esac
     return 1
 }

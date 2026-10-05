@@ -847,6 +847,7 @@ fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert("plan".into(), plan_stage());
@@ -1156,6 +1157,7 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
             run: "true".into(),
             kind: "core".into(),
             inputs: Vec::new(),
+            requires: Vec::new(),
         },
     );
     cfg.workflow.stages.insert("plan".into(), plan_stage());

@@ -42,9 +42,9 @@
 //! kill. `authorized_root` is never re-derived here (no hardcoded
 //! `<repo>/.rigger/tmp` literal, no git resolution of the caller's repo): the caller passes
 //! the SAME resolved root it already used to build `base_dir` itself
-//! ([`crate::worktree::scratch_root_path_from_env`] for the run's own scratch tree, or a
-//! registered mutation-scratch root under `$XDG_CACHE_HOME`/`$HOME/.cache` for the
-//! `cargo-mutants` tree, spec 77 criteria 2-3) - so the boundary can never silently diverge
+//! ([`crate::worktree::scratch_root_path_from_env`] for the run's own scratch tree, or any
+//! other registered scratch root, wherever it is placed) - so the boundary can never silently
+//! diverge
 //! from what the rest of the codebase already treats as authoritative, however that root is
 //! placed (a relocated `RIGGER_TMPDIR`/`defaults.workdir`, or a cache home entirely outside
 //! any git tree). [`Worktree::remove`](crate::worktree::Worktree::remove) is the one
@@ -64,7 +64,7 @@
 //! `rigger result`). And a process can hold a now-DELETED dir as its cwd - the kernel
 //! appends the literal `" (deleted)"` to its `/proc/<pid>/cwd` readlink - so [`is_inside`]
 //! strips that suffix before matching, closing the exact gap that let a spec-80 mutant test
-//! binary loop for eight days after `cargo-mutants` removed its tree out from under it: the
+//! binary loop for eight days after the mutation tool removed its tree out from under it: the
 //! cwd-rooted reaper never matched the deleted path, so it never even tried to signal it. A
 //! genuinely OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
@@ -121,7 +121,7 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
     // process can hold a now-DELETED dir as its cwd (spec 80's 8-day-hang incident - a
-    // mutant binary looped after `cargo-mutants` removed its tree out from under it), and
+    // mutant binary looped after the mutation tool removed its tree out from under it), and
     // such a process is exactly what this scan must still find. `resolve_lexically` follows
     // symlinks in whatever portion of `base_dir` still exists (so the kernel-resolved cwd of
     // a LIVE process still matches a symlinked component), then lexically resolves any
@@ -866,7 +866,7 @@ mod tests {
         // `/proc/<pid>/cwd` readlink once the directory a live process still holds as its
         // cwd has been removed. Reproduces the spec-80 incident verbatim (a mutant test
         // binary looped for eight days at ~17 cores because the reaper's cwd match never
-        // saw through that suffix once `cargo-mutants` removed its tree). Both halves of
+        // saw through that suffix once the mutation tool removed its tree). Both halves of
         // this fix are exercised here: `processes_rooted_under` must still be ABLE to scan
         // for a base dir that no longer exists (not short-circuit to empty), and `is_inside`
         // must match the deleted-suffixed cwd text against it.
@@ -922,15 +922,14 @@ mod tests {
         // The fix (spec 78 round 2, `u78c2r2-authorized-root-caller-supplied`): the boundary
         // is whatever `authorized_root` the caller supplies, never a hardcoded
         // `<repo>/.rigger/tmp` literal re-derived from `base_dir`'s own git context - so a
-        // registered mutation-scratch root under a cache home (never nested under any
-        // project's `.rigger/tmp`, and not even inside a git repo at all) is authorized just
-        // as readily.
+        // registered scratch root under a cache home (never nested under any project's
+        // `.rigger/tmp`, and not even inside a git repo at all) is authorized just as readily.
         let cache_home = tempfile::tempdir().unwrap();
-        let mutation_root = cache_home.path().join("rigger-mutants");
-        let base = mutation_root.join("some-spawn-id");
+        let scratch_root = cache_home.path().join("rigger-scratch");
+        let base = scratch_root.join("some-spawn-id");
         std::fs::create_dir_all(&base).unwrap();
         assert_eq!(
-            is_reapable_base(&base, &mutation_root),
+            is_reapable_base(&base, &scratch_root),
             Some(base.canonicalize().unwrap())
         );
     }
@@ -957,7 +956,7 @@ mod tests {
         // exists but lexically resolves strictly under the authorized root is ALREADY
         // RECLAIMED, not refused - the guard compares PATHS, never requires the leaf to
         // exist. Before this fix, `base_dir.canonicalize()` failed for a gone leaf and this
-        // returned `None` via the LOGGED refusal branch (`reclaim_unit_mutation_scratch`
+        // returned `None` via the LOGGED refusal branch (a spawn-scratch reclaim
         // hit exactly this on every `rigger result`, per `adj-u91c4-reclaim-refusal-
         // corroborates-orphan-finding`: a spawn's own mutation-scratch dir, never created,
         // logged a scary "not strictly under" line every single time).
@@ -1045,7 +1044,7 @@ mod tests {
     fn reap_kills_a_process_under_an_authorized_root_that_is_not_a_dot_rigger_tmp_tree() {
         // End-to-end proof of the fix at the public entry point: an authorized_root with NO
         // relationship whatsoever to any git repo or `.rigger/tmp` naming (mirroring a
-        // registered mutation-scratch root under a cache home, or a `defaults.workdir`/
+        // registered scratch root under a cache home, or a `defaults.workdir`/
         // `RIGGER_TMPDIR`-relocated scratch root) still reaps a live, SIGTERM-ignoring
         // process rooted inside it.
         let root_dir = tempfile::tempdir().unwrap();

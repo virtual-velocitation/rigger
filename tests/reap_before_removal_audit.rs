@@ -1,7 +1,7 @@
 //! Spec 79 criterion 2, THE BARE-REMOVAL AUDIT: the whole-tree companion to criterion 1's
 //! reap-before-removal rewiring (`sweep_terminal`, `clear_worktree_dir`, `reclaim_cache_sibling`,
-//! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` - crates/rigger-worktree-git/src/worktree.rs, and
-//! `reclaim_unit_mutation_scratch` - crates/rigger-driver/src/driver/replay.rs). This test walks every `.rs` file
+//! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` -
+//! crates/rigger-worktree-git/src/worktree.rs). This test walks every `.rs` file
 //! under `src/` and fails, naming file and line, on any `fs::remove_dir_all(...)` or
 //! `git worktree remove` call site that is NEITHER routed through a reap-then-remove path NOR
 //! carries a claimed-exemption comment this test independently verifies is present (spec 79's

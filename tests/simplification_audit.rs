@@ -96,6 +96,11 @@
 mod common;
 use common::repo::collect_rs_files;
 use common::repo::repo_root;
+#[path = "common/source_audit.rs"]
+mod source_audit;
+use source_audit::{
+    char_literal_len, is_ident_char, skip_string_literal, tokenize, RawKind, RawTok,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -197,12 +202,6 @@ impl Frame {
             FrameKind::TopLevel | FrameKind::Anonymous => false,
         }
     }
-}
-
-/// Whether `c` is a Rust identifier-continuation character (used for word-boundary checks so
-/// e.g. `fnv1a_64` is never mistaken for the `fn` keyword).
-fn is_ident_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
 }
 
 /// Scan `content` (the text of `file`, a repo-relative forward-slash path used only to label
@@ -839,139 +838,6 @@ fn scan_fn_signature_end(chars: &[char], j: &mut usize, line: &mut usize) -> Sig
         *j += 1;
     }
     SignatureEnd::NoBody
-}
-
-/// If `chars[i..]` opens a string literal (`"...\"`, `r"..."`, `r#"..."#`, ..., `b"..."`,
-/// `br#"..."#`, ...), advance `*i` past its closing delimiter and return how many `\n`s it
-/// contained. Returns `None` (and leaves `*i` untouched) if no string literal starts here.
-fn skip_string_literal(chars: &[char], i: &mut usize) -> Option<usize> {
-    let n = chars.len();
-    let start = *i;
-    let mut p = *i;
-    if p < n && chars[p] == 'b' {
-        p += 1;
-    }
-    let mut hashes = 0usize;
-    let mut raw = false;
-    if p < n && chars[p] == 'r' {
-        let mut q = p + 1;
-        let mut h = 0usize;
-        while q < n && chars[q] == '#' {
-            h += 1;
-            q += 1;
-        }
-        if q < n && chars[q] == '"' {
-            raw = true;
-            hashes = h;
-            p = q + 1;
-        }
-    }
-    if !raw {
-        if p < n && chars[p] == '"' {
-            p += 1;
-        } else {
-            return None;
-        }
-        // Plain (possibly byte-) string: scan for unescaped closing quote.
-        let mut lines = 0usize;
-        while p < n {
-            match chars[p] {
-                '\\' if p + 1 < n => {
-                    if chars[p + 1] == '\n' {
-                        lines += 1;
-                    }
-                    p += 2;
-                }
-                '\n' => {
-                    lines += 1;
-                    p += 1;
-                }
-                '"' => {
-                    p += 1;
-                    *i = p;
-                    return Some(lines);
-                }
-                _ => p += 1,
-            }
-        }
-        *i = p;
-        return Some(lines);
-    }
-    // Raw (possibly byte-) string: scan for `"` followed by exactly `hashes` `#`s.
-    let mut lines = 0usize;
-    while p < n {
-        if chars[p] == '"' {
-            let mut q = p + 1;
-            let mut h = 0usize;
-            while q < n && h < hashes && chars[q] == '#' {
-                h += 1;
-                q += 1;
-            }
-            if h == hashes {
-                *i = q;
-                return Some(lines);
-            }
-        }
-        if chars[p] == '\n' {
-            lines += 1;
-        }
-        p += 1;
-    }
-    *i = p;
-    let _ = start;
-    Some(lines)
-}
-
-/// If a char literal starts at `chars[i]` (`i` points at the opening `'`), return its length in
-/// chars (including both quotes); else `None` (this `'` is a lifetime marker instead). A char
-/// literal is a `'`, one source char OR a bounded backslash escape (`\n`, `\t`, `\r`, `\\`,
-/// `\'`, `\0`, `\xNN`, `\u{...}`), then a closing `'` - a lifetime is never followed by a bare
-/// closing `'`, so this is unambiguous.
-fn char_literal_len(chars: &[char], i: usize) -> Option<usize> {
-    let n = chars.len();
-    if i >= n || chars[i] != '\'' {
-        return None;
-    }
-    let mut p = i + 1;
-    if p >= n {
-        return None;
-    }
-    if chars[p] == '\\' {
-        p += 1;
-        if p >= n {
-            return None;
-        }
-        match chars[p] {
-            'x' => {
-                p += 1;
-                let mut hex = 0;
-                while p < n && hex < 2 && chars[p].is_ascii_hexdigit() {
-                    p += 1;
-                    hex += 1;
-                }
-            }
-            'u' => {
-                p += 1;
-                if p < n && chars[p] == '{' {
-                    p += 1;
-                    while p < n && chars[p] != '}' {
-                        p += 1;
-                    }
-                    if p < n {
-                        p += 1;
-                    }
-                }
-            }
-            _ => p += 1, // \n \t \r \\ \' \" \0 etc: one escaped char
-        }
-    } else {
-        p += 1;
-    }
-    if p < n && chars[p] == '\'' {
-        Some(p + 1 - i)
-    } else {
-        None
-    }
 }
 
 /// Collect and scan the three target files under `root` (a repo checkout), in
@@ -2388,193 +2254,6 @@ const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
      `marker_under_a_configured_workdir`",
 ];
 
-// -----------------------------------------------------------------------------------------
-// THE TOKENIZER
-// -----------------------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RawKind {
-    Keyword,
-    Ident,
-    Lifetime,
-    Lit,
-    Punct,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RawTok {
-    kind: RawKind,
-    text: String,
-    /// 1-based line the token STARTS on, within whatever `chars` slice was tokenized.
-    line: usize,
-}
-
-/// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
-/// verbatim by [`normalize_tokens`] rather than canonicalized like an identifier, since a
-/// keyword is structural signal, not a name.
-const RUST_KEYWORDS: &[&str] = &[
-    "as", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn",
-    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref",
-    "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe",
-    "use", "where", "while", "async", "await", "try", "union", "yield", "abstract", "become",
-    "box", "do", "final", "macro", "override", "priv", "typeof", "unsized", "virtual",
-];
-
-fn is_keyword(s: &str) -> bool {
-    RUST_KEYWORDS.contains(&s)
-}
-
-/// Advance `*i` past a nested block comment (`chars[*i]=='/'`, `chars[*i+1]=='*'` - the caller
-/// checks this before calling), returning the number of `\n`s crossed. A second, standalone
-/// implementation of nested-comment skipping alongside `scan_file`'s own two inline copies
-/// (its main loop and `scan_fn_signature_end`) is itself exactly the kind of instance this
-/// catalog's own similarity pass is built to catch (and does - see the report); factoring a
-/// THIRD shared implementation across all of them is section 5/6 refactor-spec territory, out
-/// of scope for an audit-only spec that changes no production code and may not consolidate
-/// tests (spec 85 "WHAT THIS SPEC DOES NOT DO").
-fn skip_block_comment(chars: &[char], i: &mut usize) -> usize {
-    let n = chars.len();
-    let mut depth = 1usize;
-    let mut lines = 0usize;
-    *i += 2;
-    while *i < n && depth > 0 {
-        if chars[*i] == '\n' {
-            lines += 1;
-            *i += 1;
-            continue;
-        }
-        if chars[*i] == '/' && *i + 1 < n && chars[*i + 1] == '*' {
-            depth += 1;
-            *i += 2;
-            continue;
-        }
-        if chars[*i] == '*' && *i + 1 < n && chars[*i + 1] == '/' {
-            depth -= 1;
-            *i += 2;
-            continue;
-        }
-        *i += 1;
-    }
-    lines
-}
-
-/// Tokenize `chars` into a normalized-similarity-ready token stream: comments and whitespace
-/// produce no token; a string/byte/raw-string literal or a char literal becomes one `Lit`
-/// token (reusing [`skip_string_literal`]/[`char_literal_len`] exactly as `scan_file` does, so
-/// no lexical state is re-implemented); a `'`+ident not matched as a char literal is one
-/// `Lifetime` token; a digit-led run (plus one optional `.`-fraction) is one `Lit` (number)
-/// token; a letter/`_`-led run is `Keyword` when it names a Rust keyword, else `Ident`; every
-/// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
-/// `->` becomes two/three adjacent `Punct` tokens - the mandatory-sweep matchers below account
-/// for this).
-fn tokenize(chars: &[char]) -> Vec<RawTok> {
-    let n = chars.len();
-    let mut i = 0usize;
-    let mut line = 1usize;
-    let mut out = Vec::new();
-    while i < n {
-        let c = chars[i];
-        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
-            while i < n && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            line += skip_block_comment(chars, &mut i);
-            continue;
-        }
-        if c == '\n' {
-            line += 1;
-            i += 1;
-            continue;
-        }
-        if c.is_whitespace() {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        let start_line = line;
-        if let Some(consumed_lines) = skip_string_literal(chars, &mut i) {
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lit,
-                text,
-                line: start_line,
-            });
-            line += consumed_lines;
-            continue;
-        }
-        if c == '\'' {
-            if let Some(len) = char_literal_len(chars, i) {
-                i += len;
-                let text: String = chars[start..i].iter().collect();
-                out.push(RawTok {
-                    kind: RawKind::Lit,
-                    text,
-                    line: start_line,
-                });
-                continue;
-            }
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lifetime,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        if c.is_ascii_digit() {
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            if i < n && chars[i] == '.' && i + 1 < n && chars[i + 1].is_ascii_digit() {
-                i += 1;
-                while i < n && is_ident_char(chars[i]) {
-                    i += 1;
-                }
-            }
-            let text: String = chars[start..i].iter().collect();
-            out.push(RawTok {
-                kind: RawKind::Lit,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        if is_ident_char(c) {
-            i += 1;
-            while i < n && is_ident_char(chars[i]) {
-                i += 1;
-            }
-            let text: String = chars[start..i].iter().collect();
-            let kind = if is_keyword(&text) {
-                RawKind::Keyword
-            } else {
-                RawKind::Ident
-            };
-            out.push(RawTok {
-                kind,
-                text,
-                line: start_line,
-            });
-            continue;
-        }
-        out.push(RawTok {
-            kind: RawKind::Punct,
-            text: c.to_string(),
-            line: start_line,
-        });
-        i += 1;
-    }
-    out
-}
-
 /// Canonicalize an identifier to its KIND by casing convention (this module's doc comment):
 /// `SCREAMING_SNAKE`/`ALLCAPS` (every letter uppercase, at least one letter present) -> `CONST`;
 /// leads with an uppercase letter -> `TYPE`; anything else -> `IDENT`.
@@ -3509,8 +3188,9 @@ fn find_same_named_helper_functions(files: &[FileScan], refs: &[FnRef]) -> Vec<D
     clusters
 }
 
-/// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and
-/// token-level lexer (`tokenize`) alongside the codebase's ONE canonical tree-sitter-based
+/// This file's own bespoke source-text scanner (`scan_file`, the frame-stack scanner) and the
+/// source audits' shared token-level lexer (`tests/common/source_audit.rs::tokenize`) alongside the
+/// codebase's ONE canonical tree-sitter-based
 /// extractor, `crates/rigger-grounder/src/grounder/symbols/extract.rs::extract` (its own module doc calls it "the ONE
 /// function that touches tree-sitter", architecture 5.5.3) - a fourth semantic cluster, added
 /// per the adjudicator's REMEDY after u85c1's architecture lens routed this exact pair to this
@@ -3526,8 +3206,9 @@ fn find_bespoke_lexer_vs_canonical_extractor(files: &[FileScan], refs: &[FnRef])
     let mut hits = Vec::new();
     for r in refs {
         let sf = r.scanned(files);
-        let is_bespoke_lexer = sf.file == "tests/simplification_audit.rs"
-            && matches!(sf.name.as_str(), "scan_file" | "tokenize");
+        let is_bespoke_lexer = (sf.file == "tests/simplification_audit.rs"
+            && sf.name == "scan_file")
+            || (sf.file == "tests/common/source_audit.rs" && sf.name == "tokenize");
         let is_canonical_extractor = sf.file
             == "crates/rigger-grounder/src/grounder/symbols/extract.rs"
             && sf.name == "extract";
@@ -4062,8 +3743,8 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
 // This criterion's own Done-when text: "This criterion OWNS sections 3-5 and introduces no
 // generator code" - unlike criteria 1 and 2, there is no new mechanical scanner here. Each
 // `render_section_N` below is hand-authored prose from a real investigation (decisions
-// `u85c3-scope-and-instruments`, `u85c3-boundary-violation-mutation-scratch-reach`,
-// `u85c3-dead-code-clean-both-instruments`, `u85c3-test-suite-shape-from-committed-catalog`),
+// `u85c3-scope-and-instruments`, `u85c3-dead-code-clean-both-instruments`,
+// `u85c3-test-suite-shape-from-committed-catalog`),
 // citing `file:line` and naming its instrument per claim, exactly as sections 1 and 2 already
 // do for their own mechanically-derived content. Section 3's citations and figures are
 // computed at render time (see LIVE CITATIONS FOR THE HAND-WRITTEN PROSE); the static prose of
@@ -4187,19 +3868,17 @@ fn joined(lines: &[usize]) -> String {
         .join(",")
 }
 
-/// Section 3, BOUNDARY VIOLATIONS: two real findings (`crates/rigger-conductor/src/conductor.rs`'s mutation-scratch
-/// reclaim reaching into the concrete `driver::replay` adapter, and `crates/rigger-grounder/src/ingest.rs` reaching two
-/// concrete grounder modules, each for a concern no port covers) plus the checked-and-clean
-/// port-concretion sweeps and the use-cases-importing-infrastructure / second-mutation-authority
-/// categories (decision `u85c3-boundary-violation-mutation-scratch-reach`). Every citation and
-/// figure is computed from `files` and the tree at render time.
+/// Section 3, BOUNDARY VIOLATIONS: one real finding (`crates/rigger-grounder/src/ingest.rs`
+/// reaching two concrete grounder modules, for a concern no port covers) plus the
+/// checked-and-clean port-concretion sweeps and the use-cases-importing-infrastructure /
+/// second-mutation-authority categories. Every citation and figure is computed from `files`
+/// and the tree at render time.
 fn render_section_3(files: &[FileScan]) -> String {
     const CONDUCTOR: &str = "crates/rigger-conductor/src/conductor.rs";
     const INGEST: &str = "crates/rigger-grounder/src/ingest.rs";
     const MAIN: &str = "src/cli/mod.rs";
     const AGENT_PORT: &str = "crates/rigger-domain/src/agent.rs";
     let boundary = test_boundary(CONDUCTOR);
-    let reclaim = cite_fn(files, CONDUCTOR, "reclaim_terminal_unit_mutation_scratch");
     let agent_driver = line_of(AGENT_PORT, "pub trait AgentDriver");
     let walk = cite_fn(files, INGEST, "walk_batches");
     let ingest_batches = line_of(CONDUCTOR, "fn ingest_project_batches");
@@ -4221,33 +3900,10 @@ fn render_section_3(files: &[FileScan]) -> String {
         Every citation below is resolved against the tree when the report is \
         rendered.\n\n",
     );
-    out.push_str("FOUND, two violations:\n\n");
+    out.push_str("FOUND, one violation:\n\n");
     let _ = write!(
         out,
-        "Violation 1 (`AgentDriver`): `{reclaim}` \
-        (`reclaim_terminal_unit_mutation_scratch`, real production code - above \
-        the `#[cfg(test)] mod tests` boundary at `{CONDUCTOR}:{boundary}`) calls \
-        `crate::driver::replay::cache_home_from` and \
-        `crate::driver::replay::reclaim_unit_mutation_scratch` directly by \
-        concrete module path. The port `conductor.rs` actually depends on for \
-        driving agents is `trait AgentDriver` (`{AGENT_PORT}:{agent_driver}`) - one \
-        method, `spawn`. Neither called function is about driving an agent or \
-        replaying a recorded run (the concern `driver::replay` otherwise owns); both \
-        are pure, driver-instance-free scratch-lifecycle utilities that happen to \
-        live inside that one concrete adapter's module. The port that should have \
-        been used: none exists for this concern yet, which is itself the defect - \
-        `conductor.rs` (a use-case/orchestration file) should not need to know which \
-        concrete `AgentDriver` implementation happens to define its own \
-        mutation-scratch cache-home resolution. Fix direction for a follow-up spec: \
-        relocate `cache_home_from` and `reclaim_unit_mutation_scratch` out of \
-        `driver::replay` into a neutral, adapter-independent module (a `scratch` or \
-        `mutation` support module conductor.rs and every driver adapter can depend \
-        on alike), so no use-case file reaches into one specific adapter's internals \
-        for a concern that adapter does not conceptually own.\n\n",
-    );
-    let _ = write!(
-        out,
-        "Violation 2 (`Grounder`): `{walk}` (`walk_batches`, called from production \
+        "Violation 1 (`Grounder`): `{walk}` (`walk_batches`, called from production \
         `conductor::RunCtx::ingest_project_batches` at `{CONDUCTOR}:{ingest_batches}`, \
         itself called from `{CONDUCTOR}:{ingest_caller}` above the `{boundary}` \
         `#[cfg(test)]` boundary) calls \
@@ -4268,8 +3924,8 @@ fn render_section_3(files: &[FileScan]) -> String {
         projected events for a whole-project batch ingest,\" so `ingest.rs` - itself \
         a domain ingest authority, not an adapter and not the composition root - has \
         no port to depend on for either call and reaches the concrete `symbols` \
-        module ({paced}) and the concrete `design` module ({design}) directly. Same \
-        missing-port defect class as violation 1. Fix direction for a follow-up \
+        module ({paced}) and the concrete `design` module ({design}) directly. Fix \
+        direction for a follow-up \
         spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` \
         or a standalone `SymbolProjector` trait) covering both concrete modules, so \
         `ingest.rs` depends on one abstraction instead of either concrete grounder \
@@ -4315,9 +3971,19 @@ fn render_section_3(files: &[FileScan]) -> String {
         ),
     );
     out.push_str(
-        "CHECKED AND CLEAN (three of five ports fully clean; the other two, \
-        `AgentDriver` and `Grounder`, are this section's two violations above - each \
-        search recorded so a clean result is not merely assumed):\n",
+        "CHECKED AND CLEAN (four of five ports fully clean; the fifth, `Grounder`, is \
+        this section's violation above - each search recorded so a clean result is not \
+        merely assumed):\n",
+    );
+    let _ = writeln!(
+        out,
+        "- `conductor::AgentDriver` concretion reach (`crate::driver::*`): production \
+        `conductor.rs` depends only on the port (`{AGENT_PORT}:{agent_driver}`), held as \
+        `dyn AgentDriver` (`{CONDUCTOR}:{}`); every one of its {} `crate::driver::` hits \
+        sits inside `#[cfg(test)] mod tests`, where the tests construct a concrete driver \
+        directly.",
+        line_of(CONDUCTOR, "dyn AgentDriver"),
+        test_only_hits(CONDUCTOR, "crate::driver::"),
     );
     let main_boundary = test_boundary(MAIN);
     let raw_open = line_of(MAIN, "rusqlite::Connection::open(");
@@ -4802,7 +4468,7 @@ const HEADLINE_HELPER_CLUSTERS: usize = 4;
 /// How many further helper clusters section 5.4 names beyond 5.2's headline ones.
 const FURTHER_HELPER_CLUSTERS: usize = 6;
 
-/// How many table-driven test families section 5.5 and item 16 name.
+/// How many table-driven test families section 5.5 and item 15 name.
 const HEADLINE_TEST_FAMILIES: usize = 2;
 
 /// The largest still-open (undispositioned) all-`#[test]` clusters of `tests`, most sites
@@ -4881,7 +4547,7 @@ const TEST_SUBSYSTEMS: &[(&str, &str, &[&[&str]])] = &[
         ]],
     ),
     ("Reset / log compaction / store hygiene", "", &[]),
-    ("Worktree & scratch/mutation-scratch lifecycle", "", &[]),
+    ("Worktree & scratch lifecycle", "", &[]),
     (
         "Simplification-audit generator & its own periphery (this spec)",
         "",
@@ -4958,7 +4624,7 @@ const CLI_VERB_PREFIXES: &[&[&str]] = &[
     &["canary_"],
     &["dash_", "status_"],
     &["store_", "eventstore_"],
-    &["spawn_", "mutation_scratch_", "scratch_"],
+    &["spawn_", "scratch_"],
     &["review_", "gate_"],
     &["setup_", "precommit_", "hook_"],
     &["courier_", "registry_"],
@@ -5375,7 +5041,7 @@ fn distinct_files(c: &DupCluster) -> String {
         .join(", ")
 }
 
-/// Section 6, PRIORITIZED PLAN: twenty follow-up refactoring-spec stubs across six
+/// Section 6, PRIORITIZED PLAN: nineteen follow-up refactoring-spec stubs across six
 /// risk-reduction tiers. See decision `u85c4-section6-plan-structure` for the tier rationale and
 /// the cluster accounting (test-only + 7 named + remaining src-touching = every catalogued
 /// cluster, each count read from the catalog at render time). Tier 1 item 0, "Delete the dead-code set", cites section 4.3's ledger
@@ -5402,15 +5068,15 @@ fn render_section_6() -> String {
     let mut out = String::new();
     out.push_str("## 6. Prioritized Plan\n\n");
     out.push_str(
-        "Twenty follow-up refactoring specs, ordered largest risk-reduction first. This \
+        "Nineteen follow-up refactoring specs, ordered largest risk-reduction first. This \
         section adds no new findings: every citation below points at a claim already \
         recorded in section 1 (`docs/audit/responsibility-map.json`), section 2 \
         (`docs/audit/duplication-catalog.json`), section 4.3 (`docs/audit/dead-code.json`), \
         or sections 3 and 5's own prose. The three committed JSON files ground every count \
         below (queried directly, never re-scanned). Item 0 (Tier 1) \
         deletes the dead-code ledger (section 4.3); six of the remaining \
-        nineteen entries split a god file (tiers 2 and 3, two phases times three files); the \
-        other thirteen retire duplication or close a port gap (tiers 1, 4 and 5) - kept as \
+        eighteen entries split a god file (tiers 2 and 3, two phases times three files); the \
+        other twelve retire duplication or close a port gap (tiers 1, 4 and 5) - kept as \
         separate entries throughout, per spec 85's own instruction that \"the god-file \
         splits and the duplication removals are separate entries so each can be its own \
         run.\"\n\n",
@@ -5428,7 +5094,7 @@ fn render_section_6() -> String {
         each entry retires, highest first:\n\n\
         1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \
         wrong concretion, or two independent implementations of one concern can already \
-        drift apart silently (section 3's two boundary violations; the one already-drifted \
+        drift apart silently (section 3's boundary violation; the one already-drifted \
         `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \
         Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \
         all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \
@@ -5487,31 +5153,12 @@ fn render_section_6() -> String {
         - Unblocks: shrinks the files tiers 2-4 operate on before they touch them, so it runs \
         first.\n\n",
     );
-    out.push_str("#### 1. Close the `AgentDriver` port gap around mutation-scratch reclaim\n\n");
-    out.push_str(
-        "- Scope: `conductor.rs`'s production `reclaim_terminal_unit_mutation_scratch` \
-        (section 3 violation 1) calls \
-        `crate::driver::replay::cache_home_from` and \
-        `crate::driver::replay::reclaim_unit_mutation_scratch` by concrete module path - two \
-        pure, driver-instance-free scratch-lifecycle utilities that do not conceptually \
-        belong to the `driver::replay` concern they currently live inside. Relocate both \
-        into a neutral module every `AgentDriver` adapter and `conductor.rs` can depend on \
-        alike (no new trait needed - neither function takes a driver instance, so this is a \
-        home fix, not a port-method fix).\n\
-        - Files: `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-driver/src/driver/replay.rs`, a new home for the two \
-        relocated functions.\n\
-        - Expected line delta: near zero net - a pure move of two functions.\n\
-        - Risk: low-medium. The reclaim path is covered by spec 83's \
-        worktree-lifetime-fenced-by-spawn-liveness contract tests; those tests move with the \
-        functions, not get rewritten.\n\
-        - Unblocks: retires the only `AgentDriver` port violation section 3 found.\n\n",
-    );
     out.push_str(&format!(
-        "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
+        "#### 1. Close the `Grounder` port gap for whole-project batch ingest (retires \
         {PROJECT_BATCHES} in the same motion)\n\n",
     ));
     out.push_str(&format!(
-        "- Scope: section 3 violation 2 (`crates/rigger-grounder/src/ingest.rs::walk_batches`, reaching \
+        "- Scope: section 3 violation 1 (`crates/rigger-grounder/src/ingest.rs::walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
         duplication cluster `{PROJECT_BATCHES}` ({batch_n} modules' own twin \
@@ -5538,7 +5185,7 @@ fn render_section_6() -> String {
     ));
     let proc_reader_files = distinct_files(proc_readers);
     out.push_str(&format!(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\n\n",
+        "#### 2. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\n\n",
         proc_literals.id, proc_readers.id,
     ));
     out.push_str(&format!(
@@ -5576,7 +5223,7 @@ fn render_section_6() -> String {
     );
     let conductor = god_file_shape("crates/rigger-conductor/src/conductor.rs");
     out.push_str(
-        "#### 4. Extract `crates/rigger-conductor/src/conductor.rs`'s inline test module\n\n",
+        "#### 3. Extract `crates/rigger-conductor/src/conductor.rs`'s inline test module\n\n",
     );
     out.push_str(&test_extraction_scope(
         "crates/rigger-conductor/src/conductor.rs",
@@ -5594,18 +5241,18 @@ fn render_section_6() -> String {
         single production line, cutting the odds that an unrelated future unit's blast \
         radius collides with this file.\n\n",
     );
-    out.push_str("#### 5. Extract `src/main.rs`'s inline test module\n\n");
+    out.push_str("#### 4. Extract `src/main.rs`'s inline test module\n\n");
     out.push_str(&test_extraction_scope(
         "src/cli/mod.rs",
         "src/main/tests",
         &format!(
-            "Same partition approach as item 4, reusing section 1's own production bucket \
+            "Same partition approach as item 3, reusing section 1's own production bucket \
             names ({}, ...).",
             bucket_names(&god_file_shape("src/cli/mod.rs"), HEADLINE_BUCKETS)
         ),
     ));
     out.push_str(
-        "- Risk: low, same rationale as item 4.\n\
+        "- Risk: low, same rationale as item 3.\n\
         - Unblocks: shrinks `main.rs` to its production code before tier 3's own main.rs \
         split.\n\n",
     );
@@ -5614,12 +5261,12 @@ fn render_section_6() -> String {
         .iter()
         .map(|g| format!("`{g}`"))
         .collect();
-    out.push_str("#### 6. Extract `crates/rigger-dash/src/dash.rs`'s inline test module\n\n");
+    out.push_str("#### 5. Extract `crates/rigger-dash/src/dash.rs`'s inline test module\n\n");
     out.push_str(&test_extraction_scope(
         "crates/rigger-dash/src/dash.rs",
         "src/dash/tests",
         &format!(
-            "Lower effort than items 4-5: section 1's own classifier already found {} \
+            "Lower effort than items 3-4: section 1's own classifier already found {} \
             pre-existing sub-boundaries inside this one test module ({}), so the partition \
             points already exist and need only become their own files.",
             dash_groups.len(),
@@ -5642,7 +5289,7 @@ fn render_section_6() -> String {
         move with whichever module they sit beside, without needing their own assignment.\n\n",
     );
     out.push_str(
-        "#### 7. Split `crates/rigger-conductor/src/conductor.rs`'s production code into `src/conductor/*.rs`\n\n",
+        "#### 6. Split `crates/rigger-conductor/src/conductor.rs`'s production code into `src/conductor/*.rs`\n\n",
     );
     out.push_str(&production_split_scope(
         "crates/rigger-conductor/src/conductor.rs",
@@ -5662,7 +5309,7 @@ fn render_section_6() -> String {
         this audit identifies; makes future duplication-spotting against conductor.rs's own \
         logic tractable by a human reviewer, not only by the mechanical scanner.\n\n",
     );
-    out.push_str("#### 8. Split `src/main.rs`'s production code into `src/main/*.rs`\n\n");
+    out.push_str("#### 7. Split `src/main.rs`'s production code into `src/main/*.rs`\n\n");
     out.push_str(&production_split_scope(
         "src/cli/mod.rs",
         "`src/main.rs` (composition root, thinned)",
@@ -5676,7 +5323,7 @@ fn render_section_6() -> String {
         mandates everywhere else.\n\n",
     );
     out.push_str(
-        "#### 9. Split `crates/rigger-dash/src/dash.rs`'s production code into `src/dash/*.rs`\n\n",
+        "#### 8. Split `crates/rigger-dash/src/dash.rs`'s production code into `src/dash/*.rs`\n\n",
     );
     out.push_str(&production_split_scope(
         "crates/rigger-dash/src/dash.rs",
@@ -5724,7 +5371,7 @@ fn render_section_6() -> String {
         .collect::<BTreeSet<_>>()
         .len();
     out.push_str(&format!(
-        "#### 10. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \
+        "#### 9. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     ));
     out.push_str(&format!(
@@ -5752,7 +5399,7 @@ fn render_section_6() -> String {
         .count();
     let test_n = command_n - port_n;
     out.push_str(&format!(
-        "#### 11. The {command_n} `Command::new` call sites (`{command_id}`) - production spawns \
+        "#### 10. The {command_n} `Command::new` call sites (`{command_id}`) - production spawns \
         already route through one process-spawn port\n\n",
     ));
     out.push_str(&format!(
@@ -5771,7 +5418,7 @@ fn render_section_6() -> String {
         port instead of constructing its own `Command`.\n\n",
     ));
     out.push_str(&format!(
-        "#### 12. Consolidate the {conn_n} sqlite `Connection::open` call sites (`{conn_id}`)\n\n",
+        "#### 11. Consolidate the {conn_n} sqlite `Connection::open` call sites (`{conn_id}`)\n\n",
     ));
     out.push_str(&format!(
         "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
@@ -5787,7 +5434,7 @@ fn render_section_6() -> String {
         {conn_n}.\n\n",
     ));
     out.push_str(&format!(
-        "#### 13. Consolidate the {error_n} error-shaping helper sites (`{error_id}`) - caution, \
+        "#### 12. Consolidate the {error_n} error-shaping helper sites (`{error_id}`) - caution, \
         confirm before merging\n\n",
     ));
     out.push_str(&format!(
@@ -5810,17 +5457,17 @@ fn render_section_6() -> String {
         of it carries production-correctness risk.\n\n",
     );
     out.push_str(
-        "#### 14. Extract the headline shared test fixtures into `tests/common` (section 5.2)\n\n",
+        "#### 13. Extract the headline shared test fixtures into `tests/common` (section 5.2)\n\n",
     );
     let widest_helpers = widest_first(&test_only.helpers);
-    let item_14 = &widest_helpers[..HEADLINE_HELPER_CLUSTERS.min(widest_helpers.len())];
-    let item_14_sites: usize = item_14.iter().map(|c| c.sites.len()).sum();
-    let item_14_scope: Vec<String> = item_14
+    let item_13 = &widest_helpers[..HEADLINE_HELPER_CLUSTERS.min(widest_helpers.len())];
+    let item_13_sites: usize = item_13.iter().map(|c| c.sites.len()).sum();
+    let item_13_scope: Vec<String> = item_13
         .iter()
         .map(|c| format!("`{}` ({} files)", c.id, file_count(c)))
         .collect();
     out.push_str(&format!(
-        "- Scope: {} - roughly {item_14_sites} duplicate definitions collapsing into {} shared \
+        "- Scope: {} - roughly {item_13_sites} duplicate definitions collapsing into {} shared \
         ones, the single largest mechanical simplification section 5 identifies anywhere in \
         the test suite.\n\
         - Files: per-cluster, from the committed catalog, plus `tests/common/`.\n\
@@ -5828,13 +5475,13 @@ fn render_section_6() -> String {
         once per file.\n\
         - Risk: low - test-only, and `tests/common/` already holds the same shape of shared \
         fixture.\n\
-        - Unblocks: item 17 below (the remaining test-helper clusters) reuses the same \
+        - Unblocks: item 16 below (the remaining test-helper clusters) reuses the same \
         `tests/common` home this item establishes.\n\n",
-        item_14_scope.join(", "),
-        item_14.len(),
+        item_13_scope.join(", "),
+        item_13.len(),
     ));
     out.push_str(
-        "#### 15. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)\n\n",
+        "#### 14. Split `tests/cli.rs` by CLI subcommand surface (section 5.3's plan)\n\n",
     );
     let cli_tests = cli_test_names();
     out.push_str(&format!(
@@ -5847,20 +5494,20 @@ fn render_section_6() -> String {
         - Expected line delta: 0 net - pure relocation into eleven files.\n\
         - Risk: low-medium - a mechanical per-test move with `cargo test`'s full pass count as the verification.\n\
         - Unblocks: splits a file in {} cross-file duplication clusters (section 5.3) and \
-        lets item 17's remaining-clusters sweep target smaller, subcommand-scoped files.\n\n",
+        lets item 16's remaining-clusters sweep target smaller, subcommand-scoped files.\n\n",
         cli_tests.len(),
         percent(verb_covered(&cli_tests), cli_tests.len()),
         cli_cross_file_clusters(&test_only.all).len(),
     ));
-    let item_16_families = largest_open_test_families(&test_only.tests);
-    let item_16: Vec<&str> = item_16_families.iter().map(|c| c.id.as_str()).collect();
-    let item_16_sites: usize = item_16_families.iter().map(|c| c.sites.len()).sum();
+    let item_15_families = largest_open_test_families(&test_only.tests);
+    let item_15: Vec<&str> = item_15_families.iter().map(|c| c.id.as_str()).collect();
+    let item_15_sites: usize = item_15_families.iter().map(|c| c.sites.len()).sum();
     out.push_str(
-        "#### 16. Convert the largest remaining table-driven test families into \
+        "#### 15. Convert the largest remaining table-driven test families into \
         parametrized tables (section 5.5)\n\n",
     );
     out.push_str(&format!(
-        "- Scope, largest first ({item_16_sites} sites across {} clusters; the spec_lint, \
+        "- Scope, largest first ({item_15_sites} sites across {} clusters; the spec_lint, \
         no-os-kill, reap-audit exemption, scanner and pid-refusal families are already \
         closed):\n{}\
         - Files: the files named above.\n\
@@ -5869,19 +5516,19 @@ fn render_section_6() -> String {
         - Risk: low - test-only, and each family already shares one body shape (section \
         5.5's own finding).\n\
         - Unblocks: the largest remaining reduction in raw `#[test]` body count.\n\n",
-        item_16.len(),
-        test_family_bullets(&item_16_families),
+        item_15.len(),
+        test_family_bullets(&item_15_families),
     ));
     let (helpers_n, tests_n) = (test_only.helpers.len(), test_only.tests.len());
-    let helpers_left = helpers_n - item_14.len();
-    let tests_left = tests_n - count_cited_in(&item_16, &test_only.tests);
+    let helpers_left = helpers_n - item_13.len();
+    let tests_left = tests_n - count_cited_in(&item_15, &test_only.tests);
     out.push_str(&format!(
-        "#### 17. Sweep the remaining {helpers_left} test-only helper-duplication clusters \
-        (section 5.4, beyond item 14's headline fixtures)\n\n",
+        "#### 16. Sweep the remaining {helpers_left} test-only helper-duplication clusters \
+        (section 5.4, beyond item 13's headline fixtures)\n\n",
     ));
     out.push_str(&format!(
         "- Scope: the {helpers_n} test-only, all-helper-function clusters section 5.4 names, \
-        minus the ones item 14 already covers - consumed directly from \
+        minus the ones item 13 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
         stated approach).\n\
         - Files: per-cluster, from the committed catalog.\n\
@@ -5891,20 +5538,20 @@ fn render_section_6() -> String {
         strict-DRY exposure.\n\n",
     ));
     out.push_str(&format!(
-        "#### 18. Sweep the remaining {tests_left} table-driven test families (section 5.5, \
-        beyond item 16's headline families)\n\n",
+        "#### 17. Sweep the remaining {tests_left} table-driven test families (section 5.5, \
+        beyond item 15's headline families)\n\n",
     ));
     out.push_str(&format!(
         "- Scope: the {tests_n} test-only, all-`#[test]` clusters section 5.5 names, minus \
-        the {} cluster ids item 16 already covers - consumed directly from \
+        the {} cluster ids item 15 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`.\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative.\n\
         - Risk: low - test-only.\n\
         - Unblocks: closes out the table-driven-test half of the test suite's own \
-        strict-DRY exposure; combined with items 14 and 16-17, retires all {} test-only \
+        strict-DRY exposure; combined with items 13 and 15-16, retires all {} test-only \
         clusters section 2 found.\n\n",
-        item_16.len(),
+        item_15.len(),
         test_only.all.len(),
     ));
     out.push_str("### 6.7 Tier 6: remaining catalog sweep\n\n");
@@ -5913,12 +5560,12 @@ fn render_section_6() -> String {
         needs its own read before merging (see `### 6.1`'s tier 6 rationale above).\n\n",
     );
     out.push_str(&format!(
-        "#### 19. Sweep the remaining {remaining} src-touching duplication clusters \
+        "#### 18. Sweep the remaining {remaining} src-touching duplication clusters \
         (section 2, beyond tiers 1 and 4's {} named clusters)\n\n",
         named.len(),
     ));
     out.push_str(&format!(
-        "- Scope: of the catalog's {} clusters, {} are test-only (items 14 and 16-18 \
+        "- Scope: of the catalog's {} clusters, {} are test-only (items 13 and 15-17 \
         above) and {} are the named tier-1/tier-4 items ({}); the remaining {remaining} \
         clusters touching `src/` - mostly small 2-5-site exact/near matches like the two \
         worked examples section 2 itself opens with (`{}`, `{}`) - are swept here, largest \
@@ -5930,7 +5577,7 @@ fn render_section_6() -> String {
         time, not fixed here).\n\
         - Risk: low-medium - unlike tier 5, some of these clusters are production code, so \
         each merge needs its own test-coverage check, not a blanket \"test-only\" pass.\n\
-        - Unblocks: the last of the catalog's {} clusters; after items 1-3 and 10-19 all \
+        - Unblocks: the last of the catalog's {} clusters; after items 1-2 and 9-18 all \
         land, a future spec can state and check that the duplication catalog's own drift \
         guard finds zero live clusters left unaddressed.\n\n",
         catalog.len(),
@@ -9190,19 +8837,29 @@ mod tests {
             &[
                 (
                     "tests/simplification_audit.rs",
-                    "fn scan_file() {}\nfn tokenize() {}\nfn unrelated() {}\n",
+                    "fn scan_file() {}\nfn unrelated() {}\n",
                 ),
+                ("tests/common/source_audit.rs", "pub fn tokenize() {}\n"),
                 ("crates/rigger-grounder/src/grounder/symbols/extract.rs", "pub fn extract() {}\n"),
             ],
             find_bespoke_lexer_vs_canonical_extractor,
             &["scan_file", "tokenize", "extract"],
         );
+        bespoke_lexer_sweep_finds_neither_lexer_name_in_the_other_lexer_file: assert_sweep_finds(
+            &[
+                ("tests/simplification_audit.rs", "fn tokenize() {}\n"),
+                ("tests/common/source_audit.rs", "pub fn scan_file() {}\n"),
+            ],
+            find_bespoke_lexer_vs_canonical_extractor,
+            &[],
+        );
     }
 
     rigger::test_cases! {
         /// The recall gap u85c1's architecture lens routed to this criterion by name across two
-        /// prior review rounds, verified closed on the REAL tree: `scan_file`, `tokenize` (this
-        /// file's own bespoke scanner/lexer) and `extract` (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
+        /// prior review rounds, verified closed on the REAL tree: `scan_file` (this file's own
+        /// bespoke scanner), `tokenize` (the source audits' shared lexer) and `extract`
+        /// (`crates/rigger-grounder/src/grounder/symbols/extract.rs`, the
         /// codebase's one canonical tree-sitter extractor) land in one cluster.
         the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster:
             assert_real_cluster_of_holds(
@@ -10115,7 +9772,7 @@ mod tests {
 
     /// Item 0's own deletion list (via [`render_dead_code_deletion_list`]) is the ONLY content
     /// anywhere in section 6 that embeds a live line number - one level deeper than section 4's
-    /// (`#### 0. ` instead of `### 4.3 `). Everything else in section 6 (items 1-19 and the tier
+    /// (`#### 0. ` instead of `### 4.3 `). Everything else in section 6 (items 1-18 and the tier
     /// framing prose) is citation-free and fully deterministic, so it stays byte-exact.
     const SECTION_6_CITED_LIST: CitedList = CitedList {
         section: "6",
@@ -10403,8 +10060,7 @@ mod tests {
         // God-file splits and duplication removals are separate entries (spec 85's own
         // wording, quoted so a reader can see this criterion's own bar is met).
         assert!(rendered.contains("separate entries"));
-        // Cites section 3's two boundary violations by name.
-        assert!(rendered.contains("AgentDriver"));
+        // Cites section 3's boundary violation by name.
         assert!(rendered.contains("Grounder"));
         // The many-candidates-one-home resolution for the project_batches cluster (spec 85
         // CONSTRAINTS WALK), its candidate count read from the catalog.
@@ -10425,7 +10081,7 @@ mod tests {
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
         assert!(
-            rendered.contains("#### 16. Convert the largest remaining table-driven test families")
+            rendered.contains("#### 15. Convert the largest remaining table-driven test families")
         );
         // Item 0: the dead-code deletion, and the explicit no-further-follow-up category.
         assert!(rendered.contains("Delete the dead-code set"));

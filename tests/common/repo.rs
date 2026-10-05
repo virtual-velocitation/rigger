@@ -218,6 +218,18 @@ pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// sorted (deterministic) order regardless of readdir order; an unreadable `dir` contributes
 /// nothing.
 pub fn collect_files_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let mut files = Vec::new();
+    collect_files(dir, &mut files);
+    out.extend(
+        files
+            .into_iter()
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some(ext)),
+    );
+}
+
+/// Every file strictly under `dir`, of any extension, recursively, appended to `out` in sorted
+/// (deterministic) order regardless of readdir order; an unreadable `dir` contributes nothing.
+pub fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -225,8 +237,8 @@ pub fn collect_files_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf
     entries.sort();
     for path in entries {
         if path.is_dir() {
-            collect_files_with_extension(&path, ext, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            collect_files(&path, out);
+        } else {
             out.push(path);
         }
     }

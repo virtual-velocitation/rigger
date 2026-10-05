@@ -82,13 +82,15 @@ fn the_event_log_resolver_and_server_adapter_never_touch_a_projection_path() {
 fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
     let src = production_main_rs();
 
-    // The graph projection is opened by the sqlite `Projector` at the local `.rigger/graph.db`
-    // (`db_path` resolves under RIGGER_DIR). If a regression redirected it - e.g. through
-    // `resolve_store` - this canonical local construction would disappear.
+    // The graph projection is opened by the sqlite `Projector` at the resolved store's local
+    // `.rigger/graph.db` (`StoreLocation::file` names a file under the resolved `.rigger/`, the
+    // one opener every store-resolving command shares). If a regression redirected it - e.g.
+    // through `resolve_store` - this canonical local construction would disappear.
     assert!(
-        src.contains(r#"Projector::open(&db_path("graph.db")"#),
-        "the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \
-         (`Projector::open(&db_path(\"graph.db\") ...)`); the canonical local construction is gone"
+        src.contains(r#"Projector::open(&self.file("graph.db")"#),
+        "the graph projection must be opened by the LOCAL sqlite Projector at the resolved \
+         store's .rigger/graph.db (`Projector::open(&self.file(\"graph.db\") ...)`); the \
+         canonical local construction is gone"
     );
 
     // The progress projection is opened by the sqlite `Store` at the local `.rigger/progress.db`.

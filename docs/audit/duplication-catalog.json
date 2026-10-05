@@ -498,7 +498,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d0dab916f0d7",
+    "id": "dup-285c043f6562",
     "classification": "exact",
     "sites": [
       {
@@ -510,9 +510,19 @@
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
         "name": "workflow_doc",
         "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "sweep_tool_refusal",
+        "content_hash": "c28c81e0bdeb1759"
+      },
+      {
+        "file": "tests/gate_scratch_root_periphery.rs",
+        "name": "recording_gate",
+        "content_hash": "c28c81e0bdeb1759"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs)",
+    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -604,7 +614,7 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "mutants_dirs",
+        "name": "gate_scratches",
         "content_hash": "70ce2252aa7ca16c"
       },
       {
@@ -682,7 +692,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e12728a3bfbc",
+    "id": "dup-96aa5aa624f2",
     "classification": "semantic",
     "sites": [
       {
@@ -1058,17 +1068,7 @@
       {
         "file": "tests/principle_gates_wiring.rs",
         "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
+        "content_hash": "08d6b42e051847dc"
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -1137,11 +1137,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 90 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 88 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-767eccd922ac",
+    "id": "dup-4d4dee559928",
     "classification": "semantic",
     "sites": [
       {
@@ -1617,22 +1617,7 @@
       {
         "file": "src/cli/mod.rs",
         "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
-      },
-      {
-        "file": "src/cli/mod.rs",
-        "name": "\".rigger\"",
-        "content_hash": "d61ae8ace1b4d383"
+        "content_hash": "f71df05adff30fbc"
       },
       {
         "file": "src/cli/mod.rs",
@@ -1736,18 +1721,23 @@
       },
       {
         "file": "src/cli/setup.rs",
+        "name": "\"scaffolded .rigger/workflow.yml (gate template set: {key})\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/cli/setup.rs",
         "name": "\"scaffolded .rigger/workflow.yml\"",
         "content_hash": "dba909280155025d"
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"scaffolded .rigger/instructions/README.md\"",
-        "content_hash": "dba909280155025d"
+        "name": "\"no gate template set matches this project ({catalogue} at the project \\\n                     root), so .rigger/workflow.yml declares no gates - declare your own under \\\n                     gates:\"",
+        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"scaffolded .rigger/gates/{file}\"",
-        "content_hash": "c61f0d8b3c3e870e"
+        "name": "\"scaffolded .rigger/instructions/README.md\"",
+        "content_hash": "dba909280155025d"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1776,18 +1766,38 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\\n\\\n# review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\\n\\\n# adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\\n\\\n# Replace the gate commands with your own.\\n\\\n\\n\\\ndefaults:\\n  \\\nautonomy: auto_notify   # manual | auto_notify | silent\\n  \\\ngrounder: symbols       # symbols (default; the structural symbol index) | grep | nop\\n  \\\n# The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\\n  \\\n# run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\\n  \\\n# so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\\n  \\\nbudget: 60\\n  \\\n# The remediation depth: how many attempts a failed unit gets before it escalates\\n  \\\n# to a human. This is the REFINEMENT-depth knob, not a review-rigor one - raise it\\n  \\\n# to give a subtle unit room to CONVERGE under the full strict review instead of\\n  \\\n# escalating prematurely. It loosens the depth limit, never the review bar. Absent\\n  \\\n# falls back to 3 (the historical default); bounded by `budget` above.\\n  \\\nmax_retries: 3\\n  \\\n# How many implement units build at once (spec 102, per-unit pipelining). Each\\n  \\\n# live unit owns its own build cache, and unbounded parallelism can fill disk on\\n  \\\n# a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\\n  \\\n# bounds the worst case to two live per-unit build caches at a time.\\n  \\\nmax_parallel_units: 2\\n  \\\n# The three-tier review panel applied to EVERY implement unit. Declared once\\n  \\\n# here, inherited by the implement stage and every planner-proposed unit.\\n  \\\nreview:\\n    \\\nlenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\\n    \\\nadversary: adversary           # tier 2: reviews the lenses and refutes them\\n    \\\nadjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\\n\\\n\\n\\\n# The compilation-cache wrapper (spec 65): `auto` probes PATH for a known wrapper\\n\\\n# (sccache, ccache) and uses it when present, so a machine that already has one\\n\\\n# installed benefits with no further config; `off` disables the shared-cache\\n\\\n# layer entirely. See `rigger validate` for the resolved wrapper/cache dir/budget.\\n\\\nbuild:\\n  \\\nwrapper: auto\\n\\\n\\n\\\ngates:                    # a reusable library of commands, referenced by name\\n  \\\nbuild: { run: \\\"echo build ok; true\\\", kind: core }\\n  \\\ntest:  { run: \\\"echo test ok; true\\\",  kind: core }\\n  \\\nlint:  { run: \\\"echo lint ok; true\\\",  kind: elevated }\\n  \\\n# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\\n  \\\n# unit has integrated - never per implementer round. For a Rust project, run the\\n  \\\n# sweep `rigger init` wrote beside this file: `run: \\\"sh .rigger/gates/mutation.sh\\\"`\\n  \\\n# (diff-scoped, in its own memory-bounded scope; its header explains each clause).\\n  \\\n# Declaring a gate under this exact id requires `cargo-mutants` on PATH (rigger\\n  \\\n# validate checks at run start).\\n  \\\nmutation: { run: \\\"echo mutation ok; true\\\", kind: core }\\n\\\n# The boundary gate: Clean Architecture made mechanical. Replace with your\\n  \\\n# project's own check that dependencies point inward and adapters are constructed\\n  \\\n# only in the composition root (see this crate's tests/boundary_audit.rs for the\\n  \\\n# worked example). A red boundary gate is non-negotiable: the adjudicator\\n  \\\n# rejects, never balances it against other evidence.\\n  \\\nboundary: { run: \\\"echo boundary ok; true\\\", kind: core }\\n\\\n# The audit gate: DRY and YAGNI as a red gate. Replace with your project's own\\n  \\\n# duplication and dead-code check; if it keeps a generated catalog, regenerate it\\n  \\\n# before asserting so a unit is never red on a stale catalog alone.\\n  \\\naudit: { run: \\\"echo audit ok; true\\\", kind: core }\\n\\\n# The red-before-green gate: TDD made mechanical. Replace with a check that a\\n  \\\n# unit's first source commit is preceded by (or carries) a test change (see this\\n  \\\n# crate's .rigger/gates/red-before-green.sh for the worked example).\\n  \\\nred-before-green: { run: \\\"echo red-before-green ok; true\\\", kind: core }\\n\\\n\\n\\\nstages:\\n  \\\n# The conductor creates one baseline implement unit per acceptance criterion (the\\n  \\\n# deterministic decomposition); this planner REFINES that baseline via UnitProposed.\\n  \\\n# A produces stage decomposes the whole spec, so it has no single coverage criterion\\n  \\\n# - it grounds on the spec's acceptance criteria, not a `coverage` label.\\n  \\\nplan:\\n    \\\nagent: planner\\n    \\\nproduces: dag           # refine the spec's unit DAG at runtime\\n\\\n\\n  \\\n# The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\\n  \\\n# adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\\n  \\\n# cannot see: ambiguous mitigation ownership and open dispositions (a shared blast\\n  \\\n# radius is informational only - partition: by-blast-radius serializes it). A reject\\n  \\\n# feeds back to the\\n  \\\n# planner (bounded by max_retries); an approve releases the fan-out. Review-only (no\\n  \\\n# agent) - it critiques the plan, it does not implement.\\n  \\\nplan-critique:\\n    \\\nneeds: [plan]\\n    \\\nadversary: adversary        # tier 2: reviews the DAG and refutes it\\n    \\\nadjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out\\n\\\n\\n  \\\n# Each unit implements, three-tier-reviews ITSELF (via defaults.review), and\\n  \\\n# integrates in one lifecycle. A reject or a gate failure feeds back into that\\n  \\\n# same unit's remediation loop; it does NOT integrate until approved + green.\\n  \\\nimplement:\\n    \\\nneeds: [plan-critique]\\n    \\\nagent: rust-engineer\\n    \\\nstrategy: fan-out       # one worker per ready unit, in isolated worktrees\\n    \\\npartition: by-blast-radius\\n    \\\ngates: [build, audit, test, lint, boundary, red-before-green]  # red -> green enforced around the change\\n    \\\non_pass: merge          # land + reindex + record, per unit, once reviewed\\n    \\\ncoverage: \\\"each unit is implemented, reviews itself, and integrates green\\\"\\n\\\n\\n  \\\n# 3. Check in ONCE, after every implement unit has integrated (spec 91): a\\n  \\\n# `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\\n  \\\n# every unit it expanded into has integrated - never per implementer round, and\\n  \\\n# never before every unit has landed. Re-verifies the whole gate suite against\\n  \\\n# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\\n  \\\n# then integrate or escalate with the accounting already on record.\\n  \\\ncheckin:\\n    \\\nneeds: [implement]\\n    \\\nagent: rust-engineer\\n    \\\nmax_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\\n    \\\ngates: [build, audit, test, lint, boundary, mutation]\\n    \\\non_pass: merge\\n    \\\ncoverage: \\\"mutation efficacy of the whole spec diff\\\"\\n\"",
+        "name": "\"nothing is written - no .rigger, no .claude, no .gitignore\"",
         "content_hash": "25597419b8dbb616"
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"../../.rigger/gates/mutation.sh\"",
-        "content_hash": "452d91e7f980731f"
+        "name": "\"scaffolded .rigger/workflow.yml\"",
+        "content_hash": "72d9cc60eb6633db"
       },
       {
         "file": "src/cli/setup.rs",
-        "name": "\"../../.rigger/gates/container-env.sh\"",
-        "content_hash": "452d91e7f980731f"
+        "name": "\"no gate template set matches this project (rust: Cargo.toml at the project \\\n                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:\"",
+        "content_hash": "47912e2adbfcd711"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"scaffolded .rigger/workflow.yml (gate template set: demo)\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"scaffolded .rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\"no gate template set matches this project (demo: a or b; other: c at the project \\\n                 root), so .rigger/workflow.yml declares no gates - declare your own under gates:\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "src/cli/setup.rs",
@@ -1970,6 +1980,11 @@
         "content_hash": "25597419b8dbb616"
       },
       {
+        "file": "tests/boundary_audit.rs",
+        "name": "\"let b = \\\"sh .rigger/gates/mutation.sh\\\";\\n\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
         "file": "tests/canary_model_drift_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -1993,26 +2008,6 @@
         "file": "tests/ci_lanes.rs",
         "name": "\".rigger/gates/lanes.sh\"",
         "content_hash": "072cce40fb047d0b"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "8c2a719b85aedc62"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml must be valid YAML\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\".rigger/workflow.yml must declare a `lanes` gate with a `run` command\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/ci_lanes.rs",
-        "name": "\". .rigger/gates/container-env.sh\"",
-        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -2337,31 +2332,6 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6c4f566ba472b44d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
         "content_hash": "c2dfa05b7c5ac948"
       },
       {
@@ -2502,6 +2472,16 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "410e6f407f72c03f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "f71df05adff30fbc"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "c2dfa05b7c5ac948"
       },
       {
@@ -2538,6 +2518,21 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "e398d83a9b990d53"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"\\n  shadow store: probe/.rigger/events.db (2B)\"",
+        "content_hash": "d53ae5846f4d060f"
       },
       {
         "file": "tests/cli.rs",
@@ -2921,46 +2916,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml\"",
-        "content_hash": "3faefb01232ee7e0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \\\n         (spec 91): {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \\\n         so drift in the committed workflow fails this suite instead of silently diverging \\\n         from the spec it satisfies: {text:?}\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"this repository's own .rigger/workflow.yml and agents must load: {e}\"",
-        "content_hash": "5c8bc0fb7d9e9b92"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `checkin` stage (spec 91)\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\"",
-        "content_hash": "6330ce3a5a38ef8d"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "\".rigger/gates\"",
         "content_hash": "bfe4eb29b4c56273"
       },
@@ -2968,6 +2923,16 @@
         "file": "tests/cli.rs",
         "name": "\".rigger/gates/{name}\"",
         "content_hash": "452d91e7f980731f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"sh .rigger/gates/content.sh {check} \\\"$RIGGER_RUN_BASE\\\"\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"sh .rigger/gates/content.sh {check}\"",
+        "content_hash": "758d6576075cf475"
       },
       {
         "file": "tests/cli.rs",
@@ -3485,6 +3450,81 @@
         "content_hash": "647e8aea340be175"
       },
       {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/workflow.yml (gate template set: rust)\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/workflow.yml\"",
+        "content_hash": "072cce40fb047d0b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"no gate template set matches this project (rust: Cargo.toml at the \\\n                           project root), so .rigger/workflow.yml declares no gates - declare \\\n                           your own under gates:\"",
+        "content_hash": "5622b7d32f9ba9c7"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/red-before-green.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/mutation.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/container-env.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/\"",
+        "content_hash": "9f02411931cf98d2"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "8d654464c21ca0ee"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "1e9dc47e2f13e14b"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"sh .rigger/gates/red-before-green.sh\"",
+        "content_hash": "328b4682e59ef8f5"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates/red-before-green.sh\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/gates/mutation.sh\"",
+        "content_hash": "e07fdfed75a43f83"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\"scaffolded .rigger/gates/mutation.sh\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "tests/init_template_sets_periphery.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\"",
         "content_hash": "6330ce3a5a38ef8d"
@@ -3500,39 +3540,29 @@
         "content_hash": "c2dfa05b7c5ac948"
       },
       {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\"reclaim_unit_mutation_scratch's own doc comment promises every process rooted in a \\\n         matched registered mutation-scratch dir is reaped BEFORE the dir is removed - a \\\n         SIGTERM-ignoring process here must still be SIGKILLed. Round 1 broke this: \\\n         is_reapable_base's <repo>/.rigger/tmp containment requirement refused this real, \\\n         ALWAYS-outside-any-repo registered root (see this file's header doc comment and \\\n         decision u78c2-mutation-scratch-reap-now-refused-flagging-for-review), so \\\n         reap_processes_rooted_under silently no-opped. Round 2 (decision \\\n         u78c2r2-authorized-root-caller-supplied) fixed it by passing the registered \\\n         mutation-scratch root itself as authorized_root - a regression back to the round-1 \\\n         shape would fail this assertion again.\"",
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\"the scaffolded .rigger/agents: {missing:#?}\"",
         "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "0a68549443b7c66d"
-      },
-      {
-        "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
-        "name": "\"control: when the registered scratch root legitimately lies under a real repo's \\\n         .rigger/tmp, reclaim_unit_mutation_scratch must still reap a live process rooted in \\\n         it - proving the sibling test's failure is specifically the base-guard's new scope, \\\n         not a defect in this file's own mechanics\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\"sh .rigger/gates/red-before-green.sh\"",
-        "content_hash": "7531401a94f0064f"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/workflow.yml: {missing:#?}\"",
-        "content_hash": "c2ea6b4829cb254f"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\"the scaffolded .rigger/: {missing:#?}\"",
-        "content_hash": "c2ea6b4829cb254f"
       },
       {
         "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/red-before-green.sh\"",
-        "content_hash": "5ba8cb17a05d01f4"
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates/mutation.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates/container-env.sh\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/gates\"",
+        "content_hash": "2404970484b55ff8"
       },
       {
         "file": "tests/principle_gates_wiring.rs",
@@ -3546,32 +3576,12 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
-        "name": "\"sh .rigger/gates/mutation.sh\"",
-        "content_hash": "e24c26c0d9d4cbdb"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates/{file}\"",
-        "content_hash": "dc7684e06683ddb3"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/container-env.sh\"",
         "content_hash": "072cce40fb047d0b"
       },
       {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\"if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || \\\n         exit 1; fi; cargo test --workspace\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/principle_gates_wiring.rs",
-        "name": "\".rigger/gates\"",
-        "content_hash": "090bbeba5641ea09"
-      },
-      {
         "file": "tests/projections_stay_local.rs",
-        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \\\n         (`Projector::open(&db_path(\\\"graph.db\\\") ...)`); the canonical local construction is gone\"",
+        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \\\n         store's .rigger/graph.db (`Projector::open(&self.file(\\\"graph.db\\\") ...)`); the \\\n         canonical local construction is gone\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3667,7 +3677,32 @@
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
         "name": "\".rigger\"",
+        "content_hash": "5164efc064547d69"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\"create the worktree's .rigger\"",
+        "content_hash": "5164efc064547d69"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
         "content_hash": "74c50c2fb6453fb9"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6381403cc55e857d"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6381403cc55e857d"
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
@@ -3756,12 +3791,12 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's boundary violation; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"#### 10. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\"",
+        "name": "\"#### 9. Consolidate the {rigger_n} `.rigger`-path string-literal sites (`{rigger_id}`) - the \\\n        single largest cluster in the entire catalog by site count\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4036,7 +4071,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 578 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 585 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4672,12 +4707,12 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's two boundary violations; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
+        "name": "\"Largest risk-reduction first is read as six tiers, ranked by the KIND of risk \\\n        each entry retires, highest first:\\n\\n\\\n        1. Tier 1 - active correctness risk, PLUS item 0: a use case already depends on the \\\n        wrong concretion, or two independent implementations of one concern can already \\\n        drift apart silently (section 3's boundary violation; the one already-drifted \\\n        `/proc`-reading pair section 2 and section 3 both name) - live gaps, not just size. \\\n        Item 0 (deleting the dead-code ledger, section 4.3) is placed here too, first of \\\n        all: not a live-gap risk itself, but the cheapest, zero-behavior-change move \\\n        available, and it shrinks the files tiers 2 and 3 operate on before either touches \\\n        them.\\n\\\n        2. Tier 2 - god-file test-module extraction: each of the three god files' own \\\n        inline `#[cfg(test)] mod tests` holds {tier2_lo}-{tier2_hi}% of that file's mapped \\\n        functions (section 1's map), and moving it is a pure \\\n        relocation with no production-behavior change - the single largest safe line-count \\\n        reduction in this plan, and the precondition that makes tier 3 tractable.\\n\\\n        3. Tier 3 - god-file production splits: section 1's own proposed module tree \\\n        applied to the (now much smaller) remaining production surface of each god file. \\\n        Higher execution risk than tier 2 because it touches live orchestration and CLI \\\n        logic, so it is sequenced after tier 2 shrinks the target first.\\n\\\n        4. Tier 4 - named production duplication sweeps: the mechanical mandatory sweeps \\\n        section 2 ran regardless of the Jaccard pass (`Command::new`, `.rigger`-path \\\n        literals, sqlite `Connection::open`, error-shaping helpers), each already a single \\\n        committed cluster with its own proposed home.\\n\\\n        5. Tier 5 - test-suite consolidation: section 5's own catalogued test-only \\\n        duplication. No production-correctness exposure at all (worst case a test \\\n        regresses, never the product), so it is ordered ahead only of tier 6 despite \\\n        touching the largest raw line count anywhere in this plan.\\n\\\n        6. Tier 6 - remaining catalog sweep: the {remaining} src-touching clusters section 2 \\\n        found but tiers 1 and 4 did not individually name. Unlike every other tier, none of \\\n        these {remaining} have been read and risk-assessed one at a time the way tiers 1-4's named \\\n        clusters have - they are consumed straight from the catalog - so this tier carries \\\n        production-correctness exposure tiers 2, 3 and 5 do not, and is ordered last: the \\\n        follow-up spec must triage each cluster's own production-or-test status before \\\n        merging it, not assume tier 5's blanket test-only treatment applies here too.\\n\\n\\\n        Within a tier, entries are ordered largest-first by the site or line count each \\\n        retires - the same rule the tiers themselves follow, applied one level down.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
+        "name": "\"#### 2. Retire the duplicate `/proc`-reading authority (`{}` + `{}`)\\n\\n\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
@@ -5048,7 +5083,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-781b5348543b",
+    "id": "dup-582bf6d9907e",
     "classification": "near",
     "sites": [
       {
@@ -5067,12 +5102,12 @@
         "content_hash": "5c594c241556f52a"
       },
       {
-        "file": "tests/simplification_audit.rs",
+        "file": "tests/common/source_audit.rs",
         "name": "is_keyword",
-        "content_hash": "e647e7c4790ca790"
+        "content_hash": "5c594c241556f52a"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/common/source_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5125,7 +5160,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-619325cc4dc0",
+    "id": "dup-af8b91bc2b2a",
     "classification": "near",
     "sites": [
       {
@@ -5134,17 +5169,17 @@
         "content_hash": "6a7f9c9540df1486"
       },
       {
+        "file": "tests/common/source_audit.rs",
+        "name": "is_ident_char",
+        "content_hash": "7b60646c82d8cb53"
+      },
+      {
         "file": "tests/no_os_kill_audit.rs",
         "name": "is_word_char",
         "content_hash": "68a8eb36f4ce0b8d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "name": "is_ident_char",
-        "content_hash": "68a8eb36f4ce0b8d"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/no_os_kill_audit.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/config.rs, tests/common/source_audit.rs, tests/no_os_kill_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5336,6 +5371,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/ingest.rs, tests/published_content_key_split_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-64eda8b7ffd5",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/instructions.rs",
+        "name": "op",
+        "content_hash": "2e3a7c94c3c240d3"
+      },
+      {
+        "file": "crates/rigger-gates-shell/src/gate.rs",
+        "name": "unavailable",
+        "content_hash": "2e3a7c94c3c240d3"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/instructions.rs, crates/rigger-gates-shell/src/gate.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6559,7 +6613,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6f126ddb8d2c",
+    "id": "dup-ff3bcd827c2f",
     "classification": "semantic",
     "sites": [
       {
@@ -6568,14 +6622,14 @@
         "content_hash": "44321c65c6fc2438"
       },
       {
-        "file": "tests/simplification_audit.rs",
-        "name": "scan_file",
-        "content_hash": "60bf386502b24d78"
+        "file": "tests/common/source_audit.rs",
+        "name": "tokenize",
+        "content_hash": "1781c97a8376d5f4"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "tokenize",
-        "content_hash": "d2e6d386ca26d8f2"
+        "name": "scan_file",
+        "content_hash": "60bf386502b24d78"
       }
     ],
     "proposed_home": "crates/rigger-grounder/src/grounder/symbols/extract.rs::extract as the ONE function that touches source parsing (already its own module doc's claim, architecture 5.5.3) - this file's own scan_file/tokenize are ad hoc scanners for the identical job and should route through an injected-grammar extractor rather than re-deriving structure by hand",
@@ -6740,7 +6794,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-cc7d493486f5",
+    "id": "dup-96daf6c3e468",
     "classification": "semantic",
     "sites": [
       {
@@ -6776,7 +6830,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "render_section_6",
-        "content_hash": "203e2ccf9f7531c1"
+        "content_hash": "06d0cca307063f7e"
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -7472,7 +7526,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-82f5fd8ce76a",
+    "id": "dup-b2e626ed7495",
     "classification": "near",
     "sites": [
       {
@@ -7586,6 +7640,11 @@
         "content_hash": "ac6ce8509142b691"
       },
       {
+        "file": "tests/graph_show_periphery.rs",
+        "name": "graph_show_and_around_with_no_store_print_the_not_found_note",
+        "content_hash": "7e3656874dd2ee0c"
+      },
+      {
         "file": "tests/reset_build_cache_periphery.rs",
         "name": "reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything",
         "content_hash": "144f272487c703b3"
@@ -7636,7 +7695,7 @@
         "content_hash": "f0f29def60c5e78e"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: tests/cli.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: tests/cli.rs, tests/graph_show_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8521,6 +8580,25 @@
       }
     ],
     "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-8fb3e9b78321",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/migration_is_deliberate_periphery.rs",
+        "name": "validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired",
+        "content_hash": "6663f34b1cc20102"
+      },
+      {
+        "file": "tests/validate_advisories.rs",
+        "name": "validate_is_silent_on_a_gated_scaffolded_fanout_template",
+        "content_hash": "c1d95768e4ae0681"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/migration_is_deliberate_periphery.rs, tests/validate_advisories.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

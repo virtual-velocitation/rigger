@@ -1584,14 +1584,16 @@ pub fn current_branch(repo: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX and
-// unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
+// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
+// than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
 // operations) and excluded from `core`. Re-exported so this module's own ~30 call
 // sites are unaffected.
 pub use crate::spawn::{
-    unit_cache_sibling, unit_sibling, UNIT_CACHE_PREFIX, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_scratch_slug, unit_sibling, UNIT_CACHE_PREFIX,
+    UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
@@ -1728,17 +1730,25 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
         reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
     }
-    // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): a THIRD sibling of the
-    // unit worktree, on the identical coordinate the cache sibling above already reclaims -
-    // widened here, in the ONE reclaim authority, so every current call site (`Worktree::
-    // remove`'s dominant graceful path, `sweep_terminal`'s crash recovery, and
-    // `reclaim_worktree_on_branch`'s resume-path branch GC) inherits the fix uniformly
-    // rather than each needing its own copy. A no-op for anything that owns no such root
-    // (mirrors `unit_cache_sibling`'s own `None` cases exactly, since both derive from the
-    // same worktree-dir shape).
-    if let Some(mutants) = unit_sibling(worktree_dir, UNIT_MUTANTS_PREFIX) {
-        reap_dir_before_removal(&mutants, authorized_root);
-        let _ = std::fs::remove_dir_all(&mutants);
+    // The unit's gate scratch root (spec 113): a THIRD sibling of the unit worktree, on the
+    // identical coordinate the cache sibling above already reclaims, so every removal path
+    // inherits it from this one authority. A no-op for anything that owns no such root.
+    reclaim_gate_scratch_sibling(worktree_dir, authorized_root);
+}
+
+/// Reclaim the gate scratch root (`rigger-gate-<slug>`) that is a SIBLING of the unit worktree
+/// at `worktree_dir` (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE): reap any process
+/// still rooted in it through [`reap_dir_before_removal`], under the caller's independently
+/// resolved `authorized_root`, then remove it. The one home of that derivation and that
+/// reap-then-remove pair, serving both [`reclaim_cache_sibling`] (the root goes with the unit's
+/// worktree) and the conductor's post-merge reclaim (the root a passing post-merge re-gate was
+/// handed goes at the landing, even when the worktree at that path was already removed). A
+/// no-op for any dir that is not a unit worktree, and for a root already gone. Best-effort: a
+/// failed removal of a throwaway root never fails the caller.
+pub fn reclaim_gate_scratch_sibling(worktree_dir: &str, authorized_root: &str) {
+    if let Some(root) = unit_sibling(worktree_dir, UNIT_GATE_SCRATCH_PREFIX) {
+        reap_dir_before_removal(&root, authorized_root);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 
@@ -5840,16 +5850,16 @@ mod tests {
                 "built.rlib",
                 "panel-0",
             );
-        /// Spec 91, THE GATE ENVIRONMENT: the `checkin` stage's `mutation` gate populates a
-        /// THIRD per-unit scratch sibling - `cargo-mutants-<slug>` - alongside the build
-        /// cache. It must be reclaimed on the SAME dominant graceful path, or every
-        /// gracefully-terminated unit leaks its cargo-mutants build debris exactly as an
+        /// Spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE: every gate that runs for a unit
+        /// is handed a THIRD per-unit scratch sibling - `rigger-gate-<slug>` - alongside the
+        /// build cache. It must be reclaimed on the SAME dominant graceful path, or every
+        /// gracefully-terminated unit leaks whatever its gates left there exactly as an
         /// un-reclaimed cache would.
-        worktree_remove_also_reclaims_the_sibling_mutants_root:
+        worktree_remove_also_reclaims_the_sibling_gate_scratch_root:
             assert_remove_reclaims_the_unit_sibling(
-                UNIT_MUTANTS_PREFIX,
-                "mutated",
-                "outcomes.json",
+                UNIT_GATE_SCRATCH_PREFIX,
+                "gated",
+                "rerun.list",
                 "panel-1",
             );
         /// Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
@@ -6152,24 +6162,26 @@ mod tests {
     }
 
     #[test]
-    fn unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest() {
-        // Spec 91, THE GATE ENVIRONMENT: the identical derivation shape as
-        // `unit_cache_sibling` above, just a different sibling name - a `rigger-wt-<slug>`
-        // unit worktree maps to its `cargo-mutants-<slug>` sibling under the SAME parent;
-        // anything that is not a unit worktree owns no such root and maps to None.
+    fn unit_gate_scratch_sibling_maps_a_unit_worktree_to_its_gate_scratch_root_and_ignores_the_rest(
+    ) {
+        // Spec 113, THE GATE SCRATCH ROOT IS HANDED GENERICALLY: the one generic sibling
+        // helper `unit_sibling` maps a `rigger-wt-<slug>` unit worktree to its
+        // `rigger-gate-<slug>` sibling under the SAME parent - the root every gate of that unit
+        // is handed as `RIGGER_GATE_SCRATCH`; anything that is not a unit worktree (a review
+        // worktree, the root itself, the worktree-less path) owns no such root and maps to None.
         assert_eq!(
-            unit_sibling("/scratch/rigger-wt-unit-7", UNIT_MUTANTS_PREFIX),
-            Some("/scratch/cargo-mutants-unit-7".to_string())
+            unit_sibling("/scratch/rigger-wt-unit-7", UNIT_GATE_SCRATCH_PREFIX),
+            Some("/scratch/rigger-gate-unit-7".to_string())
         );
         assert_eq!(
-            unit_sibling("/scratch/rigger-review-panel-0", UNIT_MUTANTS_PREFIX),
+            unit_sibling("/scratch/rigger-review-panel-0", UNIT_GATE_SCRATCH_PREFIX),
             None
         );
         assert_eq!(
-            unit_sibling("/scratch/cargo-mutants", UNIT_MUTANTS_PREFIX),
+            unit_sibling("/scratch/rigger-gate-unit-7", UNIT_GATE_SCRATCH_PREFIX),
             None
         );
-        assert_eq!(unit_sibling("", UNIT_MUTANTS_PREFIX), None);
+        assert_eq!(unit_sibling("", UNIT_GATE_SCRATCH_PREFIX), None);
     }
 
     #[test]

@@ -165,10 +165,9 @@ pub const REL_REALIZES: &str = "REALIZES";
 /// grouping.
 pub const REL_NEEDS: &str = "NEEDS";
 /// A workflow `stage` RUNS a gate or its assigned agent (spec 92 criterion 2): the edge folded from
-/// a stage's `gates:` list (`stage:checkin --RUNS--> gate:mutation`, matching the Design text's own
-/// example pair) and from its `agent:` / `agents:` field (`stage:implement --RUNS--> agent:rust-
-/// engineer`) - both read as "this stage's execution runs X". Folded from a `DocLinkExtracted` event
-/// at [`TIER_EXTRACTED`].
+/// a stage's `gates:` list (`stage:checkin --RUNS--> gate:<name>`) and from its `agent:` /
+/// `agents:` field (`stage:implement --RUNS--> agent:rust-engineer`) - both read as "this stage's
+/// execution runs X". Folded from a `DocLinkExtracted` event at [`TIER_EXTRACTED`].
 pub const REL_RUNS: &str = "RUNS";
 /// An `agent` REVIEWS a workflow stage (spec 92 criterion 2): the edge from a reviewer role to the
 /// stage its verdict gates - a standalone stage's own `adversary:` / `adjudicator:` fields (e.g.

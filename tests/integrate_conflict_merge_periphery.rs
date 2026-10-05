@@ -881,7 +881,8 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
 // ============================================================================================
 
 /// A [`rigger::gate::Runner`] fake that ONLY intercepts the `"regenerate"` gate id (recording
-/// its call - gate id, gate run command, dir - and writing its OWN sentinel content instead of
+/// its call - gate id, gate run command, dir, gate scratch root - and writing its OWN sentinel
+/// content instead of
 /// actually running `g.run` as a shell command); every OTHER gate id (a unit's ordinary `"g"`
 /// gate, the post-merge re-gate) delegates straight to the REAL [`rigger::gate::ExecRunner`], so
 /// this fake changes nothing about how the surrounding conflict/merge/gate machinery behaves -
@@ -890,7 +891,7 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
 /// two paths can never coincidentally agree on the final file content: only one of them can have
 /// produced it.
 struct RecordingGateRunner {
-    calls: Mutex<Vec<(String, String, String)>>,
+    calls: Mutex<Vec<(String, String, String, String)>>,
 }
 
 impl rigger::gate::Runner for RecordingGateRunner {
@@ -899,7 +900,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
         g: &rigger::gate::Gate,
         dir: &str,
         target_dir: &str,
-        mutants_dir: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -911,7 +912,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
                 g,
                 dir,
                 target_dir,
-                mutants_dir,
+                gate_scratch,
                 build_cache_dir,
                 build_cache_guard,
                 store_fence,
@@ -919,10 +920,12 @@ impl rigger::gate::Runner for RecordingGateRunner {
                 budget,
             );
         }
-        self.calls
-            .lock()
-            .unwrap()
-            .push((g.id.clone(), g.run.clone(), dir.to_string()));
+        self.calls.lock().unwrap().push((
+            g.id.clone(),
+            g.run.clone(),
+            dir.to_string(),
+            gate_scratch.to_string(),
+        ));
         std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_PORT\n").unwrap();
         rigger::gate::GateResult {
             pass: true,
@@ -1020,7 +1023,7 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
         "regenerate_conflicted_paths must call the injected gate::Runner port exactly once for \
          the one distinct registered command; got {runs:?}"
     );
-    let (id, run_cmd, dir) = &runs[0];
+    let (id, run_cmd, dir, gate_scratch) = &runs[0];
     assert_eq!(
         id, "regenerate",
         "run_regenerate_command's own Gate literal must carry id \"regenerate\""
@@ -1040,6 +1043,21 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
         dir.contains("unit-a") || dir.contains("unit-b"),
         "the regenerable-confined conflict belongs to whichever unit loses the integrate-lock \
          race (a genuine race, never pinned - see GAP 3's identical caveat); got {dir}"
+    );
+    // The regenerate command runs for that unit, so it is handed the unit's own gate scratch
+    // root (spec 113): exactly the `rigger-gate-<slug>` sibling of the `rigger-wt-<slug>`
+    // worktree it runs in, spelled out literally rather than through the derivation under test.
+    let wt = Path::new(dir);
+    let slug = wt
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("rigger-wt-"))
+        .unwrap_or_else(|| panic!("the regenerate command runs in a unit worktree; got {dir}"));
+    assert_eq!(
+        gate_scratch,
+        &format!("{}/rigger-gate-{slug}", wt.parent().unwrap().display()),
+        "the regenerate command must be handed its unit's own rigger-gate sibling, never an \
+         empty or foreign root"
     );
 
     // The final landed content is the FAKE runner's own sentinel - never the string a raw shell
@@ -1075,7 +1093,7 @@ impl rigger::gate::Runner for BlockingRegenerateGateRunner {
         g: &rigger::gate::Gate,
         dir: &str,
         target_dir: &str,
-        mutants_dir: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -1098,7 +1116,7 @@ impl rigger::gate::Runner for BlockingRegenerateGateRunner {
             g,
             dir,
             target_dir,
-            mutants_dir,
+            gate_scratch,
             build_cache_dir,
             build_cache_guard,
             store_fence,
@@ -2213,7 +2231,7 @@ impl rigger::gate::Runner for FailRegenerateOnceRunner {
         g: &rigger::gate::Gate,
         dir: &str,
         target_dir: &str,
-        mutants_dir: &str,
+        gate_scratch: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -2234,7 +2252,7 @@ impl rigger::gate::Runner for FailRegenerateOnceRunner {
             g,
             dir,
             target_dir,
-            mutants_dir,
+            gate_scratch,
             build_cache_dir,
             build_cache_guard,
             store_fence,
