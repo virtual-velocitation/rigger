@@ -1,6 +1,6 @@
 //! THE BOUNDARY GATE: Clean Architecture made mechanical over the whole workspace. Every crate
 //! sits in one ring of the workspace plan (entities and ports innermost, the composition root
-//! outermost) and three rules hold on the checked-out tree:
+//! outermost) and four rules hold on the checked-out tree:
 //!
 //! 1. DEPENDENCY DIRECTION. A crate's `[dependencies]` / `[build-dependencies]` (including
 //!    target-specific tables) name only workspace crates in its own ring or an inner one. Dev
@@ -11,21 +11,26 @@
 //!    root or inside that adapter's own files. Anything else reaches past a port.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
+//! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
+//!    file under `src/` or `crates/` names the one gate the core once knew, or its tool.
 //!
 //! Rules 1 and 2 each carry an allowlist of today's offenders that may only shrink: an entry that no
 //! longer matches an offender fails the suite until it is deleted, so the list is the follow-up
 //! work queue and never outlives the work.
 
 mod common;
-use common::repo::{collect_rs_files, production_part, repo_root, table_lines};
+use common::repo::{collect_files, collect_rs_files, production_part, repo_root, table_lines};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[path = "common/source_audit.rs"]
 mod source_audit;
-use source_audit::{cfg_test_ranges, enclosing_fn_line, fn_sig_lines, in_ranges, write_file};
+use source_audit::{
+    assert_real_tree_clean, cfg_test_ranges, char_literal_len, enclosing_fn_line, fn_sig_lines,
+    in_ranges, is_ident_char, skip_block_comment, skip_string_literal, write_file, Finding,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Rule 1: dependency direction
@@ -768,4 +773,241 @@ fn lint_exemptions(root: &Path) -> Vec<String> {
 fn principle_lints_carry_no_exemption() {
     let problems = lint_exemptions(&repo_root());
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rule 4: the core names no gate
+// ---------------------------------------------------------------------------------------------
+
+/// What no line of any file under `src/` or `crates/` may hold, case-sensitively: the one gate
+/// id the core once knew, spelled as a string literal or a concept id, its script, its scratch
+/// root and its tool. A token split across literals or built at run time to pass is not a
+/// removal.
+const GATE_TOKENS: &[&str] = &[
+    "cargo-mutants",
+    "cargo mutants",
+    "mutation.sh",
+    "rigger-mutants",
+    "MUTATION_GATE_ID",
+    "\"mutation\"",
+    "gate:mutation",
+];
+
+/// The tool's environment word, banned only as a whole word: `$MUTANTS` is a hit,
+/// `UNIT_MUTANTS_PREFIX` is not.
+const GATE_WORD: &str = "MUTANTS";
+
+/// The gate id as a YAML key, banned on a `.rs` line that begins inside a string literal.
+const GATE_YAML_KEY: &str = "mutation:";
+
+/// Whether `line` holds `word` with no identifier character (`[A-Za-z0-9_]`) on either side.
+fn holds_whole_word(line: &str, word: &str) -> bool {
+    line.match_indices(word).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + word.len()..].chars().next();
+        !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
+    })
+}
+
+/// The 0-based lines of the Rust source `text` that begin inside a string literal an earlier
+/// line opened, found with the one lexer the simplification audit scans by: comments, char
+/// literals and identifiers never open a string.
+fn lines_beginning_inside_a_string(text: &str) -> BTreeSet<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut inside = BTreeSet::new();
+    let (mut i, mut line) = (0, 0);
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\n' {
+            line += 1;
+            i += 1;
+        } else if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            line += skip_block_comment(&chars, &mut i);
+        } else if let Some(crossed) = skip_string_literal(&chars, &mut i) {
+            inside.extend(line + 1..=line + crossed);
+            line += crossed;
+        } else if c == '\'' {
+            i += char_literal_len(&chars, i).unwrap_or(1);
+        } else if is_ident_char(c) {
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    inside
+}
+
+/// The banned token or form `line` (0-based line `at` of a file) holds, the first one when it
+/// holds several; `in_string` is the file's lines that begin inside a string literal.
+fn gate_token_on(line: &str, at: usize, in_string: &BTreeSet<usize>) -> Option<&'static str> {
+    GATE_TOKENS
+        .iter()
+        .copied()
+        .find(|token| line.contains(token))
+        .or_else(|| holds_whole_word(line, GATE_WORD).then_some(GATE_WORD))
+        .or_else(|| {
+            (in_string.contains(&at) && line.trim_start().starts_with(GATE_YAML_KEY))
+                .then_some(GATE_YAML_KEY)
+        })
+}
+
+/// Every line under `root`'s `src/` and `crates/` holding a banned gate or tool token, as a
+/// finding naming its file, line and token. Every file the walk lists is read, of any
+/// extension, tracked or not, as lossy UTF-8; only a `.rs` file holds a string literal, so only
+/// it can hold the YAML key form.
+fn gate_token_lines(root: &Path) -> Vec<Finding> {
+    let mut files = Vec::new();
+    for dir in ["src", "crates"] {
+        collect_files(&root.join(dir), &mut files);
+    }
+    let mut out = Vec::new();
+    for path in files {
+        let file = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
+        let text = String::from_utf8_lossy(&bytes);
+        let in_string = if path.extension().is_some_and(|ext| ext == "rs") {
+            lines_beginning_inside_a_string(&text)
+        } else {
+            BTreeSet::new()
+        };
+        for (at, line) in text.lines().enumerate() {
+            if let Some(shape) = gate_token_on(line, at, &in_string) {
+                out.push(Finding {
+                    file: file.clone(),
+                    line_no: at + 1,
+                    shape,
+                    line_text: line.to_string(),
+                });
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn the_core_names_no_gate() {
+    assert_real_tree_clean(
+        gate_token_lines,
+        "rule 4 (a gate is a command the workflow wires into a stage; name the generic mechanism)",
+        "lines under src/ or crates/ naming a gate or its tool",
+    );
+}
+
+/// `file:line: token` for each of `findings`, the shape a fixture pins.
+fn located(findings: &[Finding]) -> Vec<String> {
+    findings
+        .iter()
+        .map(|f| format!("{}:{}: {}", f.file, f.line_no, f.shape))
+        .collect()
+}
+
+#[test]
+fn a_file_naming_a_gate_is_reported_by_file_and_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        root,
+        "src/fixture.rs",
+        concat!(
+            "// cargo-mutants\n",
+            "let a = \"cargo mutants\";\n",
+            "let b = \"sh .rigger/gates/mutation.sh\";\n",
+            "let c = \"/cache/rigger-mutants\";\n",
+            "let d = \"echo $MUTANTS\";\n",
+            "const MUTATION_GATE_ID: u8 = 0;\n",
+            "let e = \"mutation\";\n",
+            "let f = \"gate:mutation\";\n",
+            "let q = '\"';\n",
+            "let y = \"gates:\n",
+            "  mutation:\n",
+            "  sweep mutation: no\n",
+            "\";\n",
+            "let cfg = BuildConfig {\n",
+            "    mutation: Some(on),\n",
+            "};\n",
+            "let inline = \"build:\\n  mutation: on\\n\";\n",
+            "let p = UNIT_MUTANTS_PREFIX;\n",
+            "let m = MUTANTS_DIR;\n",
+            "// \"\n",
+            "mutation: after_a_line_comment\n",
+            "/* \"\n",
+            "mutation: in_a_block_comment */\n",
+            "let r = br#\"\n",
+            "   mutation: raw\n",
+            "\"#;\n",
+            "fn g<'a>(x: &'a str) {}\n",
+            "mutation: after_a_lifetime\n",
+            "let rr = \"a\\\n",
+            "mutation: continued\";\n",
+            "// cargo-mutants twice, and \"mutation\" too\n",
+        ),
+    );
+    write_file(
+        root,
+        "crates/rigger-x/src/lib.rs.orig",
+        "x = \"\n  mutation: on\n\"\nMUTANTS\n",
+    );
+    fs::write(root.join("src/blob.bin"), b"\xff rigger-mutants\n").unwrap();
+    write_file(root, "tests/outside.rs", "// cargo-mutants\n");
+    write_file(root, "docs/outside.md", "cargo-mutants\n");
+    assert_eq!(
+        located(&gate_token_lines(root)),
+        vec![
+            "src/blob.bin:1: rigger-mutants",
+            "src/fixture.rs:1: cargo-mutants",
+            "src/fixture.rs:2: cargo mutants",
+            "src/fixture.rs:3: mutation.sh",
+            "src/fixture.rs:4: rigger-mutants",
+            "src/fixture.rs:5: MUTANTS",
+            "src/fixture.rs:6: MUTATION_GATE_ID",
+            "src/fixture.rs:7: \"mutation\"",
+            "src/fixture.rs:8: gate:mutation",
+            "src/fixture.rs:11: mutation:",
+            "src/fixture.rs:25: mutation:",
+            "src/fixture.rs:30: mutation:",
+            "src/fixture.rs:31: cargo-mutants",
+            "crates/rigger-x/src/lib.rs.orig:4: MUTANTS",
+        ]
+    );
+}
+
+#[test]
+fn a_tree_naming_no_gate_reports_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write_file(
+        root,
+        "src/clean.rs",
+        "let a = \"sweep\";\nlet b = \"x\ny\n\";\nlet c = MUTANTS_DIR;\n",
+    );
+    write_file(root, "crates/rigger-x/src/notes.md", "a mutation sweep\n");
+    assert_eq!(located(&gate_token_lines(root)), Vec::<String>::new());
+}
+
+#[test]
+fn mutants_is_banned_only_as_a_whole_word() {
+    for (line, held) in [
+        ("MUTANTS", true),
+        ("$MUTANTS", true),
+        ("\"MUTANTS\"", true),
+        ("x MUTANTS y", true),
+        ("UNIT_MUTANTS_PREFIX", false),
+        ("MUTANTS_DIR", false),
+        ("XMUTANTS", false),
+        ("MUTANTS9", false),
+        ("MUTANTS_DIR and $MUTANTS", true),
+        ("mutants", false),
+    ] {
+        assert_eq!(holds_whole_word(line, GATE_WORD), held, "{line:?}");
+    }
 }
