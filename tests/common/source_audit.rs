@@ -204,7 +204,6 @@ pub fn is_ident_char(c: char) -> bool {
 /// contained. Returns `None` (and leaves `*i` untouched) if no string literal starts here.
 pub fn skip_string_literal(chars: &[char], i: &mut usize) -> Option<usize> {
     let n = chars.len();
-    let start = *i;
     let mut p = *i;
     if p < n && chars[p] == 'b' {
         p += 1;
@@ -276,7 +275,6 @@ pub fn skip_string_literal(chars: &[char], i: &mut usize) -> Option<usize> {
         p += 1;
     }
     *i = p;
-    let _ = start;
     Some(lines)
 }
 
