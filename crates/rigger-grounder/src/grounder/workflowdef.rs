@@ -236,7 +236,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// A small fixture workflow mirroring this project's OWN `.rigger/workflow.yml` shape closely
-    /// enough to exercise every relation source: `plan` (agent only, no gates - no REVIEWS),
+    /// enough to exercise every relation source: `plan` (the producer: agent, `produces`, no
+    /// gates - no REVIEWS),
     /// `plan-critique` (no agent, direct adversary/adjudicator - REVIEWS from those), `implement`
     /// (agent + gates, no direct review fields - REVIEWS falls back to `defaults.review`), and
     /// `checkin` (needs implement, its own gate).
@@ -267,6 +268,7 @@ mod tests {
             Stage {
                 name: "plan".to_string(),
                 agent: "planner".to_string(),
+                produces: "dag".to_string(),
                 ..Default::default()
             },
         );
@@ -415,6 +417,38 @@ mod tests {
                 .iter()
                 .any(|(_, r, t)| *r == REL_REVIEWS && t == "stage:plan"),
             "a gate-less, review-less stage must get no REVIEWS edge at all, got {links:?}"
+        );
+    }
+
+    /// The run reviews an ungated implement stage's units through the effective panel exactly as
+    /// it reviews a gated one's, so such a stage carries the defaults panel's REVIEWS edges; the
+    /// producer stage, whose units the run never reviews, still carries none.
+    #[test]
+    fn an_ungated_implement_stage_inherits_the_defaults_panel_and_the_producer_gets_none() {
+        let mut wf = fixture();
+        wf.stages.get_mut("implement").unwrap().gates.clear();
+        let (_concepts, links) = extract(&wf);
+        let has = |from: &str, to: &str| {
+            links
+                .iter()
+                .any(|(f, r, t)| f == from && *r == REL_REVIEWS && t == to)
+        };
+        for reviewer in [
+            "agent:architecture-reviewer",
+            "agent:sdet",
+            "agent:adversary",
+            "agent:adjudicator",
+        ] {
+            assert!(
+                has(reviewer, "stage:implement"),
+                "{reviewer}: got {links:?}"
+            );
+        }
+        assert!(
+            !links.iter().any(
+                |(_, r, t)| (*r == REL_REVIEWS || *r == REL_REVIEWS_LIGHT) && t == "stage:plan"
+            ),
+            "the producer stage gets no REVIEWS edge, got {links:?}"
         );
     }
 

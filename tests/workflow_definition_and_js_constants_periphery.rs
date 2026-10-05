@@ -104,6 +104,7 @@ fn seed_workflow_yml(root: &Path) {
          stages:\n\
          \x20\x20plan:\n\
          \x20\x20\x20\x20agent: planner\n\
+         \x20\x20\x20\x20produces: dag\n\
          \x20\x20plan-critique:\n\
          \x20\x20\x20\x20needs: [plan]\n\
          \x20\x20\x20\x20adversary: adversary\n\
