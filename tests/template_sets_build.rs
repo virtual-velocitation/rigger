@@ -7,6 +7,8 @@
 #[path = "../build/template_sets.rs"]
 mod template_sets;
 
+mod common;
+use common::assert_names;
 use std::path::{Path, PathBuf};
 use template_sets::generate_template_sets;
 
@@ -39,57 +41,60 @@ fn files_refusal(listed: &str) -> String {
     ])
 }
 
-fn assert_names(err: &str, wanted: &[&str]) {
-    for w in wanted {
-        assert!(err.contains(w), "the refusal must name {w:?}: {err}");
-    }
-}
-
 rigger::test_cases! {
     /// An absolute listed path is refused naming the set and the path.
     refuses_an_absolute_listed_path: assert_names(
         &files_refusal("/etc/passwd\n"),
         &["gate template set demo", "/etc/passwd", "absolute"],
+        "the refusal names what is wrong",
     );
     /// A listed path holding a `..` segment is refused naming the set and the path.
     refuses_a_dotdot_listed_path: assert_names(
         &files_refusal("gates/../gates/a.sh\n"),
         &["gate template set demo", "gates/../gates/a.sh", ".."],
+        "the refusal names what is wrong",
     );
     /// A listed path naming no file is refused naming the set and the path.
     refuses_a_listed_path_naming_no_file: assert_names(
         &files_refusal("gates/missing.sh\n"),
         &["gate template set demo", "gates/missing.sh", "names no file"],
+        "the refusal names what is wrong",
     );
     /// A listed path naming a directory names no file.
     refuses_a_listed_path_naming_a_directory: assert_names(
         &files_refusal("gates\n"),
         &["gate template set demo", "gates", "names no file"],
+        "the refusal names what is wrong",
     );
     /// A path listed twice in one set's `files` is refused naming the set and the path.
     refuses_a_path_listed_twice: assert_names(
         &files_refusal("gates/a.sh\n\ngates/a.sh\n"),
         &["gate template set demo", "gates/a.sh", "listed twice"],
+        "the refusal names what is wrong",
     );
     /// A set directory missing `set.yml` is refused naming the set.
     refuses_a_set_missing_set_yml: assert_names(
         &refusal(&[("scaffold/demo/files", "")]),
         &["gate template set demo", "set.yml"],
+        "the refusal names what is wrong",
     );
     /// A set directory missing `files` is refused naming the set.
     refuses_a_set_missing_files: assert_names(
         &refusal(&[("scaffold/demo/set.yml", "detect: []\n")]),
         &["gate template set demo", "files"],
+        "the refusal names what is wrong",
     );
     /// A root with no `scaffold/` is refused naming `scaffold/`.
     refuses_a_root_with_no_scaffold_dir: assert_names(
         &refusal(&[("README.md", "no scaffold here\n")]),
         &["scaffold/"],
+        "the refusal names what is wrong",
     );
     /// A `scaffold/` holding no set directory, only a file, is refused naming `scaffold/`.
     refuses_a_scaffold_dir_holding_no_set_directory: assert_names(
         &refusal(&[("scaffold/README.md", "not a set\n")]),
         &["scaffold/", "no gate template set"],
+        "the refusal names what is wrong",
     );
 }
 
