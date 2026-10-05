@@ -1121,6 +1121,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "postmerge_unit_dir",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "f74857d8bf96c9e6"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "run_gates",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -1133,7 +1141,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4cc15163b900ab73"
+    "content_hash": "340ab5dc3e87eefb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1197,7 +1205,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a47eae4fdafc0e67"
+    "content_hash": "61d0ba9585ba6ffe"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6553,11 +6561,19 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "spawn",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7cb078eafa878166"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ee26d591e408c837"
+    "content_hash": "f8c28a22653ab740"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
