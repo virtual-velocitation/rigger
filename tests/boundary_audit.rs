@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_token_in,
+    assert_real_tree_clean, cfg_test_ranges, enclosing_fn_line, fn_sig_lines, gate_name_in,
     holds_whole_word, in_ranges, tokenize, write_file, Finding, RawKind, GATE_WORD,
 };
 
@@ -779,9 +779,6 @@ fn principle_lints_carry_no_exemption() {
 // Rule 4: the core names no gate
 // ---------------------------------------------------------------------------------------------
 
-/// The gate id as a YAML key, banned on a `.rs` line that begins inside a string literal.
-const GATE_YAML_KEY: &str = "mutation:";
-
 /// The 0-based lines of the Rust source `text` that begin inside a string literal an earlier
 /// line opened, read off the one lexer's literal tokens: a literal starting on 1-based line `L`
 /// that crosses `k` newlines makes 1-based lines `L+1..=L+k` begin inside it.
@@ -792,15 +789,6 @@ fn lines_inside_a_literal(text: &str) -> BTreeSet<usize> {
         .filter(|tok| tok.kind == RawKind::Lit)
         .flat_map(|tok| tok.line..tok.line + tok.text.matches('\n').count())
         .collect()
-}
-
-/// The banned token or form `line` (0-based line `at` of a file) holds, the first one when it
-/// holds several; `in_string` is the file's lines that begin inside a string literal.
-fn gate_token_on(line: &str, at: usize, in_string: &BTreeSet<usize>) -> Option<&'static str> {
-    gate_token_in(line).or_else(|| {
-        (in_string.contains(&at) && line.trim_start().starts_with(GATE_YAML_KEY))
-            .then_some(GATE_YAML_KEY)
-    })
 }
 
 /// Every line under `root`'s `src/` and `crates/` holding a banned gate or tool token, as a
@@ -827,7 +815,7 @@ fn gate_token_lines(root: &Path) -> Vec<Finding> {
             BTreeSet::new()
         };
         for (at, line) in text.lines().enumerate() {
-            if let Some(shape) = gate_token_on(line, at, &in_string) {
+            if let Some(shape) = gate_name_in(line, in_string.contains(&at)) {
                 out.push(Finding {
                     file: file.clone(),
                     line_no: at + 1,

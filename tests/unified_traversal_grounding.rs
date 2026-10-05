@@ -28,7 +28,7 @@ mod common;
 use common::git::temp_git_project_with_commit;
 #[path = "common/source_audit.rs"]
 mod source_audit;
-use source_audit::gate_token_in;
+use source_audit::gate_name_in;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -942,7 +942,7 @@ fn every_review_spawn_is_forbidden_a_mutation_sweep_without_naming_the_gate_or_i
 /// The banned gate token or form a review prompt's `line` holds. A prompt is the content of a
 /// string, so every line of it is held to the rule for a line that begins inside a literal.
 fn prompt_line_gate_name(line: &str) -> Option<&'static str> {
-    gate_token_in(line)
+    gate_name_in(line, true)
 }
 
 /// A prompt line that leads with the gate id as a YAML key names the gate, exactly as a core

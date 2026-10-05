@@ -402,13 +402,23 @@ pub fn holds_whole_word(line: &str, word: &str) -> bool {
     })
 }
 
-/// The rule-4 gate or tool token `line` holds, the first one when it holds several.
-pub fn gate_token_in(line: &str) -> Option<&'static str> {
+/// The gate id as a YAML key, banned on a line that begins inside a string literal.
+pub const GATE_YAML_KEY: &str = "mutation:";
+
+/// The rule-4 gate or tool token or form `line` holds, the first one when it holds several:
+/// a [`GATE_TOKENS`] entry, [`GATE_WORD`] as a whole word, or - only when the line begins inside
+/// a string literal (`begins_in_literal`), where a YAML document's text lives - a line leading
+/// with [`GATE_YAML_KEY`].
+pub fn gate_name_in(line: &str, begins_in_literal: bool) -> Option<&'static str> {
     GATE_TOKENS
         .iter()
         .copied()
         .find(|token| line.contains(token))
         .or_else(|| holds_whole_word(line, GATE_WORD).then_some(GATE_WORD))
+        .or_else(|| {
+            (begins_in_literal && line.trim_start().starts_with(GATE_YAML_KEY))
+                .then_some(GATE_YAML_KEY)
+        })
 }
 
 /// Rust keywords (2018+ reserved and strict, plus weak keywords actually used as such) - kept
