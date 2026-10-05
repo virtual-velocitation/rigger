@@ -7769,6 +7769,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "owning_graph_to_read",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "1786d5ee37ec7bf4"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "store_file",
     "is_test": false,
     "proposed_module": "main::store",

@@ -1146,7 +1146,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6ba760e30654",
+    "id": "dup-9a7160a4d920",
     "classification": "semantic",
     "sites": [
       {
@@ -3586,7 +3586,7 @@
       },
       {
         "file": "tests/projections_stay_local.rs",
-        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at .rigger/graph.db \\\n         (`Projector::open(&db_path(\\\"graph.db\\\") ...)`); the canonical local construction is gone\"",
+        "name": "\"the graph projection must be opened by the LOCAL sqlite Projector at the resolved \\\n         store's .rigger/graph.db (`Projector::open(&self.file(\\\"graph.db\\\") ...)`); the \\\n         canonical local construction is gone\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3682,7 +3682,32 @@
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
         "name": "\".rigger\"",
+        "content_hash": "5164efc064547d69"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\"create the worktree's .rigger\"",
+        "content_hash": "5164efc064547d69"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
         "content_hash": "74c50c2fb6453fb9"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6381403cc55e857d"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6381403cc55e857d"
       },
       {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
@@ -4051,7 +4076,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 580 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 585 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7506,7 +7531,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-82f5fd8ce76a",
+    "id": "dup-b2e626ed7495",
     "classification": "near",
     "sites": [
       {
@@ -7620,6 +7645,11 @@
         "content_hash": "ac6ce8509142b691"
       },
       {
+        "file": "tests/graph_show_periphery.rs",
+        "name": "graph_show_and_around_with_no_store_print_the_not_found_note",
+        "content_hash": "7e3656874dd2ee0c"
+      },
+      {
         "file": "tests/reset_build_cache_periphery.rs",
         "name": "reset_build_cache_is_idempotent_zero_report_on_a_project_that_never_built_anything",
         "content_hash": "144f272487c703b3"
@@ -7670,7 +7700,7 @@
         "content_hash": "f0f29def60c5e78e"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: tests/cli.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: tests/cli.rs, tests/graph_show_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
