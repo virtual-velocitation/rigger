@@ -8334,6 +8334,20 @@ impl RunCtx<'_> {
         (dir, guard)
     }
 
+    /// The path `unit`'s OWN worktree occupies (the SAME `unit_worktree_dir` derivation
+    /// `stage_worktree` creates it at) - the one coordinate the post-merge re-gate's throwaway
+    /// worktree borrows its unit's cache and gate scratch root from (spec 113). Both the
+    /// re-gate's handing ([`Self::run_gates_at`]) and the landing's reclaim of that root
+    /// ([`Self::integrate_and_emit`]) read it here, so the root reclaimed is always the root
+    /// handed.
+    fn postmerge_unit_dir(&self, unit: &str) -> String {
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        unit_worktree_dir(&scratch, unit)
+    }
+
     /// Run a stage's inline gates for its `attempt`, returning whether they all passed
     /// and the compact evidence of any failure. Each gate's verdict is REPLAY-KEYED on
     /// the `(unit, attempt, gate)` coordinate (spec 04, criterion 4): the first step to
@@ -8386,15 +8400,10 @@ impl RunCtx<'_> {
         // refuses an empty root would block the integration of a green unit) and (b) the
         // re-gate should build into the SAME warm cache the pre-merge gates already populated,
         // not a cold shared one. Both fall back to the path the unit's OWN worktree occupies -
-        // `unit_worktree_dir(&scratch, &st.name)`, the SAME derivation `stage_worktree` used to
-        // create it - computed ONCE here and shared by `target` and `gate_scratch` below.
-        let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge).then(|| {
-            let scratch = crate::worktree::scratch_root_from_env(
-                &self.deps.repo,
-                &self.cfg.workflow.defaults.workdir,
-            );
-            unit_worktree_dir(&scratch, &st.name)
-        });
+        // [`Self::postmerge_unit_dir`], the SAME derivation `stage_worktree` used to create it -
+        // computed ONCE here and shared by `target` and `gate_scratch` below.
+        let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge)
+            .then(|| self.postmerge_unit_dir(&st.name));
         let target = crate::worktree::unit_cache_sibling(dir)
             .or_else(|| {
                 postmerge_unit_dir
@@ -9825,7 +9834,7 @@ impl RunCtx<'_> {
             // On a speculating unit lane 0's worktree sits at this path and may already have
             // been removed (an implementer error) before the re-gate ran, so no worktree
             // removal reclaims what the re-gate left there: this call does.
-            postmerge_reclaim = Some((unit_worktree_dir(&scratch, &st.name), scratch));
+            postmerge_reclaim = Some((self.postmerge_unit_dir(&st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
         // NOW - once the tree the run branch carries is the verified one - reindex, record the
