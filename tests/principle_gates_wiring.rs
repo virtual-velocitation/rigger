@@ -7,7 +7,7 @@
 //! but never listed on a stage, fails.
 
 mod common;
-use common::cli::{run_rigger, temp_project};
+use common::cli::{cargo_project, run_rigger};
 use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
 use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
@@ -18,12 +18,7 @@ use std::process::Command;
 
 /// A fixture project holding a root `Cargo.toml`, after `rigger init` ran in it.
 fn rust_project_after_init() -> tempfile::TempDir {
-    let dir = temp_project();
-    std::fs::write(
-        dir.path().join("Cargo.toml"),
-        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
-    )
-    .unwrap();
+    let dir = cargo_project();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     dir
