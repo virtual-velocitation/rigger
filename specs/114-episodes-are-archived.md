@@ -154,28 +154,34 @@ the ref and blob it is about to record, `read_history` those the span's latest `
 records. One domain function, `archive::read_history` (criterion 3's), over `&dyn EventStore` and
 `&dyn RunArchive`, serves both readers the spans of the descriptor list they name. Its one read is
 the forward `read_stream` from revision 0 both commands make today (`cmd_replay` through
-`Namespaced::read_stream`, `stats_lines` through `read_project_stream`). A span's `RunArchived` is
-appended above every row of the span, so that read reaches a span's live rows before its
-`RunArchived`, the log-prefix argument `read_run` makes, and an archive whose delete lands during
-the read appended its `RunArchived` before that delete, so the read meets the span's rows, its
-`RunArchived` or both. It is TOTAL over a span's three states: a span holding an episodic row in
-that read is served from its live rows and its ref is not resolved; a span with none and a
-`RunArchived` is served from `read_archived` of its latest one, its archived events interleaved by
-position with its live knowledge rows; a span with none and no `RunArchived` (a run of knowledge
-only, a current run just started, a prelude with no episodes) is served from its live rows alone,
-resolving no ref and printing no missing-ref line or refusal. No span is read from both sides, and a
-pending span (interrupted after its `RunArchived`, or whose ref was deleted by hand) reads complete
-with no missing-ref error. `rigger replay <run>` (`cmd_replay`, `src/cli/mod.rs`) resolves the run
-id to its `RunStarted`, the first match as `baseline_run_slice` takes it today, reads that span
-through `read_history` before it slices the baseline, and refuses naming the ref when it is missing,
-on standard error with a failing exit; a later `RunStarted` sharing that run id is not addressed by
-id, and no run id names the prelude, as today. `rigger stats --all` (`stats_lines`) reads every span
-of the descriptor list through `read_history` and prints one line naming each missing ref on
-standard error, so its standard output keeps its bytes. Neither command folds a `RunArchived` or a
-`GenerationIngested`: `metrics::project` (`crates/rigger-domain/src/metrics.rs`), which both fold,
-ignores every type it does not name, and `replay_trajectory` keeps only `SpawnResult` and
-`GateVerdict`, so the `RunArchived` an archive appends to the current run changes no line of their
-output. No step, one-shot command or rebuild reads an archive.
+`Namespaced::read_stream`, `stats_lines` through `read_project_stream`). On sqlite that read is one
+statement (`read_forward` prepares one SELECT and steps it) on a connection
+`crate::sqlite::open_connection` opens in WAL mode, so it reads one snapshot of the log, fixed when
+the statement starts, whatever an archiver commits meanwhile; since an archive appends its
+`RunArchived` before its one-transaction delete, the read holds all of a span's episodic rows or
+none of them, with or without the span's `RunArchived`, and on KurrentDB nothing is archived, so no
+span changes under the read. The read is ordered by revision, not position, and the argument needs
+no order: `read_history` assigns each row to its span by position range, against the `RunStarted`
+positions in the same read, so a row a stale writer reissued at a low revision, or a `RunArchived`
+read before its span's rows, counts in the span its position names. It is TOTAL over a span's three
+states: a span holding an episodic row in that read is served from its live rows and its ref is not
+resolved; a span with none and a `RunArchived` is served from `read_archived` of its latest one, its
+archived events interleaved by position with its live knowledge rows; a span with none and no
+`RunArchived` (a run of knowledge only, a current run just started, a prelude with no episodes) is
+served from its live rows alone, resolving no ref and printing no missing-ref line or refusal. No
+span is read from both sides, and a pending span (interrupted after its `RunArchived`, or whose ref
+was deleted by hand) reads complete with no missing-ref error. `rigger replay <run>` (`cmd_replay`,
+`src/cli/mod.rs`) resolves the run id to its `RunStarted`, the first match as `baseline_run_slice`
+takes it today, reads that span through `read_history` before it slices the baseline, and refuses
+naming the ref when it is missing, on standard error with a failing exit; a later `RunStarted`
+sharing that run id is not addressed by id, and no run id names the prelude, as today. `rigger stats
+--all` (`stats_lines`) reads every span of the descriptor list through `read_history` and prints one
+line naming each missing ref on standard error, so its standard output keeps its bytes. Neither
+command folds a `RunArchived` or a `GenerationIngested`: `metrics::project`
+(`crates/rigger-domain/src/metrics.rs`), which both fold, ignores every type it does not name, and
+`replay_trajectory` keeps only `SpawnResult` and `GateVerdict`, so the `RunArchived` an archive
+appends to the current run changes no line of their output. No step, one-shot command or rebuild
+reads an archive.
 
 **ARCHIVING RUNS AT TWO TRIGGERS.** One function, `archive_pending`
 (`crates/rigger-driver/src/archiving.rs`), finds the pending spans as above and hands each to
