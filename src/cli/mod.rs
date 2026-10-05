@@ -7475,7 +7475,7 @@ mod tests {
         );
         // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
         // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
-        // reclaimed. A `mutation-tool-<slug>` an earlier binary left matches no arm and stays.
+        // reclaimed. A directory of another prefix matches no arm and stays.
         write_file(
             &scratch.join("rigger-gate-live-unit").join("rerun.list"),
             &[0u8; 8],
@@ -7540,7 +7540,7 @@ mod tests {
         );
         assert!(
             scratch.join("mutation-tool-dead-unit").exists(),
-            "a mutation-tool-<slug> an earlier binary left matches no arm and is never reclaimed"
+            "a directory of another prefix matches no arm and is never reclaimed"
         );
 
         // Live-owned scratch: spared.
