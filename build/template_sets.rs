@@ -25,8 +25,8 @@ pub struct GeneratedSets {
 /// embedded path is spelled relative to `CARGO_MANIFEST_DIR`, so the generated source does not
 /// depend on where the repository is checked out. Refuses - naming `scaffold/` - a root with no
 /// `scaffold/` or one holding no set directory; naming the set, a set directory missing `set.yml`
-/// or `files`; and naming the set and the path, a listed path that is absolute, holds a `..`
-/// segment, names no file or is listed twice.
+/// or `files`; and naming the set and the path, a listed path that is absolute, holds a `.` or
+/// `..` segment, names no file or names the same components as an earlier listed path.
 pub fn generate_template_sets(root: &Path) -> Result<GeneratedSets, String> {
     let scaffold = root.join("scaffold");
     let entries = std::fs::read_dir(&scaffold)
@@ -64,16 +64,17 @@ pub fn generate_template_sets(root: &Path) -> Result<GeneratedSets, String> {
         let mut files = String::new();
         for rel in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let path = Path::new(rel);
-            if path.is_absolute() {
-                return Err(refuse(format!("{rel} is an absolute path")));
-            }
-            if path.components().any(|c| c == Component::ParentDir) {
-                return Err(refuse(format!("{rel} holds a .. segment")));
+            if let Some(why) = path.components().find_map(not_a_name) {
+                return Err(refuse(format!("{rel} {why}")));
             }
             if !root.join(path).is_file() {
                 return Err(refuse(format!("{rel} names no file")));
             }
-            if seen.contains(&rel) {
+            // By components, not text: `a//b` and `a/b` name one file.
+            if seen
+                .iter()
+                .any(|prior| Path::new(prior).components().eq(path.components()))
+            {
                 return Err(refuse(format!("{rel} is listed twice")));
             }
             seen.push(rel);
@@ -95,6 +96,17 @@ pub fn generate_template_sets(root: &Path) -> Result<GeneratedSets, String> {
         source,
         watch_paths,
     })
+}
+
+/// Why a listed path's `component` is refused, or `None` for a plain name: a listed path is
+/// copied to the same relative path in the scaffolded project, so every component must be a name.
+fn not_a_name(component: Component) -> Option<&'static str> {
+    match component {
+        Component::Normal(_) => None,
+        Component::RootDir | Component::Prefix(_) => Some("is an absolute path"),
+        Component::CurDir => Some("holds a . segment"),
+        Component::ParentDir => Some("holds a .. segment"),
+    }
 }
 
 /// `include_str!` of the repository-relative `rel`, spelled from `CARGO_MANIFEST_DIR`.
