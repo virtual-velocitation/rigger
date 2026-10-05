@@ -1876,24 +1876,30 @@ fn agent_scratch_run_root(root: &Path, cache_home: &Path) -> std::path::PathBuf 
     .join("r1")
 }
 
-/// For EVERY outcome ([`EVERY_REPORTED_OUTCOME`]), in a fresh live-run project: the reporting
-/// spawn `u/implementer#0`'s own populated leaf under the registered scratch root
-/// `scratch_root(root, cache_home)` is GONE the moment its result lands, while a different
-/// spawn `v/implementer#0` with no recorded result keeps its own leaf untouched. Leaves are
-/// keyed by the FULL injectively-encoded spawn id (spec 77 Design
-/// `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`); a dedicated cache home keeps
-/// `XDG_CACHE_HOME` off the operator's real `~/.cache`. `what` names the root in messages.
-fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
-    what: &str,
-    scratch_root: fn(&Path, &Path) -> std::path::PathBuf,
-) {
+/// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
+/// dedicated, rigger-assigned scratch dir the MOMENT its result is recorded - for EVERY
+/// outcome ([`EVERY_REPORTED_OUTCOME`]: a success, a reject verdict, an `--error`, and a
+/// liveness/infra fault) - while a sibling spawn with NO recorded result keeps its scratch
+/// untouched. All four outcomes reach the store through the SAME courier (`rigger result`,
+/// [`cmd_result`]): the driver records even a liveness/infra fault as `--error` +
+/// `--meta '{"liveness_class":"infra"}'` (see
+/// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so the
+/// reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is the
+/// single authority `driver::replay::spawn_scratch_path`: the run's agent-scratch root
+/// [`agent_scratch_run_root`] (`<scratch_root>/agent-scratch/<run>`) joined with the FULL
+/// injectively-encoded spawn id (spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`,
+/// `#` -> `_23`); a dedicated cache home keeps `XDG_CACHE_HOME` off the operator's real
+/// `~/.cache`. The "keeps its scratch" half falls out by construction: `cmd_result` only ever
+/// runs for the spawn being reported, so a spawn with no result is never touched.
+#[test]
+fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome() {
     for (label, args) in EVERY_REPORTED_OUTCOME {
         let dir = run_started_project();
         let root = dir.path();
         let cache_home = tempfile::tempdir().unwrap();
-        let registered = scratch_root(root, cache_home.path());
-        let done = registered.join("u_2fimplementer_230");
-        let live = registered.join("v_2fimplementer_230");
+        let run_scratch = agent_scratch_run_root(root, cache_home.path());
+        let done = run_scratch.join("u_2fimplementer_230");
+        let live = run_scratch.join("v_2fimplementer_230");
         for d in [&done, &live] {
             seed_bytes(d.join("scratch-debris"), 64);
         }
@@ -1905,37 +1911,17 @@ fn assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
         );
         assert!(
             !done.exists(),
-            "[{label}] a spawn's {what} must be reclaimed the moment its own result is \
+            "[{label}] a spawn's agent scratch must be reclaimed the moment its own result is \
              recorded; {} still exists",
             done.display()
         );
         assert!(
             live.exists() && live.join("scratch-debris").exists(),
-            "[{label}] a spawn with no recorded result must keep its own {what}; {} was \
+            "[{label}] a spawn with no recorded result must keep its own agent scratch; {} was \
              wrongly reclaimed",
             live.display()
         );
     }
-}
-
-rigger::test_cases! {
-    /// Spec 34, criterion 1 (per-spawn reclamation ON COMPLETION): rigger DELETES a spawn's
-    /// dedicated, rigger-assigned scratch dir the MOMENT its result is recorded - for EVERY
-    /// outcome (a success, a reject verdict, an `--error`, and a liveness/infra fault) - while a
-    /// sibling spawn with NO recorded result keeps its scratch untouched. All four outcomes reach
-    /// the store through the SAME courier (`rigger result`, [`cmd_result`]): the driver records
-    /// even a liveness/infra fault as `--error` + `--meta '{"liveness_class":"infra"}'` (see
-    /// `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`), so
-    /// the reclaim keys off "a result was recorded", never the outcome TYPE. The scratch path is
-    /// the single authority `driver::replay::spawn_scratch_path`
-    /// (`<scratch_root>/agent-scratch/<run>/<sanitized id>`); the reclaim is `cmd_result`'s. The
-    /// "keeps its scratch" half falls out by construction: `cmd_result` only ever runs for the
-    /// spawn being reported, so a spawn with no result is never touched.
-    a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome:
-        assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
-            "rigger-assigned scratch",
-            agent_scratch_run_root,
-        );
 }
 
 /// Records a result for the hostile `spawn_id` in a live-run project whose run `agent-scratch`
@@ -2001,59 +1987,6 @@ rigger::test_cases! {
     /// leaf, never the registered root itself.
     a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root:
         assert_a_hostile_spawn_id_spares_its_neighbours("/foo");
-}
-
-/// Sibling of `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`, proving the SAME
-/// shared-authority fix (`liveness::marker_filename` neutralizing an all-dots result) also
-/// holds for the OTHER call `reclaim_spawn_scratch` makes on the identical, unvalidated
-/// `spawn_id` two lines earlier: the pre-existing spec-34 per-spawn `agent-scratch` reclaim
-/// (`spawn_scratch_path`). This is not a hypothetical: an independent re-enumeration during the
-/// review that produced the fix reproduced this exact escape live on the UNFIXED code (a `..`
-/// spawn id resolved `spawn_scratch_path` to the PARENT of the run's `agent-scratch` root, and
-/// `reap_then_remove_dir`'s bare `remove_dir_all` wiped every other unit's live scratch
-/// alongside it). This test proves a sibling unit's live scratch survives the same `..` id
-/// through the real CLI.
-#[test]
-fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() {
-    let dir = run_started_project();
-    let root = dir.path();
-
-    // A dedicated cache home, so the agent-scratch root built below and the CHILD process
-    // (given the SAME override further down) resolve the identical default (spec 89,
-    // criterion 2: no longer nested under `<repo>/.rigger/tmp`) and never touch the
-    // operator's real ~/.cache.
-    let cache_home = tempfile::tempdir().unwrap();
-
-    // The run's agent-scratch root, laid out exactly as spec 34's own test:
-    // `<default scratch root>/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE
-    // scratch stands in for the "every other unit's scratch" the adversary showed a `..` id
-    // could wipe through this call.
-    let run_scratch = rigger::worktree::cache_scratch_root_from(
-        root.to_str().unwrap(),
-        Some(cache_home.path().as_os_str().to_owned()),
-        None,
-    )
-    .expect("a non-empty repo with an explicit cache home always resolves")
-    .join("agent-scratch")
-    .join("r1");
-    let sibling = run_scratch.join("v_implementer_0");
-    std::fs::create_dir_all(&sibling).unwrap();
-    std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
-
-    record_hostile_spawn_result(root, cache_home.path(), "..");
-
-    assert!(
-        run_scratch.exists(),
-        "the run's agent-scratch root itself must never be deleted by a `..`-derived reclaim \
-         path"
-    );
-    assert!(
-        sibling.exists() && sibling.join("cargo-target-debris.rlib").exists(),
-        "a `..` spawn id must never let reclaim_spawn_scratch's pre-existing agent-scratch call \
-         walk up out of the run's agent-scratch root and delete a sibling unit's live scratch; \
-         {} was wrongly removed",
-        sibling.display()
-    );
 }
 
 /// Write a minimal `.rigger/workflow.yml` into `root` pinning `defaults.grounder` to
