@@ -16331,6 +16331,41 @@ mod tests {
         }
     }
 
+    /// The shared fan-out check-in fixture config: a `worker` agent, a passing gate def for
+    /// each of `implement_gate` and `checkin_gate`, a fan-out `implement` template listing
+    /// only `implement_gate`, and a `checkin` stage (`needs: [implement]`) listing only
+    /// `checkin_gate`; both stages merge on pass.
+    fn fan_out_checkin_cfg(implement_gate: &str, checkin_gate: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        for id in [implement_gate, checkin_gate] {
+            cfg.workflow.gates.insert(id.into(), gate_def("true"));
+        }
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec![implement_gate.into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec![checkin_gate.into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
     #[test]
     fn a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates() {
         // Spec 91, criterion 1, rule 1: the fan-out implement TEMPLATE is a template,
@@ -16343,31 +16378,7 @@ mod tests {
         // real `run()` wiring (baseline-decomposition -> fanout_criteria -> ready_stages),
         // not just the pure-function level.
         let criteria = ["the first slice lands", "the second slice lands"];
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                strategy: "fan-out".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "checkin".into(),
-            Stage {
-                name: "checkin".into(),
-                agent: "worker".into(),
-                needs: vec!["implement".into()],
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
+        let cfg = fan_out_checkin_cfg("ok", "ok");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(
@@ -16405,34 +16416,7 @@ mod tests {
     /// check-in fixture over `criteria`: a fan-out `implement` template listing only the gate
     /// `unit-check` and a `checkin` stage (`needs: [implement]`) listing only the gate `sweep`.
     fn checkin_fixture_gate_calls(criteria: &[&str]) -> Vec<String> {
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow
-            .gates
-            .insert("unit-check".into(), gate_def("true"));
-        cfg.workflow.gates.insert("sweep".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                strategy: "fan-out".into(),
-                gates: vec!["unit-check".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "checkin".into(),
-            Stage {
-                name: "checkin".into(),
-                agent: "worker".into(),
-                needs: vec!["implement".into()],
-                gates: vec!["sweep".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
+        let cfg = fan_out_checkin_cfg("unit-check", "sweep");
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let runner = RecordingRunner::new(&[]);
