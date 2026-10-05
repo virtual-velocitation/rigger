@@ -29,12 +29,16 @@ EDITS, Notes). Every symbol a criterion adds has a production caller at its land
 library item, so no interim tree fails the dead-code lint. A Design sentence about a later criterion
 describes the integrated result, reached by earlier units' tests only through fixtures: on a tree
 holding 3 and not 4 no sink records an entry, so the rebuild's report line is reachable only from
-hand-built entries and its promise of restoration holds from criterion 4 on. On a tree holding 7 and
-not 8 or 9, `count_derived_duplicates` and `DerivedPreview` stand without the oracle tests criterion
-7 deletes, and the menu line and the bloat advisory still word the compaction through
-`plan_derived_prune`. Criterion 10 refuses a derived append only after criterion 7 ships the
-migration, so on sqlite a refusing binary can always migrate; a KurrentDB store keeps its derived
-events readable and unmigrated.
+hand-built entries and its promise of restoration holds from criterion 4 on. On a tree holding 4
+or 7 and not 5, `rigger validate`'s index-lag advisory still reads derived events alone
+(`project_scoped_latest_generations` skips every other type), so it samples no identity whose
+recordings are all ledger entries, every migrated one included, and reports no lag for it, and it
+compares an identity still holding derived events against the latest of them, until criterion 5
+lands. On a tree holding 7 and not 8 or 9, `count_derived_duplicates` and `DerivedPreview` stand
+without the oracle tests criterion 7 deletes, and the menu line and the bloat advisory still word
+the compaction through `plan_derived_prune`. Criterion 10 refuses a derived append only after
+criterion 7 ships the migration, so on sqlite a refusing binary can always migrate; a KurrentDB
+store keeps its derived events readable and unmigrated.
 
 **THE INVARIANT, amended here so no unit has to.** Section 2.1 of
 `docs/architecture-addendum-context-management.md` and its non-goal "Do NOT prune the event log" now
@@ -67,7 +71,10 @@ type is classified the day it is added.
 
 **THE ENTRY AND ITS BATCH FOLD AS ONE.** The `Projection` port gains `apply_generation(entry,
 batch)`, where `batch` is a function it calls at most once and which answers the entry's batch or
-that it is unresolved. It has three outcomes, each one transaction: (a) an entry whose position
+that it is unresolved. The port is ungated and compiles in the `core` build, where `retention` does
+not, so `entry` is the entry's `Event`: the store-gated sqlite projector parses its payload through
+`retention`, and the generic fold's refusal compares the event's type with `retention`'s constant.
+It has three outcomes, each one transaction: (a) an entry whose position
 `applied` already holds folds nothing and never calls `batch` (`fold_new`'s per-position guard); (b)
 a RE-RECORDING, an entry naming its identity's current generation, writes only its `applied` row and
 never calls `batch`; (c) any other entry writes its `applied` row and calls `batch`. A resolved
@@ -108,7 +115,12 @@ reads and symbols index, and `in_walk_scope`. The walk's scope (`walk_guarded`) 
 committed `.gitignore` files, so it is no predicate of the path alone: a path outside it (an
 integration's file list can name one) is handed no bytes by the sinks, whose entry for it names no
 blob, the rebuild's source 2 and the advisory, all asking `grounder::in_walk_scope(root, path)`,
-whether `walk_guarded_within` over that one name visits it. RESOLUTION IS BY GENERATION, from three
+the one answer to whether an ingest reads the path: true for the workflow definition's path
+(`.rigger/workflow.yml`, the `gw` half's one path, which the walk's hidden-entry rule skips and
+every caller reads from the ONE ROOT unconditionally), and for every other path whether
+`walk_guarded_within` over that one name visits it. Every path a half reads today answers true:
+the `gd` half's paths and the symbols index's `gc` paths are that walk's own visits, so only an
+integration's file list names a path outside it. RESOLUTION IS BY GENERATION, from three
 sources in one fixed order for every entry: (1) the entry's blob from the repository's object
 database (one `git cat-file --batch` process per rebuild, with `GIT_NO_LAZY_FETCH=1`, so a partial
 clone's missing blob is one git does not hold; an older git behaves as it does, and the process's
@@ -124,14 +136,20 @@ hash function applies no filter, so a file whose stored blob differs from its wo
 never from the object database. An entry no source resolves folds nothing (THE ENTRY AND ITS BATCH
 block). The rebuild's report is ONE number, computed from the stores once it ends: the identities
 whose current generation in `graph.db` is not their latest entry's generation, none held included,
-printed with the note that the next default-lane ingest of those files restores them (criterion 4
-asserts it). A resumed rebuild prints the number a single-pass one does. A deleted `gc` file's
-identity holds `gc`'s batch for no bytes once the walk's deletion ingest recorded it, so that ingest
-retires the file's facts, at a rebuild as live; a `gd` or `gw` identity whose file is gone or
-extracts to the empty batch is named by no ingest, so it keeps what its last fold left, live or
-rebuilt. The light lane compiles no extraction, so there every entry folds nothing and the number
-counts every identity holding an entry. The `applied` rows of shed positions are outside spec 101's
-comparison surface.
+and whose path holds a regular file in scope under the ONE ROOT that its half's function maps to a
+batch that is not empty (every `gc` input is): exactly the ones the next default-lane ingest of the
+file restores, printed with the note that the next default-lane ingest of those files restores
+them (criterion 4 asserts it). A resumed rebuild prints the number a single-pass one does. A
+deleted `gc` file's identity holds `gc`'s batch for no bytes once the walk's deletion ingest
+recorded it, so that ingest retires the file's facts, at a rebuild as live; a `gd` or `gw` identity
+whose file is gone or extracts to the empty batch is named by no ingest, so live it keeps what its
+last fold left, and after a rebuild it holds what its latest resolvable entry gave, none for a
+migrated identity with no earlier entry (WHAT A REBUILD REPRODUCES). An identity whose path holds no
+such file is not counted: what it holds after a rebuild, nothing for a gone file with no resolvable
+entry, is its correct state. The light lane compiles no extraction, so there every entry folds
+nothing and the number counts every identity holding an entry whose path holds a regular file in
+scope, since it cannot tell which files extract to the empty batch. The `applied` rows of shed
+positions are outside spec 101's comparison surface.
 
 **WHAT A REBUILD REPRODUCES, stated once.** An entry no source resolves is as if absent from the
 fold. For every identity whose latest entry resolves, a rebuild holds the same live facts and
@@ -175,7 +193,9 @@ it: the log's latest generation of the identity (from `LoggedGenerations` at the
 two both equal the third, so an identity whose current generation is not its latest entry's is never
 current. A graph that owes its rebuild, which a sink learns from `Projection::rebuild_owed`, is
 handed as owed, and the predicate then answers from the log side alone, so an owed graph records at
-most one entry per generation and the owed rebuild pays the fold. `batch_is_current` alone decides
+most one entry per generation and the owed rebuild pays the fold. A sink with no projection, or
+one whose graph cannot be opened, is handed "owed" too, so `batch_is_current` answers from the log
+side alone and records at most one entry per generation. `batch_is_current` alone decides
 the ledger write, with no key-level suppression and no wrapper store. `run::read::read_run`'s run
 slice excludes `GenerationIngested` beside the derived types, so no reader of `read_current_run`
 meets an entry. The run's sink reads `Projection::current_generation` on every walk and memoizes
@@ -196,17 +216,24 @@ hashes them through the ONE HASH FUNCTION, bytes to object id, which production 
 hash-object --stdin` in the ONE ROOT (`worktree::hash_blob`, `crates/rigger-worktree-git`: never
 written, no filter, outside a repository too, since no SHA-1 crate is a direct dependency) and a
 test binds as it needs; the conductor takes it as a new `Deps` field, `hash_blob`, so it spawns no
-process, `ingest_tree` as a parameter, the migration from `reset_derived`. A failed hash fails that
+process, `ingest_tree` as a parameter, and the migration from `reset_derived`, which takes it as a
+parameter that `cmd_reset` binds to `worktree::hash_blob`, so a test of `src/cli/hygiene.rs`'s
+tests module hands it a failing one (`tests/cli.rs` drives the binary and cannot). A failed hash
+fails that
 batch's emit and records nothing. The sink then extracts the bytes through its half's `(path, bytes,
 excluded)` function (THE REBUILD block), keyed by `key_batch`; when that extraction is itself
 current nothing is recorded, and otherwise the sink records one entry naming that extraction's
 generation, that blob and the walk's out-of-line flag and folds that extraction, never the walk's
 batch. A path that holds no file records an entry with no blob and `gc`'s batch for no bytes, which
-source 3 resolves. An index lagging the disk can key a changed file at a generation both sides hold,
-so nothing is recorded until a reindex; criterion 5's advisory names that file. The group lookup
+source 3 resolves. A lagging index lowering whose generation is NOT the one both sides hold is not
+current, so the sink reads the bytes and records the BYTES' generation; a lagging lowering whose
+generation both sides hold is current, so nothing is recorded until a reindex, and that case is
+criterion 5's advisory's alone, which names the file. The group lookup
 answers a ledger entry on both backends, and `latest_generation`'s type-first check admits the
 ledger type. A batch whose key names no identity (none from `key_batch` does) records nothing and
-fails the emit naming the key. Criterion 4 owns the sinks.
+fails the emit naming the key. Criterion 4 owns the sinks, and its recording-store assertions
+observe three more things it owns: no entry in `read_current_run`'s slice, none in the seeded
+key set, and N on the graph build line.
 
 **THE LEDGER ANSWERS THE INDEX-LAG ADVISORY.** `rigger validate`'s graph index-lag advisory
 (`read_graph_index_lag`, `src/cli/validate.rs`) reads the run stream through
@@ -214,7 +241,10 @@ fails the emit naming the key. Criterion 4 owns the sinks.
 `GenerationIngested`, never the whole stream, and reads `graph.db` as the read-only surfaces do (no
 open when the file is absent, as `graph_rebuild_owed_note` checks, else `Projector::open`, which
 writes nothing to an owed file); with `graph.db` absent, owed or unreadable it compares against the
-log side alone, as today. `ingest::project_scoped_latest_generations` answers each identity's latest
+log side alone, as today. `read_graph_index_lag` takes the store as `&dyn EventStore`, which its
+one caller, `cmd_validate`, opens through `with_project_store` and hands in, so criterion 5 asserts
+on a recording store in `src/cli/validate.rs`'s tests module that the advisory makes ONE typed read
+and no whole-stream read. `ingest::project_scoped_latest_generations` answers each identity's latest
 generation from a derived event's key or a ledger entry's generation, and `graph_index_lag` names a
 sampled file when the generation of its current bytes through its half's `(path, bytes, excluded)`
 function, with `excluded` computed as the walk computes it, never taken from an entry, differs from
@@ -319,14 +349,15 @@ sqlite alone; until criterion 10 a test still appends a derived event through a 
 and no symbols index. Criteria 1, 2, 6, 8, 9 and 10 assert nothing lane-dependent. Criterion 3's
 resolved folds, resolution sources, equality and dating run in the default lane only; the light lane
 asserts each hand-built entry folding nothing, the hole paid and the report's number counting every
-identity holding an entry. Criterion 4's sink assertions run in the default lane only, since the
-light lane compiles the run's sink out and `rigger graph build` walks nothing; the light lane
-asserts that build recording no entry and no derived event and exiting 0, and the contract suite's
-ledger-entry case on both backends. Criterion 5's named and unnamed files run in the default lane
-only; the light lane asserts the stub that samples nothing and names no file, and the reference test
-over ledger entries. Criterion 7's `excluded: true` and rebuild-equality clauses run in the default
-lane only; the light lane asserts every other clause, each entry's `excluded: false` and the rebuild
-of the migrated store counting every converted identity. Criterion 11 is the two lanes themselves.
+identity holding an entry whose path holds a regular file in scope. Criterion 4's sink assertions
+run in the default lane only, since the light lane compiles the run's sink out and `rigger graph
+build` walks nothing; the light lane asserts that build recording no entry and no derived event and
+exiting 0, and the contract suite's ledger-entry case on both backends. Criterion 5's named and
+unnamed files run in the default lane only; the light lane asserts the stub that samples nothing
+and names no file, and the reference test over ledger entries. Criterion 7's `excluded: true` and
+rebuild-equality clauses run in the default lane only; the light lane asserts every other clause,
+each entry's `excluded: false` and the rebuild of the migrated store counting every converted
+identity whose path holds a regular file in scope. Criterion 11 is the two lanes themselves.
 
 **CONSTRAINTS WALK, decided.**
 - *Revert:* a file reverted to earlier content records a new entry with that generation, and it
@@ -336,7 +367,13 @@ of the migrated store counting every converted identity. Criterion 11 is the two
   lower one current while the log's latest is the higher, so `batch_is_current` finds the batch not
   current and the next walk records again; both are instances of WHAT A REBUILD REPRODUCES.
 - *Cold start:* nothing is carried in memory between processes; the sinks' check asks the store's
-  group lookup and `graph.db`.
+  group lookup and `graph.db`. On a store with no entries every batch is not current, so the first
+  ingest reads, hashes and extracts every in-scope file once in the sink, beside the walk's index
+  lowering: a second extraction of a file once per new generation, never per walk, serially, with
+  no worker pool. The hashing is the measured 1.5 ms a file (0.91 s for 597 files, MIGRATION), the
+  extraction costs one more extraction of the tree, and each walk reads
+  `Projection::current_generation`, one primary-key read, for each file, beside the log side's
+  group lookup, which the run's sink memoizes per process.
 - *Existing data:* an older store keeps its derived events readable, folds them as spec 101 decided
   and answers the sinks' check from them until `rigger reset --derived` migrates it; a `graph.db`
   built before this spec needs no rebuild, since no fold rule or projection version changes.
@@ -449,7 +486,9 @@ pin its text:
   resolves, a superseded unresolved entry folding nothing, an entry appended through a plain append
   (the generic fold's refusal, which makes the graph owe its rebuild) paid by `rigger setup` through
   the ledger fold, and the report's number counting the identity whose current generation is not its
-  latest entry's, the same after a rebuild interrupted and resumed. This criterion OWNS
+  latest entry's and whose file the tree holds, and not one whose file is gone, the same after a
+  rebuild interrupted and resumed, and a workflow definition's entry whose blob git does not hold
+  resolved from the tree's `.rigger/workflow.yml`. This criterion OWNS
   re-extraction, the three `(path, bytes, excluded)` functions, `in_walk_scope`, `tree_root`,
   resolution by generation and its fallback outside a repository, the paying of a fold's hole, the
   report's number and its line and the rule of WHAT A REBUILD REPRODUCES; the fold rule is criterion
@@ -460,7 +499,8 @@ pin its text:
   unchanged file recording nothing, a file whose generation the log holds and `graph.db` does not
   recorded again, an identity a rebuild left behind restored by the next `rigger graph build`, a
   deleted file and a path outside the walk's scope each recording an entry with no blob, an index
-  lowering that lags the file's bytes recording the bytes' generation, a tree that is not a git
+  lowering that lags the file's bytes at a generation other than the one both sides hold recording
+  the bytes' generation, a tree that is not a git
   repository recording the blob id `git hash-object` gives, a batch whose key names no identity
   failing the emit and recording nothing, a failing hash function and a read failing for a reason
   other than absence doing the same, a graph that owes its rebuild recording one entry per
@@ -477,11 +517,13 @@ pin its text:
   and names no file whose bytes extract to the generation both hold, asserted in `tests/cli.rs`,
   with an out-of-line test module whose entries record its boundary batch not named, a `graph.db`
   that owes its rebuild compared from the log side alone, and the light lane's stub sampling
-  nothing. This criterion OWNS the ledger reading of `project_scoped_latest_generations`,
-  `graph_index_lag`'s two-sided comparison, validate's typed read and the moves TEST DISPOSITIONS
-  gives it; the `(path, bytes, excluded)` functions are criterion 3's, the sinks' entries criterion
-  4's, `Projection::current_generation` criterion 2's and the bloat advisory criterion 9's, NOT this
-  one's.
+  nothing; and, in `src/cli/validate.rs`'s tests, `read_graph_index_lag` over a recording store
+  making ONE `read_stream_typed` read with `TypeSelection::Only` of the derived types and
+  `GenerationIngested` and no whole-stream read. This criterion OWNS the ledger reading of
+  `project_scoped_latest_generations`, `graph_index_lag`'s two-sided comparison, validate's typed
+  read and the moves TEST DISPOSITIONS gives it; the `(path, bytes, excluded)` functions are
+  criterion 3's, the sinks' entries criterion 4's, `Projection::current_generation` criterion 2's
+  and the bloat advisory criterion 9's, NOT this one's.
 - [ ] a test proves RECLAMATION STAGES IN MEMORY: `Store::reclaim_space` on a sqlite store holding free pages rewrites the file smaller and reports the bytes reclaimed, with its own connection reporting `temp_store` as memory,
   asserted in `crates/rigger-store-sqlite/src/eventstore/sqlite.rs`, with the bytes reported against
   a before-size its caller hands it, a failing compacting step reported and its rerun reclaiming, a
@@ -498,8 +540,9 @@ pin its text:
   surviving recording dated at its earliest recorded valid-time, the test module's entry recording
   `excluded: true`, nothing written to `graph.db`, a rebuild of the migrated store reaching the live
   facts the keyed recordings asserted and the current generations the store held before for the
-  files the tree holds, the bytes reclaimed reported, nothing to shed when run again while still
-  reclaiming, and a failing hash function failing the verb before any row changes. This criterion
+  files the tree holds unchanged, the bytes reclaimed reported, nothing to shed when run again while
+  still reclaiming, and, in `src/cli/hygiene.rs`'s tests, `reset_derived` handed a failing hash
+  function failing before any row changes. This criterion
   OWNS the migration, `Store::shed_derived`, `Store::count_derived`, the deletion of
   `prune_derived_index`, the `--derived` text DOCUMENT EDITS gives it and the moves TEST
   DISPOSITIONS gives it; the reclamation is criterion 6's, the menu line and the bloat advisory
