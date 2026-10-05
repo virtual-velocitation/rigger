@@ -1040,7 +1040,7 @@ mod tests {
         assert_eq!(unit_scratch_slug("cargo-target"), None);
         assert_eq!(unit_scratch_slug("rigger-gate"), None);
         assert_eq!(unit_scratch_slug("rigger-wt-unit-7"), None);
-        assert_eq!(unit_scratch_slug("cargo-mutants-unit-7"), None);
+        assert_eq!(unit_scratch_slug("mutation-tool-unit-7"), None);
         assert_eq!(unit_scratch_slug("x-rigger-gate-unit-7"), None);
         assert_eq!(unit_scratch_slug(""), None);
     }

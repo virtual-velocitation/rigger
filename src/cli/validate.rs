@@ -1905,8 +1905,8 @@ mod tests {
                 gate: "sweep".into(),
                 requires: vec![
                     ResolvedRequirement {
-                        name: "cargo-mutants".into(),
-                        at: PathBuf::from("/home/u/.cargo/bin/cargo-mutants"),
+                        name: "sweeper".into(),
+                        at: PathBuf::from("/home/u/.cargo/bin/sweeper"),
                     },
                     ResolvedRequirement {
                         name: "cargo-nextest".into(),
@@ -1919,7 +1919,7 @@ mod tests {
             gate_requirement_lines(&gates),
             vec![
                 "gate build: requires nothing".to_string(),
-                "gate sweep: requires cargo-mutants at /home/u/.cargo/bin/cargo-mutants, \
+                "gate sweep: requires sweeper at /home/u/.cargo/bin/sweeper, \
                  cargo-nextest at /usr/local/bin/cargo-nextest"
                     .to_string(),
             ]

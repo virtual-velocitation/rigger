@@ -1432,8 +1432,8 @@ impl StoreLocation {
 /// see each caller's own doc comment for why). Every caller reads via
 /// [`config_store::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
 /// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
-/// just to learn two string/int fields - this project's own committed `.rigger/workflow.yml`
-/// sets `build.mutation: on`, which `validate` rejects whenever `cargo-mutants` is off PATH,
+/// just to learn two string/int fields - a committed `.rigger/workflow.yml` may declare a gate
+/// whose `requires` names an executable, which `validate` rejects whenever it is off PATH,
 /// so ANY environment invoking one of these commands without it on PATH used to silently lose
 /// a configured `defaults.workdir` (and `defaults.max_retries`) via each call site's own
 /// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
@@ -1793,7 +1793,7 @@ fn live_branches_for_sweep(
 /// best-effort and never fail the step. `authorized_root` (spec 78 round 2, decision
 /// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
 /// used to build `dir` - never re-derived here - so this reap is safe on any relocated
-/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered mutation-scratch root
+/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered scratch root
 /// under a cache home, and still never touches a process outside `authorized_root`. Off a
 /// platform without `/proc` the reap is a graceful no-op and only the removal runs. This is
 /// the shared teardown for the fixpoint scratch-area sweep in [`cmd_step`]; the
@@ -6139,7 +6139,7 @@ mod tests {
 
     // --- Spec 91 checkin round 4 (op-checkin-round-4-hang-class-mutants-fail-fast-or-justify):
     // a direct, zero-wait contract test for `resolve_main_worktree_or_refuse`'s SUCCESS return
-    // value - the whole-diff mutation sweep's own machinery (cargo-mutants --in-diff, spec 91)
+    // value - the whole-diff mutation sweep's own machinery (the mutation tool, spec 91)
     // reported this mutant (line 1807, both String-literal stubs) reachable ONLY through the
     // real-subprocess suite in tests/cli.rs, whose narrowest existing coverage
     // (`serve_from_a_linked_worktree_refuses_naming_both_trees`) exercises only the REFUSAL
@@ -6640,7 +6640,7 @@ mod tests {
         write_file(
             &root
                 .join("rigger-gate-unit-9")
-                .join("cargo-mutants-copy")
+                .join("tool-copy")
                 .join("events.db"),
             b"not-a-store-at-all",
         );
@@ -7475,7 +7475,7 @@ mod tests {
         );
         // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
         // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
-        // reclaimed. A `cargo-mutants-<slug>` an earlier binary left matches no arm and stays.
+        // reclaimed. A `mutation-tool-<slug>` an earlier binary left matches no arm and stays.
         write_file(
             &scratch.join("rigger-gate-live-unit").join("rerun.list"),
             &[0u8; 8],
@@ -7485,7 +7485,7 @@ mod tests {
             &[0u8; 8],
         );
         write_file(
-            &scratch.join("cargo-mutants-dead-unit").join("rerun.list"),
+            &scratch.join("mutation-tool-dead-unit").join("rerun.list"),
             &[0u8; 8],
         );
         // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
@@ -7539,8 +7539,8 @@ mod tests {
             "the DEAD unit's gate scratch root is reclaimed"
         );
         assert!(
-            scratch.join("cargo-mutants-dead-unit").exists(),
-            "a cargo-mutants-<slug> an earlier binary left matches no arm and is never reclaimed"
+            scratch.join("mutation-tool-dead-unit").exists(),
+            "a mutation-tool-<slug> an earlier binary left matches no arm and is never reclaimed"
         );
 
         // Live-owned scratch: spared.

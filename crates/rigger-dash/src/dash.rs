@@ -4731,8 +4731,8 @@ mod tests {
         /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
         /// lens periphery: neither the mutation-efficacy accounting recorded in
         /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
-        /// exact path - `cargo-mutants`' default mutator set never touches a `Result::ok()` call on
-        /// a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
+        /// exact path - the mutation tool's default mutator set never touches a `Result::ok()`
+        /// call on a std `.parse()`, so this arm is invisible to that tool and only a hand-written test
         /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
         /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
         /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other

@@ -7179,8 +7179,8 @@ mod tests {
         // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the workflow-definition
         // extraction pass reuses this SAME DocConceptExtracted/DocLinkExtracted fold (never a
         // second entity/edge-fold authority) to turn `.rigger/workflow.yml`'s stages, gates and
-        // agents into graph entities with needs/runs/reviews relations - the Design text's own
-        // `stage:implement` / `gate:mutation` / `agent:rust-engineer` example. Built by hand here
+        // agents into graph entities with needs/runs/reviews relations (`stage:<name>`,
+        // `gate:<name>`, `agent:<name>`). Built by hand here
         // (no extraction dependency) so the fold is proven in BOTH feature lanes, exactly like
         // the design-intent tests above.
         let p = Projector::open(":memory:", "test").unwrap();
@@ -7196,8 +7196,8 @@ mod tests {
             &p,
             2,
             KIND_GATE,
-            "gate:mutation",
-            "mutation",
+            "gate:sweep",
+            "sweep",
             ".rigger/workflow.yml",
         );
         apply_doc_concept(
@@ -7226,7 +7226,7 @@ mod tests {
         );
 
         apply_doc_link(&p, 6, "stage:implement", REL_NEEDS, "stage:plan-critique");
-        apply_doc_link(&p, 7, "stage:implement", REL_RUNS, "gate:mutation");
+        apply_doc_link(&p, 7, "stage:implement", REL_RUNS, "gate:sweep");
         apply_doc_link(&p, 8, "stage:implement", REL_RUNS, "agent:rust-engineer");
         apply_doc_link(
             &p,
@@ -7241,7 +7241,7 @@ mod tests {
                 &[
                     "stage:implement".to_string(),
                     "stage:plan-critique".to_string(),
-                    "gate:mutation".to_string(),
+                    "gate:sweep".to_string(),
                     "agent:rust-engineer".to_string(),
                     "agent:adjudicator".to_string(),
                 ],
@@ -7256,7 +7256,7 @@ mod tests {
             g.nodes
         );
         assert_eq!(
-            kind_of("gate:mutation"),
+            kind_of("gate:sweep"),
             Some(KIND_GATE),
             "a workflow gate folds into a gate node; got {:?}",
             g.nodes
@@ -7279,7 +7279,7 @@ mod tests {
             g.edges
         );
         assert!(
-            has_edge("stage:implement", REL_RUNS, "gate:mutation"),
+            has_edge("stage:implement", REL_RUNS, "gate:sweep"),
             "a stage RUNS the gates its gates: list names; got {:?}",
             g.edges
         );

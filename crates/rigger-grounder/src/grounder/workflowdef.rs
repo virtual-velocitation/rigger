@@ -3,8 +3,7 @@
 //! `DocConceptExtracted` / `DocLinkExtracted` events - REUSING the exact events and fold the
 //! design-intent pass (spec 29b) uses, never a second entity/edge-fold authority (see
 //! `crate::contextgraph`'s fold-arm doc) - so the workflow definition becomes graph entities
-//! (`stage:<name>`, `gate:<name>`, `agent:<name>`, matching the Design text's own
-//! `stage:implement` / `gate:mutation` / `agent:rust-engineer` example) with `needs` / `runs` /
+//! (`stage:<name>`, `gate:<name>`, `agent:<name>`) with `needs` / `runs` /
 //! `reviews` relations - the last split into a plain edge for a panel's full-only roster and a
 //! distinctly-tagged one for its opt-in `tiers.light` roster (see `reviewers_of`'s own doc for
 //! why the two are never unioned). This is the emit half; the fold half lives in
@@ -253,9 +252,9 @@ mod tests {
             },
         );
         gates.insert(
-            "mutation".to_string(),
+            "sweep".to_string(),
             Gate {
-                run: "cargo mutants".to_string(),
+                run: "sh sweep.sh".to_string(),
                 kind: "core".to_string(),
                 inputs: Vec::new(),
                 requires: Vec::new(),
@@ -297,7 +296,7 @@ mod tests {
                 name: "checkin".to_string(),
                 needs: vec!["implement".to_string()],
                 agent: "rust-engineer".to_string(),
-                gates: vec!["fmt".to_string(), "mutation".to_string()],
+                gates: vec!["fmt".to_string(), "sweep".to_string()],
                 ..Default::default()
             },
         );
@@ -322,9 +321,9 @@ mod tests {
     fn stages_gates_and_agents_all_become_concepts() {
         let (concepts, _links) = extract(&fixture());
         let has = |kind: &str, id: &str| concepts.iter().any(|(k, i, _)| *k == kind && i == id);
-        // The Design text's own example triple, matching this workflow's real shape.
+        // One stage, one gate and one agent entity.
         assert!(has(KIND_STAGE, "stage:implement"), "got {concepts:?}");
-        assert!(has(KIND_GATE, "gate:mutation"), "got {concepts:?}");
+        assert!(has(KIND_GATE, "gate:sweep"), "got {concepts:?}");
         assert!(has(KIND_AGENT, "agent:rust-engineer"), "got {concepts:?}");
         // Every declared gate becomes an entity, even `fmt` which every stage runs - and a gate
         // NO stage runs would too (the loop covers `workflow.gates` independent of stage refs).
@@ -369,7 +368,7 @@ mod tests {
             "got {links:?}"
         );
         assert!(
-            has("stage:checkin", REL_RUNS, "gate:mutation"),
+            has("stage:checkin", REL_RUNS, "gate:sweep"),
             "got {links:?}"
         );
         assert!(has("stage:checkin", REL_RUNS, "gate:fmt"), "got {links:?}");

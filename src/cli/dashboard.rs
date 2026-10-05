@@ -84,7 +84,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // already answers correctly with no git repo at all (its own first match arm checks the
         // override before ever consulting `repo`) - a `rigger dash` launched from a directory
         // with no git repository above it is not exotic: a whole-tree copy that excludes `.git`
-        // (this project's own `cargo mutants --in-diff` scratch-tree build, spec 78's
+        // (this project's own mutation sweep's scratch-tree build, spec 78's
         // mutation-efficacy step) produces exactly that cwd, and silently dropping an explicit
         // `RIGGER_TMPDIR` there blinds the self-reap watcher (spec 62, criterion 5) to this
         // project's own agent-liveness marker. Only when NEITHER signal is present (no repo, no
