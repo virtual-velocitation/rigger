@@ -5078,7 +5078,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-781b5348543b",
+    "id": "dup-582bf6d9907e",
     "classification": "near",
     "sites": [
       {
@@ -5097,12 +5097,12 @@
         "content_hash": "5c594c241556f52a"
       },
       {
-        "file": "tests/simplification_audit.rs",
+        "file": "tests/common/source_audit.rs",
         "name": "is_keyword",
-        "content_hash": "e647e7c4790ca790"
+        "content_hash": "5c594c241556f52a"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-domain/src/concepts.rs, crates/rigger-domain/src/ingest.rs, tests/common/source_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6608,7 +6608,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6f126ddb8d2c",
+    "id": "dup-ff3bcd827c2f",
     "classification": "semantic",
     "sites": [
       {
@@ -6617,14 +6617,14 @@
         "content_hash": "44321c65c6fc2438"
       },
       {
-        "file": "tests/simplification_audit.rs",
-        "name": "scan_file",
-        "content_hash": "60bf386502b24d78"
+        "file": "tests/common/source_audit.rs",
+        "name": "tokenize",
+        "content_hash": "1781c97a8376d5f4"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "tokenize",
-        "content_hash": "d2e6d386ca26d8f2"
+        "name": "scan_file",
+        "content_hash": "60bf386502b24d78"
       }
     ],
     "proposed_home": "crates/rigger-grounder/src/grounder/symbols/extract.rs::extract as the ONE function that touches source parsing (already its own module doc's claim, architecture 5.5.3) - this file's own scan_file/tokenize are ad hoc scanners for the identical job and should route through an injected-grammar extractor rather than re-deriving structure by hand",

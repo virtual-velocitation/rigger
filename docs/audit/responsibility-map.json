@@ -9093,7 +9093,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5eabd1c61887bb6b"
+    "content_hash": "d3435817ad736c47"
   },
   {
     "file": "src/cli/mod.rs",

@@ -465,7 +465,7 @@
     "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
   },
   {
-    "id": "dup-781b5348543b",
+    "id": "dup-582bf6d9907e",
     "disposition": "not-a-duplicate",
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
