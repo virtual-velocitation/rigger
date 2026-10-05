@@ -35662,11 +35662,11 @@ mod tests {
         );
     }
 
-    /// Mutation testing belongs to the check-in gate, never to a review: every review tier -
-    /// lens, adversary and adjudicator - is told never to run cargo-mutants, itself or through
-    /// a verify helper.
+    /// Mutation testing belongs to the gate that sweeps, never to a review: every review tier -
+    /// lens, adversary and adjudicator - is told never to run a mutation sweep, itself or
+    /// through a verify helper.
     #[test]
-    fn every_reviewer_prompt_forbids_cargo_mutants() {
+    fn every_reviewer_prompt_forbids_a_mutation_sweep() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -35674,8 +35674,11 @@ mod tests {
             ("adjudicator", adjudicator),
         ] {
             assert!(
-                prompt.contains("Never run cargo-mutants, directly or through a verify helper"),
-                "the {tier} must be told never to run cargo-mutants; prompt was:\n{prompt}"
+                prompt.contains(
+                    "Never run a mutation sweep, directly or through a verify helper: mutation \
+                     testing belongs to the gate that sweeps, never to a review."
+                ),
+                "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
             );
         }
     }
