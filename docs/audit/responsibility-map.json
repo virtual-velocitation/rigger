@@ -6525,7 +6525,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "57eedeaf9922ff92"
+    "content_hash": "c7c3549a6b140ff4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6549,7 +6549,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7cb078eafa878166"
+    "content_hash": "4fc3183122a202bf"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6557,7 +6557,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f8c28a22653ab740"
+    "content_hash": "362edc69285d7858"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8349,7 +8349,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "4734ee0bd03bbb48"
+    "content_hash": "37bb72d5b957c16a"
   },
   {
     "file": "src/cli/mod.rs",
