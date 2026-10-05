@@ -40099,23 +40099,65 @@ mod tests {
         assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root();
     }
 
+    /// The driver for [`assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root`]:
+    /// the speculating unit's lane-0 implementer CRASHES (so `run_speculation` removes lane 0's
+    /// worktree at `unit_worktree_dir`'s path, and with it any root already there); lane 1's
+    /// implementer then finds its work already on its branch and leaves the unit's
+    /// `rigger-gate-<slug>` root at `gate_root`, the way a gate that used it would - after every
+    /// worktree removal at that path, so no removal can reclaim it. Every review approves.
+    struct ReplayedGateScratchDriver {
+        unit: &'static str,
+        gate_root: String,
+    }
+    impl AgentDriver for ReplayedGateScratchDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id == spawn_id(self.unit, ROLE_IMPLEMENTER, 0) {
+                return Err(Error("lane 0's implementer crashed".into()));
+            }
+            if opts.id == spawn_id(self.unit, ROLE_IMPLEMENTER, 1) {
+                std::fs::create_dir_all(&self.gate_root).unwrap();
+                std::fs::write(Path::new(&self.gate_root).join("rerun.list"), "left\n").unwrap();
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
     /// The replay half of
     /// [`a_passing_post_merge_re_gate_reclaims_the_gate_scratch_root_its_fallback_names`]: a
-    /// step resumed over a log that already holds the unit's landed row AND a passing
-    /// post-merge verdict replays that verdict, running no gate command, and still leaves no
-    /// root behind - the reclaim follows the passing outcome, never a gate run.
+    /// speculating unit whose lane 0 crashed and whose lane 1 already landed (the log holds
+    /// lane 1's landed row AND passing verdicts for every gate it reaches, its post-merge
+    /// re-gate's included) replays that post-merge verdict, running no gate command, and
+    /// still leaves no root behind at `unit_worktree_dir`'s sibling - where no worktree
+    /// removal reaches once lane 0's is gone, so only the landing's post-merge reclaim can
+    /// remove it. The reclaim follows the passing outcome, never a gate run.
     fn assert_a_replayed_post_merge_pass_reclaims_the_gate_scratch_root() {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let base_sha = git_head(&repo_path);
         let unit = "gsr-replay";
-        commit_on_unit_branch(&repo_path, unit, "feature.rs", "fn feature() {}\n");
-        let branch = unit_branch(unit);
-        let unit_sha = {
-            let out = run_git(&repo_path, &["rev-parse", &branch]);
+        let lane_branch = format!("{}-spec1", unit_branch(unit));
+        commit_on_named_branch(&repo_path, &lane_branch, "feature.rs", "fn feature() {}\n");
+        let lane_sha = {
+            let out = run_git(&repo_path, &["rev-parse", &lane_branch]);
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        let out = run_git(&repo_path, &["merge", "--ff-only", &branch]);
+        let out = run_git(&repo_path, &["merge", "--ff-only", &lane_branch]);
         assert!(out.status.success(), "test setup: fast-forward: {out:?}");
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
@@ -40124,12 +40166,8 @@ mod tests {
             crate::worktree::UNIT_GATE_SCRATCH_PREFIX,
         )
         .unwrap();
-        std::fs::create_dir_all(&gate_root).unwrap();
-        std::fs::write(Path::new(&gate_root).join("rerun.list"), "left by a gate\n").unwrap();
 
         let st = Store::open(":memory:").unwrap();
-        let status =
-            |v: Value| Event::new(ledger::TYPE_UNIT_STATUS, serde_json::to_vec(&v).unwrap());
         let verdict = |key: String| {
             Event::new(
                 contextgraph::TYPE_GATE_VERDICT,
@@ -40142,23 +40180,20 @@ mod tests {
             &[],
             &[
                 Event::new(
-                    ledger::TYPE_UNIT_STARTED,
-                    serde_json::to_vec(&json!({"id": unit, "agent": "worker", "branch": branch}))
-                        .unwrap(),
-                ),
-                status(json!({"id": unit, "status": "verified"})),
-                status(json!({"id": unit, "status": "reviewed"})),
-                status(json!({
-                    "id": unit,
-                    "status": "integrate-landed",
-                    "attempt": 0,
-                    "evidence": {"sha": unit_sha, "pre_merge": base_sha},
-                }))
-                .with_meta(META_REPLAY_KEY, format!("{unit}/landed#0~0")),
-                // Both recorded passing verdicts the resumed step reaches - the exhaustive
-                // integrate door's and the post-merge re-gate's - so it runs no gate at all.
-                verdict(gate_key(GateKey::Verdict, unit, 0, 0, "g")),
-                verdict(gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g")),
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({
+                        "id": unit,
+                        "status": "integrate-landed",
+                        "attempt": 1,
+                        "evidence": {"sha": lane_sha, "pre_merge": base_sha},
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_REPLAY_KEY, format!("{unit}/landed#1~0")),
+                // Every recorded passing verdict lane 1 reaches - its gate door's and its
+                // post-merge re-gate's - so the step runs no gate at all.
+                verdict(gate_key(GateKey::Verdict, unit, 1, 0, "g")),
+                verdict(gate_key(GateKey::PostMergeVerdict, unit, 1, 0, "g")),
             ],
         );
 
@@ -40184,10 +40219,14 @@ mod tests {
                     adjudicator: "judge".into(),
                     ..Default::default()
                 },
+                speculation_width: 2,
                 ..Default::default()
             },
         );
-        let driver = Stub::new();
+        let driver = ReplayedGateScratchDriver {
+            unit,
+            gate_root: gate_root.clone(),
+        };
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
@@ -40195,6 +40234,16 @@ mod tests {
         let rs = run_isolated(&cfg, &deps).unwrap();
 
         assert_eq!(rs.units[unit].status, ledger::Status::Integrated);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .expect("the unit integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id(unit, ROLE_IMPLEMENTER, 1).as_str()),
+            "premise: lane 0 crashed, so lane 1 is the winner"
+        );
         assert!(
             !log.exists(),
             "the recorded passing post-merge verdict replays - no gate command runs"
