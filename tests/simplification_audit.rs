@@ -4865,7 +4865,7 @@ const TEST_SUBSYSTEMS: &[(&str, &str, &[&[&str]])] = &[
         ]],
     ),
     ("Reset / log compaction / store hygiene", "", &[]),
-    ("Worktree & scratch/mutation-scratch lifecycle", "", &[]),
+    ("Worktree & scratch lifecycle", "", &[]),
     (
         "Simplification-audit generator & its own periphery (this spec)",
         "",
@@ -4942,7 +4942,7 @@ const CLI_VERB_PREFIXES: &[&[&str]] = &[
     &["canary_"],
     &["dash_", "status_"],
     &["store_", "eventstore_"],
-    &["spawn_", "mutation_scratch_", "scratch_"],
+    &["spawn_", "scratch_"],
     &["review_", "gate_"],
     &["setup_", "precommit_", "hook_"],
     &["courier_", "registry_"],
