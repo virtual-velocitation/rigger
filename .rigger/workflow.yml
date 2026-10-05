@@ -151,7 +151,7 @@ gates:                      # the project's verification library, referenced by 
   # predate the snippet: a missing snippet runs the tests without it, and a snippet that fails
   # to source fails the gate.
   test:
-    run: "if test -f .rigger/gates/container-env.sh; then . .rigger/gates/container-env.sh || exit 1; fi; cargo test --workspace"
+    run: "sh .rigger/gates/test.sh"
     kind: core
   # The lanes gate: the no-default and core feature lanes, through the one script CI runs
   # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
