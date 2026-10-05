@@ -107,22 +107,31 @@ fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::Tem
     (dir, shas)
 }
 
-/// `sh` run with `args` from `repo`. Returns (passed, output).
-fn run_sh(repo: &Path, args: &[&OsStr]) -> (bool, String) {
+/// `sh` run with `args` from `repo`, with each `(name, value)` of `envs` set. Returns (passed,
+/// output).
+fn run_sh(repo: &Path, args: &[&OsStr], envs: &[(&str, &OsStr)]) -> (bool, String) {
     shell_outcome(
         &Command::new("sh")
             .args(args)
+            .envs(envs.iter().copied())
             .current_dir(repo)
             .output()
             .unwrap(),
     )
 }
 
+/// This repository's gate script `name` (under `.rigger/gates/`) run by path from `repo`, the
+/// working directory a gate runs in, with each `(name, value)` of `envs` set. Returns (passed,
+/// output).
+fn run_gate_script(repo: &Path, name: &str, envs: &[(&str, &OsStr)]) -> (bool, String) {
+    let script = repo_root().join(".rigger/gates").join(name);
+    run_sh(repo, &[script.as_os_str()], envs)
+}
+
 /// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
 /// Returns (passed, output).
 fn run_red_before_green(repo: &Path) -> (bool, String) {
-    let script = repo_root().join(".rigger/gates/red-before-green.sh");
-    run_sh(repo, &[script.as_os_str()])
+    run_gate_script(repo, "red-before-green.sh", &[])
 }
 
 /// The `red-before-green` command the workflow `rigger init` scaffolds in a Rust fixture project,
@@ -133,7 +142,7 @@ fn run_scaffolded_red_before_green(commits: &[(&str, &str, &str)]) -> (bool, Str
     let cfg = loaded_config(dir.path());
     let command = &cfg.workflow.gates["red-before-green"].run;
     let shas = build_unit_branch(dir.path(), LIB, commits);
-    let (passed, out) = run_sh(dir.path(), &["-c".as_ref(), command.as_ref()]);
+    let (passed, out) = run_sh(dir.path(), &["-c".as_ref(), command.as_ref()], &[]);
     (passed, out, shas)
 }
 
@@ -516,6 +525,53 @@ fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
 fn the_container_snippet_goes_on_without_a_container_cli() {
     let (out, _, _) = source_container_snippet(true, false, Some("0"));
     assert_eq!(out.lines().count(), 1, "{out}");
+}
+
+/// `.rigger/gates/audit.sh` run in a fixture repository whose committed catalog is `committed`,
+/// against a stand-in `cargo` (`tests/fixtures/audit-cargo.sh`): in write mode it regenerates the
+/// catalog as `fresh`; otherwise it asserts, failing with `red` output when `red` is set. Returns
+/// (passed, output).
+fn run_audit_gate(committed: &str, fresh: &str, red: Option<&str>) -> (bool, String) {
+    let work = tempfile::tempdir().unwrap();
+    let repo = work.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_repo(&repo);
+    commit_files(&repo, &[("docs/audit/catalog.json", committed)], "catalog");
+    let path = stub_path(work.path(), "cargo", Some("audit-cargo.sh"));
+    run_gate_script(
+        &repo,
+        "audit.sh",
+        &[
+            ("PATH", path.as_ref()),
+            ("AUDIT_CARGO_FRESH", fresh.as_ref()),
+            ("AUDIT_CARGO_RED", red.unwrap_or_default().as_ref()),
+        ],
+    )
+}
+
+#[test]
+fn the_audit_script_passes_a_fresh_committed_catalog_silently() {
+    let (passed, out) = run_audit_gate("same", "same", None);
+    assert!(passed, "{out}");
+    assert!(!out.contains("not committed"), "{out}");
+}
+
+#[test]
+fn the_audit_script_names_a_regenerated_uncommitted_catalog_without_failing_on_drift_alone() {
+    let (passed, out) = run_audit_gate("stale", "fresh", None);
+    assert!(passed, "drift alone must never fail the gate: {out}");
+    assert!(
+        out.contains("audit: docs/audit was regenerated for this tree and is not committed"),
+        "the gate must report the uncommitted regeneration distinctly: {out}"
+    );
+}
+
+#[test]
+fn the_audit_script_fails_red_assertions_with_its_own_diagnostic() {
+    let (passed, out) = run_audit_gate("same", "same", Some("clusters with no disposition"));
+    assert!(!passed, "{out}");
+    assert!(out.contains("clusters with no disposition"), "{out}");
+    assert!(out.contains("error[audit]:"), "{out}");
 }
 
 /// The committed implementer persona (`.rigger/agents/rust-engineer.md`), whitespace-
