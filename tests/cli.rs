@@ -6219,9 +6219,7 @@ stages:
     );
     // Spec 115, criterion 1: a clean run halted on nothing, so its stdout names no halt reason.
     assert_eq!(
-        out.lines()
-            .filter(|line| line.starts_with("halted: "))
-            .collect::<Vec<_>>(),
+        halted_lines(&out),
         Vec::<&str>::new(),
         "a run that did not halt prints no `halted: ` line; stdout: {out}"
     );
@@ -7412,6 +7410,14 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     );
 }
 
+/// The lines of a run's output that name a halt reason: each line starting with `halted: `, in
+/// order. The one predicate every spec 115 presence and absence assertion in this file reads.
+fn halted_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| line.starts_with("halted: "))
+        .collect()
+}
+
 /// Spec 115, criterion 1: THE BLOCKING RUN PRINTS THE HALT REASON. Given the budget-one
 /// fixture, when the operator runs `rigger run` (the blocking `cli` driver, a fake `claude` on
 /// `PATH` answering the one admitted worker), then the run exits 0 and stdout names why it
@@ -7476,11 +7482,7 @@ fn run_prints_the_budget_halt_reason_after_the_run_state() {
         "the halt reason must be the last stdout line, right after the run state; got: {out}"
     );
     assert_eq!(
-        lines
-            .iter()
-            .filter(|line| line.starts_with("halted: "))
-            .copied()
-            .collect::<Vec<_>>(),
+        halted_lines(&out),
         ["halted: budget exhausted: 1/1 spawns"],
         "the halt reason is printed exactly once; got: {out}"
     );
@@ -7506,13 +7508,6 @@ fn workflow_run_prints_the_budget_halt_reason_on_stderr() {
             serde_json::json!({}),
             "rigger_result must accept the handed-out spawn {id:?}; got: {answered}"
         );
-    };
-    let halted_lines = |stderr: &str| -> Vec<String> {
-        stderr
-            .lines()
-            .filter(|line| line.starts_with("halted: "))
-            .map(str::to_string)
-            .collect()
     };
     let args = ["run", "--driver", "workflow", "--base", "HEAD"];
 
