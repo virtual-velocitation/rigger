@@ -1611,7 +1611,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1011-1013` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:12366-12368` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:130-132` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1081-1089` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1087-1095` `stop_message`
 - `tests/common/fixtures/graph.rs:159-161` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -3808,8 +3808,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1305-1312` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:1346-1353` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:1311-1318` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:1352-1359` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -3817,8 +3817,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1339-1345` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:1373-1379` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:1345-1351` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:1379-1385` `latest_in_group`
 
 #### `dup-282069e7109f` (near, 3 sites)
 
@@ -5100,7 +5100,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8352 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8355 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4854-4895` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14796-14818` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
-use crate::driver::{allowed_tools_args, bin_or_path_default, spawn_config_args};
+use crate::driver::{allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args};
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -58,6 +58,11 @@ impl AgentDriver for Driver {
             opts,
             bin_or_path_default(&self.rigger_bin, "rigger"),
         )?);
+        // The harness environment every headless worker gets ([`harness_env`]), applied
+        // first so the build environment below overrides it under the same key.
+        for (k, v) in harness_env() {
+            cmd.env(k, v);
+        }
         // The ONE build-environment authority's second injection site (spec 65): every
         // var the resolver derived (empty when no wrapper is configured, applying
         // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the
@@ -406,6 +411,61 @@ thinking out loud, not json\n\
             without.output.contains("RUSTC_WRAPPER=\n"),
             "an empty SpawnOpts.env must inject nothing: {:?}",
             without.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_applies_the_harness_env_and_lets_opts_env_override_it() {
+        // Every headless worker gets the harness environment (`harness_env`): the print-mode
+        // idle ceiling off, so a worker that ended its turn waiting on a background helper
+        // stays open for the helper's result. The build environment is applied after it, so
+        // an operator's own value under the same key wins.
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/env-echo-agent.sh")
+            .to_string_lossy()
+            .into_owned();
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
+        let emit = |_: &str, _: Value| Ok(());
+        let agent = AgentDef {
+            id: "e".into(),
+            ..Default::default()
+        };
+
+        let default = driver
+            .spawn(&agent, "task", &SpawnOpts::default(), &emit)
+            .unwrap();
+        assert!(
+            default
+                .output
+                .contains("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\n"),
+            "output: {:?}",
+            default.output
+        );
+
+        let overridden = driver
+            .spawn(
+                &agent,
+                "task",
+                &SpawnOpts {
+                    env: vec![(
+                        "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS".to_string(),
+                        "900000".to_string(),
+                    )],
+                    ..Default::default()
+                },
+                &emit,
+            )
+            .unwrap();
+        assert!(
+            overridden
+                .output
+                .contains("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=900000\n"),
+            "an opts.env value under the same key wins: {:?}",
+            overridden.output
         );
     }
 

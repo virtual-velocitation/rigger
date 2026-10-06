@@ -13,4 +13,7 @@ echo "SCCACHE_DIR=$SCCACHE_DIR"
 echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
 echo "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS"
 echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+# The harness environment every headless worker gets (driver::harness_env), so a test can
+# assert the cli host applies it, under the build environment, to a real subprocess.
+echo "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=$CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 echo '{"id":"final","pass":true}'
