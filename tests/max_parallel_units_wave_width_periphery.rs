@@ -155,6 +155,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
 
     let driver = cli::Driver {
         bin: agent_bin.to_string_lossy().into_owned(),
+        ..cli::Driver::default()
     };
     let store = Store::open(":memory:").unwrap();
     let deps = Deps {

@@ -103,6 +103,29 @@ pub fn helper_agents_json() -> Result<Value, Error> {
     Ok(Value::Object(agents))
 }
 
+/// The rigger MCP tools ([`MCP_SERVER_NAME`]'s `mcp__rigger__*`) the [`HELPER_AGENTS`] declare
+/// in their frontmatter, in declaration order and each once: what a headless spawn must
+/// pre-approve for its `lookup` helper to reach the graph, since under
+/// `--permission-prompts none` a tool nobody pre-approved is denied.
+pub fn helper_mcp_tools() -> Result<Vec<String>, Error> {
+    let prefix = format!("mcp__{MCP_SERVER_NAME}__");
+    let mut tools: Vec<String> = Vec::new();
+    for def in helper_agents_json()?
+        .as_object()
+        .into_iter()
+        .flat_map(|a| a.values())
+    {
+        for tool in def["tools"].as_array().into_iter().flatten() {
+            if let Some(tool) = tool.as_str().filter(|t| t.starts_with(&prefix)) {
+                if !tools.iter().any(|t| t == tool) {
+                    tools.push(tool.to_string());
+                }
+            }
+        }
+    }
+    Ok(tools)
+}
+
 /// Merge a SessionStart hook that runs `command` into the settings JSON. Idempotent
 /// (installing twice does not duplicate the hook) and preserves all other settings.
 /// `existing` may be empty. A thin wrapper over [`merge_hook_block`] fixed to the
@@ -411,6 +434,18 @@ mod tests {
         assert!(arr.iter().any(
             |b| b["hooks"][0]["command"] == "rigger grep-guard" && b["matcher"] == "Grep|Bash"
         ));
+    }
+
+    #[test]
+    fn helper_mcp_tools_are_the_rigger_tools_the_helpers_declare() {
+        assert_eq!(
+            helper_mcp_tools().unwrap(),
+            [
+                "mcp__rigger__rigger_graph",
+                "mcp__rigger__rigger_ground",
+                "mcp__rigger__rigger_peers",
+            ]
+        );
     }
 
     #[test]
