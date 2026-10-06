@@ -7444,6 +7444,90 @@ fn run_prints_the_budget_halt_reason_after_the_run_state() {
     );
 }
 
+/// Spec 115, criterion 2: `rigger run --driver workflow` prints the conductor's halt reason on
+/// stderr (stdout is the MCP transport). Budget 1 with two independent units: the one admitted
+/// implementer spawn is handed out and answered, the other is refused and never handed out, so
+/// `rigger_next` answers done and the conductor's `halted: <reason>` line is on the session's
+/// stderr.
+#[test]
+fn run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
+    mcp.initialize();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let Some(spawn) = mcp.next_spawn(deadline) else {
+        mcp.fail("the run reported done before its one admitted spawn was handed out");
+    };
+    if !spawn.ends_with("/implementer#0") {
+        mcp.fail(&format!(
+            "the one handed-out spawn must be an implementer#0; got {spawn:?}"
+        ));
+    }
+    let answer = mcp.tool_call(
+        "rigger_result",
+        serde_json::json!({"id": spawn, "output": "did the unit"}),
+    );
+    if answer.get("result").is_none() {
+        mcp.fail(&format!("rigger_result must succeed; got {answer}"));
+    }
+    if let Some(second) = mcp.next_spawn(deadline) {
+        mcp.fail(&format!(
+            "the refused second unit's spawn must never be handed out; got {second:?}"
+        ));
+    }
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        err.lines()
+            .filter(|l| l.starts_with("halted: "))
+            .collect::<Vec<_>>(),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "the workflow driver prints the budget halt reason once on stderr; stderr: {err}"
+    );
+}
+
+/// Spec 115, criterion 2, the clean half: a two-stage workflow run whose every handed-out spawn
+/// is answered converges, and its stderr holds no `halted: ` line.
+#[test]
+fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
+    mcp.initialize();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut answered = Vec::new();
+    while let Some(spawn) = mcp.next_spawn(deadline) {
+        let answer = mcp.tool_call(
+            "rigger_result",
+            serde_json::json!({"id": spawn, "output": "did the unit"}),
+        );
+        if answer.get("result").is_none() {
+            mcp.fail(&format!(
+                "rigger_result must succeed for {spawn}; got {answer}"
+            ));
+        }
+        answered.push(spawn);
+    }
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    answered.sort();
+    assert_eq!(
+        answered,
+        ["a/implementer#0", "b/implementer#0"],
+        "both units' implementer spawns are handed out and answered; stderr: {err}"
+    );
+    assert_eq!(
+        err.lines()
+            .filter(|l| l.starts_with("halted: "))
+            .collect::<Vec<_>>(),
+        Vec::<&str>::new(),
+        "a clean workflow run prints no halted line; stderr: {err}"
+    );
+}
+
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
 /// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
 /// implementer's own in-process unit test
