@@ -28,7 +28,8 @@ pub struct SpawnRequest {
     /// from the conductor's single persona source (`SpawnOpts::system_prompt`). The
     /// shim passes it to the Agent SDK `query()` as `options.systemPrompt`, so a
     /// workflow agent gets its role exactly as a cli agent does (cli passes the same
-    /// persona via `--system-prompt`). Omitted from the wire when empty.
+    /// persona through the file `--system-prompt-file` names). Omitted from the wire when
+    /// empty.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub system_prompt: String,
     #[serde(skip_serializing_if = "String::is_empty")]

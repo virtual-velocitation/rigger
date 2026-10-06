@@ -37,7 +37,9 @@ use crate::spawn_store;
 /// the worktrees and the `agent-live` liveness markers. It is the SAME `agent-scratch` tree
 /// the clean-fixpoint reclaim clears (the shared scratch parent a worker parks build/verify
 /// output under); a per-spawn dir nests one level deeper under it, keyed by run and spawn id.
-const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
+/// Public so a command that runs a host outside a loop run (`rigger critique`, whose spawn
+/// writes its system-prompt file here) removes the run directories it leaves.
+pub const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 
 /// The dedicated scratch dir rigger assigns spawn `spawn_id` under `scratch_root`:
 /// `<scratch_root>/agent-scratch/<sanitized run_id>/<sanitized spawn_id>` (an EMPTY `run_id`
@@ -117,6 +119,14 @@ pub fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_
     if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
         crate::reap::reap_then_remove_dir(&path, Path::new(scratch_root));
     }
+}
+
+/// The scratch directory a blocking host's spawn `opts` owns: [`spawn_scratch_path`] under the
+/// scratch root its worktree sits in ([`spawn_scratch_root`]), the directory
+/// [`reclaim_finished_spawn_scratch`] removes at the spawn's terminus. `None` for a
+/// worktree-less spawn or a degenerate spawn id.
+pub(crate) fn blocking_spawn_scratch_dir(opts: &SpawnOpts) -> Option<PathBuf> {
+    spawn_scratch_path(&spawn_scratch_root(opts)?, &opts.run_id, &opts.id)
 }
 
 /// A blocking host's terminus reclaim: once the spawn `opts` names has finished (its process

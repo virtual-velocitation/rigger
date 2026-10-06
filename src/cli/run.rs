@@ -1463,7 +1463,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
     // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
     // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
-    // fake-`claude`-on-PATH fixtures assume (`cli::Driver`'s `-p <prompt>` plus plain-text
+    // fake-`claude`-on-PATH fixtures assume (`cli::Driver`'s task on stdin plus plain-text
     // stdout) across dozens of existing, real-subprocess, end-to-end tests - empirically
     // confirmed by running them against this swap. Migrating every such fixture to the
     // stream-json protocol is a real body of work of its own, out of this criterion's blast

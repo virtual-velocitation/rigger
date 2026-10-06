@@ -21,6 +21,7 @@ use common::fixtures::implementer_opts as opts;
 
 use rigger::config::parse_agent;
 use rigger::driver::claude_code::build_args;
+use rigger::driver::SystemPromptFile;
 
 /// The real parser (`parse_agent`, YAML frontmatter into `AgentDef`'s `#[serde(default)]`
 /// field - `AgentDef` carries no `deny_unknown_fields`, so this proves the key is actually
@@ -38,7 +39,14 @@ fn fallback_model_parses_from_real_frontmatter_and_reaches_build_args() {
         "parse_agent must read the fallback_model key from real frontmatter text, not just tolerate it"
     );
 
-    let args = build_args(&agent, &opts("u1/implementer#0"), "sess-1", "rigger").unwrap();
+    let args = build_args(
+        &agent,
+        &SystemPromptFile::default(),
+        &opts("u1/implementer#0"),
+        "sess-1",
+        "rigger",
+    )
+    .unwrap();
     let i = args.iter().position(|x| x == "--fallback-model").expect(
         "build_args must emit --fallback-model for a config-parsed AgentDef, not only a hand-built one",
     );
@@ -60,7 +68,14 @@ fn fallback_model_absent_from_frontmatter_parses_empty_and_build_args_omits_the_
         "an absent key must default to empty, not error"
     );
 
-    let args = build_args(&agent, &opts("u1/implementer#0"), "sess-1", "rigger").unwrap();
+    let args = build_args(
+        &agent,
+        &SystemPromptFile::default(),
+        &opts("u1/implementer#0"),
+        "sess-1",
+        "rigger",
+    )
+    .unwrap();
     assert!(
         !args.iter().any(|x| x == "--fallback-model"),
         "build_args must omit --fallback-model entirely when unconfigured; got {args:?}"

@@ -10642,7 +10642,7 @@ impl RunCtx<'_> {
     /// instruction layers (`cfg.instructions`), and the rigger-authored communication
     /// discipline ([`RIGGER_COMMUNICATION`]). This is
     /// the SINGLE persona-source path - every spawn site builds the system prompt
-    /// here, so BOTH drivers (the cli `--system-prompt`, the workflow shim's
+    /// here, so BOTH drivers (the cli `--system-prompt-file`, the workflow shim's
     /// `options.systemPrompt`) receive an identical persona + discipline and cannot
     /// diverge.
     fn build_system_prompt(&self, agent: &AgentDef) -> String {

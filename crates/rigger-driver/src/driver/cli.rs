@@ -8,13 +8,19 @@
 //! living DAG (UnitProposed), and feeds the side-car - the only difference from the
 //! workflow driver is that emission is post-hoc, not live mid-run.
 
+use std::io::Write;
+use std::process::{Output, Stdio};
+
 use serde_json::Value;
 
 use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
-use crate::driver::replay::reclaim_finished_spawn_scratch;
-use crate::driver::{allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args};
+use crate::driver::replay::{blocking_spawn_scratch_dir, reclaim_finished_spawn_scratch};
+use crate::driver::{
+    allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
+    SystemPromptFile,
+};
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -35,27 +41,32 @@ impl Default for Driver {
     }
 }
 
-impl AgentDriver for Driver {
-    fn spawn(
+impl Driver {
+    /// Launch `agent` on the task `framed` and wait for it to exit, returning its captured
+    /// output whatever its exit status.
+    ///
+    /// Neither prompt travels as an argv string, because Linux caps one argument at
+    /// `MAX_ARG_STRLEN` (131072 bytes) and a plan-critique task or a full persona crosses it:
+    /// the persona goes through the file `--system-prompt-file` names
+    /// ([`system_prompt_file`], in the spawn's scratch, held until the agent exits) and the
+    /// task through the child's stdin (`-p` with no positional prompt reads it there). The
+    /// task is written on its own thread, which owns the stdin handle and drops it once
+    /// written, closing the child's input, so a child that fills its stdout pipe before it
+    /// has drained stdin never deadlocks against this host. A child that exits without
+    /// reading all of it breaks the pipe: the child's fault, reported through its exit
+    /// status, never a host failure.
+    fn run_to_exit(
         &self,
         agent: &AgentDef,
-        prompt: &str,
+        framed: String,
         opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
+    ) -> Result<Output, Error> {
+        let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
         let bin = bin_or_path_default(&self.bin, "claude");
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
-        // Live progress (spec 14): frame the same per-step progress instruction the workflow
-        // drivers give, so a worker on this path also reports what it is doing between
-        // milestones. (This synchronous, non-parking path has no parked frontier entry, so the
-        // current consolidator does not surface it - the emit is recorded and future-proof.)
-        let framed = format!(
-            "{prompt}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
-            opts.id
-        );
         cmd.args(build_args(
             agent,
-            &framed,
+            &persona,
             opts,
             bin_or_path_default(&self.rigger_bin, "rigger"),
         )?);
@@ -71,14 +82,48 @@ impl AgentDriver for Driver {
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
-        let out = cmd
-            .output()
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd
+            .spawn()
             .map_err(|e| Error(format!("cli driver: spawn agent {:?}: {e}", agent.id)))?;
-        // The spawn's terminus: its process exited, whatever its outcome, and this host hands
-        // the result straight back in-process, never through the `rigger result` courier that
-        // reclaims a stepwise spawn's scratch - so reclaim the spawn's own scratch here, before
-        // anything below can return early.
+        let writer = child.stdin.take().map(|mut stdin| {
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(framed.as_bytes());
+            })
+        });
+        let waited = child.wait_with_output();
+        if let Some(writer) = writer {
+            let _ = writer.join();
+        }
+        waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))
+    }
+}
+
+impl AgentDriver for Driver {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        // Live progress (spec 14): frame the same per-step progress instruction the workflow
+        // drivers give, so a worker on this path also reports what it is doing between
+        // milestones. (This synchronous, non-parking path has no parked frontier entry, so the
+        // current consolidator does not surface it - the emit is recorded and future-proof.)
+        let framed = format!(
+            "{prompt}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
+            opts.id
+        );
+        let out = self.run_to_exit(agent, framed, opts);
+        // The spawn's terminus: its process exited (or never started), whatever its outcome,
+        // and this host hands the result straight back in-process, never through the `rigger
+        // result` courier that reclaims a stepwise spawn's scratch - so reclaim the spawn's own
+        // scratch here, before anything below can return early.
         reclaim_finished_spawn_scratch(opts);
+        let out = out?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         // Bridge emission: a subprocess agent has no live MCP channel, so its
         // decisions/findings are printed to stdout per the EMIT_PROTOCOL /
@@ -161,14 +206,16 @@ fn bridge_emits(
     Ok(())
 }
 
-/// Build the `claude` headless invocation: the grounded task is the `-p` prompt and
-/// the agent's PERSONA (its role) is the SYSTEM prompt (`--system-prompt`), with the
-/// model and allowed tools the agent declares. The persona is taken from
-/// `opts.system_prompt` - the conductor's single persona source (`SpawnOpts::system_prompt`,
-/// set from `AgentDef::prompt`) - NOT read from `agent.prompt` here, so the cli and
-/// workflow paths thread the SAME persona and cannot diverge. An empty persona omits
-/// the flag (the agent runs with the default system prompt). `opts.attempt` selects the
-/// cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
+/// Build the `claude` headless invocation: `-p` with NO positional prompt, so the session
+/// reads the grounded task from its stdin, and the agent's PERSONA (its role) as the SYSTEM
+/// prompt through the file `persona` holds (`--system-prompt-file`), with the model and
+/// allowed tools the agent declares. Neither prompt is ever an argv string: Linux caps one
+/// argument at `MAX_ARG_STRLEN` (131072 bytes), which a plan-critique task or a full persona
+/// crosses. The host writes the persona file from `opts.system_prompt` - the conductor's
+/// single persona source (`SpawnOpts::system_prompt`, set from `AgentDef::prompt`) - NOT from
+/// `agent.prompt`, so the cli and workflow paths thread the SAME persona and cannot diverge.
+/// An empty persona omits the flag (the agent runs with the default system prompt).
+/// `opts.attempt` selects the cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
 /// agent runs on the rung it escalated to for this remediation attempt.
 ///
 /// The spawn configuration follows (see [`spawn_config_args`]: permissions, then the
@@ -179,15 +226,12 @@ fn bridge_emits(
 /// `opts.settings_json` is not a JSON object the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
-    prompt: &str,
+    persona: &SystemPromptFile,
     opts: &SpawnOpts,
     rigger_bin: &str,
 ) -> Result<Vec<String>, Error> {
-    let mut args = vec!["-p".to_string(), prompt.to_string()];
-    if !opts.system_prompt.is_empty() {
-        args.push("--system-prompt".to_string());
-        args.push(opts.system_prompt.clone());
-    }
+    let mut args = vec!["-p".to_string()];
+    args.extend(persona.args());
     let model = agent.model_for_attempt(opts.attempt);
     if !model.is_empty() {
         args.push("--model".to_string());
@@ -298,8 +342,8 @@ thinking out loud, not json\n\
     #[test]
     fn spawn_shells_out_and_bridges_the_agents_emits() {
         // End-to-end through the real spawn path: a tiny executable shell script
-        // acts as the "agent" binary. It ignores its args (build_args passes `-p
-        // <prompt>`) and prints two emit-protocol lines plus chatter. The driver
+        // acts as the "agent" binary. It ignores its args and its stdin (the task) and
+        // prints two emit-protocol lines plus chatter. The driver
         // must shell out, capture stdout, and bridge BOTH emits through the
         // callback - proving the cli path records decisions and extends the DAG.
         //
@@ -522,6 +566,128 @@ thinking out loud, not json\n\
         assert!(dir.exists(), "the unit worktree itself is never touched");
     }
 
+    /// Linux's per-argument limit (`MAX_ARG_STRLEN`, 32 pages of 4096 bytes): one argv string
+    /// longer than this fails `execve` with `E2BIG` whatever the total argv size.
+    #[cfg(unix)]
+    const MAX_ARG_STRLEN: usize = 131_072;
+
+    /// The checked-in fixture agent that copies its stdin and its `--system-prompt-file` into
+    /// the directory `PROMPT_CAPTURE_DIR` names, relative to this crate's manifest.
+    #[cfg(unix)]
+    const PROMPT_CAPTURE_AGENT: &str = "../../tests/fixtures/prompt-capture-agent.sh";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_task_and_a_persona_each_past_the_per_argument_limit_reach_the_agent_intact() {
+        // A plan-critique prompt (plan + spec + code neighbourhood) and a full persona each
+        // cross the kernel's per-argument limit, so neither can travel as one argv string: the
+        // task arrives on stdin and the persona through the file `--system-prompt-file` names,
+        // under the spawn's own scratch, which the spawn's terminus reclaims.
+        let scratch = tempfile::tempdir().unwrap();
+        let capture = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("rigger-wt-u");
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = "t".repeat(MAX_ARG_STRLEN + 1);
+        let persona = "p".repeat(MAX_ARG_STRLEN + 1);
+        let opts = SpawnOpts {
+            id: "u/adversary#0".into(),
+            run_id: "r1".into(),
+            dir: dir.to_string_lossy().into_owned(),
+            system_prompt: persona.clone(),
+            env: vec![(
+                "PROMPT_CAPTURE_DIR".to_string(),
+                capture.path().to_string_lossy().into_owned(),
+            )],
+            ..Default::default()
+        };
+        let driver = Driver {
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(PROMPT_CAPTURE_AGENT)
+                .to_string_lossy()
+                .into_owned(),
+            ..Driver::default()
+        };
+
+        driver
+            .spawn(&AgentDef::default(), &task, &opts, &|_: &str, _: Value| {
+                Ok(())
+            })
+            .unwrap();
+
+        let stdin = std::fs::read_to_string(capture.path().join("stdin")).unwrap();
+        assert!(
+            stdin.starts_with(&task),
+            "the whole task arrived on stdin ({} bytes read)",
+            stdin.len()
+        );
+        assert_eq!(
+            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            persona,
+            "the whole persona arrived through the system-prompt file"
+        );
+        let leaf = crate::driver::replay::spawn_scratch_path(
+            &scratch.path().to_string_lossy(),
+            "r1",
+            &opts.id,
+        )
+        .unwrap();
+        assert!(
+            !leaf.exists(),
+            "the spawn's scratch, system-prompt file included, is reclaimed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_less_spawn_delivers_its_persona_and_leaves_no_file_behind() {
+        // A spawn with no worktree (an `isolation: none` planner, or any spawn of a repo-less
+        // run) has no spawn scratch; its persona still travels as a file, which the host
+        // removes once the spawn ends.
+        let capture = tempfile::tempdir().unwrap();
+        let opts = SpawnOpts {
+            id: "plan/planner#0".into(),
+            system_prompt: "You plan.".into(),
+            env: vec![(
+                "PROMPT_CAPTURE_DIR".to_string(),
+                capture.path().to_string_lossy().into_owned(),
+            )],
+            ..Default::default()
+        };
+        let driver = Driver {
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(PROMPT_CAPTURE_AGENT)
+                .to_string_lossy()
+                .into_owned(),
+            ..Driver::default()
+        };
+
+        driver
+            .spawn(
+                &AgentDef::default(),
+                "plan it",
+                &opts,
+                &|_: &str, _: Value| Ok(()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            "You plan."
+        );
+        assert!(std::fs::read_to_string(capture.path().join("stdin"))
+            .unwrap()
+            .starts_with("plan it"));
+        let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
+        assert!(
+            std::path::Path::new(&path).is_absolute(),
+            "the agent's cwd is not the host's, so the path is absolute: {path}"
+        );
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "the system-prompt file is removed once the spawn ends: {path}"
+        );
+    }
+
     /// The index of `flag` in the built `args`, panicking when it is absent.
     fn arg_index(args: &[String], flag: &str) -> usize {
         args.iter()
@@ -548,24 +714,49 @@ thinking out loud, not json\n\
         }
     }
 
-    /// `build_args` for `agent` with the task `prompt`, persona `system_prompt` and remediation
-    /// `attempt`, naming the `rigger` binary on `$PATH` for the MCP server.
-    fn args_for(agent: &AgentDef, prompt: &str, system_prompt: &str, attempt: u32) -> Vec<String> {
+    /// `build_args` for `agent` with the persona `system_prompt` (written to a file under
+    /// `scratch`, held by the returned guard) and remediation `attempt`, naming the `rigger`
+    /// binary on `$PATH` for the MCP server.
+    fn args_with_persona(
+        agent: &AgentDef,
+        scratch: &std::path::Path,
+        system_prompt: &str,
+        attempt: u32,
+    ) -> (Vec<String>, SystemPromptFile) {
+        let opts = persona_opts(system_prompt, attempt);
+        let persona = system_prompt_file(&opts.system_prompt, Some(scratch.to_path_buf())).unwrap();
+        let args = build_args(agent, &persona, &opts, "rigger").unwrap();
+        (args, persona)
+    }
+
+    /// `build_args` for `agent` with no persona at remediation `attempt`, naming the `rigger`
+    /// binary on `$PATH` for the MCP server.
+    fn args_for(agent: &AgentDef, attempt: u32) -> Vec<String> {
         build_args(
             agent,
-            prompt,
-            &persona_opts(system_prompt, attempt),
+            &SystemPromptFile::default(),
+            &persona_opts("", attempt),
             "rigger",
         )
         .unwrap()
     }
 
+    /// The prompt `-p` carries in `args`: none, since the task travels on stdin.
+    fn assert_no_positional_prompt(args: &[String]) {
+        let pi = arg_index(args, "-p");
+        assert!(
+            args.get(pi + 1).is_none_or(|next| next.starts_with("--")),
+            "-p takes no positional prompt; the task travels on stdin: {args:?}"
+        );
+    }
+
     #[test]
-    fn persona_is_the_system_prompt_task_is_the_prompt() {
-        // The persona (the agent's role) is threaded in as the `system_prompt` arg -
-        // the conductor's single persona source - and goes to `--system-prompt`; the
-        // grounded task is the `-p` prompt. The persona is NOT read from agent.prompt
-        // here, so the cli path uses the same persona source the workflow path does.
+    fn persona_is_the_system_prompt_file_and_no_prompt_is_in_argv() {
+        // The persona (the agent's role) is threaded in as the `system_prompt` arg - the
+        // conductor's single persona source - and reaches the session through the file
+        // `--system-prompt-file` names; the grounded task travels on stdin, so `-p` carries
+        // no positional prompt. The persona is NOT read from agent.prompt here, so the cli
+        // path uses the same persona source the workflow path does.
         let a = AgentDef {
             id: "impl".into(),
             model: "sonnet".into(),
@@ -575,15 +766,22 @@ thinking out loud, not json\n\
             prompt: "stale body that must not be used".into(),
             ..Default::default()
         };
-        let args = args_for(&a, "do the thing", "You implement findings.", 0);
-        // The grounded task is the -p prompt, and the persona is NOT spliced into it.
-        let pi = arg_index(&args, "-p");
-        assert_eq!(args[pi + 1], "do the thing");
-        assert!(!args[pi + 1].contains("You implement findings."));
-        assert!(!args[pi + 1].contains("stale body"));
-        // The persona is the system prompt.
-        let si = arg_index(&args, "--system-prompt");
-        assert_eq!(args[si + 1], "You implement findings.");
+        let scratch = tempfile::tempdir().unwrap();
+        let (args, _persona) = args_with_persona(&a, scratch.path(), "You implement findings.", 0);
+        assert_no_positional_prompt(&args);
+        assert!(
+            !args
+                .iter()
+                .any(|x| x.contains("You implement findings.") || x.contains("stale body")),
+            "no prompt text is in argv: {args:?}"
+        );
+        // The persona is the system prompt, read from its file.
+        let si = arg_index(&args, "--system-prompt-file");
+        assert_eq!(
+            std::fs::read_to_string(&args[si + 1]).unwrap(),
+            "You implement findings."
+        );
+        assert!(!args.iter().any(|x| x == "--system-prompt"));
         let mi = arg_index(&args, "--model");
         assert_eq!(args[mi + 1], "sonnet");
         let ti = arg_index(&args, "--allowed-tools");
@@ -598,7 +796,7 @@ thinking out loud, not json\n\
             recurse: false,
             ..Default::default()
         };
-        let args = args_for(&a, "task", "", 0);
+        let args = args_for(&a, 0);
         let ti = arg_index(&args, "--allowed-tools");
         assert_eq!(args[ti + 1], with_helper_tools("Read"));
         assert!(!args[ti + 1].contains("Agent"));
@@ -612,7 +810,7 @@ thinking out loud, not json\n\
             recurse: true,
             ..Default::default()
         };
-        let args = args_for(&a, "task", "", 0);
+        let args = args_for(&a, 0);
         let ti = arg_index(&args, "--allowed-tools");
         assert_eq!(args[ti + 1], with_helper_tools("Read,Agent"));
     }
@@ -627,7 +825,7 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let model_at = |attempt: u32| {
-            let args = args_for(&a, "task", "", attempt);
+            let args = args_for(&a, attempt);
             let mi = arg_index(&args, "--model");
             args[mi + 1].clone()
         };
@@ -645,22 +843,20 @@ thinking out loud, not json\n\
     }
 
     #[test]
-    fn minimal_agent_with_no_persona_yields_the_prompt_the_helper_tools_and_the_configuration() {
-        // No persona (empty system_prompt) omits --system-prompt entirely, so a bare
-        // agent's args are exactly the task prompt, the helpers' pre-approved MCP tools
-        // and the spawn configuration every spawn carries.
+    fn minimal_agent_with_no_persona_yields_print_mode_the_helper_tools_and_the_configuration() {
+        // No persona (empty system_prompt) omits --system-prompt-file entirely, so a bare
+        // agent's args are exactly print mode (no positional prompt: the task travels on
+        // stdin), the helpers' pre-approved MCP tools and the spawn configuration every spawn
+        // carries.
         let args = args_for(
             &AgentDef {
                 id: "bare".into(),
                 ..Default::default()
             },
-            "task",
-            "",
             0,
         );
         let mut expected = vec![
             "-p".to_string(),
-            "task".to_string(),
             "--allowed-tools".to_string(),
             crate::hooks::helper_mcp_tools().unwrap().join(","),
         ];
@@ -687,8 +883,8 @@ thinking out loud, not json\n\
         };
         let args = build_args(
             &a,
-            "task",
-            &persona_opts("persona", 0),
+            &SystemPromptFile::default(),
+            &persona_opts("", 0),
             "/custom/bin/rigger",
         )
         .unwrap();
@@ -720,7 +916,7 @@ thinking out loud, not json\n\
             tools: vec!["Read".into(), "mcp__rigger__rigger_graph".into()],
             ..Default::default()
         };
-        let args = args_for(&a, "task", "", 0);
+        let args = args_for(&a, 0);
         assert_eq!(
             args[arg_index(&args, "--allowed-tools") + 1],
             "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers"
@@ -728,17 +924,18 @@ thinking out loud, not json\n\
     }
 
     #[test]
-    fn build_args_orders_task_persona_model_tools_permissions_then_configuration() {
+    fn build_args_orders_print_mode_persona_model_tools_permissions_then_configuration() {
         let a = AgentDef {
             id: "impl".into(),
             model: "opus".into(),
             tools: vec!["Read".into()],
             ..Default::default()
         };
-        let args = args_for(&a, "task", "persona", 0);
+        let scratch = tempfile::tempdir().unwrap();
+        let (args, _persona) = args_with_persona(&a, scratch.path(), "persona", 0);
         let order: Vec<usize> = [
             "-p",
-            "--system-prompt",
+            "--system-prompt-file",
             "--model",
             "--allowed-tools",
             "--permission-mode",
@@ -763,7 +960,13 @@ thinking out loud, not json\n\
             settings_json: "{\"model\":\"opus\"}".to_string(),
             ..Default::default()
         };
-        let args = build_args(&AgentDef::default(), "task", &opts, "rigger").unwrap();
+        let args = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &opts,
+            "rigger",
+        )
+        .unwrap();
         let settings = flag_json(&args, "--settings");
         assert_eq!(
             settings["model"], "opus",
@@ -780,7 +983,13 @@ thinking out loud, not json\n\
             settings_json: "[1]".to_string(),
             ..Default::default()
         };
-        let err = build_args(&AgentDef::default(), "task", &opts, "rigger").unwrap_err();
+        let err = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &opts,
+            "rigger",
+        )
+        .unwrap_err();
         assert!(err.0.contains("settings"), "{}", err.0);
     }
 }
