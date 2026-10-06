@@ -31,14 +31,17 @@ set is folded from parked spawn requests (`crates/rigger-driver/src/liveness.rs:
 the blocking drivers never park (`conductor.rs:1882-1884`), so `cmd_step`'s composition at
 `src/cli/run.rs:875-880` is unchanged.
 
-**EVERY RUN ENTRY, enumerated.** `cmd_step` (`rigger step`, `src/cli/run.rs:428`): the key,
-unchanged. `run_cli` (`rigger run`, `--driver cli` by default, `src/cli/run.rs:317-325`): stdout.
-`run_workflow` (`rigger run --driver workflow`, and `rigger serve` via `cmd_serve`,
-`src/cli/run.rs:1879`): stderr, which under an MCP host other than the shim lands in that host's
-server log, accepted. `cmd_workflow` (`src/cli/run.rs:1920`) prints nothing itself; its shim
-spawns `rigger serve` with stderr inherited (`shim/shim.mjs:413`). The other caller of
-`liveness::halt_reason`, `close_landed_units` of `rigger reset --runs` (`src/cli/hygiene.rs:982`),
-is not a run entry and is untouched.
+**EVERY RUN ENTRY, enumerated** over the four production `conductor::run` call sites: `cmd_step`
+(`rigger step`, `src/cli/run.rs:428`): the key, unchanged. `run_cli` (`rigger run`, `--driver cli`
+by default, `src/cli/run.rs:317-325`): stdout. `run_workflow` (`rigger run --driver workflow`, and
+`rigger serve` via `cmd_serve`, `src/cli/run.rs:1879`): stderr, which under an MCP host other than
+the shim lands in that host's server log, accepted. `cmd_workflow` (`src/cli/run.rs:1920`) prints
+nothing itself; its shim spawns `rigger serve` with stderr inherited (`shim/shim.mjs:413`).
+`cmd_replay` (`rigger replay`, `src/cli/mod.rs:2468`, the call at `:2574`) is not a run entry: an
+offline re-fold of a recorded trajectory over an isolated store for a metrics diff, reading its
+state only for `err()` (`:2596`) and printing its own not-completed line (`:2615-2620`); untouched.
+The other caller of `liveness::halt_reason`, `close_landed_units` of `rigger reset --runs`
+(`src/cli/hygiene.rs:982`), is not a run entry and is untouched.
 
 **CONSTRAINTS WALK.** Empty log, clean fixpoint: no line. A run that ends `incomplete` with no
 budget or spec-defect reason (an escalated unit, a manual-review pause, a failed deferred gate,
@@ -62,8 +65,8 @@ halt is NOT an implementation (`ledger.rs:181-183`).
 
 **TEST DISPOSITIONS.** Both new tests sit in `tests/cli.rs` beside the step's budget test
 (`tests/cli.rs:7374`), using the budget-one fixture `BUDGET_ONE_TWO_STAGE_WORKFLOW`
-(`tests/cli.rs:4158`), private to that file. The step's three arms stay pinned as they are:
-budget (`tests/cli.rs:7374`), hung (`tests/cli.rs:7549`), spec defect
+(`tests/cli.rs:4158`), private to that file. The step's three arms stay pinned as they are: budget
+(`tests/cli.rs:7374`), hung (`tests/cli.rs:7549`), spec defect
 (`tests/plan_critique_spec_defect_stop_periphery.rs:254`). A halt line's absence is asserted per
 line: no line starting with `halted: `, the form `halted_line` returns. The clean `rigger run` of
 `tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. `McpSession`
@@ -76,45 +79,47 @@ the standing idiom, issue #60, outside this spec. Criterion 2 makes `McpSession:
 through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so every session
 carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME` (`root`, the periphery suite's existing
 choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry directory in the
-fixture root is accepted). `rigger mcp` reads
-neither variable (`cmd_mcp`, `src/cli/dashboard.rs:814`, reaches neither the registry nor the
-dash), so every existing `McpSession` caller is unchanged and the builder change is a consequence
-of criterion 2's test, not a second mitigation. Criterion 2 adds four `McpSession` methods in
-`tests/common/mcp.rs`, nothing moved: `tool_call(name, arguments)`, the one `tools/call`
-authority, which `peers` calls and whose private copy in
-`tests/compaction_generations_periphery.rs:3530` is deleted, its callers calling the method and
-its assertions unchanged; `initialize()`, once per session; `next_spawn(deadline: Instant) ->
-Option<String>`, polling `rigger_next` 20 ms apart until it hands out a spawn id (`Some`), answers
-`done: true` (`None`) or the deadline passes, when it calls `fail` itself; and `fail(&mut self,
-why: &str) -> !`, which ends its own child by its handle (`Child::kill()`, the no-os-kill gate's
-sanctioned form), drains its stderr and panics naming `why` and that stderr. `finish(self)` alone
-consumes the session; the clean run shares one `Instant` across its loop, the budget run its own.
+fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
+`src/cli/dashboard.rs:814`, reaches neither the registry nor the dash), so every existing
+`McpSession` caller is unchanged and the builder change is a consequence of criterion 2's test, not
+a second mitigation. Criterion 2 adds four `McpSession` methods in `tests/common/mcp.rs`, nothing
+moved: `tool_call(name, arguments)`, the one `tools/call` authority, which `peers` calls and whose
+private copy in `tests/compaction_generations_periphery.rs:3530` is deleted, its callers calling
+the method and its assertions unchanged; `initialize()`, once per session; `next_spawn(deadline:
+Instant) -> Option<String>`, polling `rigger_next` 20 ms apart until it hands out a spawn id
+(`Some`), answers `done: true` (`None`) or the deadline passes, when it calls `fail` itself; and
+`fail(&mut self, why: &str) -> !`, which ends its own child by its handle (`Child::kill()`, the
+no-os-kill gate's sanctioned form), drains its stderr, waits it and panics naming `why` and that
+stderr. `finish(self)` alone consumes the session; the clean run shares one `Instant` across its
+loop, the budget run one `Instant` taken before its first `next_spawn` and passed to both calls.
 `initialize()` asserts the response carries `result` (the periphery's assert, moved there);
 `tool_call` returns the whole JSON-RPC response as `call` does (the compaction callers'
 `answer["error"]["message"]` assertions unchanged); `next_spawn` reads `result.structuredContent`
-for `id` and `done`, and an answer carrying neither polls on to the deadline, where `fail` names
-stderr (the deleted `call_tool`'s absent-`structuredContent` panic ends there, decided);
-`McpSession::call`'s parse panic stands in for the deleted `call`'s empty-line assert. `finish` is
-the clean-run exit (stdin closed after the run reports done) and `fail` the deadline exit, 15 s,
-because `run_workflow`'s scope (`src/cli/run.rs:1844-1875`) joins a conductor thread blocked in
-`Driver::spawn`'s `rx.recv()` (`workflow.rs:198-202`) while a spawn is pending, so the process
-never exits on stdin closing (issue #59). `McpSession` implements `Drop`, ending a child still
-running (`try_wait()` is `Ok(None)`) by its handle and waiting it, so a test panicking with a spawn
-pending leaks no process; `finish` takes the child out of the session before waiting, so `Drop`
-finds none, and `fail` keeps its own end, drain and panic, since the drain must follow the end (a
-drain before it blocks on the open pipe), so `Drop` then finds the child exited.
-`tests/workflow_driver_resolved_model_periphery.rs` is re-expressed over `McpSession` and these
-methods, its `call`, `call_tool`, `drain_stderr` and piped spawn deleted, its `events.db` poll miss
-calling `fail`, its assertions unchanged. Their first caller is criterion 2's test, which uses
-`tool_call` for `rigger_result`, reads stderr from `McpSession::finish`'s `Output` and also drives
-`TWO_STAGE_WORKFLOW` (`tests/cli.rs:4140`, budget 60) clean, looping `next_spawn` and answering
-each id until `None`, asserting the per-line absence. The budget run, after its one
-`rigger_result`, calls `next_spawn` again and requires `None` before `finish`, so the 15 s deadline
-covers the conductor's return and the assertion also pins that the refused second unit's spawn is
-never handed out; `finish` then waits on a process whose run has reported done. A session is for
-short fixtures whose stderr stays under the 64 KiB pipe buffer, as these two runs do, and a hang
-inside `exchange`'s untimed `read_line` (`tests/common/mcp.rs:55`) is outside `fail`'s reach and
-accepted for them; a longer run drains stderr on a thread first (not this spec's).
+for `id` and `done`: an absent or empty `id` is no handout, `done` is read only then (`true` is
+`None`, else it polls on, as the periphery does at `:193-196`), and a missing `structuredContent`
+polls on to the deadline, where `fail` names stderr (the deleted `call_tool`'s panic ends there,
+decided); `McpSession::call`'s parse panic stands in for the deleted `call`'s empty-line assert.
+`finish` is the clean-run exit (stdin closed after the run reports done) and `fail` the deadline
+exit, 15 s, because `run_workflow`'s scope (`src/cli/run.rs:1844-1875`) joins a conductor thread
+blocked in `Driver::spawn`'s `rx.recv()` (`workflow.rs:198-202`) while a spawn is pending, so the
+process never exits on stdin closing (issue #59). `fail`'s end and `finish` are the only session
+ends this spec adds; a test panicking between `next_spawn`'s handout and its `rigger_result` leaves
+the serve child running, which is issue #59's consequence and ends with its root fix, accepted here
+by name. `tests/workflow_driver_resolved_model_periphery.rs` is re-expressed over `McpSession` and
+these methods, its `call`, `call_tool`, `drain_stderr` and piped spawn deleted, its `events.db`
+poll miss calling `fail`, its assertions unchanged; it ends its session with `finish` after reading
+the green event (its one spawn answered, nothing pending, so the conductor returns), and a `None`
+from its `next_spawn` before a spawn is handed out calls `fail`. Their first caller is criterion
+2's test, which uses `tool_call` for `rigger_result`, reads stderr from `McpSession::finish`'s
+`Output` and also drives `TWO_STAGE_WORKFLOW` (`tests/cli.rs:4140`, budget 60) clean, looping
+`next_spawn` and answering each id until `None`, asserting the per-line absence. The budget run,
+after its one `rigger_result`, calls `next_spawn` again and requires `None` before `finish`, so the
+15 s deadline covers the conductor's return and the assertion also pins that the refused second
+unit's spawn is never handed out; `finish` then waits on a process whose run has reported done. A
+session is for short fixtures whose stderr stays under the 64 KiB pipe buffer, as these two runs
+do, and a hang inside `exchange`'s untimed `read_line` (`tests/common/mcp.rs:55`) is outside
+`fail`'s reach and accepted for them; a longer run drains stderr on a thread first (not this
+spec's).
 
 **DOCUMENT EDITS.** In `tests/common/mcp.rs` only: criterion 2 rewords its module and method
 rustdoc and `expect` strings (`:1-8, 21, 32, 65, 94`) from a `rigger mcp` invocation to a rigger
@@ -146,7 +151,7 @@ shim's end-of-run text after a halted serve.
   read from `McpSession::finish`, while a clean two-stage workflow run's stderr holds no line
   starting with `halted: `. This criterion OWNS `run_workflow`'s call, its stream,
   `McpSession::start_with`'s builder change, the `tool_call`, `initialize`, `next_spawn` and `fail`
-  methods, its `Drop`, the `tests/common/mcp.rs` rewording DOCUMENT EDITS gives it, and the
+  methods, the `tests/common/mcp.rs` rewording DOCUMENT EDITS gives it, and the
   re-expression of the periphery and compaction suites over them; `halted_line` is criterion 1's,
   NOT this one's.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features). This
