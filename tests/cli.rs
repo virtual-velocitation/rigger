@@ -7424,19 +7424,38 @@ fn run_prints_the_budget_halt_reason_after_the_run_state() {
     write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
 
     // The fixture's worker persona carries no marker of its own, so the one arm matches its
-    // text; any other spawn fails the fake agent loudly.
+    // text and records each answer as one line in `$RIGGERTEST_MARKER`, a file outside the unit
+    // worktree. A spawn no arm matches writes nothing there, and the run would still exit 0
+    // with the same halt line, so the premise assertion below is what sees the agent answer.
     let (_fakebin, path_env) = install_fake_claude(
         r#"  *"Do the unit."*)
+    echo answered >> "$RIGGERTEST_MARKER"
     echo "did the unit"
     ;;
 "#,
     );
+    let marker = root.join("worker-answered-marker.txt");
 
-    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["run"],
+        &[
+            ("PATH", &path_env),
+            ("RIGGERTEST_MARKER", marker.to_str().unwrap()),
+        ],
+    );
     assert!(
         ok,
         "a budget-halted run is a run outcome, not a process error: it exits 0; stderr: {err}\n\
          stdout: {out}"
+    );
+    // Non-vacuity: the fake agent on `PATH` answered the worker, exactly once - the one spawn
+    // the budget admits. An arm that never matched, or no agent at all, leaves no line here.
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap_or_default(),
+        "answered\n",
+        "premise: the fake agent must have answered the one admitted worker, or the halt line \
+         below says nothing about a run an agent took part in; stderr: {err}"
     );
 
     let lines: Vec<&str> = out.lines().collect();
