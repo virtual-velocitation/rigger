@@ -7407,6 +7407,86 @@ mod tests {
             .unwrap()
     }
 
+    /// Every row of every table but the `applied` ledger, straight off the projector's own
+    /// connection, as `<table>: <columns>`, sorted, so two dumps compare whatever order a table
+    /// hands its rows in.
+    fn projection_but_applied(p: &Projector) -> Vec<String> {
+        let tables: Vec<String> = raw_rows(
+            p,
+            "SELECT name FROM sqlite_master
+              WHERE type = 'table' AND name != 'applied' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        );
+        let mut rows: Vec<String> = Vec::new();
+        for table in tables {
+            let found: Vec<String> = raw_rows(p, &format!("SELECT * FROM {table}"), [], |r| {
+                let width = r.as_ref().column_count();
+                Ok((0..width)
+                    .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join(" | "))
+            });
+            rows.extend(found.into_iter().map(|row| format!("{table}: {row}")));
+        }
+        rows.sort();
+        rows
+    }
+
+    #[test]
+    fn folding_each_episodic_type_writes_its_applied_row_and_leaves_the_projection_unchanged() {
+        // Spec 107, criterion 1 (THE CLASSES ARE ONE TABLE): an episodic type is one whose fold
+        // changes neither the live projection nor the fold state, `FileTouched` and `GateVerdict`
+        // through their no-op arms and the rest through none. Over a seeded graph, folding one
+        // event of each type of `retention::EPISODIC_TYPES`, its payload naming a seeded file,
+        // leaves every table but `applied` row for row as it stood and adds exactly its own
+        // position to `applied`.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let mut pos = crate::test_support::seed_two_subsystems(&p);
+        apply_decision(&p, pos, "d1", "keep", &["src/combat/hit.rs"], "");
+        let seeded = projection_but_applied(&p);
+        for table in ["nodes: ", "edges: ", "node_assertions: "] {
+            assert!(
+                seeded.iter().any(|row| row.starts_with(table)),
+                "the seeded projection holds rows of {table}so an unchanged dump proves something"
+            );
+        }
+        for type_ in rigger_domain::retention::EPISODIC_TYPES {
+            pos += 1;
+            let mut applied: Vec<i64> = raw_rows(
+                &p,
+                "SELECT position FROM applied ORDER BY position",
+                [],
+                |r| r.get(0),
+            );
+            apply_json(
+                &p,
+                pos,
+                type_,
+                serde_json::json!({
+                    "id": "e1", "unit": "u1", "by": "rust-engineer", "path": "src/combat/hit.rs",
+                    "gate": "cargo test", "pass": true, "artifact": "src/combat/hit.rs",
+                }),
+            );
+            assert_eq!(
+                projection_but_applied(&p),
+                seeded,
+                "folding {type_} changes no table but applied"
+            );
+            applied.push(i64::try_from(pos).unwrap());
+            let after: Vec<i64> = raw_rows(
+                &p,
+                "SELECT position FROM applied ORDER BY position",
+                [],
+                |r| r.get(0),
+            );
+            assert_eq!(
+                after, applied,
+                "folding {type_} adds exactly its own applied row"
+            );
+        }
+    }
+
     #[test]
     fn re_extraction_supersedes_a_files_prior_structural_edges_without_deleting_them() {
         // Criterion 3: re-extracting a CHANGED file SUPERSEDES rather than overwrites. The FIRST
