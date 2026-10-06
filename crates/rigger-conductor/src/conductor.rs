@@ -43,8 +43,8 @@ use rigger_domain::review::{
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
-    baseline_units, coverage_gap, criterion_stable_id, critique_gate_name, fan_out_lenses,
-    first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
+    baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
+    fan_out_lenses, first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
@@ -11959,10 +11959,12 @@ impl RunCtx<'_> {
                     for owner in prior_owners {
                         stages.remove(&owner);
                     }
-                    // The superseding unit carries the EXACT criterion text as its
-                    // coverage, so it grounds on and records the real criterion and the
-                    // coverage gate stays exact even when the planner paraphrased.
-                    u.coverage = criterion;
+                    // The superseding unit's coverage OPENS with the EXACT criterion text,
+                    // so it grounds on and records the real criterion even when the planner
+                    // paraphrased, and keeps whatever ownership sentence a split part
+                    // carries past it, so two parts of one criterion never become twins
+                    // and each part's contract names the half it owns.
+                    u.coverage = part_coverage(&criterion, &u.coverage);
                     // THE STAMP (spec 72, outcome-level): carry the criterion's own
                     // stable id onto the stage this proposal becomes - not only a
                     // conductor-synthesized baseline gets one from here on. Without this
@@ -12052,7 +12054,9 @@ impl RunCtx<'_> {
     /// the surrounding display brackets and emits `[c<pos>-<hex>]` while the baseline
     /// stores the UN-bracketed id; [`normalize_criterion_id`] strips the brackets so a
     /// compliant echo (either form) resolves. The prose fallback keeps a hand-authored
-    /// proposal (or an older planner) that copies a criterion VERBATIM with no id working.
+    /// proposal (or an older planner) that copies a criterion VERBATIM with no id working:
+    /// it resolves to the longest criterion the text opens with ([`criterion_remainder`]),
+    /// so a split part carrying its ownership sentence past the criterion still resolves.
     ///
     /// This is the ONE resolution authority for `harvest_proposed`'s ADD path, which
     /// resolves a proposal's coverage AND supersedes the served criterion's baseline as
@@ -12079,9 +12083,23 @@ impl RunCtx<'_> {
                     .criteria
                     .iter()
                     .enumerate()
-                    .find(|(_, c)| normalize_ws(c) == normalize_ws(coverage))
+                    .filter(|(_, c)| criterion_remainder(c, coverage).is_some())
+                    .min_by_key(|(_, c)| std::cmp::Reverse(normalize_ws(c).len()))
             })
             .map(|(i, c)| (criterion_stable_id(i + 1, c), c.clone()))
+    }
+}
+
+/// The coverage a proposal that resolved to `criterion` carries: the exact criterion text,
+/// followed after a blank line by whatever `proposed` carries past it when `proposed` opens
+/// with the criterion ([`criterion_remainder`]) - a split part's ownership sentence. A
+/// verbatim copy, a paraphrase or a truncation carries the exact criterion alone. The one
+/// authority for a proposal's coverage text, so every part of a split stays distinct while
+/// the criterion stays the prefix every reader grounds and matches on.
+fn part_coverage(criterion: &str, proposed: &str) -> String {
+    match criterion_remainder(criterion, proposed) {
+        Some(rest) if !rest.is_empty() => format!("{criterion}\n\n{rest}"),
+        _ => criterion.to_string(),
     }
 }
 
@@ -12255,7 +12273,7 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with
 /// the implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with
 /// the one unit size cap sentence ([`unit_size_cap`]) that says when a criterion splits.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- {unit_size_cap} Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part: every one echoes that criterion's id and ends its `criterion` text with an OWNS sentence naming its part.\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- {unit_size_cap} Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part: every one echoes that criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor keeps that sentence after the criterion's exact text as that unit's contract).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -17331,6 +17349,148 @@ mod tests {
             2,
             "the criterion must be served by exactly the two split units; got {serving:?}"
         );
+    }
+
+    /// The criterion the split-part fixtures below plan against.
+    const SPLIT_CRITERION: &str = "criterion A: the report is rendered from the parsed log";
+    /// Part 1's ownership sentence, carried past [`SPLIT_CRITERION`]'s verbatim text.
+    const PART_ONE_OWNS: &str = "THIS UNIT (part 1 of 2 of this criterion) OWNS the parser; \
+         the renderer is part 2's (split-part-2), NOT this unit's.";
+    /// Part 2's ownership sentence, carried past [`SPLIT_CRITERION`]'s verbatim text.
+    const PART_TWO_OWNS: &str = "THIS UNIT (part 2 of 2 of this criterion) OWNS the renderer; \
+         the parser is part 1's (split-part-1), NOT this unit's.";
+
+    /// Fold two same-episode parts of [`SPLIT_CRITERION`] through the real harvest, each the
+    /// criterion's verbatim text followed by its own ownership sentence (one after a line break,
+    /// one after a space - the planner echoes either) and echoing `cid`.
+    fn harvest_split_parts(st: &Store, cid: &str) -> BTreeMap<String, Stage> {
+        let part_one = format!("{SPLIT_CRITERION}\n{PART_ONE_OWNS}");
+        let part_two = format!("{SPLIT_CRITERION} {PART_TWO_OWNS}");
+        append_proposals(
+            st,
+            &[
+                ("split-part-1", &part_one, cid.to_string(), Vec::new()),
+                ("split-part-2", &part_two, cid.to_string(), Vec::new()),
+            ],
+        );
+        harvest_seeded(st, &[SPLIT_CRITERION])
+    }
+
+    #[test]
+    fn a_split_criterions_parts_keep_their_own_owns_sentence_after_the_exact_criterion() {
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, SPLIT_CRITERION);
+        let stages = harvest_split_parts(&st, &cid);
+        for (id, owns) in [
+            ("split-part-1", PART_ONE_OWNS),
+            ("split-part-2", PART_TWO_OWNS),
+        ] {
+            assert_eq!(
+                stages[id].coverage,
+                format!("{SPLIT_CRITERION}\n\n{owns}"),
+                "a part's coverage is the exact criterion followed by its own ownership sentence"
+            );
+            assert_eq!(
+                stages[id].criterion_id, cid,
+                "{id} keeps the criterion's stamp"
+            );
+        }
+        assert_ne!(
+            stages["split-part-1"].coverage, stages["split-part-2"].coverage,
+            "the two parts of one criterion must never reach the fan-out as twins"
+        );
+        assert!(!stages.contains_key(&baseline_id(1, SPLIT_CRITERION)));
+    }
+
+    #[test]
+    fn a_split_parts_contract_carries_its_own_owns_sentence() {
+        let st = Store::open(":memory:").unwrap();
+        let stages = harvest_split_parts(&st, &criterion_stable_id(1, SPLIT_CRITERION));
+        let contract = task_block(&stages["split-part-1"]);
+        assert!(
+            contract.contains(SPLIT_CRITERION) && contract.contains(PART_ONE_OWNS),
+            "part 1's implementer and reviewers must read the criterion AND which half they \
+             own; got:\n{contract}"
+        );
+        assert!(
+            !contract.contains(PART_TWO_OWNS),
+            "part 1's contract must not carry part 2's ownership sentence; got:\n{contract}"
+        );
+    }
+
+    #[test]
+    fn an_id_less_split_part_still_supersedes_its_baseline_by_its_criterion_prefix() {
+        let st = Store::open(":memory:").unwrap();
+        let stages = harvest_split_parts(&st, "");
+        for (id, owns) in [
+            ("split-part-1", PART_ONE_OWNS),
+            ("split-part-2", PART_TWO_OWNS),
+        ] {
+            assert_eq!(stages[id].coverage, format!("{SPLIT_CRITERION}\n\n{owns}"));
+            assert_eq!(
+                stages[id].criterion_id,
+                criterion_stable_id(1, SPLIT_CRITERION),
+                "an id-less part resolves through the criterion its text starts with"
+            );
+            assert!(
+                !has_unmatched_signal(&st, id),
+                "{id} matched a criterion, so it is never flagged as a genuinely-new sub-unit"
+            );
+        }
+        assert!(
+            !stages.contains_key(&baseline_id(1, SPLIT_CRITERION)),
+            "the parts supersede the baseline instead of running beside it"
+        );
+    }
+
+    #[test]
+    fn an_id_less_part_resolves_to_the_longest_criterion_its_text_starts_with() {
+        let short = "the widget is built";
+        let long = "the widget is built and documented";
+        let st = Store::open(":memory:").unwrap();
+        let text = format!("{long} {PART_ONE_OWNS}");
+        append_proposals(&st, &[("part-long", &text, String::new(), Vec::new())]);
+        let stages = harvest_seeded(&st, &[short, long]);
+        assert_eq!(
+            stages["part-long"].criterion_id,
+            criterion_stable_id(2, long)
+        );
+        assert_eq!(
+            stages["part-long"].coverage,
+            format!("{long}\n\n{PART_ONE_OWNS}")
+        );
+        assert!(stages.contains_key(&baseline_id(1, short)));
+        assert!(!stages.contains_key(&baseline_id(2, long)));
+    }
+
+    crate::test_cases! {
+        /// A paraphrase that echoes the criterion's id stamps the EXACT criterion, never the
+        /// planner's wording.
+        a_paraphrase_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion("the parsed log feeds the rendered report");
+        /// A truncated copy stamps the whole criterion back.
+        a_truncation_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion("criterion A: the report is rendered");
+        /// Text that runs on past the criterion without a word break is not a part sentence.
+        a_run_on_without_a_word_break_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion(&format!("{SPLIT_CRITERION}s and more"));
+        /// A verbatim copy, reflowed, stamps the criterion with nothing appended.
+        a_verbatim_copy_stamps_the_exact_criterion_with_nothing_appended:
+            assert_proposal_stamps_exact_criterion(&format!(
+                "  {}\n",
+                SPLIT_CRITERION.replace(' ', "\n   ")
+            ));
+    }
+
+    /// A proposal for [`SPLIT_CRITERION`] whose text is `text`, echoing the criterion's id, folds
+    /// to a stage whose coverage is the EXACT criterion text.
+    fn assert_proposal_stamps_exact_criterion(text: &str) {
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, SPLIT_CRITERION);
+        append_proposals(&st, &[("u-a", text, cid.clone(), Vec::new())]);
+        let stages = harvest_seeded(&st, &[SPLIT_CRITERION]);
+        assert_eq!(stages["u-a"].coverage, SPLIT_CRITERION, "text {text:?}");
+        assert_eq!(stages["u-a"].criterion_id, cid);
     }
 
     /// The `data` of a planner `UnitProposed` for unit `id` (agent `worker`, gate `ok`) against

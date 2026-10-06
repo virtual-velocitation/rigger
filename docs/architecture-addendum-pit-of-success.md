@@ -225,6 +225,9 @@ genuinely-new sub-unit (the existing, intended behavior for real splits), but th
 conductor emits a visible **`unmatched-proposal`** signal — surfaced in the current-
 blocker line (§4) — so the extra unit is legible instead of silent. A proposal mapping
 to the same baseline id as another is merged, never double-run.
+A planner that splits one criterion echoes its id on every part and writes each part's OWNS
+sentence after the copied criterion; the conductor keeps that sentence after the exact criterion
+text in the part's coverage, so the parts stay distinct and each part's contract names its half.
 
 This is the highest-risk unit in the addendum: it touches both the conductor's harvest
 path and the planner persona. It is specified with its own tests proving (a) a verbatim

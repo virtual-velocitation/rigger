@@ -17,6 +17,24 @@ pub fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What `text` carries past `criterion` when it opens with the criterion's verbatim text
+/// (both [`normalize_ws`]-normalized, the criterion ending on a word break): `Some("")` for
+/// a verbatim copy, `Some(rest)` for the criterion followed by more (a split part's
+/// ownership sentence), `None` when the text does not open with the criterion (a
+/// paraphrase or a truncation). The one prefix authority for matching a proposal's text
+/// to a criterion.
+pub fn criterion_remainder(criterion: &str, text: &str) -> Option<String> {
+    let (criterion, text) = (normalize_ws(criterion), normalize_ws(text));
+    if criterion.is_empty() {
+        return None;
+    }
+    let rest = text.strip_prefix(&criterion)?;
+    if rest.is_empty() {
+        return Some(String::new());
+    }
+    rest.strip_prefix(' ').map(str::to_string)
+}
+
 /// A baseline criterion's STABLE id (spec 18 §3.3, addendum "Planner ↔ baseline
 /// robustness"): its 1-based `position` plus a content hash of the criterion, so the
 /// planner can echo the id and `harvest_proposed` can match a proposal to its baseline
@@ -286,22 +304,27 @@ fn has_llm_verifier(st: &Stage) -> bool {
 /// covered by a stage that has a real (LLM-judge) verifier; a criterion covered only
 /// by a mechanical gate counts as NOT covered (the proxy-gap guard, item 5). It runs
 /// against the live `stages` map, so proposed planner units (which carry their own
-/// `coverage`) count toward closing the gap. Returns the gap reason, or None if every
-/// criterion is covered (or there are no criteria to enforce).
+/// `coverage`) count toward closing the gap. A stage covers a criterion when it carries
+/// that criterion's stable id (every planner unit serving it does, including each part of
+/// a split whose coverage runs on past the criterion with its ownership sentence) or its
+/// coverage is the criterion's text (an authored stage). Returns the gap reason, or None
+/// if every criterion is covered (or there are no criteria to enforce).
 pub fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option<String> {
     if criteria.is_empty() {
         return None;
     }
-    let covered: HashSet<&str> = stages
-        .values()
-        .filter(|st| has_llm_verifier(st))
-        .map(|st| st.coverage.trim())
-        .filter(|c| !c.is_empty())
-        .collect();
+    let verifiers: Vec<&Stage> = stages.values().filter(|st| has_llm_verifier(st)).collect();
     let gaps: Vec<&str> = criteria
         .iter()
-        .map(|c| c.trim())
-        .filter(|c| !covered.contains(c))
+        .enumerate()
+        .filter(|(i, c)| {
+            let id = criterion_stable_id(i + 1, c);
+            !verifiers.iter().any(|st| {
+                st.criterion_id == id
+                    || (!st.coverage.trim().is_empty() && st.coverage.trim() == c.trim())
+            })
+        })
+        .map(|(_, c)| c.trim())
         .collect();
     if gaps.is_empty() {
         return None;
@@ -433,6 +456,59 @@ mod tests {
     }
 
     const PLAN: &str = "  plan:\n    agent: planner\n    produces: dag\n";
+
+    /// A worker stage `name` with `coverage`, stamped with `criterion_id`.
+    fn covering_stage(name: &str, coverage: &str, criterion_id: &str) -> (String, Stage) {
+        (
+            name.to_string(),
+            Stage {
+                name: name.to_string(),
+                agent: "worker".into(),
+                coverage: coverage.to_string(),
+                criterion_id: criterion_id.to_string(),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_criterion_served_only_by_split_parts_is_covered() {
+        let criterion = "the report is rendered".to_string();
+        let cid = criterion_stable_id(1, &criterion);
+        let stages: BTreeMap<String, Stage> = [
+            covering_stage(
+                "part-1",
+                &format!("{criterion}\n\nTHIS UNIT OWNS the parser"),
+                &cid,
+            ),
+            covering_stage(
+                "part-2",
+                &format!("{criterion}\n\nTHIS UNIT OWNS the view"),
+                &cid,
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(coverage_gap(&stages, &[criterion]), None);
+    }
+
+    #[test]
+    fn a_criterion_no_stage_is_stamped_with_or_copies_is_a_gap() {
+        let criterion = "the report is rendered".to_string();
+        let stages: BTreeMap<String, Stage> = [
+            covering_stage("authored", "the report is rendered", ""),
+            covering_stage("other", "something else", "c9-0000000000000000"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            coverage_gap(&stages, std::slice::from_ref(&criterion)),
+            None
+        );
+        let other = "the log is parsed".to_string();
+        assert!(coverage_gap(&stages, &[criterion, other])
+            .is_some_and(|gap| gap.contains("the log is parsed")));
+    }
 
     #[test]
     fn the_critic_is_the_plan_critique_gates_adversary_first() {
