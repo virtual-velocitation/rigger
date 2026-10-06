@@ -7,6 +7,8 @@
 //! beyond its protocol (permissions, MCP server, settings, helpers) is composed here once,
 //! by [`spawn_config_args`], and each host's own `build_args` appends it.
 
+use std::path::PathBuf;
+
 use crate::agent::Error;
 use crate::config::AgentDef;
 use crate::hooks;
@@ -91,6 +93,86 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
 /// its ten-minute default and `0` waiting without one).
 pub(crate) fn harness_env() -> [(&'static str, &'static str); 1] {
     [("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")]
+}
+
+/// The file a spawn's system prompt (its persona) is written to, inside the spawn's scratch.
+const SYSTEM_PROMPT_FILE: &str = "system-prompt.md";
+
+/// A spawn's system prompt, written to a file the headless session reads through
+/// `--system-prompt-file`, and removed when this value drops. A host holds it until its spawn
+/// ends, so the session can read the file whenever it starts.
+///
+/// The persona never travels as an argv string because Linux caps any ONE argument at
+/// `MAX_ARG_STRLEN` (32 pages, 131072 bytes on a 4 KiB-page system): a longer one fails
+/// `execve` with `E2BIG` before the session starts, whatever the total argv size. A full
+/// persona can cross that limit, so every spawn takes the same path whatever its size.
+///
+/// Its default holds no file: a spawn with no system prompt.
+#[derive(Default)]
+pub struct SystemPromptFile {
+    /// The absolute path of the written file; `None` when the spawn has no system prompt.
+    path: Option<PathBuf>,
+}
+
+impl SystemPromptFile {
+    /// The `--system-prompt-file <path>` pair this spawn passes, or none for an empty system
+    /// prompt (the session then runs with its default one).
+    pub fn args(&self) -> Vec<String> {
+        self.path.as_ref().map_or_else(Vec::new, |path| {
+            vec![
+                "--system-prompt-file".to_string(),
+                path.to_string_lossy().into_owned(),
+            ]
+        })
+    }
+}
+
+impl Drop for SystemPromptFile {
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// The ONE prompt-delivery authority for the system prompt, whichever host launches the
+/// spawn: write `system_prompt` to `<spawn_scratch>/system-prompt.md` and return the guard
+/// that owns it ([`SystemPromptFile`]). An empty `system_prompt` writes nothing.
+///
+/// `spawn_scratch` is the spawn's own scratch directory
+/// ([`replay::spawn_scratch_path`]), created here when absent; the spawn's terminus reclaims
+/// that directory whole, so the file shares its lifecycle (and the orphan sweep covers a host
+/// that crashed mid-spawn). A spawn with no scratch directory - a spawn with no worktree on
+/// the cli host, or any spawn of a run with no repository - writes a uniquely named file in
+/// the system temp directory instead. Either way the guard removes the file when it drops.
+/// The path is absolute: the session runs in the spawn's worktree, not the host's cwd.
+pub(crate) fn system_prompt_file(
+    system_prompt: &str,
+    spawn_scratch: Option<PathBuf>,
+) -> Result<SystemPromptFile, Error> {
+    if system_prompt.is_empty() {
+        return Ok(SystemPromptFile { path: None });
+    }
+    let (dir, name) = match spawn_scratch {
+        Some(dir) => (dir, SYSTEM_PROMPT_FILE.to_string()),
+        None => (
+            std::env::temp_dir(),
+            format!("rigger-system-prompt-{}.md", uuid::Uuid::new_v4()),
+        ),
+    };
+    let write = || -> std::io::Result<PathBuf> {
+        std::fs::create_dir_all(&dir)?;
+        let path = std::path::absolute(dir.join(name))?;
+        std::fs::write(&path, system_prompt)?;
+        Ok(path)
+    };
+    let path = write().map_err(|e| {
+        Error(format!(
+            "driver: write the spawn's system prompt under {}: {e}",
+            dir.display()
+        ))
+    })?;
+    Ok(SystemPromptFile { path: Some(path) })
 }
 
 /// The unattended configuration every headless spawn carries, whichever host launches it. It

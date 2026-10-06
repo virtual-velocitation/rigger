@@ -20,8 +20,8 @@ use common::cli::{
 };
 use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_conn, critique_stub_spawns, critique_stub_task,
-    write_critique_stub, write_critique_stub_reporting,
+    critique_stub_argv, critique_stub_conn, critique_stub_spawns, critique_stub_system_prompt,
+    critique_stub_task, write_critique_stub, write_critique_stub_reporting,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -230,7 +230,11 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         "a sqlite selection hands the critic no server: its bound rigger server resolves the \
          local store through configuration"
     );
-    let system = flag_value(&argv, "--system-prompt");
+    assert!(
+        !argv.iter().any(|a| a == "--system-prompt"),
+        "the persona never travels as an argv string: {argv:?}"
+    );
+    let system = critique_stub_system_prompt(first.path());
     assert!(
         system.starts_with("You are the CRITIC-PERSONA adversary."),
         "the critic's system prompt opens with the persona the workflow names:\n{system}"
@@ -945,8 +949,7 @@ fn the_critic_is_the_plan_critique_gates_adversary_else_the_default_review_adver
         let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
         assert!(ok, "a workflow naming a critic critiques; stderr:\n{err}");
         assert_eq!(out, reject_out(SPEC, 0));
-        let argv = critique_stub_argv(work.path());
-        let system = flag_value(&argv, "--system-prompt");
+        let system = critique_stub_system_prompt(work.path());
         assert!(
             system.starts_with(persona),
             "the critic opens with {persona:?}:\n{system}"

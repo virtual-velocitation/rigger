@@ -40,12 +40,13 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
 const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
 
 /// The files the critique stub reads and writes beside its PATH symlink (`<work>/bin`): the
-/// transcript it replays, its spawn count, its first stdin line, its argv and the
-/// `KURRENTDB_CONN` it was started with.
+/// transcript it replays, its spawn count, its first stdin line, its argv, the system prompt its
+/// `--system-prompt-file` named and the `KURRENTDB_CONN` it was started with.
 const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
+const CRITIQUE_SYSTEM_PROMPT: &str = "critique-system-prompt";
 const CRITIQUE_CONN: &str = "critique-conn";
 
 /// A PATH that runs the checked-in critique stub as `claude`, ahead of the ambient PATH, set on
@@ -114,6 +115,13 @@ pub fn critique_stub_task(work: &Path) -> String {
 /// environment carried none.
 pub fn critique_stub_conn(work: &Path) -> String {
     std::fs::read_to_string(work.join("bin").join(CRITIQUE_CONN)).unwrap()
+}
+
+/// The system prompt the critique stub under `work` was last started with: the content of the
+/// file its `--system-prompt-file` named, copied at spawn time (the host removes that file once
+/// the spawn ends).
+pub fn critique_stub_system_prompt(work: &Path) -> String {
+    std::fs::read_to_string(work.join("bin").join(CRITIQUE_SYSTEM_PROMPT)).unwrap()
 }
 
 /// The argv the critique stub under `work` was last started with.

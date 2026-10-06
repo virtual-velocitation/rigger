@@ -1,6 +1,6 @@
 //! The native Claude Code agent host (spec 104: rigger hosts its agents as headless
 //! Claude Code sessions; `docs/architecture-addendum-claude-code-integration.md` §4).
-//! Replaces the blocking `cli` driver's `Command::output()` (one shot, learn nothing
+//! Replaces the blocking `cli` driver's wait-for-exit launch (one shot, learn nothing
 //! until exit, infer the rest) with a typed, streaming launch: every fact about an agent,
 //! its session, its model, its tools, its permissions, travels as an explicit argv or
 //! stream field, never inferred from a prompt sentence or parsed stdout.
@@ -27,8 +27,11 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
-use crate::driver::replay::reclaim_spawn_registered_scratch;
-use crate::driver::{allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args};
+use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
+use crate::driver::{
+    allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
+    SystemPromptFile,
+};
 use crate::eventstore::EventStore;
 use crate::hooks;
 use crate::liveness;
@@ -131,6 +134,9 @@ pub struct Launch {
     pub child: Child,
     pub session_id: String,
     pub args: Vec<String>,
+    /// The file the session reads its system prompt from (`--system-prompt-file`), held for
+    /// as long as the launch is, so the session can read it whenever it starts.
+    pub persona: SystemPromptFile,
 }
 
 impl Driver<'_> {
@@ -155,8 +161,15 @@ impl Driver<'_> {
         store: &dyn EventStore,
     ) -> Result<Launch, Error> {
         let session_id = uuid::Uuid::new_v4().to_string();
+        // The persona travels as a file in the spawn's scratch, never as an argv string (see
+        // [`SystemPromptFile`]); the spawn's terminus reclaims that scratch.
+        let persona = system_prompt_file(
+            &opts.system_prompt,
+            spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id),
+        )?;
         let args = build_args(
             agent,
+            &persona,
             opts,
             &session_id,
             bin_or_path_default(&self.rigger_bin, "rigger"),
@@ -231,6 +244,7 @@ impl Driver<'_> {
             child,
             session_id,
             args,
+            persona,
         })
     }
 
@@ -1005,16 +1019,18 @@ impl AgentDriver for Driver<'_> {
         opts: &SpawnOpts,
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        let launch = self.launch(agent, prompt, opts, self.progress_store)?;
         // THE STOP (spec 104 criterion 6): the agent's own resolved bound (spec 10 unit
         // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
         // config-load time) - 0 stays unbounded, the established convention this field's
         // own doc already sets.
-        let result = self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0));
-        // The spawn's terminus: `read_stream` reaped the session, whatever its outcome, and
-        // this host records its result directly, never through the `rigger result` courier
-        // that reclaims a stepwise spawn's scratch - so reclaim the scratch its spawn MCP
-        // server names (`rigger_scratch`, under this host's own scratch root) here.
+        let result = self
+            .launch(agent, prompt, opts, self.progress_store)
+            .and_then(|launch| self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0)));
+        // The spawn's terminus: `read_stream` reaped the session (or the launch never started
+        // one), whatever its outcome, and this host records its result directly, never through
+        // the `rigger result` courier that reclaims a stepwise spawn's scratch - so reclaim the
+        // scratch its spawn MCP server names (`rigger_scratch`, under this host's own scratch
+        // root) and its system-prompt file sits in here.
         reclaim_spawn_registered_scratch(&self.scratch_root, &opts.run_id, &opts.id);
         result
     }
@@ -1179,7 +1195,10 @@ fn first_user_message(task: &str) -> String {
 
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
-/// - every field below is a fact, never inferred at read time.
+/// - every field below is a fact, never inferred at read time. Neither prompt is an argv
+/// string, since Linux caps one argument at `MAX_ARG_STRLEN` (131072 bytes): the task is the
+/// first stream-json message on stdin and the persona reaches the session through the file
+/// `persona` holds (`--system-prompt-file`), omitted for an empty persona.
 ///
 /// `--json-schema` (verdict personas, §4.5) is deliberately out of this criterion's scope
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
@@ -1189,6 +1208,7 @@ fn first_user_message(task: &str) -> String {
 /// `settings_json` is not a JSON object the session settings can merge into.
 pub fn build_args(
     agent: &AgentDef,
+    persona: &SystemPromptFile,
     opts: &SpawnOpts,
     session_id: &str,
     rigger_bin: &str,
@@ -1203,10 +1223,7 @@ pub fn build_args(
         "--session-id".to_string(),
         session_id.to_string(),
     ];
-    if !opts.system_prompt.is_empty() {
-        args.push("--system-prompt".to_string());
-        args.push(opts.system_prompt.clone());
-    }
+    args.extend(persona.args());
     let model = agent.model_for_attempt(opts.attempt);
     if !model.is_empty() {
         args.push("--model".to_string());
@@ -1247,9 +1264,14 @@ mod tests {
         };
         let mut o = opts("u1/implementer#0");
         o.settings_json = "{\"model\":\"opus\"}".to_string();
-        let args = build_args(&a, &o, "sess-123", "rigger").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let persona =
+            system_prompt_file(&o.system_prompt, Some(scratch.path().to_path_buf())).unwrap();
+        let args = build_args(&a, &persona, &o, "sess-123", "rigger").unwrap();
 
         assert_eq!(args[0], "-p");
+        // No positional prompt: the task is the first stream-json message on stdin.
+        assert_eq!(args[1], "--output-format");
         let get_val = |flag: &str| -> String {
             let i = args
                 .iter()
@@ -1261,7 +1283,12 @@ mod tests {
         assert_eq!(get_val("--input-format"), "stream-json");
         assert!(args.iter().any(|x| x == "--verbose"));
         assert_eq!(get_val("--session-id"), "sess-123");
-        assert_eq!(get_val("--system-prompt"), "You implement findings.");
+        assert_eq!(
+            std::fs::read_to_string(get_val("--system-prompt-file")).unwrap(),
+            "You implement findings.",
+            "the persona reaches the session through its file, never as an argv string"
+        );
+        assert!(!args.iter().any(|x| x == "--system-prompt"));
         assert_eq!(get_val("--model"), "sonnet");
         assert_eq!(get_val("--fallback-model"), "haiku");
         assert_eq!(
@@ -1484,7 +1511,7 @@ mod tests {
     fn build_args_mcp_config_names_the_spawn_bound_server() {
         let a = AgentDef::default();
         let o = opts("u7-launch/implementer#2");
-        let args = build_args(&a, &o, "sess", "rigger").unwrap();
+        let args = build_args(&a, &SystemPromptFile::default(), &o, "sess", "rigger").unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         assert_eq!(cfg["mcpServers"]["rigger"]["command"], "rigger");
@@ -1500,7 +1527,14 @@ mod tests {
     fn build_args_mcp_config_uses_the_configured_rigger_bin() {
         let a = AgentDef::default();
         let o = opts("u/implementer#0");
-        let args = build_args(&a, &o, "sess", "/custom/path/rigger").unwrap();
+        let args = build_args(
+            &a,
+            &SystemPromptFile::default(),
+            &o,
+            "sess",
+            "/custom/path/rigger",
+        )
+        .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         assert_eq!(
@@ -1515,8 +1549,9 @@ mod tests {
         let o = opts("u/implementer#0"); // settings_json left empty by opts()
         let mut bare = o;
         bare.system_prompt = String::new();
-        let args = build_args(&a, &bare, "sess", "rigger").unwrap();
-        assert!(!args.iter().any(|x| x == "--system-prompt"));
+        let persona = system_prompt_file(&bare.system_prompt, None).unwrap();
+        let args = build_args(&a, &persona, &bare, "sess", "rigger").unwrap();
+        assert!(!args.iter().any(|x| x == "--system-prompt-file"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));
         // The helpers' MCP tools are pre-approved even for an agent declaring no tools.

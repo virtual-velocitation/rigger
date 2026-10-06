@@ -119,6 +119,14 @@ pub fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_
     }
 }
 
+/// The scratch directory a blocking host's spawn `opts` owns: [`spawn_scratch_path`] under the
+/// scratch root its worktree sits in ([`spawn_scratch_root`]), the directory
+/// [`reclaim_finished_spawn_scratch`] removes at the spawn's terminus. `None` for a
+/// worktree-less spawn or a degenerate spawn id.
+pub(crate) fn blocking_spawn_scratch_dir(opts: &SpawnOpts) -> Option<PathBuf> {
+    spawn_scratch_path(&spawn_scratch_root(opts)?, &opts.run_id, &opts.id)
+}
+
 /// A blocking host's terminus reclaim: once the spawn `opts` names has finished (its process
 /// exited, whatever its outcome), reclaim the scratch rigger names for it under the scratch
 /// root its worktree sits in ([`spawn_scratch_root`]). A blocking host hands its result

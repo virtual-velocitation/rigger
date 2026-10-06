@@ -6049,7 +6049,8 @@ stages:
 }
 
 /// Install a fake `claude` on a fresh bin dir: a shell script that answers each spawn by
-/// matching its `--system-prompt` against the shell `case` `arms` (each `*MARKER*) ... ;;`),
+/// matching its system prompt (the content of the file its `--system-prompt-file` names) against
+/// the shell `case` `arms` (each `*MARKER*) ... ;;`),
 /// failing loudly on any prompt no arm names. Returns the bin dir (keep it alive for the run)
 /// and a `PATH` value that resolves it first.
 fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
@@ -6065,10 +6066,10 @@ sp=""
 next=0
 for a in "$@"; do
   if [ "$next" = "1" ]; then
-    sp="$a"
+    sp=$(cat "$a")
     next=0
   fi
-  if [ "$a" = "--system-prompt" ]; then
+  if [ "$a" = "--system-prompt-file" ]; then
     next=1
   fi
 done
@@ -6118,7 +6119,7 @@ esac
 /// emits` unit test uses for the driver alone, extended here through the whole compiled
 /// binary and a real git-backed unit worktree). The fake agent plays four roles, selected
 /// by a marker embedded in each agent's own persona (which `build_system_prompt` forwards
-/// verbatim into `--system-prompt`): the worker writes a file; the LENS - the review
+/// verbatim into the file `--system-prompt-file` names): the worker writes a file; the LENS - the review
 /// panel's own FIRST tier, standing in for the "review agents doing unprompted forensic
 /// self-repair" this spec's Goal section names as the motivating harm - deletes its own
 /// `$PWD` (the unit worktree) wholesale as a side effect of running, the identical shape
@@ -6177,7 +6178,7 @@ stages:
 
     // A fake `claude` executable, substituted onto PATH ahead of the real system PATH. Its
     // behavior is selected by a marker embedded in each agent's own persona (above), which
-    // the driver forwards verbatim into `--system-prompt`; the lens's own branch deletes
+    // the driver forwards verbatim into the file `--system-prompt-file` names; the lens's own branch deletes
     // its `$PWD` wholesale (mirroring a real gate's `rm -rf`, per the sibling gate-based
     // tests above) before reporting, self-describing the deletion to `$RIGGERTEST_MARKER`
     // (a location OUTSIDE the worktree the deletion itself never touches).
