@@ -11924,6 +11924,14 @@ mod tests {
 
             #[test]
             fn an_unresolved_entry_leaves_the_identitys_facts_and_generation_as_they_stood() {
+                // A batch that resolves to no events folds as an unresolved one does: asked for
+                // once, and nothing changes.
+                let _ = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h2", 8, 20),
+                    Some(vec![]),
+                    EntryFold::BatchAsked,
+                    1,
+                );
                 let p = folds_nothing_onto_h1(
                     entry("gc", "src/f.rs", "h2", 8, 20),
                     None,
@@ -11974,7 +11982,7 @@ mod tests {
 
             #[test]
             fn an_entry_whose_position_is_applied_folds_nothing_and_never_asks_for_its_batch() {
-                let p = Projector::open(":memory:", "test").unwrap();
+                let (_dir, p, mark) = graph_file();
                 apply_decision(&p, 3, "d1", "keep", &["src/f.rs"], "");
                 holding_h1(&p);
                 let before = projection_but_applied(&p);
@@ -11992,6 +12000,21 @@ mod tests {
                         "position {pos}"
                     );
                 }
+                // An entry whose payload does not parse, at a position already applied: the
+                // `applied` guard answers before the payload is read, so the fold neither fails
+                // nor marks the file owed.
+                let mut unparsable = entry("gc", "src/f.rs", "h2", 7, 20);
+                unparsable.data = b"not a ledger entry".to_vec();
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &unparsable,
+                        Ok(Some(vec![def_event("other", 5, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::AlreadyApplied),
+                    "an unparsable entry at an applied position"
+                );
                 assert_eq!(
                     asked.get(),
                     0,
@@ -12004,6 +12027,11 @@ mod tests {
                     Some("h1".to_string())
                 );
                 assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
+                assert_eq!(
+                    (p.rebuild_owed().unwrap(), mark.exists()),
+                    (false, false),
+                    "nothing failed, so the file owes nothing"
+                );
             }
 
             #[test]
