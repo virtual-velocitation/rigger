@@ -559,6 +559,8 @@ pub enum EntryFold {
 
 /// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
+/// It runs inside the fold's transaction, while the projection is held for that write: it must
+/// not read or fold the projection it is handed to, and must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
 /// The permission to fold into a [`Projection`] through [`Projection::apply`] and
@@ -699,9 +701,11 @@ pub trait Projection: Send + Sync {
     /// by event at the entry's position and valid-time, every event asserted under the entry's
     /// identity and generation, never under a key the event carries, and installs that
     /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
-    /// the fold. A ledger entry folds only here: the sqlite projector's
-    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch) refuse one. It
-    /// takes no [`FoldAccess`].
+    /// the fold. `batch` runs inside that transaction, while this projection is held for the
+    /// write: it must not read or fold this projection, and must do no slow work there. A ledger
+    /// entry folds only here: an implementor that folds refuses one on
+    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch). It takes no
+    /// [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity
