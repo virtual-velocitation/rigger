@@ -22,15 +22,30 @@ use rigger::spawn::TYPE_SPAWN_RESULT;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Whether `line` opens a `TYPE_` constant: `const TYPE_`, behind `pub`, `pub(crate)` or no
-/// visibility.
+/// `line` past its indentation and its visibility, whatever the visibility restricts to: a
+/// leading `pub ` or `pub(...) ` is dropped, and any other line is returned past its indentation.
+fn past_visibility(line: &str) -> &str {
+    let item = line.trim_start();
+    let Some(rest) = item.strip_prefix("pub") else {
+        return item;
+    };
+    let rest = rest
+        .strip_prefix('(')
+        .and_then(|restricted| restricted.split_once(')'))
+        .map_or(rest, |(_, after)| after);
+    rest.strip_prefix(' ').unwrap_or(item)
+}
+
+/// Whether `line` opens a `TYPE_` constant, behind any visibility or none. A `static TYPE_` item
+/// fails the scan, naming the line: a constant declares a type and a static is never classified.
 fn opens_type_const(line: &str) -> bool {
-    let t = line.trim_start();
-    let t = t
-        .strip_prefix("pub(crate) ")
-        .or_else(|| t.strip_prefix("pub "))
-        .unwrap_or(t);
-    t.starts_with("const TYPE_")
+    let item = past_visibility(line);
+    assert!(
+        !item.starts_with("static TYPE_") && !item.starts_with("static mut TYPE_"),
+        "`{}`: a TYPE_ item is a constant, never a static",
+        line.trim()
+    );
+    item.starts_with("const TYPE_")
 }
 
 /// Every `const TYPE_` statement in `text`, each from its opening line to the line holding its
