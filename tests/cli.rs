@@ -7539,6 +7539,182 @@ fn lines_starting_with<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
     text.lines().filter(|l| l.starts_with(prefix)).collect()
 }
 
+/// What one run entry left behind about its always-on dash: whether it exited 0, every stderr
+/// line the dash start prints (`rigger dash: serving ...` or the could-not-start notice), and the
+/// `.rigger/` breadcrumbs a started dash writes (`dash.url`) and an attempted one stamps
+/// (`dash.attempt`), `None` when absent.
+struct DashTrace {
+    ok: bool,
+    stderr: String,
+    dash_lines: Vec<String>,
+    url: Option<String>,
+    attempt: Option<String>,
+}
+
+/// The `rigger <args>` command in `root` an entry test runs, the fake agent's `PATH` when
+/// `path_env` is given, with the environment dash opt-out `RIGGER_NO_DASH` kept when
+/// `env_opt_out` and removed otherwise; `state` must outlive the process.
+fn dash_entry_command(
+    root: &Path,
+    args: &[&str],
+    path_env: Option<&str>,
+    env_opt_out: bool,
+    state: &Path,
+) -> Command {
+    let envs: Vec<(&str, &str)> = path_env.map(|p| ("PATH", p)).into_iter().collect();
+    let mut cmd = common::cli::rigger_command(root, args, &envs, state);
+    if !env_opt_out {
+        cmd.env_remove("RIGGER_NO_DASH");
+    }
+    cmd
+}
+
+/// The [`DashTrace`] of the finished entry `out` that ran in `root`.
+fn dash_trace(root: &Path, out: &std::process::Output) -> DashTrace {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let dash_lines = stderr
+        .lines()
+        .filter(|l| {
+            l.starts_with("rigger dash")
+                || l.starts_with("rigger: could not auto-start the dashboard")
+        })
+        .map(str::to_string)
+        .collect();
+    let read = |name: &str| std::fs::read_to_string(root.join(".rigger").join(name)).ok();
+    DashTrace {
+        ok: out.status.success(),
+        dash_lines,
+        url: read("dash.url"),
+        attempt: read("dash.attempt"),
+        stderr,
+    }
+}
+
+/// The entry ran past its dash start (it exited 0) and started and attempted no dash at all.
+fn assert_no_dash(trace: &DashTrace, entry: &str) {
+    let err = &trace.stderr;
+    assert!(trace.ok, "{entry} must exit 0; stderr: {err}");
+    assert_eq!(
+        trace.dash_lines,
+        Vec::<String>::new(),
+        "{entry} under a dash opt-out prints no dash line; stderr: {err}"
+    );
+    assert_eq!(
+        trace.url, None,
+        "{entry} under a dash opt-out records no dash.url"
+    );
+    assert_eq!(
+        trace.attempt, None,
+        "{entry} under a dash opt-out stamps no dash.attempt"
+    );
+}
+
+/// The entry exited 0, started exactly one dash, printed its URL once on stderr, recorded that
+/// same URL in `dash.url` and stamped a non-empty run id in `dash.attempt`. The started dash's
+/// own `rigger dash: serving on ...` line shares the entry's stderr, so only the entry's
+/// run-start line is counted here.
+fn assert_one_dash(trace: &DashTrace, entry: &str) {
+    let err = &trace.stderr;
+    assert!(trace.ok, "{entry} must exit 0; stderr: {err}");
+    let urls: Vec<&str> = trace
+        .dash_lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("rigger dash: serving this run at "))
+        .collect();
+    let [url] = urls.as_slice() else {
+        panic!("{entry} prints exactly one run-start dash line; stderr: {err}");
+    };
+    let url = *url;
+    assert!(
+        url.starts_with("http://127.0.0.1:"),
+        "{entry}'s dash serves on loopback; got {url:?}"
+    );
+    assert_eq!(
+        trace.url.as_deref().map(str::trim),
+        Some(url),
+        "{entry} records the URL it printed in dash.url"
+    );
+    let attempt = trace.attempt.as_deref().unwrap_or_default();
+    assert_ne!(
+        attempt.trim(),
+        "",
+        "{entry} stamps the run id it attempted a dash for in dash.attempt"
+    );
+}
+
+/// Spec 115 (the dash opt-out every McpSession relies on): given a workflow whose config says
+/// `dash: off` and NO environment opt-out, when the operator drives the workflow driver through
+/// either entry (`rigger serve`, `rigger run --driver workflow`) to the end of its run, then no
+/// dash starts and no dash breadcrumb is written - the config opt-out alone suffices, as on the
+/// step path.
+#[test]
+fn the_workflow_driver_entries_honor_the_config_dash_off_opt_out() {
+    for args in [
+        &["serve", "--base", "HEAD"][..],
+        &["run", "--driver", "workflow", "--base", "HEAD"][..],
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+        append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
+        let mut mcp = McpSession::from_command(dash_entry_command(root, args, None, false, root));
+        mcp.initialize();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut answered = Vec::new();
+        while let Some(spawn) = mcp.next_spawn(deadline) {
+            let answer = mcp.tool_call(
+                "rigger_result",
+                serde_json::json!({"id": spawn, "output": "did the unit"}),
+            );
+            if answer.get("result").is_none() {
+                mcp.fail(&format!(
+                    "rigger_result must succeed for {spawn}; got {answer}"
+                ));
+            }
+            answered.push(spawn);
+        }
+        let out = mcp.finish();
+        let entry = format!("rigger {}", args.join(" "));
+        answered.sort();
+        assert_eq!(
+            answered,
+            ["a/implementer#0", "b/implementer#0"],
+            "{entry} runs both units to the end"
+        );
+        assert_no_dash(&dash_trace(root, &out), &entry);
+    }
+}
+
+/// Spec 115 (the dash opt-out on the blocking entry): given a workflow the fake agent completes,
+/// when the operator runs `rigger run` with `RIGGER_NO_DASH` set, or with `dash: off` and no
+/// environment opt-out, then no dash starts; with neither, exactly one does.
+#[cfg(unix)]
+#[test]
+fn rigger_run_honors_each_dash_opt_out_and_starts_its_dash_without_one() {
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+    let run = |dash_off: bool, env_opt_out: bool| {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+        if dash_off {
+            append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
+        }
+        let out = dash_entry_command(root, &["run"], Some(&path_env), env_opt_out, root)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("failed to spawn the rigger binary");
+        dash_trace(root, &out)
+    };
+    assert_no_dash(&run(false, true), "rigger run with RIGGER_NO_DASH");
+    assert_no_dash(&run(true, false), "rigger run with dash: off");
+    assert_one_dash(&run(false, false), "rigger run with no opt-out");
+}
+
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
 /// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
 /// implementer's own in-process unit test

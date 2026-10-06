@@ -24,9 +24,14 @@ impl McpSession {
     /// integration invocation is ([`super::cli::rigger_command`]): no dash, and the instance
     /// registry isolated under `root`.
     pub fn start_with(root: &Path, args: &[&str]) -> Self {
+        McpSession::from_command(super::cli::rigger_command(root, args, &[], root))
+    }
+
+    /// A rigger stdio session over the already-built `cmd`, its three standard streams piped.
+    pub fn from_command(mut cmd: std::process::Command) -> Self {
         use std::process::Stdio;
 
-        let mut child = super::cli::rigger_command(root, args, &[], root)
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
