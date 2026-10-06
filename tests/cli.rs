@@ -6217,6 +6217,14 @@ stages:
          ENOENT spawning the adversary in the now-deleted worktree instead; stderr: {err}\n\
          stdout: {out}"
     );
+    // Spec 115, criterion 1: a clean run halted on nothing, so its stdout names no halt reason.
+    assert_eq!(
+        out.lines()
+            .filter(|line| line.starts_with("halted: "))
+            .collect::<Vec<_>>(),
+        Vec::<&str>::new(),
+        "a run that did not halt prints no `halted: ` line; stdout: {out}"
+    );
 
     // Non-vacuity: the lens's own fake-agent process really did delete the worktree
     // wholesale, self-reported from a location outside the worktree the deletion itself
@@ -7401,6 +7409,61 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
         ),
         "a budget halt that is also the budget's final tenth must stamp both run-scoped \
          attention entries, in order, on the real binary's own stdout; got: {line:?}"
+    );
+}
+
+/// Spec 115, criterion 1: THE BLOCKING RUN PRINTS THE HALT REASON. Given the budget-one
+/// fixture, when the operator runs `rigger run` (the blocking `cli` driver, a fake `claude` on
+/// `PATH` answering the one admitted worker), then the run exits 0 and stdout names why it
+/// stopped, `halted: budget exhausted: 1/1 spawns`, as the one line after the run state.
+#[cfg(unix)]
+#[test]
+fn run_prints_the_budget_halt_reason_after_the_run_state() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+
+    // The fixture's worker persona carries no marker of its own, so the one arm matches its
+    // text; any other spawn fails the fake agent loudly.
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    assert!(
+        ok,
+        "a budget-halted run is a run outcome, not a process error: it exits 0; stderr: {err}\n\
+         stdout: {out}"
+    );
+
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("run state:"),
+        "stdout opens with the run state; got: {out}"
+    );
+    // The run state ends at its `incomplete:` line (a refused unit never integrates), and the
+    // halt reason is the ONE line after it: nothing before the state, nothing between, nothing
+    // after, and no second copy.
+    assert_eq!(
+        lines[lines.len().saturating_sub(2)..],
+        [
+            "incomplete: not every unit integrated",
+            "halted: budget exhausted: 1/1 spawns",
+        ],
+        "the halt reason must be the last stdout line, right after the run state; got: {out}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.starts_with("halted: "))
+            .copied()
+            .collect::<Vec<_>>(),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "the halt reason is printed exactly once; got: {out}"
     );
 }
 
