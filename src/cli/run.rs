@@ -16,11 +16,11 @@ fn record_dash_attempt(run_id: &str) {
     }
 }
 
-/// Environment opt-out for the step path's always-on dashboard: when
-/// [`DASH_DISABLE_ENV`] is set (to any value) the step does NOT auto-start a run
-/// dashboard. Production leaves it unset (the dash is always-on, no opt-in flag - spec
-/// 19b); a headless CI or the crate's own integration tests set it so a short-lived
-/// `rigger step` never spawns a real dashboard process.
+/// Environment opt-out for every run entry's always-on dashboard: when
+/// [`DASH_DISABLE_ENV`] is set (to any value) `rigger step`, `rigger run` and `rigger serve` do
+/// NOT auto-start a run dashboard. Production leaves it unset (the dash is always-on, no opt-in
+/// flag - spec 19b); a headless CI or the crate's own integration tests set it so a short-lived
+/// run never spawns a real dashboard process.
 const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
 
 /// Env override for the PORT the step-path always-on dashboard binds. Absent (the production
@@ -1486,7 +1486,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
-    let _dash = start_run_dashboard(&store);
+    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
     let rs = conductor::run(&cfg, &deps)?;
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
@@ -1839,7 +1839,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // whole MCP session, so an active harness is never invisible. Held here (not inside the
     // scope) so it is reaped when `run_workflow` returns - after the session ends - by unit
     // 3's guard.
-    let _dash = start_run_dashboard(&store);
+    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
@@ -2070,7 +2070,17 @@ pub(crate) fn load_criteria(
 /// [`record_dash_attempt`] (spec 69, round-8 fix), mirroring [`ensure_run_dashboard`]'s own
 /// stamp on the step path - by the time this runs, `fresh_run_if_requested` has already
 /// ensured/minted the run, so the id is always available for a real run.
-fn start_run_dashboard(store: &dyn EventStore) -> Option<dash::ReapedChild> {
+///
+/// OPT-OUT: the same one opt-out as the step path's [`ensure_run_dashboard`] ([`dash_opted_out`]
+/// over `config_dash_enabled`, the workflow's resolved [`config::Workflow::dash_enabled`]) starts
+/// no dash and stamps no attempt.
+fn start_run_dashboard(
+    config_dash_enabled: bool,
+    store: &dyn EventStore,
+) -> Option<dash::ReapedChild> {
+    if dash_opted_out(config_dash_enabled) {
+        return None;
+    }
     if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
         record_dash_attempt(&run_id);
     }
@@ -2492,6 +2502,15 @@ fn dash_ensure_suppressed(env_disabled: bool, config_dash_enabled: bool) -> bool
     env_disabled || !config_dash_enabled
 }
 
+/// [`dash_ensure_suppressed`] with `env_disabled` read from the process environment: the opt-out
+/// every run entry's always-on dash honors.
+fn dash_opted_out(config_dash_enabled: bool) -> bool {
+    dash_ensure_suppressed(
+        std::env::var_os(DASH_DISABLE_ENV).is_some(),
+        config_dash_enabled,
+    )
+}
+
 /// The port the step-path always-on dashboard binds: [`DASH_PORT_ENV`] when set to a valid
 /// `u16`, else [`dash::DEFAULT_PORT`]. The real caller resolves the raw value from the process
 /// environment; the resolution itself is [`dash_ensure_port_from`], pure over that resolved input
@@ -2529,8 +2548,7 @@ fn dash_ensure_port_from(raw: Option<&str>) -> u16 {
 /// run. Skipped entirely on the opt-out path above: an opted-out step attempts no dash at all, so
 /// there is nothing this run to vouch for.
 fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
-    let env_disabled = std::env::var_os(DASH_DISABLE_ENV).is_some();
-    if dash_ensure_suppressed(env_disabled, config_dash_enabled) {
+    if dash_opted_out(config_dash_enabled) {
         return;
     }
     if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
