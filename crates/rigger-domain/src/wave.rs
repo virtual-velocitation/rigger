@@ -286,22 +286,27 @@ fn has_llm_verifier(st: &Stage) -> bool {
 /// covered by a stage that has a real (LLM-judge) verifier; a criterion covered only
 /// by a mechanical gate counts as NOT covered (the proxy-gap guard, item 5). It runs
 /// against the live `stages` map, so proposed planner units (which carry their own
-/// `coverage`) count toward closing the gap. Returns the gap reason, or None if every
-/// criterion is covered (or there are no criteria to enforce).
+/// `coverage`) count toward closing the gap. A stage covers a criterion when it carries
+/// that criterion's stable id (every planner unit serving it does, including each part of
+/// a split whose coverage runs on past the criterion with its ownership sentence) or its
+/// coverage is the criterion's text (an authored stage). Returns the gap reason, or None
+/// if every criterion is covered (or there are no criteria to enforce).
 pub fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option<String> {
     if criteria.is_empty() {
         return None;
     }
-    let covered: HashSet<&str> = stages
-        .values()
-        .filter(|st| has_llm_verifier(st))
-        .map(|st| st.coverage.trim())
-        .filter(|c| !c.is_empty())
-        .collect();
+    let verifiers: Vec<&Stage> = stages.values().filter(|st| has_llm_verifier(st)).collect();
     let gaps: Vec<&str> = criteria
         .iter()
-        .map(|c| c.trim())
-        .filter(|c| !covered.contains(c))
+        .enumerate()
+        .filter(|(i, c)| {
+            let id = criterion_stable_id(i + 1, c);
+            !verifiers.iter().any(|st| {
+                st.criterion_id == id
+                    || (!st.coverage.trim().is_empty() && st.coverage.trim() == c.trim())
+            })
+        })
+        .map(|(_, c)| c.trim())
         .collect();
     if gaps.is_empty() {
         return None;
