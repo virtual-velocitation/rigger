@@ -37,7 +37,9 @@ use crate::spawn_store;
 /// the worktrees and the `agent-live` liveness markers. It is the SAME `agent-scratch` tree
 /// the clean-fixpoint reclaim clears (the shared scratch parent a worker parks build/verify
 /// output under); a per-spawn dir nests one level deeper under it, keyed by run and spawn id.
-const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
+/// Public so a command that runs a host outside a loop run (`rigger critique`, whose spawn
+/// writes its system-prompt file here) removes the run directories it leaves.
+pub const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 
 /// The dedicated scratch dir rigger assigns spawn `spawn_id` under `scratch_root`:
 /// `<scratch_root>/agent-scratch/<sanitized run_id>/<sanitized spawn_id>` (an EMPTY `run_id`
