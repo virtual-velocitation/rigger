@@ -17333,6 +17333,148 @@ mod tests {
         );
     }
 
+    /// The criterion the split-part fixtures below plan against.
+    const SPLIT_CRITERION: &str = "criterion A: the report is rendered from the parsed log";
+    /// Part 1's ownership sentence, carried past [`SPLIT_CRITERION`]'s verbatim text.
+    const PART_ONE_OWNS: &str = "THIS UNIT (part 1 of 2 of this criterion) OWNS the parser; \
+         the renderer is part 2's (split-part-2), NOT this unit's.";
+    /// Part 2's ownership sentence, carried past [`SPLIT_CRITERION`]'s verbatim text.
+    const PART_TWO_OWNS: &str = "THIS UNIT (part 2 of 2 of this criterion) OWNS the renderer; \
+         the parser is part 1's (split-part-1), NOT this unit's.";
+
+    /// Fold two same-episode parts of [`SPLIT_CRITERION`] through the real harvest, each the
+    /// criterion's verbatim text followed by its own ownership sentence (one after a line break,
+    /// one after a space - the planner echoes either) and echoing `cid`.
+    fn harvest_split_parts(st: &Store, cid: &str) -> BTreeMap<String, Stage> {
+        let part_one = format!("{SPLIT_CRITERION}\n{PART_ONE_OWNS}");
+        let part_two = format!("{SPLIT_CRITERION} {PART_TWO_OWNS}");
+        append_proposals(
+            st,
+            &[
+                ("split-part-1", &part_one, cid.to_string(), Vec::new()),
+                ("split-part-2", &part_two, cid.to_string(), Vec::new()),
+            ],
+        );
+        harvest_seeded(st, &[SPLIT_CRITERION])
+    }
+
+    #[test]
+    fn a_split_criterions_parts_keep_their_own_owns_sentence_after_the_exact_criterion() {
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, SPLIT_CRITERION);
+        let stages = harvest_split_parts(&st, &cid);
+        for (id, owns) in [
+            ("split-part-1", PART_ONE_OWNS),
+            ("split-part-2", PART_TWO_OWNS),
+        ] {
+            assert_eq!(
+                stages[id].coverage,
+                format!("{SPLIT_CRITERION}\n\n{owns}"),
+                "a part's coverage is the exact criterion followed by its own ownership sentence"
+            );
+            assert_eq!(
+                stages[id].criterion_id, cid,
+                "{id} keeps the criterion's stamp"
+            );
+        }
+        assert_ne!(
+            stages["split-part-1"].coverage, stages["split-part-2"].coverage,
+            "the two parts of one criterion must never reach the fan-out as twins"
+        );
+        assert!(!stages.contains_key(&baseline_id(1, SPLIT_CRITERION)));
+    }
+
+    #[test]
+    fn a_split_parts_contract_carries_its_own_owns_sentence() {
+        let st = Store::open(":memory:").unwrap();
+        let stages = harvest_split_parts(&st, &criterion_stable_id(1, SPLIT_CRITERION));
+        let contract = task_block(&stages["split-part-1"]);
+        assert!(
+            contract.contains(SPLIT_CRITERION) && contract.contains(PART_ONE_OWNS),
+            "part 1's implementer and reviewers must read the criterion AND which half they \
+             own; got:\n{contract}"
+        );
+        assert!(
+            !contract.contains(PART_TWO_OWNS),
+            "part 1's contract must not carry part 2's ownership sentence; got:\n{contract}"
+        );
+    }
+
+    #[test]
+    fn an_id_less_split_part_still_supersedes_its_baseline_by_its_criterion_prefix() {
+        let st = Store::open(":memory:").unwrap();
+        let stages = harvest_split_parts(&st, "");
+        for (id, owns) in [
+            ("split-part-1", PART_ONE_OWNS),
+            ("split-part-2", PART_TWO_OWNS),
+        ] {
+            assert_eq!(stages[id].coverage, format!("{SPLIT_CRITERION}\n\n{owns}"));
+            assert_eq!(
+                stages[id].criterion_id,
+                criterion_stable_id(1, SPLIT_CRITERION),
+                "an id-less part resolves through the criterion its text starts with"
+            );
+            assert!(
+                !has_unmatched_signal(&st, id),
+                "{id} matched a criterion, so it is never flagged as a genuinely-new sub-unit"
+            );
+        }
+        assert!(
+            !stages.contains_key(&baseline_id(1, SPLIT_CRITERION)),
+            "the parts supersede the baseline instead of running beside it"
+        );
+    }
+
+    #[test]
+    fn an_id_less_part_resolves_to_the_longest_criterion_its_text_starts_with() {
+        let short = "the widget is built";
+        let long = "the widget is built and documented";
+        let st = Store::open(":memory:").unwrap();
+        let text = format!("{long} {PART_ONE_OWNS}");
+        append_proposals(&st, &[("part-long", &text, String::new(), Vec::new())]);
+        let stages = harvest_seeded(&st, &[short, long]);
+        assert_eq!(
+            stages["part-long"].criterion_id,
+            criterion_stable_id(2, long)
+        );
+        assert_eq!(
+            stages["part-long"].coverage,
+            format!("{long}\n\n{PART_ONE_OWNS}")
+        );
+        assert!(stages.contains_key(&baseline_id(1, short)));
+        assert!(!stages.contains_key(&baseline_id(2, long)));
+    }
+
+    crate::test_cases! {
+        /// A paraphrase that echoes the criterion's id stamps the EXACT criterion, never the
+        /// planner's wording.
+        a_paraphrase_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion("the parsed log feeds the rendered report");
+        /// A truncated copy stamps the whole criterion back.
+        a_truncation_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion("criterion A: the report is rendered");
+        /// Text that runs on past the criterion without a word break is not a part sentence.
+        a_run_on_without_a_word_break_stamps_the_exact_criterion:
+            assert_proposal_stamps_exact_criterion(&format!("{SPLIT_CRITERION}s and more"));
+        /// A verbatim copy, reflowed, stamps the criterion with nothing appended.
+        a_verbatim_copy_stamps_the_exact_criterion_with_nothing_appended:
+            assert_proposal_stamps_exact_criterion(&format!(
+                "  {}\n",
+                SPLIT_CRITERION.replace(' ', "\n   ")
+            ));
+    }
+
+    /// A proposal for [`SPLIT_CRITERION`] whose text is `text`, echoing the criterion's id, folds
+    /// to a stage whose coverage is the EXACT criterion text.
+    fn assert_proposal_stamps_exact_criterion(text: &str) {
+        let st = Store::open(":memory:").unwrap();
+        let cid = criterion_stable_id(1, SPLIT_CRITERION);
+        append_proposals(&st, &[("u-a", text, cid.clone(), Vec::new())]);
+        let stages = harvest_seeded(&st, &[SPLIT_CRITERION]);
+        assert_eq!(stages["u-a"].coverage, SPLIT_CRITERION, "text {text:?}");
+        assert_eq!(stages["u-a"].criterion_id, cid);
+    }
+
     /// The `data` of a planner `UnitProposed` for unit `id` (agent `worker`, gate `ok`) against
     /// `criterion` and its stable id `cid`.
     fn proposal_data(id: &str, criterion: &str, cid: &str) -> Value {

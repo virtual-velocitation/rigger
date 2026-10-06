@@ -434,6 +434,59 @@ mod tests {
 
     const PLAN: &str = "  plan:\n    agent: planner\n    produces: dag\n";
 
+    /// A worker stage `name` with `coverage`, stamped with `criterion_id`.
+    fn covering_stage(name: &str, coverage: &str, criterion_id: &str) -> (String, Stage) {
+        (
+            name.to_string(),
+            Stage {
+                name: name.to_string(),
+                agent: "worker".into(),
+                coverage: coverage.to_string(),
+                criterion_id: criterion_id.to_string(),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_criterion_served_only_by_split_parts_is_covered() {
+        let criterion = "the report is rendered".to_string();
+        let cid = criterion_stable_id(1, &criterion);
+        let stages: BTreeMap<String, Stage> = [
+            covering_stage(
+                "part-1",
+                &format!("{criterion}\n\nTHIS UNIT OWNS the parser"),
+                &cid,
+            ),
+            covering_stage(
+                "part-2",
+                &format!("{criterion}\n\nTHIS UNIT OWNS the view"),
+                &cid,
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(coverage_gap(&stages, &[criterion]), None);
+    }
+
+    #[test]
+    fn a_criterion_no_stage_is_stamped_with_or_copies_is_a_gap() {
+        let criterion = "the report is rendered".to_string();
+        let stages: BTreeMap<String, Stage> = [
+            covering_stage("authored", "the report is rendered", ""),
+            covering_stage("other", "something else", "c9-0000000000000000"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            coverage_gap(&stages, std::slice::from_ref(&criterion)),
+            None
+        );
+        let other = "the log is parsed".to_string();
+        assert!(coverage_gap(&stages, &[criterion, other])
+            .is_some_and(|gap| gap.contains("the log is parsed")));
+    }
+
     #[test]
     fn the_critic_is_the_plan_critique_gates_adversary_first() {
         let wf = workflow(&format!(
