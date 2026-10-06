@@ -27,7 +27,8 @@ pub struct GenerationIngested {
     /// The object id of the bytes the batch was extracted from, as git prints it, or empty when
     /// the path held no file.
     pub blob: String,
-    /// Whether the batch was lowered as an out-of-line test module; true only for a `gc` batch.
+    /// The walk's flag: whether `walk_exclusions` names the entry's identity. It changes only a
+    /// parsed `gc` batch.
     pub excluded: bool,
 }
 
