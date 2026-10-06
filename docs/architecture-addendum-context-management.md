@@ -161,10 +161,11 @@ shares the `RunStarted`-boundary attribution with `reset --runs`.
 **The end state is a SINGLE knowledge graph that encapsulates both (a) the dev-loop's decision
 stream — decisions, findings, lessons, folded from the event log — and (b) everything
 structurally known about the codebase and project — code entities and their structure, the
-docs, and design rationale.** It is one queryable, rebuildable, event-sourced projection you
-traverse across; the event log stays the source of truth and the graph's own structural
-retrieval answers symbol-free NL queries (§2.5) - the vector sidecar that once sat alongside was
-retired as zero marginal recall over the graph.
+docs, and design rationale.** It is one queryable projection you traverse across, rebuildable
+from the log and the tree; the event log stays the source of truth for knowledge and the tree
+for structure (section 2.1), and the graph's own structural retrieval answers symbol-free NL
+queries (section 2.5) - the vector sidecar that once sat alongside was retired as zero marginal
+recall over the graph.
 
 ### 6.1 The node taxonomy — one typed vocabulary for three domains
 
@@ -189,10 +190,10 @@ orchestration             unit           UnitProposed event              a plann
                           artifact       produced output                 what a unit produced
 ```
 
-The graph is ONE event-sourced projection over all three domains: code structure, design intent,
-and the decision stream share a single id space, one query surface, and one lifecycle. Structure
-is ingested AS EVENTS alongside decisions (§6.3), and §2.1 fixes why the graph is a projection
-rather than a fourth store.
+The graph is ONE projection over all three domains: code structure, design intent, and the
+decision stream share a single id space, one query surface, and one lifecycle. Knowledge is
+folded from the log and structure re-derived from the tree beside it (section 6.3), and section
+2.1 fixes why the graph is a projection rather than a fourth store.
 
 **The design-intent layer is first-class and deliberately in scope; user-facing docs are not.**
 The `design-doc` / `arch-decision` nodes are the reference architecture (this document and its
@@ -236,32 +237,40 @@ the `EXTRACTED` sub-graph; the **safe superset** the safety consumers need (§2.
 set, two filters — replacing the hand-rolled `BlastRadius{precise,safe,serialize}` struct and
 the documented seed-vs-precise divergence.
 
-### 6.3 How it is built — structure ingested AS EVENTS, folded like decisions
+### 6.3 How it is built - knowledge folded from the log, structure re-derived from the tree
 
-The code and doc knowledge is made event-sourced: an extraction pass emits events, and the
-same idempotent `apply` that folds a `DecisionMade` folds them into the graph. Nothing is a
-mutable side artifact (§2.1).
+The decision stream is event-sourced: the same idempotent `apply` folds each `DecisionMade`,
+`ReviewFinding` and `LessonLearned` into the graph. Code and doc structure is perception, which
+the tree re-derives: an ingest extracts a file's code entities, edges, doc concepts and links
+from its bytes and folds them into the graph projection, and the log keeps only one
+`GenerationIngested` ledger entry per file generation (the file, its generation and the blob it
+was extracted from). That entry replaces the extracted events (`CodeEntityExtracted`,
+`EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`), which the log does not hold.
+Nothing is a mutable side artifact (section 2.1).
 
 ```
-   EVENT LOG  (source of truth · per-project namespaced `proj-<id>-` · append-only)
-   ┌─────────────────────────────────────────────────────────────────────────────┐
-   │ dev-loop stream:   DecisionMade  ReviewFinding  LessonLearned                 │
-   │ codebase ingest:   CodeEntityExtracted  EdgeInferred   (per tree-sitter pass) │
-   │ docs ingest:       DocConceptExtracted  DocLinkExtracted                      │
-   └───────────────────────────────┬─────────────────────────────────────────────┘
-                                    │  apply()  — idempotent per position,
-                                    │            supersede-not-delete (sets valid_to)
-                                    ▼
-        ╔══════════════════ UNIFIED KNOWLEDGE GRAPH (projection) ══════════════════╗
-        ║  nodes {code-entity, doc-concept, rationale, decision, finding, lesson}  ║
-        ║  edges {calls, GOVERNS, ABOUT, references, needs, …}  bi-temporal+tiered ║
-        ╚═══════════════════════════════════┬═════════════════════════════════════╝
-                                            │  subgraph(seed, depth)
-             seed = the unit's blast radius │  traversal, tier-filtered
-                                            ▼
-        confidence tier:  EXTRACTED → prompt seed   |   ∪INFERRED∪AMBIGUOUS → safety consumers
-                                            │
-                                            ▼
+   EVENT LOG  (source of truth for KNOWLEDGE - per-project namespaced `proj-<id>-` - append-only)
+   +-----------------------------------------------------------------------------+
+   | dev-loop stream:  DecisionMade  ReviewFinding  LessonLearned                |
+   | ingest ledger:    GenerationIngested  (one per file generation perceived)   |
+   +--------------------------------------+--------------------------------------+
+                                          |
+   TREE  (source of truth for STRUCTURE)  |  apply() - idempotent per position,
+   +---------------------------------+    |            supersede-not-delete (sets valid_to);
+   | each file at the generation an  |----+  an entry's batch re-extracted from the tree:
+   | entry names: code entities and  |    |  code entities, edges, doc concepts, doc links
+   | edges, doc concepts and links   |    |
+   +---------------------------------+    v
+        +=================== UNIFIED KNOWLEDGE GRAPH (projection) ===================+
+        |  nodes {code-entity, doc-concept, rationale, decision, finding, lesson}    |
+        |  edges {calls, GOVERNS, ABOUT, references, needs, ...}  bi-temporal+tiered |
+        +===================================+========================================+
+                                            |  subgraph(seed, depth)
+             seed = the unit's blast radius |  traversal, tier-filtered
+                                            v
+        confidence tier:  EXTRACTED -> prompt seed   |   +INFERRED +AMBIGUOUS -> safety consumers
+                                            |
+                                            v
                           AGENT PROMPT  (bounded, fact-complete, design-intent-aware)
 ```
 
