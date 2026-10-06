@@ -3526,18 +3526,6 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
     }
 }
 
-/// One `tools/call` of `name` with `arguments` over `mcp`.
-fn tool_call(
-    mcp: &mut common::mcp::McpSession,
-    name: &str,
-    arguments: serde_json::Value,
-) -> serde_json::Value {
-    mcp.call(
-        "tools/call",
-        serde_json::json!({"name": name, "arguments": arguments}),
-    )
-}
-
 /// Given a `graph.db` still at the old fold rule, an agent's `rigger mcp` session starts and
 /// serves it as it stands: `rigger_graph` (both selectors) and `rigger_ground` refuse at once
 /// naming `rigger setup`, while `rigger_emit` appends and writes nothing to `graph.db`. When
@@ -3555,7 +3543,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
         ("rigger_graph", serde_json::json!({"show": "alpha"})),
         ("rigger_ground", serde_json::json!({"query": "alpha"})),
     ] {
-        let answer = tool_call(&mut mcp, tool, arguments.clone());
+        let answer = mcp.tool_call(tool, arguments.clone());
         assert_eq!(
             answer["error"]["message"],
             format!("{tool}: {}", rigger::contextgraph::REBUILD_OWED),
@@ -3568,7 +3556,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
             "data": {"id": id, "summary": "s", "governs": ["src/f.rs::alpha"], "supersedes": ""},
         })
     };
-    let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-owed"));
+    let emitted = mcp.tool_call("rigger_emit", decision("d-owed"));
     let log = store.log();
     assert_eq!(
         (log.len(), log.last().unwrap().type_.as_str()),
@@ -3591,11 +3579,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
 
     let (_, err, ok) = run_rigger_envs(store.root(), &["setup"], &[("RIGGER_NPM", "true")]);
     assert!(ok, "setup must succeed; stderr: {err}");
-    let around = tool_call(
-        &mut mcp,
-        "rigger_graph",
-        serde_json::json!({"around": "docs/f.md"}),
-    );
+    let around = mcp.tool_call("rigger_graph", serde_json::json!({"around": "docs/f.md"}));
     let answer = around["result"].to_string();
     assert!(
         around.get("error").is_none()
@@ -3603,7 +3587,7 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
             && !answer.contains("src/old.rs"),
         "the same session answers from the rebuilt graph; got: {around}"
     );
-    let emitted = tool_call(&mut mcp, "rigger_emit", decision("d-paid"));
+    let emitted = mcp.tool_call("rigger_emit", decision("d-paid"));
     assert_eq!(
         emitted["result"]["structuredContent"],
         serde_json::json!({"position": store.log().last().unwrap().position, "folded": true}),
@@ -4093,7 +4077,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
         })
     };
     let mut mcp = common::mcp::McpSession::start_with(root, &["mcp", "--spawn", "u/implementer#0"]);
-    let free = tool_call(&mut mcp, "rigger_emit", decision("d-free"));
+    let free = mcp.tool_call("rigger_emit", decision("d-free"));
     let free_at = read_run_events(root).last().unwrap().position;
     assert_eq!(
         free["result"]["structuredContent"],
@@ -4104,7 +4088,7 @@ fn an_mcp_emit_whose_fold_fails_answers_not_folded_with_the_reason() {
     let graph_db = rigger_file(root, "graph.db");
     let holder = rusqlite::Connection::open(&graph_db).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let locked = tool_call(&mut mcp, "rigger_emit", decision("d-locked"));
+    let locked = mcp.tool_call("rigger_emit", decision("d-locked"));
     holder.execute_batch("ROLLBACK").unwrap();
     let finished = mcp.finish();
     assert!(
