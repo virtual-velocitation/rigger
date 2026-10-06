@@ -1858,8 +1858,14 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 criteria,
                 log: &stderr_line,
             };
-            if let Err(e) = conductor::run(&cfg, &deps) {
-                eprintln!("rigger: conductor: {e}");
+            // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
+            match conductor::run(&cfg, &deps) {
+                Ok(rs) => {
+                    if let Some(line) = halted_line(&rs) {
+                        eprintln!("{line}");
+                    }
+                }
+                Err(e) => eprintln!("rigger: conductor: {e}"),
             }
             // Signal the run is over so an empty rigger_next reports done:true and the
             // shim exits cleanly. Set on BOTH success and error: a conductor error
