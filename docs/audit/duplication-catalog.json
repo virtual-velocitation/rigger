@@ -405,7 +405,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-663145ccb151",
+    "id": "dup-94e49c052a26",
     "classification": "semantic",
     "sites": [
       {
@@ -464,13 +464,23 @@
         "content_hash": "5cdbef81b464bcbf"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns",
+        "content_hash": "c0f6e3d647f2a511"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "a_clean_run_workflow_prints_no_halted_line_on_stderr",
+        "content_hash": "2cf5b29425a35ea0"
+      },
+      {
         "file": "tests/grounder_name_contract.rs",
         "name": "public_name_contract_predicate_error_and_resolver_agree",
         "content_hash": "7a5f0a9cd4ee7866"
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 12 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 14 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8129,7 +8139,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3f117fd28c02",
+    "id": "dup-d7d5597c4fbc",
     "classification": "semantic",
     "sites": [
       {
@@ -8140,7 +8150,7 @@
       {
         "file": "tests/common/mcp.rs",
         "name": "start_with",
-        "content_hash": "5c8623e27b20ac2a"
+        "content_hash": "969877e05344f34a"
       }
     ],
     "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
