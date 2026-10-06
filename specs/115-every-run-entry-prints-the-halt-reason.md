@@ -14,14 +14,10 @@ drops the returned state (`src/cli/run.rs:1858`).
 ## Design
 
 **UNIT ORDER AND BASE, decided here.** Criterion 1 needs nothing, criterion 2 needs criterion 1
-for `halted_line` only (criterion 1 lands it with its caller `run_cli`) and criterion 3 needs
-both; launched on rigger-run. Written against 65536eec, the run's base, which every citation names;
-built by PR #62 (main e3a9125b); the dash opt-out in `start_run_dashboard` for `rigger run` and
-`rigger serve`, with its tests, is criterion 2's, a consequence of its sessions carrying
-`RIGGER_NO_DASH` (the disposition the builder change has), not criterion 1's, which only shares
-the one authority; the build's other additions beyond this text - `McpSession::from_command`, the
-`lines_starting_with` and `answer_every_spawn` helpers, the `rigger serve` budget test - are the
-build's, owned by its units' reviews, not by this text.
+for `halted_line` and the clean run its per-line helper re-points (criterion 1 lands
+`halted_line` with its caller `run_cli`) and criterion 3 needs both; launched on rigger-run.
+Written against 65536eec, the run's base, which every citation names; built by PR #62 (main
+e3a9125b), whose code is the record of what the build added beyond this text.
 
 **ONE RENDERER, decided here.** No run entry renders the reason as text today: the step's
 renderer is the composition above, serialized as the `halted` key, and the only text form is the
@@ -87,7 +83,13 @@ halt is NOT an implementation (`ledger.rs:181-183`).
 (`tests/cli.rs:4158`), private to that file. The step's three arms stay pinned as they are: budget
 (`tests/cli.rs:7374`), hung (`tests/cli.rs:7549`), spec defect
 (`tests/plan_critique_spec_defect_stop_periphery.rs:254`). A halt line's absence is asserted per
-line: no line starting with `halted: `, the form `halted_line` returns. The clean `rigger run` of
+line: no line starting with `halted: `, the form `halted_line` returns. The per-line absence
+assertion is one `tests/cli.rs` helper, landed by criterion 2 beside its first stderr use and
+re-pointed under criterion 1's clean-run assertion in the same unit, as its reviewers' DRY item
+required; criterion 2 needs criterion 1 for `halted_line` and for that assertion's first caller.
+Criterion 2's budget run and its clean run are two tests, the clean one beside the budget one;
+this block's opening "both new tests" are criterion 1's and criterion 2's budget-one tests. The
+clean `rigger run` of
 `tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. Criterion 1's test is
 `#[cfg(unix)]` like its neighbour (`tests/cli.rs:6132`) and gives the fake agent one arm matching
 the worker persona's `Do the unit.` text (`tests/common/cli.rs:524-525`), echoing one line.
@@ -113,7 +115,9 @@ Instant) -> Option<String>`, polling `rigger_next` 20 ms apart until it hands ou
 (`Some`), answers `done: true` (`None`) or the deadline passes, when it calls `fail` itself; and
 `fail(&mut self, why: &str) -> !`, which ends its own child by its handle (`Child::kill()`, the
 no-os-kill gate's sanctioned form), drains its stderr, waits it and panics naming `why` and that
-stderr. `finish(self)` alone consumes the session; the clean run shares one `Instant` across its
+stderr; `fail`'s drain is sound only for a session that starts no dash, which every `start_with`
+session is (`RIGGER_NO_DASH`). `finish(self)` alone consumes the session; the clean run shares
+one `Instant` across its
 loop, the budget run one `Instant` taken before its first `next_spawn` and passed to both calls.
 `initialize()` asserts the response carries `result` (the periphery's assert, moved there);
 `tool_call` returns the whole JSON-RPC response as `call` does (the compaction callers'
@@ -156,7 +160,8 @@ directories and the README says what a run entry prints on a halt; the rustdoc n
 
 **OUT OF SCOPE.** Exit status (a halt is a run outcome; `rigger step` exits 0 on one,
 `tests/cli.rs:7379-7385`); the step line's other fields; the Workflow driver's stop text; the
-shim's end-of-run text after a halted serve.
+shim's end-of-run text after a halted serve; criterion 1's `exits 0` assertion pins existing
+behaviour and changes nothing.
 
 ## Global constraints
 
