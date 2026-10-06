@@ -25,9 +25,6 @@ the selection surface"), and every neighbor that could plausibly claim the same 
 the exclusion by name ("the orphan-id advisory is unit-9's, NOT this unit's"). A criterion whose
 ownership sentence sits outside the checkbox gets truncated away when the planner copies
 criteria verbatim into units - that truncation is a recorded failure, not a hypothesis.
-When the planner itself splits one criterion into parts, each part keeps the criterion's
-verbatim text and adds its own OWNS sentence after it; the conductor keeps that sentence after
-the exact criterion as the part's contract, so the parts never reach the plan critique as twins.
 
 ### F2 - Bundled criteria
 
