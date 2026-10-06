@@ -13,11 +13,26 @@ use rigger::contextgraph::{
     Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
     TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
+use rigger::eventstore::{Event, META_GROUP};
+use rigger::ingest::META_REPLAY_KEY;
+use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 /// A `type_` event carrying `json` as its payload.
 pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
     Event::new(type_, serde_json::to_vec(&json).unwrap())
+}
+
+/// The ledger entry recording `entry`, the generation of a batch of `n` events: its payload, its
+/// identity as the group and `<identity>@<generation>#<n>` as the replay key. Position and
+/// valid-time are the caller's to set.
+pub fn entry_event(entry: &GenerationIngested, n: usize) -> Event {
+    let identity = entry.identity();
+    Event::new(TYPE_GENERATION_INGESTED, serde_json::to_vec(entry).unwrap())
+        .with_meta(
+            META_REPLAY_KEY,
+            format!("{identity}@{}#{n}", entry.generation),
+        )
+        .with_meta(META_GROUP, identity)
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of

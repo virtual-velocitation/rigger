@@ -14,6 +14,8 @@ use rigger_domain::spawn;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::{ingest, retention};
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_root::{conductor, metrics};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::{lockfile, sqlite};

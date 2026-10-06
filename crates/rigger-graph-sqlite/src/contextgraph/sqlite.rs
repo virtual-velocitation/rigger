@@ -11514,5 +11514,592 @@ mod tests {
             );
             assert_eq!(alpha.attrs.get("line").map(String::as_str), Some("2"));
         }
+
+        /// Spec 107, THE ENTRY AND ITS BATCH FOLD AS ONE: a `GenerationIngested` ledger entry
+        /// folds only through `Projection::apply_generation`, with the batch its `batch` function
+        /// answers, at the entry's position and valid-time and under the entry's identity and
+        /// generation. Every entry is hand-built by the test-side builder and no sink is involved.
+        mod ledger_entries {
+            use super::*;
+            use crate::contextgraph::{wired, EntryFold, Fold};
+            use crate::test_support::{entry_event, event_of};
+            use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+            use std::cell::Cell;
+
+            /// The tail every lost fold's error ends with.
+            const SETUP_PAYS: &str =
+                " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
+
+            /// What the generic fold answers a ledger entry.
+            const ENTRY_REFUSED: &str = "a GenerationIngested entry folds only with its batch, \
+                                         through `Projection::apply_generation`";
+
+            /// The hand-built entry of `<prefix>/<file>` at `generation`, at log position `pos`,
+            /// valid from `secs` past the epoch.
+            fn entry(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64) -> Event {
+                let named = GenerationIngested {
+                    prefix: prefix.to_string(),
+                    file: file.to_string(),
+                    generation: generation.to_string(),
+                    blob: String::new(),
+                    excluded: false,
+                };
+                let mut e =
+                    entry_event(&named, 1).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                e.position = pos;
+                e
+            }
+
+            /// Fold `entry` into `p` with a batch function that answers `batch` and counts each
+            /// call of it in `asked`, answering the outcome or the error's text.
+            fn apply_entry(
+                p: &Projector,
+                entry: &Event,
+                batch: Result<Option<Vec<Event>>, Error>,
+                asked: &Cell<u32>,
+            ) -> Result<EntryFold, String> {
+                p.apply_generation(
+                    entry,
+                    Box::new(move || {
+                        asked.set(asked.get() + 1);
+                        batch
+                    }),
+                )
+                .map_err(|e| e.0)
+            }
+
+            /// One unkeyed definition of `src/f.rs`, as a batch event.
+            fn def_event(name: &str, line: u64, fresh: bool) -> Event {
+                event_of(TYPE_CODE_ENTITY_EXTRACTED, def(name, line, fresh))
+            }
+
+            /// One unkeyed `SPECIFIES` link from [`F`] to `to`, as a batch event.
+            fn link_event(to: &str) -> Event {
+                event_of(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    serde_json::json!({ "from": F, "to": to, "rel": REL_SPECIFIES }),
+                )
+            }
+
+            /// Every position `p`'s `applied` ledger holds, in order.
+            fn applied_positions(p: &Projector) -> Vec<i64> {
+                raw_rows(
+                    p,
+                    "SELECT position FROM applied ORDER BY position",
+                    [],
+                    |r| r.get(0),
+                )
+            }
+
+            /// Every `(identity, generation)` row of `p`'s `generations` table, in order.
+            fn installed(p: &Projector) -> Vec<(String, String)> {
+                raw_rows(
+                    p,
+                    "SELECT identity, generation FROM generations ORDER BY identity",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            }
+
+            /// Every distinct `(identity, generation)` `p`'s node assertions were made under.
+            fn node_asserters(p: &Projector) -> Vec<(String, String)> {
+                raw_rows(
+                    p,
+                    "SELECT DISTINCT identity, generation FROM node_assertions
+                      ORDER BY identity, generation",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            }
+
+            /// The `label` attribute of the community node `community` in `p`.
+            fn label(p: &Projector, community: &str) -> Option<String> {
+                p.whole()
+                    .unwrap()
+                    .nodes
+                    .into_iter()
+                    .find(|n| n.id == community)
+                    .and_then(|n| n.attrs.get("label").cloned())
+            }
+
+            /// A fresh file-backed graph, with the directory that keeps it and its owed mark's path.
+            fn graph_file() -> (tempfile::TempDir, Projector, PathBuf) {
+                let dir = tempfile::tempdir().unwrap();
+                let p =
+                    Projector::open(dir.path().join("graph.db").to_str().unwrap(), "test").unwrap();
+                let mark = dir.path().join("graph.db.owed");
+                (dir, p, mark)
+            }
+
+            /// `p` holding generation `h1` of `gc/src/f.rs`, folded from the entry at position 7
+            /// valid from 10s: the definitions `alpha` and `gone`.
+            fn holding_h1(p: &Projector) {
+                let asked = Cell::new(0);
+                let batch = vec![def_event("alpha", 1, true), def_event("gone", 9, false)];
+                assert_eq!(
+                    apply_entry(
+                        p,
+                        &entry("gc", "src/f.rs", "h1", 7, 10),
+                        Ok(Some(batch)),
+                        &asked
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+            }
+
+            #[test]
+            fn the_entry_builder_stamps_the_identity_as_group_and_the_generation_key() {
+                let named = GenerationIngested {
+                    prefix: "gd".to_string(),
+                    file: "docs/f.md".to_string(),
+                    generation: "h1".to_string(),
+                    blob: "b10b".to_string(),
+                    excluded: true,
+                };
+                let e = entry_event(&named, 3);
+                assert_eq!(e.type_, TYPE_GENERATION_INGESTED);
+                assert_eq!(
+                    e.meta
+                        .get(crate::eventstore::META_GROUP)
+                        .map(String::as_str),
+                    Some("gd/docs/f.md")
+                );
+                assert_eq!(
+                    e.meta
+                        .get(rigger_domain::ingest::META_REPLAY_KEY)
+                        .map(String::as_str),
+                    Some("gd/docs/f.md@h1#3")
+                );
+                assert_eq!(GenerationIngested::parse(&e.data), Ok(named));
+            }
+
+            #[test]
+            fn a_resolved_entry_folds_its_batch_at_the_entrys_position_and_installs_its_generation()
+            {
+                let p = Projector::open(":memory:", "test").unwrap();
+                assert_eq!(p.current_generation("gc/src/f.rs").unwrap(), None);
+                // The second batch event carries a replay key naming another identity, and its own
+                // position and valid-time: the fold reads none of the three.
+                let mut stray = def_event("gone", 9, false)
+                    .with_meta(
+                        rigger_domain::ingest::META_REPLAY_KEY,
+                        "gc/src/other.rs@zz#0",
+                    )
+                    .with_valid_from(UNIX_EPOCH + Duration::from_secs(99));
+                stray.position = 42;
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h1", 7, 10),
+                        Ok(Some(vec![def_event("alpha", 1, true), stray])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![
+                        edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 10, 7),
+                        edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 10, 7),
+                    ],
+                    "every batch event folds at the entry's position and valid-time"
+                );
+                assert_eq!(
+                    node_ids(&p),
+                    vec!["src/f.rs", "src/f.rs::alpha", "src/f.rs::gone"]
+                );
+                assert_eq!(
+                    applied_positions(&p),
+                    vec![7],
+                    "the entry's position is recorded once, and no batch event's own"
+                );
+                let h1 = vec![("gc/src/f.rs".to_string(), "h1".to_string())];
+                assert_eq!(installed(&p), h1);
+                assert_eq!(
+                    node_asserters(&p),
+                    h1,
+                    "every batch event is asserted under the entry's identity and generation"
+                );
+            }
+
+            #[test]
+            fn an_entry_of_another_generation_supersedes_the_code_facts_its_batch_drops() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                holding_h1(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 9, 20),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h2".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 9)]
+                );
+                assert_eq!(node_ids(&p), vec!["src/f.rs", "src/f.rs::alpha"]);
+                assert_eq!(p.retired_code_entity_count().unwrap(), 1);
+                assert_eq!(applied_positions(&p), vec![7, 9]);
+            }
+
+            #[test]
+            fn an_entry_of_another_generation_retires_the_design_link_its_batch_drops() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gd", F, "h1", 1, 10),
+                        Ok(Some(vec![link_event("src/a.rs"), link_event("src/b.rs")])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gd", F, "h2", 3, 20),
+                        Ok(Some(vec![link_event("src/a.rs")])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 2);
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
+                    "the kept link holds from its first entry and is sourced at its newest"
+                );
+                assert_eq!(node_ids(&p), vec![F, "src/a.rs"]);
+                let retired_at: Vec<Option<i64>> = raw_rows(
+                    &p,
+                    "SELECT valid_to FROM edges WHERE to_id = 'src/b.rs'",
+                    [],
+                    |r| r.get(0),
+                );
+                assert_eq!(
+                    retired_at,
+                    vec![Some(to_nanos(UNIX_EPOCH + Duration::from_secs(20)))],
+                    "the dropped link is retired at the superseding entry's valid-time"
+                );
+                assert_eq!(
+                    p.current_generation("gd/docs/f.md").unwrap(),
+                    Some("h2".to_string())
+                );
+            }
+
+            #[test]
+            fn a_re_recording_writes_only_its_applied_row_and_never_asks_for_its_batch() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                holding_h1(&p);
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h1", 8, 50),
+                        Ok(Some(vec![def_event("other", 5, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::ReRecording)
+                );
+                assert_eq!(asked.get(), 0, "a re-recording never asks for its batch");
+                assert_eq!(
+                    projection_but_applied(&p),
+                    before,
+                    "a re-recording changes no fact"
+                );
+                assert_eq!(applied_positions(&p), vec![7, 8]);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+            }
+
+            #[test]
+            fn an_unresolved_entry_leaves_the_identitys_facts_and_generation_as_they_stood() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                holding_h1(&p);
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(&p, &entry("gc", "src/f.rs", "h2", 8, 20), Ok(None), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
+                // An identity that holds no generation installs none either.
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/new.rs", "k1", 9, 20),
+                        Ok(None),
+                        &asked
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 2);
+                assert_eq!(
+                    projection_but_applied(&p),
+                    before,
+                    "an unresolved entry folds nothing"
+                );
+                assert_eq!(applied_positions(&p), vec![7, 8, 9]);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
+                // The generation it named is still not the current one, so a later entry of it
+                // that resolves folds.
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 10, 30),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h2".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 30, 10)]
+                );
+            }
+
+            #[test]
+            fn an_entry_whose_position_is_applied_folds_nothing_and_never_asks_for_its_batch() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                apply_decision(&p, 3, "d1", "keep", &["src/f.rs"], "");
+                holding_h1(&p);
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                // Position 7 is the entry that installed h1; position 3 a decision's.
+                for (file, generation, pos) in [("src/f.rs", "h2", 7), ("src/new.rs", "k1", 3)] {
+                    assert_eq!(
+                        apply_entry(
+                            &p,
+                            &entry("gc", file, generation, pos, 20),
+                            Ok(Some(vec![def_event("other", 5, true)])),
+                            &asked,
+                        ),
+                        Ok(EntryFold::AlreadyApplied),
+                        "position {pos}"
+                    );
+                }
+                assert_eq!(
+                    asked.get(),
+                    0,
+                    "an applied position never asks for its batch"
+                );
+                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(applied_positions(&p), vec![3, 7]);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
+            }
+
+            #[test]
+            fn a_resolved_batch_changing_a_members_degree_relabels_its_community_as_it_returns() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                seed_community_fixture(&p);
+                assert_eq!(label(&p, "community/1/0"), Some("apply_damage".to_string()));
+                let hit = "src/combat/hit.rs";
+                let batch = vec![
+                    event_of(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        crate::test_support::def_json(hit, "apply_damage", 10, true),
+                    ),
+                    event_of(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        crate::test_support::def_json(hit, "clamp", 30, false),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "min", "clamp"),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "max", "clamp"),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "floor", "clamp"),
+                    ),
+                ];
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(&p, &entry("gc", hit, "h1", 20, 30), Ok(Some(batch)), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    label(&p, "community/1/0"),
+                    Some("clamp".to_string()),
+                    "the member whose degree the batch raised labels the community at once"
+                );
+                assert_eq!(label(&p, "community/1/1"), Some("alpha".to_string()));
+                let owed: Vec<String> =
+                    raw_rows(&p, "SELECT community FROM relabel_owed", [], |r| r.get(0));
+                assert_eq!(owed, Vec::<String>::new(), "the fold ends owing no relabel");
+            }
+
+            #[test]
+            fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_marks_the_graph_owed(
+            ) {
+                let refused = Fold::NotFolded(format!("graph: {ENTRY_REFUSED}{SETUP_PAYS}"));
+                // A batch holding an entry is refused whole.
+                let (_dir, p, mark) = graph_file();
+                let mut held =
+                    event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], ""));
+                held.position = 1;
+                let batch = [held, entry("gc", "src/f.rs", "h1", 2, 10)];
+                assert_eq!(Fold::of_batch(|| wired(Some(&p)), &batch), refused);
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), Vec::<i64>::new());
+                assert_eq!(node_ids(&p), Vec::<String>::new());
+
+                // One entry alone is refused.
+                let (_dir, p, mark) = graph_file();
+                assert_eq!(
+                    Fold::of(wired(Some(&p)), &entry("gc", "src/f.rs", "h1", 2, 10)),
+                    refused
+                );
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), Vec::<i64>::new());
+
+                // So is one whose position the ledger already holds.
+                let (_dir, p, mark) = graph_file();
+                let asked = Cell::new(0);
+                let folded = entry("gc", "src/f.rs", "h1", 5, 10);
+                assert_eq!(
+                    apply_entry(&p, &folded, Ok(None), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
+                assert_eq!(Fold::of(wired(Some(&p)), &folded), refused);
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), vec![5]);
+            }
+
+            #[test]
+            fn apply_generation_refuses_on_a_graph_that_owes_its_rebuild_and_the_generation_still_reads(
+            ) {
+                let (_dir, p, mark) = graph_file();
+                holding_h1(&p);
+                let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+                poison.position = 8;
+                assert!(matches!(
+                    Fold::of(wired(Some(&p)), &poison),
+                    Fold::NotFolded(_)
+                ));
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 9, 20),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Err(REBUILD_OWED.to_string())
+                );
+                assert_eq!(asked.get(), 0, "a refused fold never asks for its batch");
+                assert_eq!(applied_positions(&p), vec![7]);
+                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string()),
+                    "the generation is read from a graph that owes its rebuild"
+                );
+            }
+
+            /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`: the
+            /// file is marked owed, and no applied row, generation or fact is written.
+            fn fails_and_marks(entry: Event, batch: Result<Option<Vec<Event>>, Error>, why: &str) {
+                let (_dir, p, mark) = graph_file();
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(&p, &entry, batch, &asked),
+                    Err(format!("{why}{SETUP_PAYS}"))
+                );
+                assert_eq!(
+                    (p.rebuild_owed().unwrap(), mark.exists()),
+                    (true, true),
+                    "{why}"
+                );
+                assert_eq!(applied_positions(&p), Vec::<i64>::new(), "{why}");
+                assert_eq!(installed(&p), Vec::<(String, String)>::new(), "{why}");
+                assert_eq!(node_ids(&p), Vec::<String>::new(), "{why}");
+            }
+
+            #[test]
+            fn a_failed_apply_generation_marks_the_file_owed_and_writes_no_applied_row() {
+                // The batch function fails.
+                fails_and_marks(
+                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    Err(Error("the blob could not be read".to_string())),
+                    "the blob could not be read",
+                );
+                // The entry's payload does not parse.
+                let mut unparsable = entry("gc", "src/f.rs", "h1", 7, 10);
+                unparsable.data = b"{}".to_vec();
+                fails_and_marks(
+                    unparsable,
+                    Ok(Some(vec![def_event("alpha", 1, true)])),
+                    "GenerationIngested payload: missing field `prefix` at line 1 column 2",
+                );
+                // A batch event's fold fails after an earlier one folded: the whole entry rolls
+                // back, the generation the first event installed included.
+                let poison: &[u8] = b"{ not valid json";
+                let rejected = serde_json::from_slice::<serde_json::Value>(poison)
+                    .unwrap_err()
+                    .to_string();
+                fails_and_marks(
+                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    Ok(Some(vec![
+                        def_event("alpha", 1, true),
+                        Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
+                    ])),
+                    &rejected,
+                );
+            }
+
+            #[test]
+            fn current_generation_answers_only_the_asking_projects_own_identity() {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("graph.db");
+                let path = path.to_str().unwrap();
+                let ours = Projector::open(path, "ours").unwrap();
+                let theirs = Projector::open(path, "theirs").unwrap();
+                holding_h1(&ours);
+                assert_eq!(
+                    ours.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(theirs.current_generation("gc/src/f.rs").unwrap(), None);
+                assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
+            }
+        }
     }
 }

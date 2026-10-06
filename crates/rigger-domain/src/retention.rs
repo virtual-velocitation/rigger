@@ -62,3 +62,47 @@ pub const EPISODIC_TYPES: [&str; 16] = [
     crate::progress::TYPE_SPAWN_LAUNCHED,
     crate::progress::TYPE_STOP_FAILURE,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The entry every case names.
+    fn named() -> GenerationIngested {
+        GenerationIngested {
+            prefix: "gc".to_string(),
+            file: "src/a.rs".to_string(),
+            generation: "h1".to_string(),
+            blob: "b10b".to_string(),
+            excluded: true,
+        }
+    }
+
+    #[test]
+    fn parse_answers_the_five_fields_of_an_entrys_payload() {
+        let data =
+            br#"{"prefix":"gc","file":"src/a.rs","generation":"h1","blob":"b10b","excluded":true}"#;
+        assert_eq!(GenerationIngested::parse(data), Ok(named()));
+    }
+
+    #[test]
+    fn parse_refuses_a_payload_that_is_not_an_entry_naming_the_type_and_the_fault() {
+        assert_eq!(
+            GenerationIngested::parse(b"{}"),
+            Err(
+                "GenerationIngested payload: missing field `prefix` at line 1 column 2".to_string()
+            )
+        );
+        let trailing =
+            br#"{"prefix":"gc","file":"src/a.rs","generation":"h1","blob":"","excluded":false} x"#;
+        assert_eq!(
+            GenerationIngested::parse(trailing),
+            Err("GenerationIngested payload: trailing characters at line 1 column 80".to_string())
+        );
+    }
+
+    #[test]
+    fn identity_is_the_prefix_and_the_file_joined_by_a_slash() {
+        assert_eq!(named().identity(), "gc/src/a.rs");
+    }
+}

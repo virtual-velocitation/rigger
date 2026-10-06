@@ -29,6 +29,12 @@ mod contextgraph {
     #[cfg(all(test, feature = "symbols"))]
     pub use rigger_graph_sqlite::contextgraph::sqlite;
 }
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use rigger_domain::retention;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
 
