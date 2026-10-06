@@ -27,9 +27,11 @@ adds `halted_line(rs: &RunState) -> Option<String>` in `src/cli/run.rs`, `Some("
 `done:` label form. Each entry is one `if let Some(line)` and only the stream differs: `run_cli`
 prints it on stdout right after `print_run_state`; `run_workflow` on stderr, never stdout (the
 MCP transport), from the conductor thread's `Ok(rs)` arm before `driver.finish()`, and its `Err`
-arm keeps `rigger: conductor: <e>`. The halt line's stdout-clean half is pinned by the budget
-run's second `next_spawn` exchange (`tests/cli.rs:7476`) parsing as JSON-RPC, `McpSession::call`'s
-parse panic (`tests/common/mcp.rs:73-74`), beside the exactly-once stderr assertion
+arm keeps `rigger: conductor: <e>`. The halt line's stdout-clean half is pinned by the stdout
+lock the server thread holds for the whole run (`src/cli/run.rs:1883`): a stdout write from the
+conductor thread blocks before `driver.finish()` (`:1873`), the second `next_spawn`
+(`tests/cli.rs:7476`) never answers `None` and `fail`s at its deadline, beside the exactly-once
+stderr assertion
 (`tests/cli.rs:7483-7487`). `run_cli`'s `Err` path is unchanged: `conductor::run(&cfg, &deps)?`
 (`src/cli/run.rs:1490`) propagates before `print_run_state` (`:1506`) and `halted_line` (`:1507`),
 printing neither. The blocking entries
@@ -44,8 +46,10 @@ by default, `src/cli/run.rs:317-325`): stdout. `run_workflow` (`rigger run --dri
 `rigger serve` via `cmd_serve`, `src/cli/run.rs:1888`): stderr, which under an MCP host other than
 the shim lands in that host's server log, accepted. The build added a third test, `rigger serve`'s
 budget run (`tests/cli.rs:7528`, its id checked after `finish`, `:7534-7542`), as that entry's own
-proof; it is not criterion 2's, whose two runs stay two. `cmd_workflow` (`src/cli/run.rs:1929`)
-prints nothing itself; its shim spawns `rigger serve` with stderr inherited (`shim/shim.mjs:413`).
+proof; criterion 2 owns it as the second proof of the one `run_workflow` call it owns (its doc
+comment, `tests/cli.rs:7523`, and its unit's commit say so); criteria 1 and 3 do not.
+`cmd_workflow` (`src/cli/run.rs:1929`) prints nothing itself; its shim spawns `rigger serve` with
+stderr inherited (`shim/shim.mjs:413`).
 `cmd_replay` (`rigger replay`, `src/cli/mod.rs:2468`, the call at `:2574`) is not a run entry: an
 offline re-fold of a recorded trajectory over an isolated store for a metrics diff, reading its
 state only for `err()` (`:2596`) and printing its own not-completed line (`:2615-2620`); untouched.
@@ -74,7 +78,7 @@ reason only through the conductor's state; `--driver` picks the stream. STATE PL
 returned `RunState::budget_halt` and the log's fold; folding `BudgetExhausted` to print a budget
 halt is NOT an implementation (`ledger.rs:181-183`).
 
-**TEST DISPOSITIONS.** Both new tests sit in `tests/cli.rs` beside the step's budget test
+**TEST DISPOSITIONS.** The three new tests sit in `tests/cli.rs` beside the step's budget test
 (`tests/cli.rs:7380`), using the budget-one fixture `BUDGET_ONE_TWO_STAGE_WORKFLOW`
 (`tests/cli.rs:4158`), private to that file. Criterion 1's test is `#[cfg(unix)]`
 (`tests/cli.rs:7418`) and its fake agent answers the worker's `*"Do the unit."*` arm by echoing
@@ -82,7 +86,13 @@ halt is NOT an implementation (`ledger.rs:181-183`).
 (`tests/cli.rs:7380`), hung (`tests/cli.rs:7882`), spec defect
 (`tests/plan_critique_spec_defect_stop_periphery.rs:254`). A halt line's absence is asserted per
 line: no line starting with `halted: `, the form `halted_line` returns. The clean `rigger run` of
-`tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. `McpSession`
+`tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. The build landed
+`lines_starting_with` (`tests/cli.rs:7575`) in criterion 2's unit and, in a later commit of that
+unit, its reviewers' DRY item re-pointed criterion 1's clean-run assertion (`:6222`) at it;
+criterion 2 owns the helper. Criterion 2 owns `answer_every_spawn` (`tests/cli.rs:7554-7572`),
+the loop of its clean run, the serve test and the dash opt-out test (`:7503`, `:7533`, `:7698`);
+the budget run stays inline because its checks between handout and `rigger_result` go through
+`fail` with their own messages. `McpSession`
 (`tests/common/mcp.rs:11-166`) is the one MCP session authority. The auto-started-dash test
 (`tests/cli.rs:15666`) stays a raw spawn, the one `rigger serve` session outside `McpSession`,
 because it must run with the dash (`rigger_command` sets `RIGGER_NO_DASH`), speaks no MCP (it holds
@@ -137,7 +147,7 @@ from its `next_spawn` before a spawn is handed out calls `fail`. Their first cal
 after its one `rigger_result`, calls `next_spawn` again and requires `None` before `finish`, so the
 15 s deadline covers the conductor's return and the assertion also pins that the refused second
 unit's spawn is never handed out; `finish` then waits on a process whose run has reported done. A
-session is for short fixtures whose stderr stays under the 64 KiB pipe buffer, as these two runs
+session is for short fixtures whose stderr stays under the 64 KiB pipe buffer, as these three runs
 do, and a hang inside `exchange`'s untimed `read_line` (`tests/common/mcp.rs:62`) is outside
 `fail`'s reach and accepted for them; a longer run drains stderr on a thread first (not this
 spec's).
