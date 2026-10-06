@@ -572,14 +572,9 @@ thinking out loud, not json\n\
     const MAX_ARG_STRLEN: usize = 131_072;
 
     /// The checked-in fixture agent that copies its stdin and its `--system-prompt-file` into
-    /// the directory `PROMPT_CAPTURE_DIR` names.
+    /// the directory `PROMPT_CAPTURE_DIR` names, relative to this crate's manifest.
     #[cfg(unix)]
-    fn prompt_capture_agent() -> String {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/prompt-capture-agent.sh")
-            .to_string_lossy()
-            .into_owned()
-    }
+    const PROMPT_CAPTURE_AGENT: &str = "../../tests/fixtures/prompt-capture-agent.sh";
 
     #[cfg(unix)]
     #[test]
@@ -606,7 +601,10 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let driver = Driver {
-            bin: prompt_capture_agent(),
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(PROMPT_CAPTURE_AGENT)
+                .to_string_lossy()
+                .into_owned(),
             ..Driver::default()
         };
 
@@ -656,7 +654,10 @@ thinking out loud, not json\n\
             ..Default::default()
         };
         let driver = Driver {
-            bin: prompt_capture_agent(),
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(PROMPT_CAPTURE_AGENT)
+                .to_string_lossy()
+                .into_owned(),
             ..Driver::default()
         };
 
