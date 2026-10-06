@@ -262,7 +262,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
             && peers.contains(&critique_finding_id(SPEC, 0, 2)),
         "the graph shows the copied findings about the spec:\n{peers}"
     );
-    for sub in ["agent-live", "agent-stream"] {
+    for sub in ["agent-live", "agent-stream", "agent-scratch"] {
         assert!(
             !scratch.join(sub).join(format!("critique-{hash}")).exists(),
             "the critique run's {sub} directory goes once its spawn returns"
@@ -714,8 +714,9 @@ fn the_critique_record_persists_under_the_literal_content_hash_with_the_critics_
         "the result keeps the critic's whole output and no error: {result}"
     );
 
-    // The session's liveness marker and transcript lived under the critique run and went with it.
-    for sub in ["agent-live", "agent-stream"] {
+    // The session's liveness marker, transcript and spawn scratch (its system-prompt file) lived
+    // under the critique run and went with it.
+    for sub in ["agent-live", "agent-stream", "agent-scratch"] {
         let left: Vec<std::ffi::OsString> = std::fs::read_dir(scratch.join(sub))
             .unwrap_or_else(|e| panic!("the session wrote under {sub}: {e}"))
             .flatten()
