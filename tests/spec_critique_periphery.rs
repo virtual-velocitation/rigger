@@ -20,8 +20,8 @@ use common::cli::{
 };
 use common::fixtures::{git_ok, temp_git_project_with_commit};
 use common::repo::{
-    critique_stub_argv, critique_stub_conn, critique_stub_spawns, critique_stub_system_prompt,
-    critique_stub_task, write_critique_stub, write_critique_stub_reporting,
+    critique_stub_argv, critique_stub_record, critique_stub_spawns, critique_stub_task,
+    write_critique_stub, write_critique_stub_reporting, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -225,7 +225,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         "the persona's rung for attempt 0"
     );
     assert_eq!(
-        critique_stub_conn(first.path()),
+        critique_stub_record(first.path(), CRITIQUE_CONN),
         "unset",
         "a sqlite selection hands the critic no server: its bound rigger server resolves the \
          local store through configuration"
@@ -234,7 +234,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
         !argv.iter().any(|a| a == "--system-prompt"),
         "the persona never travels as an argv string: {argv:?}"
     );
-    let system = critique_stub_system_prompt(first.path());
+    let system = critique_stub_record(first.path(), CRITIQUE_SYSTEM_PROMPT);
     assert!(
         system.starts_with("You are the CRITIC-PERSONA adversary."),
         "the critic's system prompt opens with the persona the workflow names:\n{system}"
@@ -949,7 +949,7 @@ fn the_critic_is_the_plan_critique_gates_adversary_else_the_default_review_adver
         let (out, err, ok) = critique(root, SPEC_REL, &path, &root.join("scratch"));
         assert!(ok, "a workflow naming a critic critiques; stderr:\n{err}");
         assert_eq!(out, reject_out(SPEC, 0));
-        let system = critique_stub_system_prompt(work.path());
+        let system = critique_stub_record(work.path(), CRITIQUE_SYSTEM_PROMPT);
         assert!(
             system.starts_with(persona),
             "the critic opens with {persona:?}:\n{system}"
@@ -1222,7 +1222,7 @@ fn a_server_selected_by_flags_alone_is_handed_to_the_critic_whose_bound_server_r
             !rigger_file(root, "events.db").exists(),
             "the critique lives on the server, never a local store"
         );
-        let handed = critique_stub_conn(work.path());
+        let handed = critique_stub_record(work.path(), CRITIQUE_CONN);
         assert_eq!(
             handed, conn,
             "the critic is handed the flag-selected server"
@@ -1690,7 +1690,7 @@ fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the
             "the configured server holds the critique, never a local store"
         );
         assert_eq!(
-            critique_stub_conn(work.path()),
+            critique_stub_record(work.path(), CRITIQUE_CONN),
             conn,
             "the critic is handed the server the configuration selected"
         );
@@ -1717,7 +1717,7 @@ fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the
         assert_eq!(out, reject_out(SPEC, 0));
         assert_eq!(critique_stub_spawns(work.path()), 1);
         assert_eq!(
-            critique_stub_conn(work.path()),
+            critique_stub_record(work.path(), CRITIQUE_CONN),
             conn,
             "the handed selection outranks the ambient KURRENTDB_CONN the critic inherits"
         );

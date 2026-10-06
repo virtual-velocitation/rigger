@@ -46,8 +46,13 @@ const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
-const CRITIQUE_SYSTEM_PROMPT: &str = "critique-system-prompt";
-const CRITIQUE_CONN: &str = "critique-conn";
+/// The critique stub's record of the system prompt it was started with: the content of the file
+/// its `--system-prompt-file` named, copied at spawn time (the host removes that file once the
+/// spawn ends). Read with [`critique_stub_record`].
+pub const CRITIQUE_SYSTEM_PROMPT: &str = "critique-system-prompt";
+/// The critique stub's record of the `KURRENTDB_CONN` it was started with, `unset` when its
+/// environment carried none. Read with [`critique_stub_record`].
+pub const CRITIQUE_CONN: &str = "critique-conn";
 
 /// A PATH that runs the checked-in critique stub as `claude`, ahead of the ambient PATH, set on
 /// the one `rigger critique` command that should reach it. The stub replays a stream-json session
@@ -111,17 +116,10 @@ pub fn critique_stub_task(work: &Path) -> String {
         .to_string()
 }
 
-/// The `KURRENTDB_CONN` the critique stub under `work` was last started with, `unset` when its
-/// environment carried none.
-pub fn critique_stub_conn(work: &Path) -> String {
-    std::fs::read_to_string(work.join("bin").join(CRITIQUE_CONN)).unwrap()
-}
-
-/// The system prompt the critique stub under `work` was last started with: the content of the
-/// file its `--system-prompt-file` named, copied at spawn time (the host removes that file once
-/// the spawn ends).
-pub fn critique_stub_system_prompt(work: &Path) -> String {
-    std::fs::read_to_string(work.join("bin").join(CRITIQUE_SYSTEM_PROMPT)).unwrap()
+/// What the critique stub under `work` recorded of its last start under `record`
+/// ([`CRITIQUE_CONN`] or [`CRITIQUE_SYSTEM_PROMPT`]).
+pub fn critique_stub_record(work: &Path, record: &str) -> String {
+    std::fs::read_to_string(work.join("bin").join(record)).unwrap()
 }
 
 /// The argv the critique stub under `work` was last started with.
