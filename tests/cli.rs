@@ -7486,6 +7486,89 @@ fn run_prints_the_budget_halt_reason_after_the_run_state() {
     );
 }
 
+/// Spec 115, criterion 2: THE WORKFLOW DRIVER PRINTS THE HALT REASON. Given the budget-one
+/// fixture, when the operator runs `rigger run --driver workflow` and its one admitted spawn is
+/// answered over the MCP wire, then stderr names why the run stopped, `halted: budget
+/// exhausted: 1/1 spawns`, by the time the run reports done; and given the same two stages
+/// under a budget they fit, a run driven to its end prints no such line.
+#[test]
+fn workflow_run_prints_the_budget_halt_reason_on_stderr() {
+    use std::time::{Duration, Instant};
+
+    let workers = ["a/implementer#0", "b/implementer#0"];
+    let answer = |mcp: &mut McpSession, id: &str| {
+        let answered = mcp.tool_call(
+            "rigger_result",
+            serde_json::json!({"id": id, "output": "did the unit"}),
+        );
+        assert_eq!(
+            answered["result"]["structuredContent"],
+            serde_json::json!({}),
+            "rigger_result must accept the handed-out spawn {id:?}; got: {answered}"
+        );
+    };
+    let halted_lines = |stderr: &str| -> Vec<String> {
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("halted: "))
+            .map(str::to_string)
+            .collect()
+    };
+    let args = ["run", "--driver", "workflow", "--base", "HEAD"];
+
+    let dir = temp_git_project_with_commit();
+    write_workflow_fixture(dir.path(), &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(dir.path(), &args);
+    mcp.initialize();
+    // One deadline covers both polls: the handout and the conductor's return after its answer.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let Some(admitted) = mcp.next_spawn(deadline) else {
+        mcp.fail("the budget-one run reported done before handing out its one spawn")
+    };
+    // Two independent units are ready at once, so which one the budget admits varies.
+    assert!(
+        workers.contains(&admitted.as_str()),
+        "the one admitted spawn is a unit's first implementer; got {admitted:?}"
+    );
+    answer(&mut mcp, &admitted);
+    // The run reports done only after its conductor returned, and the refused second unit's
+    // spawn is never handed out.
+    assert_eq!(
+        mcp.next_spawn(deadline),
+        None,
+        "budget 1 admits one spawn: after its answer the run is done"
+    );
+    let stderr = String::from_utf8_lossy(&mcp.finish().stderr).into_owned();
+    assert_eq!(
+        halted_lines(&stderr),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "the workflow driver names the halt reason on stderr, exactly once; stderr: {stderr}"
+    );
+
+    let dir = temp_git_project_with_commit();
+    write_workflow_fixture(dir.path(), &TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(dir.path(), &args);
+    mcp.initialize();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut answered = Vec::new();
+    while let Some(id) = mcp.next_spawn(deadline) {
+        answer(&mut mcp, &id);
+        answered.push(id);
+    }
+    answered.sort();
+    let stderr = String::from_utf8_lossy(&mcp.finish().stderr).into_owned();
+    // Non-vacuity: the clean run really ran both units to its end before the absence counts.
+    assert_eq!(
+        answered, workers,
+        "premise: the clean run hands out both units' spawns and no other; stderr: {stderr}"
+    );
+    assert_eq!(
+        halted_lines(&stderr),
+        Vec::<String>::new(),
+        "a run no budget stopped prints no halt line; stderr: {stderr}"
+    );
+}
+
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
 /// ACROSS A REAL PROCESS BOUNDARY (review u69c5 round 2, cause genuine-defect). The
 /// implementer's own in-process unit test

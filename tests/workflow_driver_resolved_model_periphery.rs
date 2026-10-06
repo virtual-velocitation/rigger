@@ -43,9 +43,8 @@
 mod common;
 use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::git::temp_git_project_with_commit;
+use common::mcp::McpSession;
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{ChildStderr, ChildStdin, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -63,62 +62,6 @@ const ONE_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
-/// Send one JSON-RPC 2.0 request line to `stdin` and return the parsed response line read
-/// back from `stdout` - the plain newline-delimited protocol `mcpserver.rs::Server::run`
-/// implements (no `Content-Length` framing, unlike LSP).
-fn call(stdin: &mut ChildStdin, stdout: &mut impl BufRead, req: &Value) -> Value {
-    let line = req.to_string();
-    writeln!(stdin, "{line}").expect("write a request to rigger serve's stdin");
-    stdin
-        .flush()
-        .expect("flush a request to rigger serve's stdin");
-    let mut resp = String::new();
-    stdout
-        .read_line(&mut resp)
-        .expect("read a response from rigger serve's stdout");
-    assert!(
-        !resp.trim().is_empty(),
-        "rigger serve closed stdout answering {line}"
-    );
-    serde_json::from_str(&resp)
-        .unwrap_or_else(|e| panic!("invalid JSON-RPC response to {line}: {e}\ngot: {resp:?}"))
-}
-
-/// Call an MCP tool (`tools/call`) and return its `structuredContent` - the same value shape
-/// `shim/shim.mjs`'s `call()` extracts.
-fn call_tool(
-    stdin: &mut ChildStdin,
-    stdout: &mut impl BufRead,
-    id: i64,
-    name: &str,
-    args: Value,
-) -> Value {
-    let resp = call(
-        stdin,
-        stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": args},
-        }),
-    );
-    resp.get("result")
-        .and_then(|r| r.get("structuredContent"))
-        .cloned()
-        .unwrap_or_else(|| panic!("tools/call {name} returned no structuredContent: {resp}"))
-}
-
-/// Drain and return `stderr` for a diagnosable panic message (the child is about to be
-/// killed either way).
-fn drain_stderr(stderr: Option<ChildStderr>) -> String {
-    let mut err = String::new();
-    if let Some(mut e) = stderr {
-        let _ = e.read_to_string(&mut err);
-    }
-    err
-}
-
 /// Drive the REAL compiled `rigger serve` over the REAL MCP wire through one workflow unit: the
 /// `initialize` handshake, `rigger_next` polled until unit `a`'s implementer spawn is queued, then
 /// `rigger_result` for it carrying `arguments` - and return the `green` `UnitStatus` event the REAL
@@ -128,80 +71,21 @@ fn green_event_after_result(arguments: Value) -> Event {
     let root = proj.path();
     write_workflow_fixture(root, &ONE_STAGE_WORKFLOW);
 
-    let mut child = common::rigger_courier()
-        .args(["serve", "--base", "HEAD"])
-        .current_dir(root)
-        // Isolate the machine-global discovery registry (spec 50) into the test's own temp
-        // tree, mirroring `tests/cli.rs`'s served-driver dash test.
-        .env("XDG_STATE_HOME", root)
-        // No dash needed for this test - opt out so it never outlives the test process.
-        .env("RIGGER_NO_DASH", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger serve`");
-
-    let mut stdin = child
-        .stdin
-        .take()
-        .expect("rigger serve's stdin must be piped");
-    let mut stdout = BufReader::new(
-        child
-            .stdout
-            .take()
-            .expect("rigger serve's stdout must be piped"),
-    );
+    // The session carries no dash and isolates the machine-global discovery registry (spec 50)
+    // into the test's own temp tree.
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
 
     // `initialize`: the real wire sequence a well-behaved MCP client (shim.mjs's SDK client
     // included) performs first. `handle()` does not gate `tools/call` on having seen it, but
     // sending it keeps this test's request sequence faithful to production traffic.
-    let init = call(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "workflow-driver-periphery-test", "version": "0.0.0"},
-            },
-        }),
-    );
-    assert!(
-        init.get("result").is_some(),
-        "initialize must succeed; got {init}"
-    );
+    mcp.initialize();
 
     // Poll `rigger_next` until unit `a`'s implementer spawn is queued. The conductor grounds
     // and enqueues on its own background thread (spec 19b's `std::thread::scope` split between
     // the conductor and the MCP-serving thread), so an empty/id-less answer early on is
     // transient, not a failure - the same race `shim.mjs`'s own poll loop tolerates.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut next_call_id = 2i64;
-    let spawn_id = loop {
-        let next = call_tool(
-            &mut stdin,
-            &mut stdout,
-            next_call_id,
-            "rigger_next",
-            json!({}),
-        );
-        next_call_id += 1;
-        let id = next.get("id").and_then(Value::as_str).unwrap_or_default();
-        if !id.is_empty() {
-            break id.to_string();
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let err = drain_stderr(child.stderr.take());
-            panic!(
-                "unit a's implementer spawn was never queued within the deadline; stderr:\n{err}"
-            );
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let Some(spawn_id) = mcp.next_spawn(Instant::now() + Duration::from_secs(15)) else {
+        mcp.fail("the run reported done before unit a's implementer spawn was queued")
     };
     assert!(
         spawn_id.starts_with("a/implementer#"),
@@ -212,19 +96,7 @@ fn green_event_after_result(arguments: Value) -> Event {
     // spawn's own id.
     let mut arguments = arguments;
     arguments["id"] = json!(spawn_id);
-    let result_resp = call(
-        &mut stdin,
-        &mut stdout,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": next_call_id,
-            "method": "tools/call",
-            "params": {
-                "name": "rigger_result",
-                "arguments": arguments,
-            },
-        }),
-    );
+    let result_resp = mcp.tool_call("rigger_result", arguments);
     assert!(
         result_resp.get("result").is_some(),
         "rigger_result must succeed for the queued spawn id; got {result_resp}"
@@ -253,15 +125,14 @@ fn green_event_after_result(arguments: Value) -> Event {
             }
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let err = drain_stderr(child.stderr.take());
-            panic!("unit a's green status event was never recorded within the deadline; stderr:\n{err}");
+            mcp.fail("unit a's green status event was never recorded within the deadline");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
 
-    drop(stdin);
-    let _ = child.wait();
+    // The one spawn is answered and nothing is pending, so the conductor returns and the
+    // session exits on stdin closing.
+    mcp.finish();
     green
 }
 
