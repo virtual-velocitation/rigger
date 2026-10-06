@@ -16,8 +16,10 @@ drops the returned state (`src/cli/run.rs:1858`).
 **UNIT ORDER AND BASE, decided here.** Criterion 1 needs nothing, criterion 2 needs criterion 1
 for `halted_line` only (criterion 1 lands it with its caller `run_cli`) and criterion 3 needs
 both; launched on rigger-run. Written against 65536eec, the run's base, which every citation names;
-built by PR #62 (main e3a9125b), whose additions beyond this text - the dash opt-out fix in
-`rigger run` and `rigger serve` with its tests and `McpSession::from_command`, the
+built by PR #62 (main e3a9125b); the dash opt-out in `start_run_dashboard` for `rigger run` and
+`rigger serve`, with its tests, is criterion 2's, a consequence of its sessions carrying
+`RIGGER_NO_DASH` (the disposition the builder change has), not criterion 1's, which only shares
+the one authority; the build's other additions beyond this text - `McpSession::from_command`, the
 `lines_starting_with` and `answer_every_spawn` helpers, the `rigger serve` budget test - are the
 build's, owned by its units' reviews, not by this text.
 
@@ -58,7 +60,9 @@ The other caller of `liveness::halt_reason`, `close_landed_units` of `rigger res
 **CONSTRAINTS WALK.** Empty log, clean fixpoint: no line. A run that ends `incomplete` with no
 budget or spec-defect reason (an escalated unit, a manual-review pause, a failed deferred gate,
 `conductor.rs:2408-2410`) prints no `halted: ` line either, at parity with `rigger step`'s
-`halted` key, which is `None` for the same stops; the unit status lines name them; accepted.
+`halted` key, which is `None` for the same stops; the unit status lines `print_run_state` prints
+name them; accepted; on the workflow entry those stops are named by `rigger status` or the shim,
+not by the entry, accepted by name.
 Repeated, crash-resume and cold start:
 `cmd_step` re-trips on every step, its count seeded from the recorded spawn requests
 (`tests/cli.rs:7436-7439`), and the stop refolds (`spawn.rs:893-894`). On a slice no step drove,
@@ -90,16 +94,15 @@ the worker persona's `Do the unit.` text (`tests/common/cli.rs:524-525`), echoin
 `McpSession`
 (`tests/common/mcp.rs:9-96`) is the one MCP session authority. The auto-started-dash test
 (`tests/cli.rs:15333`) stays a raw spawn, the one `rigger serve` session outside `McpSession`,
-because it must run with the dash (`rigger_command` sets `RIGGER_NO_DASH`), speaks no MCP (it holds
-stdin open and never writes it) and its `workflow.yml` declares no stages
-(`write_gating_lint_project`, `tests/cli.rs:14728`; `stages` defaults empty,
+because it speaks no MCP (it holds stdin open and never writes it) and its `workflow.yml`
+declares no stages (`write_gating_lint_project`, `tests/cli.rs:14728`; `stages` defaults empty,
 `crates/rigger-domain/src/config.rs:936-937`), so no spawn is parked when its stdin closes and
 its teardown is a clean exit; the suite's other raw child ends are
 the standing idiom, issue #60, outside this spec. Criterion 2 makes `McpSession::start_with` build
-through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so every session
-carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME` (`root`, the periphery suite's existing
-choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry directory in the
-fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
+through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so every `start_with`
+session carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME` (`root`, the periphery suite's
+existing choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry
+directory in the fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
 `src/cli/dashboard.rs:814`, reaches neither the registry nor the dash), so every existing
 `McpSession` caller is unchanged and the builder change is a consequence of criterion 2's test, not
 a second mitigation. Criterion 2 adds four `McpSession` methods in `tests/common/mcp.rs`, nothing
