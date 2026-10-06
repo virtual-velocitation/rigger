@@ -43,8 +43,8 @@ use rigger_domain::review::{
 #[cfg(test)]
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
-    baseline_units, coverage_gap, criterion_stable_id, critique_gate_name, fan_out_lenses,
-    first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
+    baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
+    fan_out_lenses, first_stage_named, is_fan_out, is_fan_out_template, is_producer, wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
@@ -12052,7 +12052,9 @@ impl RunCtx<'_> {
     /// the surrounding display brackets and emits `[c<pos>-<hex>]` while the baseline
     /// stores the UN-bracketed id; [`normalize_criterion_id`] strips the brackets so a
     /// compliant echo (either form) resolves. The prose fallback keeps a hand-authored
-    /// proposal (or an older planner) that copies a criterion VERBATIM with no id working.
+    /// proposal (or an older planner) that copies a criterion VERBATIM with no id working:
+    /// it resolves to the longest criterion the text opens with ([`criterion_remainder`]),
+    /// so a split part carrying its ownership sentence past the criterion still resolves.
     ///
     /// This is the ONE resolution authority for `harvest_proposed`'s ADD path, which
     /// resolves a proposal's coverage AND supersedes the served criterion's baseline as
@@ -12079,7 +12081,8 @@ impl RunCtx<'_> {
                     .criteria
                     .iter()
                     .enumerate()
-                    .find(|(_, c)| normalize_ws(c) == normalize_ws(coverage))
+                    .filter(|(_, c)| criterion_remainder(c, coverage).is_some())
+                    .min_by_key(|(_, c)| std::cmp::Reverse(normalize_ws(c).len()))
             })
             .map(|(i, c)| (criterion_stable_id(i + 1, c), c.clone()))
     }

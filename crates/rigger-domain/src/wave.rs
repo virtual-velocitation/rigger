@@ -17,6 +17,24 @@ pub fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// What `text` carries past `criterion` when it opens with the criterion's verbatim text
+/// (both [`normalize_ws`]-normalized, the criterion ending on a word break): `Some("")` for
+/// a verbatim copy, `Some(rest)` for the criterion followed by more (a split part's
+/// ownership sentence), `None` when the text does not open with the criterion (a
+/// paraphrase or a truncation). The one prefix authority for matching a proposal's text
+/// to a criterion.
+pub fn criterion_remainder(criterion: &str, text: &str) -> Option<String> {
+    let (criterion, text) = (normalize_ws(criterion), normalize_ws(text));
+    if criterion.is_empty() {
+        return None;
+    }
+    let rest = text.strip_prefix(&criterion)?;
+    if rest.is_empty() {
+        return Some(String::new());
+    }
+    rest.strip_prefix(' ').map(str::to_string)
+}
+
 /// A baseline criterion's STABLE id (spec 18 §3.3, addendum "Planner ↔ baseline
 /// robustness"): its 1-based `position` plus a content hash of the criterion, so the
 /// planner can echo the id and `harvest_proposed` can match a proposal to its baseline
