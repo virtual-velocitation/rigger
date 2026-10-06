@@ -317,23 +317,51 @@ fn a_string_literal_declares_its_type_and_an_alias_declares_none() {
         "a multi-segment path alias declares no type"
     );
     assert_eq!(
-        type_const_statements(
-            "pub const TYPE_LONG: &str =\n    \"Long\";\n// const TYPE_COMMENTED: &str = \
-             \"No\";\n    pub(crate) const TYPE_B: &str = a::TYPE_A;\nlet type_x = 1;\nconst \
-             OTHER: &str = \"Other\";\n"
-        ),
+        type_const_statements(concat!(
+            "pub const TYPE_LONG: &str =\n",
+            "    \"Long\";\n",
+            "// const TYPE_COMMENTED: &str = \"No\";\n",
+            "    pub(crate) const TYPE_B: &str = a::TYPE_A;\n",
+            "let type_x = 1;\n",
+            "const OTHER: &str = \"Other\";\n",
+            "pub(super) const TYPE_S: &str = \"Super\";\n",
+            "    pub(in crate::x) const TYPE_P: &str = \"Path\";\n",
+            "const TYPE_BARE: &str = \"Bare\";\n",
+            "pub(super) const OTHER_S: &str = \"No\";\n",
+            "pub(in crate::x) fn type_const() {}\n",
+            "static OTHER_STATIC: &str = \"No\";\n",
+            "pub static mut COUNT: u8 = 0;\n",
+        )),
         vec![
             "pub const TYPE_LONG: &str = \"Long\";".to_string(),
             "pub(crate) const TYPE_B: &str = a::TYPE_A;".to_string(),
+            "pub(super) const TYPE_S: &str = \"Super\";".to_string(),
+            "pub(in crate::x) const TYPE_P: &str = \"Path\";".to_string(),
+            "const TYPE_BARE: &str = \"Bare\";".to_string(),
         ],
-        "a statement runs from its opening line to its semicolon"
+        "a statement opens behind any visibility and runs from its opening line to its semicolon"
     );
+    for line in [
+        "static TYPE_S: &str = \"Static\";",
+        "pub static TYPE_S: &str = \"Static\";",
+        "pub(super) static TYPE_S: &str = \"Static\";",
+        "pub(in crate::x) static TYPE_S: &str = \"Static\";",
+        "pub(crate) static mut TYPE_S: &str = \"Static\";",
+    ] {
+        let text = format!("const TYPE_A: &str = \"Alpha\";\n    {line}\n");
+        assert_eq!(
+            scan_failure(|| type_const_statements(&text)),
+            format!("`{line}`: a TYPE_ item is a constant, never a static"),
+            "a static TYPE_ item fails the scan naming its line, behind any visibility"
+        );
+    }
 }
 
-/// The message `declared_type` fails the scan with on `statement`.
-fn scan_failure(statement: &str) -> String {
-    let failure = std::panic::catch_unwind(|| declared_type(statement))
-        .expect_err("the scan classifies the statement instead of failing");
+/// The message the scan fails with when `scan` runs.
+fn scan_failure<T>(scan: impl FnOnce() -> T + std::panic::UnwindSafe) -> String {
+    let failure = std::panic::catch_unwind(scan)
+        .err()
+        .expect("the scan reads the input instead of failing");
     failure
         .downcast_ref::<String>()
         .cloned()
@@ -349,7 +377,7 @@ fn a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming
         "const TYPE_X: &str",
     ] {
         assert_eq!(
-            scan_failure(statement),
+            scan_failure(|| declared_type(statement)),
             format!("`{statement}`: the right side is neither a string literal nor a TYPE_ alias"),
             "a macro call, an alias of a constant not named TYPE_, an unclosed literal and a \
              statement with no right side each fail the scan"
