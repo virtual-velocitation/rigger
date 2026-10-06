@@ -8129,7 +8129,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3f117fd28c02",
+    "id": "dup-d7d5597c4fbc",
     "classification": "semantic",
     "sites": [
       {
@@ -8140,7 +8140,7 @@
       {
         "file": "tests/common/mcp.rs",
         "name": "start_with",
-        "content_hash": "5c8623e27b20ac2a"
+        "content_hash": "969877e05344f34a"
       }
     ],
     "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
