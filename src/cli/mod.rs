@@ -19,7 +19,7 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{spawn_scratch_path, ReplayDriver};
+use rigger::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{DerivedPreview, PrunedDerived, Store},

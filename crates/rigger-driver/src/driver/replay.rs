@@ -77,6 +77,60 @@ pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> O
     crate::liveness::scratch_subpath(scratch_root, SPAWN_SCRATCH_SUBDIR, run_id, spawn_id)
 }
 
+/// The scratch root a spawn's assigned worktree sits in: the PARENT of `opts.dir`, since the
+/// conductor places every unit worktree at `<scratch_root>/rigger-wt-<slug>`
+/// (`conductor::unit_worktree_dir`). `None` for a worktree-less spawn (`isolation: none`,
+/// empty `dir`), which has no per-spawn scratch. The ONE derivation the park that ASSIGNS a
+/// spawn its scratch ([`ReplayDriver::spawn`]) and a blocking host's terminus that RECLAIMS it
+/// ([`reclaim_finished_spawn_scratch`]) share, so the two can never resolve different roots.
+fn spawn_scratch_root(opts: &SpawnOpts) -> Option<String> {
+    if opts.dir.is_empty() {
+        return None;
+    }
+    Path::new(&opts.dir)
+        .parent()
+        .map(|root| root.to_string_lossy().into_owned())
+}
+
+/// The reclaim ACTION itself: given an already-resolved `scratch_root`/`run_id`, reap spawn
+/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1) through the one
+/// reap-then-remove ([`crate::reap::reap_then_remove_dir`]), authorized under `scratch_root`.
+///
+/// The ONE reap authority every production site that ends a spawn converges on, so none can
+/// diverge on what "reclaim a spawn's scratch" means: the `rigger result` courier (success,
+/// reject, `--error`, and any outcome the death courier records through it) and `rigger
+/// step`'s liveness sweep (a hung spawn it records a fault for in-process) in the binary, and
+/// the terminus of each blocking host that records or returns a result without that courier
+/// ([`reclaim_finished_spawn_scratch`] for the cli host, the headless host's own scratch root
+/// for `claude_code`). Lives beside [`spawn_scratch_path`] so assign and reclaim share one file.
+///
+/// Keyed on the SAME raw `spawn_id` at every call site - no unit/attempt extraction, so none
+/// can ever diverge from how `spawn::spawn_id` mints it. A DEGENERATE id
+/// ([`spawn_scratch_path`] returning `None`) is a no-op, never a fabricated path to reap.
+///
+/// A leaf an agent registered a git worktree inside is still removed whole: the nested
+/// worktree is not the leaf itself, so a `git worktree remove` of the leaf would fail and fall
+/// back to this same removal; the dangling admin entry it leaves is pruned by the next `git
+/// worktree prune` the worktree lifecycle runs (the step-start terminal sweep, and every
+/// unit-worktree clear on any host).
+pub fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
+        crate::reap::reap_then_remove_dir(&path, Path::new(scratch_root));
+    }
+}
+
+/// A blocking host's terminus reclaim: once the spawn `opts` names has finished (its process
+/// exited, whatever its outcome), reclaim the scratch rigger names for it under the scratch
+/// root its worktree sits in ([`spawn_scratch_root`]). A blocking host hands its result
+/// straight back to the conductor in-process, never through the `rigger result` courier that
+/// reclaims a stepwise spawn's scratch, so without this every leaf would live for the life of
+/// the clone. A worktree-less spawn has nothing to reclaim. Best-effort, like every reclaim.
+pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
+    if let Some(root) = spawn_scratch_root(opts) {
+        reclaim_spawn_registered_scratch(&root, &opts.run_id, &opts.id);
+    }
+}
+
 /// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else
 /// `None` in a homeless environment. Mirrors `registry::state_home_from`'s XDG-then-HOME
 /// shape. Takes the two candidate env values as plain arguments (never reading `std::env`
@@ -187,14 +241,10 @@ impl AgentDriver for ReplayDriver<'_> {
             // (`isolation: none`, empty `dir`) has no per-spawn scratch to assign. Assigned
             // once (this parks only an id not already recorded, so it never re-runs after the
             // request lands) and best-effort - a create failure never blocks parking.
-            if !opts.dir.is_empty() {
-                if let Some(scratch_root) = Path::new(&opts.dir).parent() {
-                    if let Some(path) =
-                        spawn_scratch_path(&scratch_root.to_string_lossy(), &opts.run_id, &opts.id)
-                    {
-                        let _ = std::fs::create_dir_all(path);
-                    }
-                }
+            if let Some(path) = spawn_scratch_root(opts)
+                .and_then(|root| spawn_scratch_path(&root, &opts.run_id, &opts.id))
+            {
+                let _ = std::fs::create_dir_all(path);
             }
         }
 

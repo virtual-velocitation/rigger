@@ -1617,7 +1617,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:1011-1013` `conflict_regenerate_key`
 - `crates/rigger-conductor/src/conductor.rs:12443-12445` `audit_id`
 - `crates/rigger-domain/src/spawn.rs:130-132` `spawn_id`
-- `crates/rigger-driver/src/driver/claude_code.rs:1087-1095` `stop_message`
+- `crates/rigger-driver/src/driver/claude_code.rs:1094-1102` `stop_message`
 - `tests/common/fixtures/graph.rs:159-161` `spoke_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:56-58` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:59-61` `expected_postmerge_branch`
@@ -1841,10 +1841,10 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `src/cli/mod.rs:9923-9923` `Command::new`
 - `src/cli/mod.rs:11610-11610` `Command::new`
 - `src/cli/mod.rs:11644-11644` `Command::new`
-- `src/cli/run.rs:3268-3268` `Command::new`
-- `src/cli/run.rs:3301-3301` `Command::new`
-- `src/cli/run.rs:3345-3345` `Command::new`
-- `src/cli/run.rs:3414-3414` `Command::new`
+- `src/cli/run.rs:3246-3246` `Command::new`
+- `src/cli/run.rs:3279-3279` `Command::new`
+- `src/cli/run.rs:3323-3323` `Command::new`
+- `src/cli/run.rs:3392-3392` `Command::new`
 - `src/cli/validate.rs:1449-1449` `Command::new`
 - `src/cli/validate.rs:1728-1728` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
@@ -1853,7 +1853,7 @@ mandatory sweep: Command::new call sites - 88 site(s), collected mechanically re
 - `tests/checkin_mutation_diff_base_periphery.rs:182-182` `Command::new`
 - `tests/ci_lanes.rs:357-357` `Command::new`
 - `tests/ci_lanes.rs:380-380` `Command::new`
-- `tests/claude_code_stream_periphery.rs:990-990` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1018-1018` `Command::new`
 - `tests/cli.rs:1460-1460` `Command::new`
 - `tests/cli.rs:5142-5142` `Command::new`
 - `tests/cli.rs:12682-12682` `Command::new`
@@ -3239,8 +3239,8 @@ mandatory sweep: /proc-path string literals - 52 site(s), collected mechanically
 - `crates/rigger-process/src/reap.rs:234-234` `"/proc/{pid}/status"`
 - `crates/rigger-process/src/reap.rs:294-294` `"/proc"`
 - `crates/rigger-process/src/reap.rs:371-371` `"/proc/{}/cwd"`
-- `src/cli/run.rs:3406-3406` `"/proc"`
-- `src/cli/run.rs:3510-3510` `"/proc"`
+- `src/cli/run.rs:3384-3384` `"/proc"`
+- `src/cli/run.rs:3488-3488` `"/proc"`
 - `tests/cli.rs:20320-20320` `"/proc"`
 - `tests/cli.rs:24542-24542` `"/proc"`
 - `tests/cli.rs:24650-24650` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
@@ -3814,8 +3814,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1311-1318` `read_stream`
-- `crates/rigger-driver/src/driver/claude_code.rs:1352-1359` `read_stream_typed`
+- `crates/rigger-driver/src/driver/claude_code.rs:1318-1325` `read_stream`
+- `crates/rigger-driver/src/driver/claude_code.rs:1359-1366` `read_stream_typed`
 
 #### `dup-4979c76ee36f` (near, 2 sites)
 
@@ -3823,8 +3823,8 @@ Proposed home: `claude_code::failing_read_store`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/claude_code.rs:1345-1351` `last_position`
-- `crates/rigger-driver/src/driver/claude_code.rs:1379-1385` `latest_in_group`
+- `crates/rigger-driver/src/driver/claude_code.rs:1352-1358` `last_position`
+- `crates/rigger-driver/src/driver/claude_code.rs:1386-1392` `latest_in_group`
 
 #### `dup-282069e7109f` (near, 3 sites)
 
@@ -3832,7 +3832,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/replay.rs:220-227` `sonnet_agent`
+- `crates/rigger-driver/src/driver/replay.rs:270-277` `sonnet_agent`
 - `tests/common/fixtures/config.rs:173-183` `fan_out_stage`
 - `tests/model_pinning_periphery.rs:61-68` `agent`
 
@@ -3842,8 +3842,8 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/replay.rs:233-240` `opts_for`
-- `tests/claude_code_stream_periphery.rs:142-148` `opts`
+- `crates/rigger-driver/src/driver/replay.rs:283-290` `opts_for`
+- `tests/claude_code_stream_periphery.rs:143-149` `opts`
 - `tests/common/fixtures/conductor.rs:19-26` `implementer_opts`
 
 #### `dup-b43ee3b4b5bb` (exact, 2 sites)
@@ -3852,7 +3852,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/replay.rs:285-293` `spawn_scratch_path_is_none_rather_than_relative_for_an_empty_scratch_root`
+- `crates/rigger-driver/src/driver/replay.rs:335-343` `spawn_scratch_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 - `crates/rigger-driver/src/liveness.rs:1007-1015` `marker_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 
 #### `dup-8c5011c59ed1` (near, 2 sites)
@@ -3861,7 +3861,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/replay.rs:870-879` `stage`
+- `crates/rigger-driver/src/driver/replay.rs:920-929` `stage`
 - `tests/common/fixtures/config.rs:14-20` `agent_with_prompt`
 
 #### `dup-4cf25824ad00` (near, 2 sites)
@@ -3870,8 +3870,8 @@ Proposed home: `replay::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-driver/src/driver/replay.rs:1623-1671` `an_emit_only_approve_gating_persona_hard_errors_on_the_replay_driver`
-- `crates/rigger-driver/src/driver/replay.rs:1746-1795` `a_parked_unanswered_sibling_does_not_suppress_this_units_own_approve_backstop`
+- `crates/rigger-driver/src/driver/replay.rs:1673-1721` `an_emit_only_approve_gating_persona_hard_errors_on_the_replay_driver`
+- `crates/rigger-driver/src/driver/replay.rs:1796-1845` `a_parked_unanswered_sibling_does_not_suppress_this_units_own_approve_backstop`
 
 #### `dup-02b6d2bbb967` (semantic, 2 sites)
 
@@ -5106,7 +5106,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8362 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8366 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4897-4938` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14873-14895` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

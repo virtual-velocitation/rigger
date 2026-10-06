@@ -753,7 +753,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
                         // recorded its liveness fault DIRECTLY via
                         // `spawn_store::record_result_if_absent`, never through `cmd_result`, so
                         // that courier's own reclaim never runs for it; this call site is the
-                        // liveness-fault half of the two-call-site/one-authority shape
+                        // liveness-fault call site of the one-authority shape
                         // [`reclaim_spawn_registered_scratch`]'s doc comment describes (review
                         // u77c2b round 2/3 reject: a hung spawn's mutation-scratch used to
                         // leak until its unit reached a terminal state).
@@ -2894,28 +2894,6 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
     let scratch_root = rigger::worktree::scratch_root_path_from_env(&repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
     reclaim_spawn_registered_scratch(&scratch_root, &run_id, spawn_id);
-}
-
-/// The reclaim ACTION itself: given an already-resolved `scratch_root`/`run_id`, reap spawn
-/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1).
-///
-/// The ONE reap authority both production call sites that record a spawn's terminal outcome
-/// converge on, so they can never diverge on what "reclaim a spawn's scratch" means:
-/// [`reclaim_spawn_scratch`] (the `cmd_result` courier path - success/reject/`--error`, and any
-/// outcome an operator or `workflows/rigger.js`'s death courier records through it) resolves
-/// `scratch_root`/`run_id` from its own `StoreLocation`/prior-events context and delegates
-/// here; `cmd_step`'s liveness-sweep call site delegates here directly for each spawn
-/// [`rigger::liveness::sweep`] just recorded a fault for, using the `scratch_root`/`run_id` it
-/// already resolved for the sweep call itself, since the sweep records the fault in-process,
-/// never through `cmd_result`.
-///
-/// Keyed on the SAME raw `spawn_id` at both call sites - no unit/attempt extraction, so
-/// neither can ever diverge from how `spawn::spawn_id` mints it. A DEGENERATE id
-/// ([`spawn_scratch_path`] returning `None`) is a no-op, never a fabricated path to reap.
-fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
-    if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
-        reap_then_remove_dir(&path, Path::new(scratch_root));
-    }
 }
 
 /// Fold a just-recorded [`spawn::SpawnResult`] into the run's context graph at its recorded

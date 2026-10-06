@@ -27,6 +27,7 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
+use crate::driver::replay::reclaim_spawn_registered_scratch;
 use crate::driver::{allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args};
 use crate::eventstore::EventStore;
 use crate::hooks;
@@ -1009,7 +1010,13 @@ impl AgentDriver for Driver<'_> {
         // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
         // config-load time) - 0 stays unbounded, the established convention this field's
         // own doc already sets.
-        self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0))
+        let result = self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0));
+        // The spawn's terminus: `read_stream` reaped the session, whatever its outcome, and
+        // this host records its result directly, never through the `rigger result` courier
+        // that reclaims a stepwise spawn's scratch - so reclaim the scratch its spawn MCP
+        // server names (`rigger_scratch`, under this host's own scratch root) here.
+        reclaim_spawn_registered_scratch(&self.scratch_root, &opts.run_id, &opts.id);
+        result
     }
 }
 

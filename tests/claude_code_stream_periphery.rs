@@ -35,6 +35,7 @@ use common::is_running;
 use rigger::conductor::{AgentDriver, AgentFailure, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
+use rigger::driver::replay::spawn_scratch_path;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::liveness;
@@ -182,6 +183,33 @@ fn stop(driver: &Driver, o: &SpawnOpts) -> (String, Duration) {
     let elapsed = started.elapsed();
     assert!(err.0.contains("stopped"), "{}", err.0);
     (err.0, elapsed)
+}
+
+#[test]
+fn a_finished_spawn_reclaims_its_own_scratch_and_spares_an_unfinished_siblings() {
+    // The per-spawn scratch lifecycle on this blocking host: the spawn's terminus reclaims the
+    // `agent-scratch` leaf rigger names for it (`spawn_scratch_path`), through the one reclaim
+    // authority - a spawn whose result is recorded keeps no scratch - while a sibling spawn of
+    // the same run that has not finished keeps its own.
+    let fx = Fixture::new();
+    let root = fx.scratch_root.path().to_string_lossy().into_owned();
+    let o = opts("u-scratch/adversary#0");
+    let leaf = spawn_scratch_path(&root, &o.run_id, &o.id).unwrap();
+    let sibling = spawn_scratch_path(&root, &o.run_id, "u-scratch/adjudicator#0").unwrap();
+    for dir in [&leaf, &sibling] {
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        std::fs::write(dir.join("target/build.log"), "built").unwrap();
+    }
+
+    fx.driver()
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("the recorded stream ends in a result");
+
+    assert!(!leaf.exists(), "the finished spawn's scratch is reclaimed");
+    assert!(
+        sibling.join("target/build.log").exists(),
+        "an unfinished sibling spawn keeps its scratch"
+    );
 }
 
 #[test]
