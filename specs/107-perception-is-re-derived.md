@@ -39,8 +39,8 @@ the last production reader of an existing function, field or type removes it, an
 still needing it use a test-side successor until the criterion retiring them deletes it. A Design
 sentence about a later criterion describes the integrated result, reached by earlier units' tests
 only through fixtures: on the tree 1 to 3 no sink records an entry, so the rebuild's report line is
-reachable only from hand-built entries and its promise of restoration holds from criterion 4 on. On
-the tree 1 to 4, `rigger validate`'s index-lag advisory still hands
+reachable only from hand-built entries and its note's promise of an entry at the next ingest holds
+from criterion 4 on. On the tree 1 to 4, `rigger validate`'s index-lag advisory still hands
 `project_scoped_latest_generations` the derived types, so it samples no identity whose recordings
 are all ledger entries and compares one still holding derived events against the latest of them. On
 the tree 1 to 7, `count_derived_duplicates` and `DerivedPreview` stand without the oracle tests
@@ -196,7 +196,10 @@ admits that it can read under the ONE ROOT, and none for any other path (outside
 not regular, or a read that fails for any reason); the rebuild's source 2 and the report's file
 test, the index-lag advisory and the migration's hash pass take a file's bytes from it alone, so for
 them an unreadable file hands no bytes and only a sink fails on one (SINK OUTCOMES row 5), and its
-own tests prove the scope, the root and the read rule once. THE READ FAULT, the one fault the read
+own tests prove the scope, the root and the read rule once. Criteria 3, 5 and 7's clauses over a
+`gc` path outside the walk's scope and a store in a repository subdirectory or nested worktree
+assert each consumer's wiring to `grounder::tree_bytes` and the ONE ROOT, never the rule, which the
+grounder crate's tests own. THE READ FAULT, the one fault the read
 rule's test and SINK OUTCOMES row 5's test arm, is a regular in-scope file the test's uid cannot
 read, the test asserting the read fails before the function or sink runs and ending there when it
 succeeds, as under uid 0, since a directory at the path is outside the walk's scope; it is ONE
@@ -208,9 +211,10 @@ beside `in_walk_scope`, `pub(crate)`, `workflowdef` calling it; criterion 3's wi
 RESOLUTION IS BY GENERATION, from three sources in one fixed order for every entry: (1) the entry's
 blob from the repository's object database (one `git cat-file --batch` process per rebuild,
 `worktree::BlobBatch` beside `worktree::hash_blob`, which `rebuild_owed_graph` binds into
-`ingest::resolve_entry(entry, blobs)`, ONE grounder function in
-`crates/rigger-grounder/src/ingest.rs` under `cfg(feature = "symbols")` that takes the blob source
-as an `Option` (absent when source 1 is skipped), applies sources 2 and 3 itself through
+`ingest::resolve_entry(root, entry, blobs)`, ONE grounder function in
+`crates/rigger-grounder/src/ingest.rs` under `cfg(feature = "symbols")` that takes the ONE ROOT,
+which `rebuild_owed_graph` binds from `tree_root(store_dir)`, and the blob source as an `Option`
+(absent when source 1 is skipped), applies sources 2 and 3 itself through
 `grounder::tree_bytes` and the half's `(path, bytes, excluded)` function and answers the resolved
 batch or none, `rebuild_owed_graph` handing the bound function to `Projector::rebuild` and deciding
 nothing else; `BlobBatch` ends by closing its standard input and waiting for the child on every exit
@@ -248,16 +252,17 @@ parameter), which cuts each row's replay key and so sees a keyed derived row wit
 the identities whose current generation in `graph.db` is not the generation of their latest
 recording (MIGRATION), none held included, and whose path `grounder::tree_bytes` hands bytes that
 its half's function maps to a batch that is not empty (every `gc` input is; not applied in the light
-lane, where no extraction compiles): exactly the ones the next default-lane ingest of the file
-restores, printed in the default lane with a note saying so (criterion 4 asserts it); a zero prints
-without the note. A deleted `gc` file's identity holds `gc`'s batch for no bytes once the walk's
-deletion ingest recorded it, so that ingest retires the file's facts, at a rebuild as live; a `gd`
-or `gw` identity whose file is gone or extracts to the empty batch is named by no ingest, so live it
-keeps what its last fold left, and after a rebuild it holds what its latest resolvable entry gave,
-none for a migrated identity with no earlier entry (WHAT A REBUILD REPRODUCES). An identity whose
-path holds no such file is not counted: what it holds after a rebuild, nothing for a gone file with
-no resolvable entry, is its correct state. The `applied` rows of shed positions are outside spec
-101's comparison surface.
+lane, where no extraction compiles): exactly the ones whose next default-lane ingest of the file
+records an entry (SINK OUTCOMES row 9, its fold a re-recording of row 13 included), printed in the
+default lane with a note saying so (criterion 4 asserts it); a zero prints without the note. A
+deleted `gc` file's identity holds `gc`'s batch for no bytes once the walk's deletion ingest
+recorded it, so that ingest retires the file's facts, at a rebuild as live; a `gd` or `gw` identity
+whose file is gone or extracts to the empty batch is named by no ingest, so live it keeps what its
+last fold left, and after a rebuild it holds what its latest resolvable entry gave, none for a
+migrated identity with no earlier entry (WHAT A REBUILD REPRODUCES). An identity whose path holds no
+such file is not counted: what it holds after a rebuild, nothing for a gone file with no resolvable
+entry, is its correct state. The `applied` rows of shed positions are outside spec 101's comparison
+surface.
 
 **WHAT A REBUILD REPRODUCES, stated once.** An entry no source resolves is as if absent from the
 fold. For every identity whose latest entry resolves, a rebuild holds the same live facts and
@@ -533,26 +538,27 @@ needing the inserter and builds it, and no KurrentDB test seeds pre-ledger rows.
 and no symbols index. Criteria 1, 2, 6, 8, 9 and 10 assert nothing lane-dependent. Criterion 3's
 resolved folds, resolution sources, equality and dating run in the default lane only; the light lane
 asserts each hand-built entry folding nothing, the hole paid and the report's number, its line there
-carrying no note, since no extraction compiles to make the promise of restoration (THE REBUILD
+carrying no note, since no extraction compiles to keep the note's promise, an entry recorded at
+each counted identity's next default-lane ingest and never a restoration of facts (THE REBUILD
 block); there `rebuild_owed_graph` binds `ingest::resolve_entry`'s `not(feature = "symbols")` stub,
-of the same signature and beside the other light-lane stubs, answering unresolved for every entry
-and starting no batch process, criterion 3's. The `walk_exclusions` light-lane stub lands with
-criterion 3 as the cfg twin of a referenced function, which UNIT ORDER's rule does not count as a
-function a criterion adds; its first light-lane caller is criterion 7's migration. Criterion 4's
-sink assertions run in the default lane only, since the light lane compiles the run's sink out and
-`rigger graph build` walks nothing, the extraction arm of that build's sink (`ingest_tree`'s call of
-`ingest::entry_of_batch`, with the hash function bound there to `worktree::hash_blob`, so its
-signature carries no parameter the light lane leaves unused) sitting behind `cfg(feature =
-"symbols")` as the run's sink does and the light-lane `ingest_project_batched` handing it no batch;
-the light lane asserts that build recording no entry and no derived event and exiting 0, and the
-contract suite's ledger-entry case on both backends. Criterion 5's named and unnamed files run in
-the default lane only; the light lane asserts the stub that samples nothing and names no file, and
-the reference test over ledger entries. Criterion 7's `excluded: true` and rebuild-equality clauses
-run in the default lane only; the light lane asserts every other clause, the refusals among them,
-which compile in both lanes as the owed check does, each entry's `excluded: false` and the rebuild
-of the migrated store printing the report's number; that clause observes criterion 3's number, and
-the default lane's rebuild-equality clause criterion 3's rebuild, as fixtures of the migrated store,
-and neither owns any part of their rule.
+of the same signature, the root included, and beside the other light-lane stubs, answering
+unresolved for every entry and starting no batch process, criterion 3's. The `walk_exclusions`
+light-lane stub lands with criterion 3 as the cfg twin of a referenced function, which UNIT ORDER's
+rule does not count as a function a criterion adds; its first light-lane caller is criterion 7's
+migration. Criterion 4's sink assertions run in the default lane only, since the light lane compiles
+the run's sink out and `rigger graph build` walks nothing, the extraction arm of that build's sink
+(`ingest_tree`'s call of `ingest::entry_of_batch`, with the hash function bound there to
+`worktree::hash_blob`, so its signature carries no parameter the light lane leaves unused) sitting
+behind `cfg(feature = "symbols")` as the run's sink does and the light-lane `ingest_project_batched`
+handing it no batch; the light lane asserts that build recording no entry and no derived event and
+exiting 0, and the contract suite's ledger-entry case on both backends. Criterion 5's named and
+unnamed files run in the default lane only; the light lane asserts the stub that samples nothing and
+names no file, and the reference test over ledger entries. Criterion 7's `excluded: true` and
+rebuild-equality clauses run in the default lane only; the light lane asserts every other clause,
+the refusals among them, which compile in both lanes as the owed check does, each entry's `excluded:
+false` and the rebuild of the migrated store printing the report's number; that clause observes
+criterion 3's number, and the default lane's rebuild-equality clause criterion 3's rebuild, as
+fixtures of the migrated store, and neither owns any part of their rule.
 
 **CONSTRAINTS WALK, decided.**
 - *Concurrent ingest:* a step and a `rigger graph build` can record one generation twice; the later
