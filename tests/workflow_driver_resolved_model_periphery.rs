@@ -71,8 +71,8 @@ fn green_event_after_result(arguments: Value) -> Event {
     let root = proj.path();
     write_workflow_fixture(root, &ONE_STAGE_WORKFLOW);
 
-    // The session carries no dash and isolates the machine-global discovery registry (spec 50)
-    // into the test's own temp tree.
+    // The session isolates the machine-global discovery registry (spec 50) into the test's own
+    // temp tree.
     let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
 
     // `initialize`: the real wire sequence a well-behaved MCP client (shim.mjs's SDK client

@@ -19,7 +19,7 @@ impl McpSession {
         McpSession::start_with(root, &["mcp"])
     }
 
-    /// A session over `rigger <args>` (a rigger stdio session) in `root`, with no dash and
+    /// A rigger stdio session over `rigger <args>` in `root`, with the dash opt-out set and
     /// its discovery registry isolated under `root`.
     pub fn start_with(root: &Path, args: &[&str]) -> Self {
         use std::process::Stdio;
