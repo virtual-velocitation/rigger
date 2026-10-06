@@ -7520,6 +7520,33 @@ fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
     );
 }
 
+/// Spec 115, criterion 2, the other entry over `run_workflow`: given the budget-one fixture,
+/// when the shim's entry `rigger serve` runs it and the one admitted implementer spawn is
+/// answered, then `rigger_next` answers done and the conductor's halt reason is on the serve
+/// session's stderr exactly once.
+#[test]
+fn rigger_serve_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    let answered = answer_every_spawn(&mut mcp);
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let [spawn] = answered.as_slice() else {
+        panic!("exactly one spawn is admitted and handed out; got {answered:?}; stderr: {err}");
+    };
+    assert!(
+        spawn.ends_with("/implementer#0"),
+        "the one handed-out spawn is an implementer#0; got {spawn:?}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "halted: "),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "rigger serve prints the budget halt reason once on stderr; stderr: {err}"
+    );
+}
+
 /// Run `mcp`'s workflow session to its end: the `initialize` handshake, then every spawn
 /// `rigger_next` hands out answered with one successful `rigger_result` until it answers done
 /// (a failed answer or a missed 15 s deadline [`McpSession::fail`]s the session); returns the
