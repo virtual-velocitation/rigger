@@ -539,9 +539,34 @@ pub enum Fold {
     NotFolded(String),
 }
 
-/// The permission to fold into a [`Projection`]: its field is private to this module, so only
-/// [`Fold::of`] and [`Fold::of_batch`] can hand one over, and every fold is therefore one whose
-/// outcome is reported.
+/// What became of folding one ledger entry of perception (a `GenerationIngested` event) with its
+/// batch ([`Projection::apply_generation`]): the one answer naming which of the fold's three
+/// outcomes happened, so no caller infers it from an earlier read.
+#[must_use = "the outcome says whether the entry's batch was asked for"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryFold {
+    /// The projection had already folded the entry's position: nothing was written and the batch
+    /// was never asked for.
+    AlreadyApplied,
+    /// The entry names the generation its identity already holds: only its position was recorded
+    /// and the batch was never asked for.
+    ReRecording,
+    /// The entry's position was recorded and its batch was asked for, once. A resolved batch
+    /// folded at the entry's position and installed its generation; an unresolved one folded
+    /// nothing and left the identity's facts and current generation as they stood.
+    BatchAsked,
+}
+
+/// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
+/// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
+pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
+
+/// The permission to fold into a [`Projection`] through [`Projection::apply`] and
+/// [`Projection::apply_batch`]: its field is private to this module, so only [`Fold::of`] and
+/// [`Fold::of_batch`] can hand one over, and every fold through them is therefore one whose
+/// outcome is reported. [`Projection::apply_generation`] takes none: its outcome is reported by
+/// convention of its one production caller, the ledger form of the folding store, which answers
+/// the [`Fold`] and the [`EntryFold`] of every entry it appends.
 #[derive(Debug, Clone, Copy)]
 pub struct FoldAccess(());
 
@@ -665,6 +690,24 @@ pub trait Projection: Send + Sync {
         }
         Ok(())
     }
+
+    /// Fold one ledger entry of perception - `entry`, a `GenerationIngested` event - with its
+    /// batch, in ONE transaction, and answer which of three things happened ([`EntryFold`]): an
+    /// entry whose position this projection already folded folds nothing; one naming the
+    /// generation its identity already holds records only its position; any other records its
+    /// position and asks `batch` for the entry's batch, once. A batch `batch` answers folds event
+    /// by event at the entry's position and valid-time, every event asserted under the entry's
+    /// identity and generation, never under a key the event carries, and installs that
+    /// generation; an entry `batch` answers `None` for folds nothing; an error from `batch` fails
+    /// the fold. A ledger entry folds only here: the sqlite projector's
+    /// [`apply`](Projection::apply) and [`apply_batch`](Projection::apply_batch) refuse one. It
+    /// takes no [`FoldAccess`].
+    fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
+
+    /// The generation this projection currently holds for the `<prefix>/<file>` identity
+    /// `identity`, or `None` when it holds none. A plain read: it answers on a projection that
+    /// owes its rebuild ([`rebuild_owed`](Projection::rebuild_owed)).
+    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
     /// (spec 101) - it was folded under an older fold rule, or a fold into it failed and marked it
@@ -1302,6 +1345,7 @@ mod around_neighborhood {
         fn rebuild_owed(&self) -> Result<bool, Error> {
             Ok(false)
         }
+        crate::projection_folds_no_entry!();
         fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
             Ok(Graph {
                 nodes: vec![

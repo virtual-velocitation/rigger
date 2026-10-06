@@ -2211,6 +2211,7 @@ mod tests {
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
+            crate::projection_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();

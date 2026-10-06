@@ -32,6 +32,19 @@ pub struct GenerationIngested {
     pub excluded: bool,
 }
 
+impl GenerationIngested {
+    /// The entry a [`TYPE_GENERATION_INGESTED`] event's payload `data` records, or why it is not
+    /// one. The whole of `data` must be the payload: bytes trailing it are refused.
+    pub fn parse(data: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(data).map_err(|e| format!("{TYPE_GENERATION_INGESTED} payload: {e}"))
+    }
+
+    /// The `<prefix>/<file>` identity whose generation the entry records.
+    pub fn identity(&self) -> String {
+        format!("{}/{}", self.prefix, self.file)
+    }
+}
+
 /// PERCEPTION: the derived index and the ledger entry that stands for it, the one list every
 /// reader that skips perception cites.
 pub const PERCEPTION_TYPES: [&str; 5] = [

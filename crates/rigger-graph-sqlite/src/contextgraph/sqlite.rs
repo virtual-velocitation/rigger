@@ -10,13 +10,13 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 
 use super::query::name_suffix;
 use super::{
-    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, FoldAccess,
-    Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-    KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
-    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
-    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
+    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
+    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
+    KIND_STAGE, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS,
+    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
+    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
     REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
     TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
@@ -27,6 +27,7 @@ use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revis
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
+use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -580,6 +581,47 @@ impl Projector {
         let tx = guard.transaction().map_err(be)?;
         fold_new(&tx, events, &self.project)?;
         tx.commit().map_err(be)
+    }
+
+    /// Run `fold` under the two guards every fold into this file keeps. It refuses before
+    /// folding when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a
+    /// file that owed nothing leaves that file behind the log for good - nothing folds a position
+    /// twice - and its positions missing from the `applied` ledger are that debt, which the next
+    /// `rigger setup` reads against the log and pays ([`Projector::owed_against`]). The failure
+    /// also marks the file ([`owed_mark`]), so from then on it refuses every fold and every
+    /// answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark that
+    /// cannot be written is named beside the fold's error and nothing else is recorded - the
+    /// ledger still carries the debt. Either way the error ends by naming the one command that
+    /// pays it, so every surface that reports the lost fold says who does.
+    fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        if self.rebuild_owed()? {
+            return Err(Error(REBUILD_OWED.to_string()));
+        }
+        let lost = match fold() {
+            Err(lost) => lost,
+            folded => return folded,
+        };
+        let unmarked = match self.mark_lost_fold() {
+            Ok(()) => String::new(),
+            Err(unmarked) => {
+                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
+            }
+        };
+        Err(Error(format!(
+            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
+             rebuilds it",
+            lost.0
+        )))
+    }
+
+    /// Fold the ledger entry `entry` with its batch ([`fold_entry`]) in ONE transaction, rolled
+    /// back whole on any failure.
+    fn fold_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(be)?;
+        let outcome = fold_entry(&tx, entry, &self.project, batch)?;
+        tx.commit().map_err(be)?;
+        Ok(outcome)
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -1605,34 +1647,25 @@ impl Projection for Projector {
     /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
     /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
     ///
-    /// A batch that fails to fold into a file that owed nothing leaves that file behind the log
-    /// for good - nothing folds a position twice - and its positions missing from the `applied`
-    /// ledger are that debt, which the next `rigger setup` reads against the log and pays
-    /// ([`Projector::owed_against`]). The failure also marks the file ([`owed_mark`]), so from
-    /// then on it refuses every fold and every answer that depends on the fold with
-    /// [`REBUILD_OWED`] without reading the log; a mark that cannot be written is named beside the
-    /// fold's error and nothing else is recorded - the ledger still carries the debt. Either way the
-    /// error ends by naming the one command that pays it, so every surface that reports the lost
-    /// fold says who does.
+    /// It folds under the two guards of [`Projector::guarded`]: refused on a file that owes its
+    /// rebuild, and a batch that fails to fold marks the file owed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        if self.rebuild_owed()? {
-            return Err(Error(REBUILD_OWED.to_string()));
-        }
-        let lost = match self.fold_batch(events) {
-            Err(lost) => lost,
-            folded => return folded,
-        };
-        let unmarked = match self.mark_lost_fold() {
-            Ok(()) => String::new(),
-            Err(unmarked) => {
-                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
-            }
-        };
-        Err(Error(format!(
-            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
-             rebuilds it",
-            lost.0
-        )))
+        self.guarded(|| self.fold_batch(events))
+    }
+
+    /// Fold `entry` with its batch in ONE transaction ([`fold_entry`]), under the same two guards
+    /// as every other fold into this file ([`Projector::guarded`]): refused before folding, its
+    /// batch never asked for, on a file that owes its rebuild, and a fold that fails - an entry
+    /// whose payload does not parse, a batch function that fails, a batch event the fold rejects
+    /// - rolls back whole, its `applied` row included, and marks the file owed.
+    fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
+        self.guarded(|| self.fold_generation(entry, batch))
+    }
+
+    /// A plain read of the `generations` table ([`current_generation`]): it consults no owed
+    /// mark, so it answers on a file that owes its rebuild.
+    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
+        current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
 
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
@@ -1779,7 +1812,8 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
 }
 
 /// Who asserts the facts one event folds: the `<prefix>/<file>` identity and content generation
-/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]), or, for every other event, the log
+/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]) or of the ledger
+/// entry whose batch the event belongs to ([`fold_entry`]), or, for every other event, the log
 /// itself - an assertion no later generation can retract (both fields empty).
 struct Asserter<'e> {
     identity: &'e str,
@@ -1801,11 +1835,19 @@ impl<'e> Asserter<'e> {
 }
 
 /// Fold every event of `events` whose position has not folded yet, in order - the one
-/// per-position idempotency guard (`applied`) every fold path shares.
+/// per-position idempotency guard (`applied`) every fold path shares. A ledger entry of
+/// perception is refused, whatever its position and before anything is written for it: it folds
+/// only with its batch ([`fold_entry`]).
 fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Error> {
     for e in events {
+        if e.type_ == TYPE_GENERATION_INGESTED {
+            return Err(Error(format!(
+                "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
+                 `Projection::apply_generation`"
+            )));
+        }
         if record_applied(tx, e.position)? {
-            fold(tx, e, project)?;
+            fold(tx, e, project, &Asserter::of(e))?;
         }
     }
     relabel_owed_communities(tx)
@@ -1821,20 +1863,75 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
     .map_err(be)
 }
 
-/// Fold one event under the GENERATION RULE (spec 101, [`rigger_domain::ingest::derived_generation`]): when the
-/// event opens a newer generation of its identity, the prior generation's design links are
-/// retired BEFORE it folds (each one the newer generation asserts again is revived in place by
-/// [`assert_link`]), and every node the prior generation asserted that nothing live still holds is
-/// retired AFTER it folds ([`retire_unheld_nodes`]) - after, because the event's own arm is what
-/// retires the code half's prior edges (its `fresh` head) and re-asserts the nodes it keeps.
-fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
-    let by = Asserter::of(e);
-    let prior = advance_generation(tx, &by, project)?;
-    fold_event(tx, e, project, &by)?;
+/// Fold the ledger entry `entry` with its batch, in the caller's transaction, and answer which of
+/// the three outcomes happened. It begins, as [`fold_new`] does, with the entry's `applied` row,
+/// so everything after it is read under the write lock: a position already there folds nothing.
+/// An entry naming the generation its identity holds is a re-recording and writes that row alone.
+/// Any other asks `batch` for the entry's batch, once, and folds each event of it through
+/// [`fold`] at the entry's position and valid-time - which [`fold_event`] reads for every edge it
+/// adds - under the ENTRY's identity and generation, never a key the event carries. The first
+/// event folded installs the generation ([`advance_generation`]), so an entry no source resolves
+/// installs none and leaves the identity's facts as they stood. Every community the batch owed a
+/// relabel is labelled before this returns ([`relabel_owed_communities`]). The `applied` row
+/// cannot guard the batch's events, which share the entry's position.
+fn fold_entry(
+    tx: &Transaction,
+    entry: &Event,
+    project: &str,
+    batch: impl FnOnce() -> Result<Option<Vec<Event>>, Error>,
+) -> Result<EntryFold, Error> {
+    if !record_applied(tx, entry.position)? {
+        return Ok(EntryFold::AlreadyApplied);
+    }
+    let named = GenerationIngested::parse(&entry.data).map_err(Error)?;
+    let identity = named.identity();
+    if current_generation(tx, project, &identity)?.as_deref() == Some(named.generation.as_str()) {
+        return Ok(EntryFold::ReRecording);
+    }
+    let by = Asserter {
+        identity: &identity,
+        generation: &named.generation,
+        at: to_nanos(entry.valid_from),
+    };
+    for mut e in batch()?.unwrap_or_default() {
+        e.position = entry.position;
+        e.valid_from = entry.valid_from;
+        fold(tx, &e, project, &by)?;
+    }
+    relabel_owed_communities(tx)?;
+    Ok(EntryFold::BatchAsked)
+}
+
+/// Fold one event, asserted by `by` ([`Asserter`]), under the GENERATION RULE (spec 101,
+/// [`rigger_domain::ingest::derived_generation`]): when the event opens a newer generation of its
+/// identity, the prior generation's design links are retired BEFORE it folds (each one the newer
+/// generation asserts again is revived in place by [`assert_link`]), and every node the prior
+/// generation asserted that nothing live still holds is retired AFTER it folds
+/// ([`retire_unheld_nodes`]) - after, because the event's own arm is what retires the code half's
+/// prior edges (its `fresh` head) and re-asserts the nodes it keeps.
+fn fold(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
+    let prior = advance_generation(tx, by, project)?;
+    fold_event(tx, e, project, by)?;
     match prior {
-        Some(prior) => retire_unheld_nodes(tx, &by, &prior, project),
+        Some(prior) => retire_unheld_nodes(tx, by, &prior, project),
         None => Ok(()),
     }
+}
+
+/// The generation the file behind `conn` currently holds for `identity` in `project`, or `None`
+/// when it holds none.
+fn current_generation(
+    conn: &Connection,
+    project: &str,
+    identity: &str,
+) -> Result<Option<String>, Error> {
+    conn.query_row(
+        "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
+        params![project, identity],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// Record `by`'s generation as its identity's current one, answering the PRIOR generation when
@@ -1852,15 +1949,7 @@ fn advance_generation(
     if by.identity.is_empty() {
         return Ok(None);
     }
-    let current: Option<String> = tx
-        .query_row(
-            "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
-            params![project, by.identity],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(be)?;
-    let Some(prior) = current else {
+    let Some(prior) = current_generation(tx, project, by.identity)? else {
         tx.execute(
             "INSERT INTO generations (project, identity, generation) VALUES (?1, ?2, ?3)",
             params![project, by.identity, by.generation],
@@ -11591,22 +11680,16 @@ mod tests {
                 )
             }
 
-            /// Every `(identity, generation)` row of `p`'s `generations` table, in order.
-            fn installed(p: &Projector) -> Vec<(String, String)> {
+            /// Every distinct `(identity, generation)` pair in `p`'s `table`, in order: the
+            /// generations it holds (`generations`) or made its node assertions under
+            /// (`node_assertions`).
+            fn identity_generations(p: &Projector, table: &str) -> Vec<(String, String)> {
                 raw_rows(
                     p,
-                    "SELECT identity, generation FROM generations ORDER BY identity",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-            }
-
-            /// Every distinct `(identity, generation)` `p`'s node assertions were made under.
-            fn node_asserters(p: &Projector) -> Vec<(String, String)> {
-                raw_rows(
-                    p,
-                    "SELECT DISTINCT identity, generation FROM node_assertions
-                      ORDER BY identity, generation",
+                    &format!(
+                        "SELECT DISTINCT identity, generation FROM {table}
+                          ORDER BY identity, generation"
+                    ),
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -11720,9 +11803,9 @@ mod tests {
                     "the entry's position is recorded once, and no batch event's own"
                 );
                 let h1 = vec![("gc/src/f.rs".to_string(), "h1".to_string())];
-                assert_eq!(installed(&p), h1);
+                assert_eq!(identity_generations(&p, "generations"), h1);
                 assert_eq!(
-                    node_asserters(&p),
+                    identity_generations(&p, "node_assertions"),
                     h1,
                     "every batch event is asserted under the entry's identity and generation"
                 );
@@ -11802,45 +11885,53 @@ mod tests {
                 );
             }
 
-            #[test]
-            fn a_re_recording_writes_only_its_applied_row_and_never_asks_for_its_batch() {
+            /// A graph holding `h1` folds `entry`, of `gc/src/f.rs` at position 8, with a batch
+            /// function answering `batch`: the fold answers `outcome` having asked for the batch
+            /// `asks` times, and changes no fact - every table but `applied` stands row for row,
+            /// `applied` gains exactly position 8 and the identity still holds `h1`. Answers the
+            /// graph, for the caller to go on from.
+            fn folds_nothing_onto_h1(
+                entry: Event,
+                batch: Option<Vec<Event>>,
+                outcome: EntryFold,
+                asks: u32,
+            ) -> Projector {
                 let p = Projector::open(":memory:", "test").unwrap();
                 holding_h1(&p);
                 let before = projection_but_applied(&p);
                 let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(
-                        &p,
-                        &entry("gc", "src/f.rs", "h1", 8, 50),
-                        Ok(Some(vec![def_event("other", 5, true)])),
-                        &asked,
-                    ),
-                    Ok(EntryFold::ReRecording)
-                );
-                assert_eq!(asked.get(), 0, "a re-recording never asks for its batch");
-                assert_eq!(
-                    projection_but_applied(&p),
-                    before,
-                    "a re-recording changes no fact"
-                );
+                assert_eq!(apply_entry(&p, &entry, Ok(batch), &asked), Ok(outcome));
+                assert_eq!(asked.get(), asks, "how often the batch was asked for");
+                assert_eq!(projection_but_applied(&p), before, "no fact changes");
                 assert_eq!(applied_positions(&p), vec![7, 8]);
                 assert_eq!(
                     p.current_generation("gc/src/f.rs").unwrap(),
                     Some("h1".to_string())
                 );
+                p
+            }
+
+            #[test]
+            fn a_re_recording_writes_only_its_applied_row_and_never_asks_for_its_batch() {
+                // The batch would resolve, and would change the identity's facts, were it asked for.
+                let _ = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h1", 8, 50),
+                    Some(vec![def_event("other", 5, true)]),
+                    EntryFold::ReRecording,
+                    0,
+                );
             }
 
             #[test]
             fn an_unresolved_entry_leaves_the_identitys_facts_and_generation_as_they_stood() {
-                let p = Projector::open(":memory:", "test").unwrap();
-                holding_h1(&p);
-                let before = projection_but_applied(&p);
-                let asked = Cell::new(0);
-                assert_eq!(
-                    apply_entry(&p, &entry("gc", "src/f.rs", "h2", 8, 20), Ok(None), &asked),
-                    Ok(EntryFold::BatchAsked)
+                let p = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h2", 8, 20),
+                    None,
+                    EntryFold::BatchAsked,
+                    1,
                 );
-                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
+                let held = projection_but_applied(&p);
+                let asked = Cell::new(0);
                 // An identity that holds no generation installs none either.
                 assert_eq!(
                     apply_entry(
@@ -11851,20 +11942,16 @@ mod tests {
                     ),
                     Ok(EntryFold::BatchAsked)
                 );
-                assert_eq!(asked.get(), 2);
+                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
                 assert_eq!(
                     projection_but_applied(&p),
-                    before,
+                    held,
                     "an unresolved entry folds nothing"
                 );
                 assert_eq!(applied_positions(&p), vec![7, 8, 9]);
-                assert_eq!(
-                    p.current_generation("gc/src/f.rs").unwrap(),
-                    Some("h1".to_string())
-                );
                 assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
-                // The generation it named is still not the current one, so a later entry of it
-                // that resolves folds.
+                // The generation the first entry named is still not the current one, so a later
+                // entry of it that resolves folds.
                 assert_eq!(
                     apply_entry(
                         &p,
@@ -11874,6 +11961,7 @@ mod tests {
                     ),
                     Ok(EntryFold::BatchAsked)
                 );
+                assert_eq!(asked.get(), 2);
                 assert_eq!(
                     p.current_generation("gc/src/f.rs").unwrap(),
                     Some("h2".to_string())
@@ -12049,7 +12137,11 @@ mod tests {
                     "{why}"
                 );
                 assert_eq!(applied_positions(&p), Vec::<i64>::new(), "{why}");
-                assert_eq!(installed(&p), Vec::<(String, String)>::new(), "{why}");
+                assert_eq!(
+                    identity_generations(&p, "generations"),
+                    Vec::<(String, String)>::new(),
+                    "{why}"
+                );
                 assert_eq!(node_ids(&p), Vec::<String>::new(), "{why}");
             }
 

@@ -2137,6 +2137,22 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "apply_generation",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "32bc50daa90ca236"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "current_generation",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "893dde0713e7be28"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_fold_the_run_could_not_make_is_said_through_its_injected_log",
     "is_test": true,
     "proposed_module": "conductor::tests",

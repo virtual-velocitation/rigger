@@ -14174,8 +14174,8 @@ mod tests {
         }
 
         /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
-        /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
-        /// mention.
+        /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, resolves no mention,
+        /// holds no generation and folds no ledger entry.
         #[derive(Default)]
         pub(super) struct SpyGraph {
             pub(super) graph: Graph,
@@ -14208,6 +14208,21 @@ mod tests {
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
+            }
+            fn apply_generation(
+                &self,
+                _entry: &Event,
+                _batch: crate::contextgraph::EntryBatch<'_>,
+            ) -> Result<crate::contextgraph::EntryFold, contextgraph::Error> {
+                Err(contextgraph::Error(
+                    "this double folds no ledger entry".to_string(),
+                ))
+            }
+            fn current_generation(
+                &self,
+                _identity: &str,
+            ) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
             }
         }
     }

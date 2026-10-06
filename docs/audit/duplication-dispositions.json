@@ -1033,5 +1033,10 @@
     "id": "dup-8fb3e9b78321",
     "disposition": "not-a-duplicate",
     "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
+  },
+  {
+    "id": "dup-3eae43945289",
+    "disposition": "not-a-duplicate",
+    "reason": "`DashMarker::serialize` renders the dash marker's on-disk `port\npid\n` record and `GenerationIngested::identity` joins a ledger entry's prefix and file into the `<prefix>/<file>` identity its generation is recorded under; the shared token shape is a one-line `format!` of two fields, and no logic is repeated."
   }
 ]

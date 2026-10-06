@@ -4522,6 +4522,25 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-3eae43945289",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-dash/src/dash.rs",
+        "name": "serialize",
+        "content_hash": "61341edbeeecefc1"
+      },
+      {
+        "file": "crates/rigger-domain/src/retention.rs",
+        "name": "identity",
+        "content_hash": "61341edbeeecefc1"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-dash/src/dash.rs, crates/rigger-domain/src/retention.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-0b65674d0c1c",
     "classification": "semantic",
     "sites": [
