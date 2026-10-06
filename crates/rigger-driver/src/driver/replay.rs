@@ -77,6 +77,60 @@ pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> O
     crate::liveness::scratch_subpath(scratch_root, SPAWN_SCRATCH_SUBDIR, run_id, spawn_id)
 }
 
+/// The scratch root a spawn's assigned worktree sits in: the PARENT of `opts.dir`, since the
+/// conductor places every unit worktree at `<scratch_root>/rigger-wt-<slug>`
+/// (`conductor::unit_worktree_dir`). `None` for a worktree-less spawn (`isolation: none`,
+/// empty `dir`), which has no per-spawn scratch. The ONE derivation the park that ASSIGNS a
+/// spawn its scratch ([`ReplayDriver::spawn`]) and a blocking host's terminus that RECLAIMS it
+/// ([`reclaim_finished_spawn_scratch`]) share, so the two can never resolve different roots.
+fn spawn_scratch_root(opts: &SpawnOpts) -> Option<String> {
+    if opts.dir.is_empty() {
+        return None;
+    }
+    Path::new(&opts.dir)
+        .parent()
+        .map(|root| root.to_string_lossy().into_owned())
+}
+
+/// The reclaim ACTION itself: given an already-resolved `scratch_root`/`run_id`, reap spawn
+/// `spawn_id`'s per-spawn `agent-scratch` dir (spec 34, criterion 1) through the one
+/// reap-then-remove ([`crate::reap::reap_then_remove_dir`]), authorized under `scratch_root`.
+///
+/// The ONE reap authority every production site that ends a spawn converges on, so none can
+/// diverge on what "reclaim a spawn's scratch" means: the `rigger result` courier (success,
+/// reject, `--error`, and any outcome the death courier records through it) and `rigger
+/// step`'s liveness sweep (a hung spawn it records a fault for in-process) in the binary, and
+/// the terminus of each blocking host that records or returns a result without that courier
+/// ([`reclaim_finished_spawn_scratch`] for the cli host, the headless host's own scratch root
+/// for `claude_code`). Lives beside [`spawn_scratch_path`] so assign and reclaim share one file.
+///
+/// Keyed on the SAME raw `spawn_id` at every call site - no unit/attempt extraction, so none
+/// can ever diverge from how `spawn::spawn_id` mints it. A DEGENERATE id
+/// ([`spawn_scratch_path`] returning `None`) is a no-op, never a fabricated path to reap.
+///
+/// A leaf an agent registered a git worktree inside is still removed whole: the nested
+/// worktree is not the leaf itself, so a `git worktree remove` of the leaf would fail and fall
+/// back to this same removal; the dangling admin entry it leaves is pruned by the next `git
+/// worktree prune` the worktree lifecycle runs (the step-start terminal sweep, and every
+/// unit-worktree clear on any host).
+pub fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
+    if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
+        crate::reap::reap_then_remove_dir(&path, Path::new(scratch_root));
+    }
+}
+
+/// A blocking host's terminus reclaim: once the spawn `opts` names has finished (its process
+/// exited, whatever its outcome), reclaim the scratch rigger names for it under the scratch
+/// root its worktree sits in ([`spawn_scratch_root`]). A blocking host hands its result
+/// straight back to the conductor in-process, never through the `rigger result` courier that
+/// reclaims a stepwise spawn's scratch, so without this every leaf would live for the life of
+/// the clone. A worktree-less spawn has nothing to reclaim. Best-effort, like every reclaim.
+pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
+    if let Some(root) = spawn_scratch_root(opts) {
+        reclaim_spawn_registered_scratch(&root, &opts.run_id, &opts.id);
+    }
+}
+
 /// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else
 /// `None` in a homeless environment. Mirrors `registry::state_home_from`'s XDG-then-HOME
 /// shape. Takes the two candidate env values as plain arguments (never reading `std::env`
@@ -187,14 +241,10 @@ impl AgentDriver for ReplayDriver<'_> {
             // (`isolation: none`, empty `dir`) has no per-spawn scratch to assign. Assigned
             // once (this parks only an id not already recorded, so it never re-runs after the
             // request lands) and best-effort - a create failure never blocks parking.
-            if !opts.dir.is_empty() {
-                if let Some(scratch_root) = Path::new(&opts.dir).parent() {
-                    if let Some(path) =
-                        spawn_scratch_path(&scratch_root.to_string_lossy(), &opts.run_id, &opts.id)
-                    {
-                        let _ = std::fs::create_dir_all(path);
-                    }
-                }
+            if let Some(path) = spawn_scratch_root(opts)
+                .and_then(|root| spawn_scratch_path(&root, &opts.run_id, &opts.id))
+            {
+                let _ = std::fs::create_dir_all(path);
             }
         }
 
@@ -1684,8 +1734,9 @@ mod tests {
         // just because a concurrent sibling unit `v` emitted an approve whose position lands
         // between `u`'s park and result. The sibling's native emit is STAMPED with the SIBLING's
         // spawn id, so it is UNAMBIGUOUSLY the sibling's - it can never be attributed to `u`,
-        // whatever their positions. `u` folds as an ordinary reject (which charges a remediation
-        // attempt), never the run-halting halt that would blame the innocent unit.
+        // whatever their positions. `u`'s verdict-less result takes the verdict-less re-drive (a
+        // fresh attempt of the same review re-parks, the unit charged nothing), never the
+        // run-halting mismatch halt that would blame the innocent unit.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
         crate::run_store::ensure_started(&store, &[]).unwrap();
@@ -1709,7 +1760,7 @@ mod tests {
             .unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line, having emitted
-        // NO approve of its own - a GENUINE empty-verdict reject. The sibling's approve lands at
+        // NO approve of its own - a GENUINE verdict-less result. The sibling's approve lands at
         // a position within `u`'s (park, result] span, so a position window WOULD misattribute
         // it; the stamp is what keeps it the sibling's.
         courier_records(
@@ -1719,21 +1770,19 @@ mod tests {
         );
 
         // Replaying `u`'s recorded result must NOT hard-error: the sibling's approve is stamped
-        // with the SIBLING's id, so it is never attributed to `u`, whose empty verdict folds as
-        // an ordinary reject, not the verdict-channel-mismatch halt.
+        // with the SIBLING's id, so it is never attributed to `u`, whose verdict-less result
+        // re-parks its review, not the verdict-channel-mismatch halt.
         replay_step(&store, &cfg).expect(
-            "a concurrent sibling's approve must not turn a unit's genuine empty-verdict \
-             reject into a run-halting verdict-channel mismatch",
+            "a concurrent sibling's approve must not turn a unit's genuine verdict-less \
+             result into a run-halting verdict-channel mismatch",
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // Folded as an ORDINARY reject: it charged the unit a remediation attempt (UnitFailed),
-        // the exact opposite of the mismatch halt (which charges none and returns an Err).
+        // The verdict-less re-drive, the opposite of the mismatch halt (which returns an Err
+        // and never re-drives): a fresh attempt of `u`'s review is parked.
         assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
-            "the genuine empty-verdict reject folds as an ordinary reject that charges an attempt"
+            spawn::is_recorded(&events, &spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1)),
+            "the verdict-less result re-parks a fresh attempt of the same review"
         );
         // Nothing was approved on `u`'s result channel, so no `reviewed` status is folded - the
         // sibling's approve never leaked into `u`'s gate.

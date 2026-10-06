@@ -617,6 +617,24 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
     reap_authorized(base);
 }
 
+/// Reap any process rooted in `dir` (spec 23), then remove the dir. The reap runs BEFORE the
+/// removal so no process outlives the dir holding a now-deleted cwd; both halves are
+/// best-effort and never fail the caller. `authorized_root` (spec 78 round 2, decision
+/// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
+/// used to build `dir` - never re-derived here - so this reap is safe on any relocated
+/// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered scratch root under a cache
+/// home, and still never touches a process outside `authorized_root`. Off a platform without
+/// `/proc` the reap is a graceful no-op and only the removal runs. The shared teardown for
+/// every scratch area rigger removes - the binary's sweeps and the per-spawn reclaim the
+/// driver crate owns (`driver::replay::reclaim_spawn_registered_scratch`) - so both crates
+/// reach the ONE reap-then-remove; the worktree-removal reap point is
+/// [`crate::worktree::Worktree::remove`], which authorizes its own reap differently (git
+/// identity, not containment - see its own doc comment).
+pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {
+    reap_processes_rooted_under(dir, authorized_root);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The reap's termination sequence for an ALREADY-AUTHORIZED `base` (SIGTERM every match,
 /// wait a short grace, then SIGKILL whatever is STILL rooted inside) - `pub` so a
 /// caller with its OWN independent authorization can reuse the ONE implementation rather

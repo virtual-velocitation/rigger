@@ -1,6 +1,6 @@
 //! Periphery (cross-module, real-binary) test for spec 78 round 2's core production fix
 //! (decision `u78c2r2-authorized-root-caller-supplied`) at its HIGHEST-TRAFFIC real entry
-//! point: `main.rs::reclaim_spawn_registered_scratch`, the ONE reap authority both `rigger
+//! point: `driver::replay::reclaim_spawn_registered_scratch`, the ONE reap authority both `rigger
 //! result` and `cmd_step`'s liveness sweep converge on (its own doc comment says so).
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.

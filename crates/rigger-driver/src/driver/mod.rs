@@ -60,6 +60,39 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
         .map_err(|e| Error(format!("driver: compose the spawn's {what}: {e}")))
 }
 
+/// The harness environment every headless worker gets, whichever host launches it: the
+/// `(key, value)` pairs each host applies to the spawned `claude -p` process at its env
+/// injection site, BEFORE the build environment (`SpawnOpts::env`). `Command::env` is
+/// last-write-wins per key, so a value the operator puts in the build environment under the
+/// same key overrides the one here.
+///
+/// Today exactly one pair, `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. In print mode a session
+/// that started a background helper (a subagent dispatched without waiting on it, or a
+/// background command) stays open after its final turn until that work completes, but only
+/// for a default ceiling of ten minutes of continuous idle waiting; past it the harness stops
+/// whatever is still running and DROPS its partial result. A gating persona that handed its
+/// battery to a background helper and ended its turn to wait then exits with no verdict line,
+/// and the host records that verdict-less stdout as the spawn's result. With the ceiling at
+/// `0` the session stays open, the helper's result arrives, the persona takes its turn on it
+/// and records the verdict. The wait stays bounded by the harness's own limits: a subagent
+/// that streams no progress for its stall timeout (`CLAUDE_CODE_ASYNC_AGENT_STALL_TIMEOUT_MS`,
+/// ten minutes by default) is aborted and reported to the parent, which then takes a turn,
+/// and a background command runs under its own time limit; a healthy helper that runs for an
+/// hour holds the session open, which is the behaviour wanted - the work is in flight.
+///
+/// The rejected lever: `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` disables background work
+/// entirely, the `run_in_background` parameter on Bash and subagent tools and
+/// auto-backgrounding included, and a command that reaches the foreground timeout then stops
+/// instead of moving to the background - so every persona's long build battery, which runs as
+/// a background or auto-backgrounded command, would stop at the foreground cap.
+///
+/// Sources: <https://code.claude.com/docs/en/headless.md> (the print-mode wait on background
+/// work and its ceiling) and <https://code.claude.com/docs/en/env-vars.md> (the variable,
+/// its ten-minute default and `0` waiting without one).
+pub(crate) fn harness_env() -> [(&'static str, &'static str); 1] {
+    [("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")]
+}
+
 /// The unattended configuration every headless spawn carries, whichever host launches it. It
 /// lives here, beside both hosts rather than in [`hooks`], because it is argv: `hooks` keeps
 /// the values a rigger session carries (the one home `rigger setup` also installs from), and

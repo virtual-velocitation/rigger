@@ -369,6 +369,30 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "output_tail",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "fbd6b2502f947e7f"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "no_verdict_line",
+    "is_test": false,
+    "proposed_module": "conductor::gate",
+    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
+    "content_hash": "b22ccea561f105b7"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "verdictless_reviewer",
+    "is_test": false,
+    "proposed_module": "conductor::gate",
+    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
+    "content_hash": "000f7a1f3e8fb48b"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "plan_landing_failed",
     "is_test": false,
     "proposed_module": "conductor::schedule",
@@ -989,7 +1013,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c5380e2b0557d435"
+    "content_hash": "cfb0267c9af9315b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3833,6 +3857,38 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "charged_an_attempt",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9a0ee6d0084dcbbb"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_verdictless_adjudicator_result_re_drives_the_review_once_and_charges_no_attempt",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0dbd883b6afc4525"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_second_verdictless_adjudicator_result_halts_loudly_and_charges_no_attempt",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f33da6ed29ee23a8"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_recorded_verdictless_adjudicator_result_re_parks_the_review_on_the_stepwise_host",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1e406ee420e70707"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -5893,7 +5949,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa7912cdc105a68d"
+    "content_hash": "b1f3c595cab312e2"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7878,14 +7934,6 @@
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
     "content_hash": "7df63dac00343633"
-  },
-  {
-    "file": "src/cli/mod.rs",
-    "name": "reap_then_remove_dir",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7c31804a3b4f3626"
   },
   {
     "file": "src/cli/mod.rs",

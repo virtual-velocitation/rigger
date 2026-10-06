@@ -14,8 +14,10 @@ drops the returned state (`src/cli/run.rs:1858`).
 ## Design
 
 **UNIT ORDER AND BASE, decided here.** Criterion 1 needs nothing, criterion 2 needs criterion 1
-for `halted_line` only (criterion 1 lands it with its caller `run_cli`) and criterion 3 needs
-both; launched on rigger-run.
+for `halted_line` and the clean run its per-line helper re-points (criterion 1 lands
+`halted_line` with its caller `run_cli`) and criterion 3 needs both; launched on rigger-run.
+Written against 65536eec, the run's base, which every citation names; built by PR #62 (main
+e3a9125b), whose code is the record of what the build added beyond this text.
 
 **ONE RENDERER, decided here.** No run entry renders the reason as text today: the step's
 renderer is the composition above, serialized as the `halted` key, and the only text form is the
@@ -25,7 +27,15 @@ adds `halted_line(rs: &RunState) -> Option<String>` in `src/cli/run.rs`, `Some("
 `done:` label form. Each entry is one `if let Some(line)` and only the stream differs: `run_cli`
 prints it on stdout right after `print_run_state`; `run_workflow` on stderr, never stdout (the
 MCP transport), from the conductor thread's `Ok(rs)` arm before `driver.finish()`, and its `Err`
-arm keeps `rigger: conductor: <e>`. The blocking entries
+arm keeps `rigger: conductor: <e>`. The halt line's stdout-clean half is pinned by the stdout lock
+the server thread holds for the whole run (`server.run(stdin.lock(), stdout.lock())`,
+`src/cli/run.rs:1874` at the base): a stdout write from the conductor thread blocks before
+`driver.finish()`, so the budget run's second `next_spawn` never answers `None` and `fail`s at its
+deadline, beside the exactly-once stderr assertion. `run_cli`'s `Err` path is unchanged:
+`conductor::run(&cfg, &deps)?` (`src/cli/run.rs:1490` at the base) propagates before
+`print_run_state`, printing neither the run state nor a halt line. The reason is printed verbatim
+after `halted: `; a reason with a newline carries the prefix on its first line only, accepted.
+The blocking entries
 print the conductor's returned reason alone: the hung arm is the step's alone, because the hung
 set is folded from parked spawn requests (`crates/rigger-driver/src/liveness.rs:614-631`), which
 the blocking drivers never park (`conductor.rs:1882-1884`), so `cmd_step`'s composition at
@@ -46,7 +56,9 @@ The other caller of `liveness::halt_reason`, `close_landed_units` of `rigger res
 **CONSTRAINTS WALK.** Empty log, clean fixpoint: no line. A run that ends `incomplete` with no
 budget or spec-defect reason (an escalated unit, a manual-review pause, a failed deferred gate,
 `conductor.rs:2408-2410`) prints no `halted: ` line either, at parity with `rigger step`'s
-`halted` key, which is `None` for the same stops; the unit status lines name them; accepted.
+`halted` key, which is `None` for the same stops; the unit status lines `print_run_state` prints
+name them; accepted; on the workflow entry those stops are named by `rigger status` or the shim,
+not by the entry, accepted by name.
 Repeated, crash-resume and cold start:
 `cmd_step` re-trips on every step, its count seeded from the recorded spawn requests
 (`tests/cli.rs:7436-7439`), and the stop refolds (`spawn.rs:893-894`). On a slice no step drove,
@@ -57,6 +69,9 @@ relaunch until the spec is amended and relaunched, pinned by the step's test
 (`tests/plan_critique_spec_defect_stop_periphery.rs:254`); the blocking entries print whatever
 reason the returned state carries, asserted with the budget reason. On a slice a step drove, they
 print the conductor's returned reason whatever it counts and name no hung spawn; accepted.
+The workflow entry owes the line only when its conductor returns (the `Ok(rs)` arm after
+`conductor::run`, `src/cli/run.rs:1858` at the base); a spawn never answered keeps it in
+`rx.recv()` and prints none, accepted under issue #59 by name.
 Concurrent: `run_workflow`'s conductor thread writes stderr, its server thread stdout. Every input
 (`--driver`, `--base`, `RIGGER_BASE`, `--fresh`, the store flags, the spec path) changes the
 reason only through the conductor's state; `--driver` picks the stream. STATE PLACEMENT: the
@@ -68,18 +83,28 @@ halt is NOT an implementation (`ledger.rs:181-183`).
 (`tests/cli.rs:4158`), private to that file. The step's three arms stay pinned as they are: budget
 (`tests/cli.rs:7374`), hung (`tests/cli.rs:7549`), spec defect
 (`tests/plan_critique_spec_defect_stop_periphery.rs:254`). A halt line's absence is asserted per
-line: no line starting with `halted: `, the form `halted_line` returns. The clean `rigger run` of
-`tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. `McpSession`
+line: no line starting with `halted: `, the form `halted_line` returns. The per-line absence
+assertion is one `tests/cli.rs` helper, landed by criterion 2 beside its first stderr use and
+re-pointed under criterion 1's clean-run assertion in the same unit, as its reviewers' DRY item
+required; criterion 2 needs criterion 1 for `halted_line` and for that assertion's first caller.
+Criterion 2's budget run and its clean run are two tests, the clean one beside the budget one;
+this block's opening "both new tests" are criterion 1's and criterion 2's budget-one tests. The
+clean `rigger run` of
+`tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. Criterion 1's test is
+`#[cfg(unix)]` like its neighbour (`tests/cli.rs:6132`) and gives the fake agent one arm matching
+the worker persona's `Do the unit.` text (`tests/common/cli.rs:524-525`), echoing one line.
+`McpSession`
 (`tests/common/mcp.rs:9-96`) is the one MCP session authority. The auto-started-dash test
 (`tests/cli.rs:15333`) stays a raw spawn, the one `rigger serve` session outside `McpSession`,
-because it must run with the dash (`rigger_command` sets `RIGGER_NO_DASH`), speaks no MCP (it holds
-stdin open and never writes it) and runs no spec (`src/cli/run.rs:2013-2015`), so no spawn is
-parked when its stdin closes and its teardown is a clean exit; the suite's other raw child ends are
+because it speaks no MCP (it holds stdin open and never writes it) and its `workflow.yml`
+declares no stages (`write_gating_lint_project`, `tests/cli.rs:14728`; `stages` defaults empty,
+`crates/rigger-domain/src/config.rs:936-937`), so no spawn is parked when its stdin closes and
+its teardown is a clean exit; the suite's other raw child ends are
 the standing idiom, issue #60, outside this spec. Criterion 2 makes `McpSession::start_with` build
-through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so every session
-carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME` (`root`, the periphery suite's existing
-choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry directory in the
-fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
+through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so every `start_with`
+session carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME` (`root`, the periphery suite's
+existing choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry
+directory in the fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
 `src/cli/dashboard.rs:814`, reaches neither the registry nor the dash), so every existing
 `McpSession` caller is unchanged and the builder change is a consequence of criterion 2's test, not
 a second mitigation. Criterion 2 adds four `McpSession` methods in `tests/common/mcp.rs`, nothing
@@ -90,7 +115,9 @@ Instant) -> Option<String>`, polling `rigger_next` 20 ms apart until it hands ou
 (`Some`), answers `done: true` (`None`) or the deadline passes, when it calls `fail` itself; and
 `fail(&mut self, why: &str) -> !`, which ends its own child by its handle (`Child::kill()`, the
 no-os-kill gate's sanctioned form), drains its stderr, waits it and panics naming `why` and that
-stderr. `finish(self)` alone consumes the session; the clean run shares one `Instant` across its
+stderr; `fail`'s drain is sound only for a session that starts no dash, which every `start_with`
+session is (`RIGGER_NO_DASH`). `finish(self)` alone consumes the session; the clean run shares
+one `Instant` across its
 loop, the budget run one `Instant` taken before its first `next_spawn` and passed to both calls.
 `initialize()` asserts the response carries `result` (the periphery's assert, moved there);
 `tool_call` returns the whole JSON-RPC response as `call` does (the compaction callers'
@@ -105,7 +132,11 @@ blocked in `Driver::spawn`'s `rx.recv()` (`workflow.rs:198-202`) while a spawn i
 process never exits on stdin closing (issue #59). `fail`'s end and `finish` are the only session
 ends this spec adds; a test panicking between `next_spawn`'s handout and its `rigger_result` leaves
 the serve child running, which is issue #59's consequence and ends with its root fix, accepted here
-by name. `tests/workflow_driver_resolved_model_periphery.rs` is re-expressed over `McpSession` and
+by name. In the two new runs every check between a handout and its `rigger_result` goes through
+`fail`, never a bare assert, so the accepted leak covers only unforeseen panics; the periphery's
+own asserts stand as they are, accepted under issue #59 by name. The periphery keeps two 15 s
+deadlines, one passed to `next_spawn`, one for its `events.db` poll.
+`tests/workflow_driver_resolved_model_periphery.rs` is re-expressed over `McpSession` and
 these methods, its `call`, `call_tool`, `drain_stderr` and piped spawn deleted, its `events.db`
 poll miss calling `fail`, its assertions unchanged; it ends its session with `finish` after reading
 the green event (its one spawn answered, nothing pending, so the conductor returns), and a `None`
@@ -129,7 +160,8 @@ directories and the README says what a run entry prints on a halt; the rustdoc n
 
 **OUT OF SCOPE.** Exit status (a halt is a run outcome; `rigger step` exits 0 on one,
 `tests/cli.rs:7379-7385`); the step line's other fields; the Workflow driver's stop text; the
-shim's end-of-run text after a halted serve.
+shim's end-of-run text after a halted serve; criterion 1's `exits 0` assertion pins existing
+behaviour and changes nothing.
 
 ## Global constraints
 

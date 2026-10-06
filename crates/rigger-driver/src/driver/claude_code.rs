@@ -27,7 +27,8 @@ use crate::agent::{
     classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
 };
 use crate::config::AgentDef;
-use crate::driver::{allowed_tools_args, bin_or_path_default, spawn_config_args};
+use crate::driver::replay::reclaim_spawn_registered_scratch;
+use crate::driver::{allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args};
 use crate::eventstore::EventStore;
 use crate::hooks;
 use crate::liveness;
@@ -140,7 +141,8 @@ impl Driver<'_> {
     /// `bin` does not exist still cannot be re-attempted silently - the record proves the
     /// attempt), and it is the ONLY event this call writes - closing it belongs to a
     /// later criterion. The environment the child sees is the operator's ambient
-    /// environment (inherited unchanged, credential included) plus `opts.env`; this
+    /// environment (inherited unchanged, credential included) plus the harness environment
+    /// ([`harness_env`]) plus `opts.env`, which wins under a shared key; this
     /// function neither reads nor sets a credential variable of its own. Once the record
     /// is written the launch never returns `Err` with an unaccounted-for child still
     /// running behind it: a failure writing the first message ends the child through its
@@ -188,7 +190,12 @@ impl Driver<'_> {
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top
         // of the inherited ambient environment (`Command` never clears it) - so the
-        // operator's own credential rides through untouched and unread.
+        // operator's own credential rides through untouched and unread. The harness
+        // environment every headless worker gets ([`harness_env`]) goes first, so the build
+        // environment overrides it under the same key.
+        for (k, v) in harness_env() {
+            cmd.env(k, v);
+        }
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
@@ -1003,7 +1010,13 @@ impl AgentDriver for Driver<'_> {
         // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
         // config-load time) - 0 stays unbounded, the established convention this field's
         // own doc already sets.
-        self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0))
+        let result = self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0));
+        // The spawn's terminus: `read_stream` reaped the session, whatever its outcome, and
+        // this host records its result directly, never through the `rigger result` courier
+        // that reclaims a stepwise spawn's scratch - so reclaim the scratch its spawn MCP
+        // server names (`rigger_scratch`, under this host's own scratch root) here.
+        reclaim_spawn_registered_scratch(&self.scratch_root, &opts.run_id, &opts.id);
+        result
     }
 }
 
@@ -1662,6 +1675,43 @@ mod tests {
             "lines: {lines:?}"
         );
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn launch_applies_the_harness_env_and_lets_opts_env_override_it() {
+        // Every headless worker gets the harness environment (`harness_env`): the print-mode
+        // idle ceiling off, so a session that ended its turn waiting on a background helper
+        // stays open for the helper's result. `opts.env` is applied after it, so an
+        // operator's own value under the same key wins.
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let ceiling = |env: Vec<(String, String)>| {
+            let mut o = opts("u/implementer#0");
+            o.env = env;
+            let mut launch = driver
+                .launch(&AgentDef::default(), "task", &o, &store)
+                .unwrap();
+            read_fixture_lines(&mut launch.child)
+                .into_iter()
+                .find(|l| l.starts_with("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="))
+                .expect("the fixture echoes the ceiling")
+        };
+        assert_eq!(
+            ceiling(Vec::new()),
+            "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"
+        );
+        assert_eq!(
+            ceiling(vec![(
+                "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS".to_string(),
+                "900000".to_string()
+            )]),
+            "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=900000",
+            "an opts.env value under the same key wins"
+        );
     }
 
     #[test]
