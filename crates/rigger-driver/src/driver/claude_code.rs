@@ -1765,6 +1765,47 @@ mod tests {
     }
 
     #[test]
+    fn a_persona_past_the_per_argument_limit_reaches_the_session_through_its_file() {
+        // Linux fails `execve` with `E2BIG` for any one argv string past `MAX_ARG_STRLEN`
+        // (32 pages of 4096 bytes), so a full persona travels as the file
+        // `--system-prompt-file` names, under the spawn's scratch.
+        let scratch = tempfile::tempdir().unwrap();
+        let capture = tempfile::tempdir().unwrap();
+        let driver = Driver {
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/prompt-capture-agent.sh")
+                .to_string_lossy()
+                .into_owned(),
+            scratch_root: scratch.path().to_string_lossy().into_owned(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let mut o = opts("u/adversary#0");
+        o.system_prompt = "p".repeat(131_072 + 1);
+        o.env = vec![(
+            "PROMPT_CAPTURE_DIR".to_string(),
+            capture.path().to_string_lossy().into_owned(),
+        )];
+
+        let mut launch = driver
+            .launch(&AgentDef::default(), "task", &o, &store)
+            .unwrap();
+        drop(launch.child.stdin.take());
+        launch.child.wait().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            o.system_prompt,
+            "the whole persona arrived through the system-prompt file"
+        );
+        let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
+        assert!(
+            std::path::Path::new(&path).starts_with(scratch.path()),
+            "the file lives under the spawn's scratch, which the spawn's terminus reclaims: {path}"
+        );
+    }
+
+    #[test]
     fn a_launch_relaunches_at_a_new_ordinal_with_no_resumed_from_this_spec() {
         // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal."
         // Every launch spec 104 itself performs is fresh (resume is spec 105's), so two

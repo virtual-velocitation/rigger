@@ -522,6 +522,124 @@ thinking out loud, not json\n\
         assert!(dir.exists(), "the unit worktree itself is never touched");
     }
 
+    /// Linux's per-argument limit (`MAX_ARG_STRLEN`, 32 pages of 4096 bytes): one argv string
+    /// longer than this fails `execve` with `E2BIG` whatever the total argv size.
+    #[cfg(unix)]
+    const MAX_ARG_STRLEN: usize = 131_072;
+
+    /// The checked-in fixture agent that copies its stdin and its `--system-prompt-file` into
+    /// the directory `PROMPT_CAPTURE_DIR` names.
+    #[cfg(unix)]
+    fn prompt_capture_agent() -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/prompt-capture-agent.sh")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_task_and_a_persona_each_past_the_per_argument_limit_reach_the_agent_intact() {
+        // A plan-critique prompt (plan + spec + code neighbourhood) and a full persona each
+        // cross the kernel's per-argument limit, so neither can travel as one argv string: the
+        // task arrives on stdin and the persona through the file `--system-prompt-file` names,
+        // under the spawn's own scratch, which the spawn's terminus reclaims.
+        let scratch = tempfile::tempdir().unwrap();
+        let capture = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("rigger-wt-u");
+        std::fs::create_dir_all(&dir).unwrap();
+        let task = "t".repeat(MAX_ARG_STRLEN + 1);
+        let persona = "p".repeat(MAX_ARG_STRLEN + 1);
+        let opts = SpawnOpts {
+            id: "u/adversary#0".into(),
+            run_id: "r1".into(),
+            dir: dir.to_string_lossy().into_owned(),
+            system_prompt: persona.clone(),
+            env: vec![(
+                "PROMPT_CAPTURE_DIR".to_string(),
+                capture.path().to_string_lossy().into_owned(),
+            )],
+            ..Default::default()
+        };
+        let driver = Driver {
+            bin: prompt_capture_agent(),
+            ..Driver::default()
+        };
+
+        driver
+            .spawn(&AgentDef::default(), &task, &opts, &|_: &str, _: Value| {
+                Ok(())
+            })
+            .unwrap();
+
+        let stdin = std::fs::read_to_string(capture.path().join("stdin")).unwrap();
+        assert!(
+            stdin.starts_with(&task),
+            "the whole task arrived on stdin ({} bytes read)",
+            stdin.len()
+        );
+        assert_eq!(
+            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            persona,
+            "the whole persona arrived through the system-prompt file"
+        );
+        let leaf = crate::driver::replay::spawn_scratch_path(
+            &scratch.path().to_string_lossy(),
+            "r1",
+            &opts.id,
+        )
+        .unwrap();
+        assert!(
+            !leaf.exists(),
+            "the spawn's scratch, system-prompt file included, is reclaimed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_less_spawn_delivers_its_persona_and_leaves_no_file_behind() {
+        // A spawn with no worktree (an `isolation: none` planner, or any spawn of a repo-less
+        // run) has no spawn scratch; its persona still travels as a file, which the host
+        // removes once the spawn ends.
+        let capture = tempfile::tempdir().unwrap();
+        let opts = SpawnOpts {
+            id: "plan/planner#0".into(),
+            system_prompt: "You plan.".into(),
+            env: vec![(
+                "PROMPT_CAPTURE_DIR".to_string(),
+                capture.path().to_string_lossy().into_owned(),
+            )],
+            ..Default::default()
+        };
+        let driver = Driver {
+            bin: prompt_capture_agent(),
+            ..Driver::default()
+        };
+
+        driver
+            .spawn(&AgentDef::default(), "plan it", &opts, &|_: &str, _: Value| {
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(capture.path().join("system-prompt")).unwrap(),
+            "You plan."
+        );
+        assert!(std::fs::read_to_string(capture.path().join("stdin"))
+            .unwrap()
+            .starts_with("plan it"));
+        let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
+        assert!(
+            std::path::Path::new(&path).is_absolute(),
+            "the agent's cwd is not the host's, so the path is absolute: {path}"
+        );
+        assert!(
+            !std::path::Path::new(&path).exists(),
+            "the system-prompt file is removed once the spawn ends: {path}"
+        );
+    }
+
     /// The index of `flag` in the built `args`, panicking when it is absent.
     fn arg_index(args: &[String], flag: &str) -> usize {
         args.iter()
