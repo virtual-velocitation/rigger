@@ -1504,6 +1504,9 @@ fn run_cli(parsed: &RunArgs) -> Res {
             .0
         });
     print_run_state(&rs, &release_base);
+    if let Some(line) = halted_line(&rs) {
+        println!("{line}");
+    }
     // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
     // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
     // parallelism-retention floor was breached under structural grounding, log the SAME line the
@@ -2984,6 +2987,15 @@ fn print_run_state(rs: &RunState, base: &str) {
             println!("{line}");
         }
     }
+}
+
+/// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
+/// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
+/// stop's), `None` on any other stop. The text form of `rigger step`'s `halted` key.
+fn halted_line(rs: &RunState) -> Option<String> {
+    rs.budget_halt
+        .as_ref()
+        .map(|reason| format!("halted: {reason}"))
 }
 
 #[cfg(test)]
