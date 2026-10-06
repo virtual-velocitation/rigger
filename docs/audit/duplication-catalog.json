@@ -405,7 +405,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-94e49c052a26",
+    "id": "dup-057996e51fcc",
     "classification": "semantic",
     "sites": [
       {
@@ -469,18 +469,13 @@
         "content_hash": "c0f6e3d647f2a511"
       },
       {
-        "file": "tests/cli.rs",
-        "name": "a_clean_run_workflow_prints_no_halted_line_on_stderr",
-        "content_hash": "2cf5b29425a35ea0"
-      },
-      {
         "file": "tests/grounder_name_contract.rs",
         "name": "public_name_contract_predicate_error_and_resolver_agree",
         "content_hash": "7a5f0a9cd4ee7866"
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 14 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -1151,7 +1146,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-4d4dee559928",
+    "id": "dup-da5c9dfefd76",
     "classification": "semantic",
     "sites": [
       {
@@ -2303,6 +2298,21 @@
         "file": "tests/cli.rs",
         "name": "\".rigger/events.db\"",
         "content_hash": "d53ae5846f4d060f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "ec2a94ff1011dfe8"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "1fc9da9ac6dbcd8f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "1fc9da9ac6dbcd8f"
       },
       {
         "file": "tests/cli.rs",
@@ -4081,7 +4091,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 585 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 588 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8139,7 +8149,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d7d5597c4fbc",
+    "id": "dup-4f6fb68b58e5",
     "classification": "semantic",
     "sites": [
       {
@@ -8150,11 +8160,16 @@
       {
         "file": "tests/common/mcp.rs",
         "name": "start_with",
-        "content_hash": "969877e05344f34a"
+        "content_hash": "50209220bd3a8ade"
+      },
+      {
+        "file": "tests/common/mcp.rs",
+        "name": "from_command",
+        "content_hash": "b6620111544c2d31"
       }
     ],
     "proposed_home": "mcp::mcp_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
-    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: parallel constructor functions - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
