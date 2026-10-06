@@ -15,7 +15,9 @@ drops the returned state (`src/cli/run.rs:1862`).
 
 **UNIT ORDER AND BASE, decided here.** Criterion 1 needs nothing, criterion 2 needs criterion 1
 for `halted_line` only (criterion 1 lands it with its caller `run_cli`) and criterion 3 needs
-both; launched on rigger-run.
+both; launched on rigger-run. Written against 65536eec, the run's base, and recorded as built at
+e3a9125b: code the criteria add is cited at its landed position, code they delete at its position
+on the base, and `adds`, `NEW` and red-first are read against the base.
 
 **ONE RENDERER, decided here.** No run entry renders the reason as text today: the step's
 renderer is the composition above, serialized as the `halted` key, and the only text form is the
@@ -40,8 +42,10 @@ the blocking drivers never park (`conductor.rs:1882-1884`), so `cmd_step`'s comp
 (`rigger step`, `src/cli/run.rs:428`): the key, unchanged. `run_cli` (`rigger run`, `--driver cli`
 by default, `src/cli/run.rs:317-325`): stdout. `run_workflow` (`rigger run --driver workflow`, and
 `rigger serve` via `cmd_serve`, `src/cli/run.rs:1888`): stderr, which under an MCP host other than
-the shim lands in that host's server log, accepted. `cmd_workflow` (`src/cli/run.rs:1929`) prints
-nothing itself; its shim spawns `rigger serve` with stderr inherited (`shim/shim.mjs:413`).
+the shim lands in that host's server log, accepted. The build added a third test, `rigger serve`'s
+budget run (`tests/cli.rs:7528`, its id checked after `finish`, `:7534-7542`), as that entry's own
+proof; it is not criterion 2's, whose two runs stay two. `cmd_workflow` (`src/cli/run.rs:1929`)
+prints nothing itself; its shim spawns `rigger serve` with stderr inherited (`shim/shim.mjs:413`).
 `cmd_replay` (`rigger replay`, `src/cli/mod.rs:2468`, the call at `:2574`) is not a run entry: an
 offline re-fold of a recorded trajectory over an isolated store for a metrics diff, reading its
 state only for `err()` (`:2596`) and printing its own not-completed line (`:2615-2620`); untouched.
@@ -91,7 +95,10 @@ choice at `tests/workflow_driver_resolved_model_periphery.rs:136`; the registry 
 fixture root is accepted). `rigger mcp` reads neither variable (`cmd_mcp`,
 `src/cli/dashboard.rs:814`, reaches neither the registry nor the dash), so every existing
 `McpSession` caller is unchanged and the builder change is a consequence of criterion 2's test, not
-a second mitigation. Criterion 2 adds four `McpSession` methods in `tests/common/mcp.rs`, nothing
+a second mitigation. The re-expressions are the same consequence: the new methods would duplicate
+the periphery's `call`/`call_tool`/poll and the compaction suite's `tools/call` copy, so deleting
+those copies is the DRY consequence of adding the methods, not a second mitigation. Criterion 2
+adds four `McpSession` methods in `tests/common/mcp.rs`, nothing
 moved: `tool_call(name, arguments)`, the one `tools/call` authority, which `peers` calls and whose
 private copy in `tests/compaction_generations_periphery.rs:3530` is deleted, its callers calling
 the method and its assertions unchanged; `initialize()`, once per session; `next_spawn(deadline:
@@ -115,10 +122,10 @@ process never exits on stdin closing (issue #59). `fail`'s end and `finish` are 
 ends this spec adds; a test panicking between `next_spawn`'s handout and its `rigger_result` leaves
 the serve child running, which is issue #59's consequence and ends with its root fix, accepted here
 by name. The budget run's checks between handout and `rigger_result` go through `fail`
-(`tests/cli.rs:7461-7480`) and the serve test checks its id after `finish` (`:7534-7542`); the
-periphery's bare `assert!`s there (`tests/workflow_driver_resolved_model_periphery.rs:87-100`)
-leave the child running on failure, issue #59's, accepted by name. The periphery takes two 15 s
-`Instant`s, one passed to `next_spawn` (`:83`), one for its `events.db` poll (`:107`).
+(`tests/cli.rs:7461-7480`); the periphery's bare `assert!`s there
+(`tests/workflow_driver_resolved_model_periphery.rs:87-100`) leave the child running on failure,
+issue #59's, accepted by name. The periphery takes two 15 s `Instant`s, one passed to
+`next_spawn` (`:83`), one for its `events.db` poll (`:107`).
 `tests/workflow_driver_resolved_model_periphery.rs` is re-expressed over `McpSession` and
 these methods, its `call`, `call_tool`, `drain_stderr` and piped spawn deleted, its `events.db`
 poll miss calling `fail`, its assertions unchanged; it ends its session with `finish` after reading
