@@ -56,6 +56,10 @@ landing with its function:
 | 19 | the refusal with `class_of` | no derived append succeeds |
 | 20 | nothing | both lanes green |
 
+Criterion 4 sits at the unit size cap: if the planner cannot fit it, `walk_exclusions` and its stub
+land at criterion 9, its first flag-bearing caller, a relief of this order and never an edit of a
+criterion.
+
 The spec is launched on rigger-run. A test a unit's change breaks is that unit's to move (TEST
 DISPOSITIONS and DOCUMENT EDITS, Notes). A unit that changes a signature, a trait or a struct's
 fields adapts every caller, implementor and constructor of it in the same unit with behaviour
@@ -283,7 +287,9 @@ while an object git answers `missing` for is not held, whatever made git say so 
 whose header is corrupt), and resolution falls to source 2: the batch function's error propagates
 out of `fold_source`, the batch rolls back, and the rebuild stays resumable from its last committed
 batch, so a resumed rebuild, given the same answer to whether the batch process starts, resolves
-each entry from the sources a single pass would and prints the number a single pass does. The one
+each entry from the sources a single pass would and prints the number a single pass does. That
+failure names the object id and its remedy, restoring or removing the object, after which git
+answers `missing` for it and resolution falls to source 2. The one
 hash function applies no filter, so a file whose stored blob differs from its working-tree bytes
 (end-of-line conversion, a clean filter, LFS) resolves from the tree's file while it is unchanged,
 never from the object database. An entry no source resolves folds nothing (THE ENTRY AND ITS BATCH
@@ -402,7 +408,10 @@ records is that extraction, never the walk's batch, and only for an extraction i
 hash the bytes, through the ONE HASH FUNCTION, bytes to object id, which production binds to `git
 hash-object --stdin` in the ONE ROOT (`worktree::hash_blob`, `crates/rigger-worktree-git`: one
 process per call, waited to its exit, never written, no filter, outside a repository too, since no
-SHA-1 crate is a direct dependency) and a test binds as it needs. Both sinks call it and keep no
+SHA-1 crate is a direct dependency) and a test binds as it needs. The hash outside a repository is
+proved once, at `worktree::hash_blob`'s own adapter test in
+`crates/rigger-worktree-git/src/worktree.rs`'s tests module, and `ingest_tree`'s binding of it,
+which `rigger graph build` reaches walking `.` outside a repository, is covered by that test. Both sinks call it and keep no
 identity cut, only what differs: the log-side lookup they hand it (the run's memo, the build's store
 read), the run's memo update, the run-id stamp, the ledger-form append and the build line's N. The
 conductor takes the hash function as a new `Deps` field, `hash_blob`, so it spawns no process, and
@@ -639,7 +648,9 @@ that clause observes criterion 6's number, and the default lane's rebuild-equali
   it; an identity whose derived rows carry no group answers no generation at the group lookup, so
   its first walk records one entry that folds as a re-recording (SINK OUTCOMES rows 9 then 13); a
   `graph.db` built before this spec needs no rebuild, since no fold rule or projection version
-  changes.
+  changes. A KurrentDB store's derived backlog is never shed (OUT OF SCOPE), so there the whole
+  `PERCEPTION_TYPES` read of the rebuild's report and the index-lag advisory is a permanent cost,
+  accepted, which the sqlite-only bloat advisory never names.
 - *Output streams:* the rebuild's report, the migration's counts and the menu line print on standard
   output, as today, and `rigger graph build`'s `graph build: ingested N code-ingest event(s)` line
   keeps its stream and its meaning, N counting the batch events of each entry SINK OUTCOMES counts
@@ -660,8 +671,8 @@ classifies and leaves live, migration on KurrentDB, a deleted `graph.db` (forbid
 
 `GenerationIngested { prefix, file, generation, blob, excluded }`: `prefix` is `gc`, `gd` or `gw`;
 `blob` is the object id as git prints it for the repository's object format, or empty for an entry
-with no blob, recorded when the path held no file; `excluded` is true only for a `gc` batch lowered
-as an out-of-line test module. Its group is `<prefix>/<file>` and its replay key
+with no blob, recorded when the path held no file; `excluded` is the walk's flag, whether
+`walk_exclusions` names the identity, which changes only a parsed `gc` batch. Its group is `<prefix>/<file>` and its replay key
 `<prefix>/<file>@<generation>#<n>`, both built by `GenerationIngested::event(n)`.
 
 SINK OUTCOMES. What either sink does with one batch the walk hands it, in the order it decides, rows
@@ -716,7 +727,7 @@ row inserter, THE STORE REFUSES block):
 | `tests/dedup_seeding_periphery.rs` | 10 | re-expressed over ledger entries, sqlite |
 | the `rigger graph build` tests of `tests/cli.rs` reading derived events back | 12 | re-expressed over ledger entries, sqlite |
 | `tests/group_lookup_periphery.rs` but its namespace test, `tests/change_path_revert_periphery.rs` and `a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses`, each seeded through a sink | 10, or 12 for one seeded through `rigger graph build` | re-expressed over ledger entries, sqlite |
-| `graph_index_lag*` tests (`crates/rigger-grounder/src/ingest.rs`, `src/cli/validate.rs`) | 13 | re-expressed over ledger entries and the graph's current generation |
+| `graph_index_lag*` tests (`crates/rigger-grounder/src/ingest.rs`, `src/cli/validate.rs`) and the index-lag tests of `tests/validate_advisories.rs` seeded through `seed_graph_generation` (`validate_warns_of_graph_index_lag_and_names_reindex`, `validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree`), which seeds by a plain store append that folds nothing | 13 | re-expressed over ledger entries and the graph's current generation, the `tests/validate_advisories.rs` seeds over a folded entry or an absent `graph.db` |
 | `latest_generation_answers_what_the_reference_answers_on_the_same_log` (contract suite) | 13 | re-expressed over ledger entries, both backends |
 | `a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted`, `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` (`sqlite.rs`) | 14 | moved onto `Store::reclaim_space`'s injectable step |
 | `discipline_names_reset_derived_as_the_event_logs_own_prune` (`docs.rs`), `the_committed_operator_documents_ship_the_derived_prunes_guidance` | 14 | staging sentences re-expressed as held in memory; the `--derived` wording re-expressed by 16 |
