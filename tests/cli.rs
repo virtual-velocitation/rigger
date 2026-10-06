@@ -7499,24 +7499,9 @@ fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
     let root = dir.path();
     write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
-    mcp.initialize();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    let mut answered = Vec::new();
-    while let Some(spawn) = mcp.next_spawn(deadline) {
-        let answer = mcp.tool_call(
-            "rigger_result",
-            serde_json::json!({"id": spawn, "output": "did the unit"}),
-        );
-        if answer.get("result").is_none() {
-            mcp.fail(&format!(
-                "rigger_result must succeed for {spawn}; got {answer}"
-            ));
-        }
-        answered.push(spawn);
-    }
+    let answered = answer_every_spawn(&mut mcp);
     let out = mcp.finish();
     let err = String::from_utf8_lossy(&out.stderr);
-    answered.sort();
     assert_eq!(
         answered,
         ["a/implementer#0", "b/implementer#0"],
@@ -7532,6 +7517,30 @@ fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
         Vec::<&str>::new(),
         "a session carrying RIGGER_NO_DASH starts no dash; stderr: {err}"
     );
+}
+
+/// Run `mcp`'s workflow session to its end: the `initialize` handshake, then every spawn
+/// `rigger_next` hands out answered with one successful `rigger_result` until it answers done
+/// (a failed answer or a missed 15 s deadline [`McpSession::fail`]s the session); returns the
+/// answered spawn ids, sorted.
+fn answer_every_spawn(mcp: &mut McpSession) -> Vec<String> {
+    mcp.initialize();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut answered = Vec::new();
+    while let Some(spawn) = mcp.next_spawn(deadline) {
+        let answer = mcp.tool_call(
+            "rigger_result",
+            serde_json::json!({"id": spawn, "output": "did the unit"}),
+        );
+        if answer.get("result").is_none() {
+            mcp.fail(&format!(
+                "rigger_result must succeed for {spawn}; got {answer}"
+            ));
+        }
+        answered.push(spawn);
+    }
+    answered.sort();
+    answered
 }
 
 /// Every line of `text` starting with `prefix`, in order.
@@ -7658,24 +7667,9 @@ fn the_workflow_driver_entries_honor_the_config_dash_off_opt_out() {
         write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
         append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
         let mut mcp = McpSession::from_command(dash_entry_command(root, args, None, false, root));
-        mcp.initialize();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        let mut answered = Vec::new();
-        while let Some(spawn) = mcp.next_spawn(deadline) {
-            let answer = mcp.tool_call(
-                "rigger_result",
-                serde_json::json!({"id": spawn, "output": "did the unit"}),
-            );
-            if answer.get("result").is_none() {
-                mcp.fail(&format!(
-                    "rigger_result must succeed for {spawn}; got {answer}"
-                ));
-            }
-            answered.push(spawn);
-        }
+        let answered = answer_every_spawn(&mut mcp);
         let out = mcp.finish();
         let entry = format!("rigger {}", args.join(" "));
-        answered.sort();
         assert_eq!(
             answered,
             ["a/implementer#0", "b/implementer#0"],
