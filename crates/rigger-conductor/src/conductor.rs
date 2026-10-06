@@ -11959,10 +11959,12 @@ impl RunCtx<'_> {
                     for owner in prior_owners {
                         stages.remove(&owner);
                     }
-                    // The superseding unit carries the EXACT criterion text as its
-                    // coverage, so it grounds on and records the real criterion and the
-                    // coverage gate stays exact even when the planner paraphrased.
-                    u.coverage = criterion;
+                    // The superseding unit's coverage OPENS with the EXACT criterion text,
+                    // so it grounds on and records the real criterion even when the planner
+                    // paraphrased, and keeps whatever ownership sentence a split part
+                    // carries past it, so two parts of one criterion never become twins
+                    // and each part's contract names the half it owns.
+                    u.coverage = part_coverage(&criterion, &u.coverage);
                     // THE STAMP (spec 72, outcome-level): carry the criterion's own
                     // stable id onto the stage this proposal becomes - not only a
                     // conductor-synthesized baseline gets one from here on. Without this
@@ -12085,6 +12087,19 @@ impl RunCtx<'_> {
                     .min_by_key(|(_, c)| std::cmp::Reverse(normalize_ws(c).len()))
             })
             .map(|(i, c)| (criterion_stable_id(i + 1, c), c.clone()))
+    }
+}
+
+/// The coverage a proposal that resolved to `criterion` carries: the exact criterion text,
+/// followed after a blank line by whatever `proposed` carries past it when `proposed` opens
+/// with the criterion ([`criterion_remainder`]) - a split part's ownership sentence. A
+/// verbatim copy, a paraphrase or a truncation carries the exact criterion alone. The one
+/// authority for a proposal's coverage text, so every part of a split stays distinct while
+/// the criterion stays the prefix every reader grounds and matches on.
+fn part_coverage(criterion: &str, proposed: &str) -> String {
+    match criterion_remainder(criterion, proposed) {
+        Some(rest) if !rest.is_empty() => format!("{criterion}\n\n{rest}"),
+        _ => criterion.to_string(),
     }
 }
 
