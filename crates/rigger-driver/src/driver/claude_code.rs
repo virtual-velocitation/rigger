@@ -1195,10 +1195,12 @@ fn first_user_message(task: &str) -> String {
 
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
-/// - every field below is a fact, never inferred at read time. Neither prompt is an argv
-/// string, since Linux caps one argument at `MAX_ARG_STRLEN` (131072 bytes): the task is the
-/// first stream-json message on stdin and the persona reaches the session through the file
-/// `persona` holds (`--system-prompt-file`), omitted for an empty persona.
+/// - every field below is a fact, never inferred at read time.
+///
+/// Neither prompt is an argv string, since Linux caps one argument at `MAX_ARG_STRLEN` (131072
+/// bytes): the task is the first stream-json message on stdin and the persona reaches the
+/// session through the file `persona` holds (`--system-prompt-file`), omitted for an empty
+/// persona.
 ///
 /// `--json-schema` (verdict personas, §4.5) is deliberately out of this criterion's scope
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
