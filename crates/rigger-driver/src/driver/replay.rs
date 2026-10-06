@@ -1684,8 +1684,9 @@ mod tests {
         // just because a concurrent sibling unit `v` emitted an approve whose position lands
         // between `u`'s park and result. The sibling's native emit is STAMPED with the SIBLING's
         // spawn id, so it is UNAMBIGUOUSLY the sibling's - it can never be attributed to `u`,
-        // whatever their positions. `u` folds as an ordinary reject (which charges a remediation
-        // attempt), never the run-halting halt that would blame the innocent unit.
+        // whatever their positions. `u`'s verdict-less result takes the verdict-less re-drive (a
+        // fresh attempt of the same review re-parks, the unit charged nothing), never the
+        // run-halting mismatch halt that would blame the innocent unit.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
         crate::run_store::ensure_started(&store, &[]).unwrap();
@@ -1709,7 +1710,7 @@ mod tests {
             .unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line, having emitted
-        // NO approve of its own - a GENUINE empty-verdict reject. The sibling's approve lands at
+        // NO approve of its own - a GENUINE verdict-less result. The sibling's approve lands at
         // a position within `u`'s (park, result] span, so a position window WOULD misattribute
         // it; the stamp is what keeps it the sibling's.
         courier_records(
@@ -1719,21 +1720,19 @@ mod tests {
         );
 
         // Replaying `u`'s recorded result must NOT hard-error: the sibling's approve is stamped
-        // with the SIBLING's id, so it is never attributed to `u`, whose empty verdict folds as
-        // an ordinary reject, not the verdict-channel-mismatch halt.
+        // with the SIBLING's id, so it is never attributed to `u`, whose verdict-less result
+        // re-parks its review, not the verdict-channel-mismatch halt.
         replay_step(&store, &cfg).expect(
-            "a concurrent sibling's approve must not turn a unit's genuine empty-verdict \
-             reject into a run-halting verdict-channel mismatch",
+            "a concurrent sibling's approve must not turn a unit's genuine verdict-less \
+             result into a run-halting verdict-channel mismatch",
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // Folded as an ORDINARY reject: it charged the unit a remediation attempt (UnitFailed),
-        // the exact opposite of the mismatch halt (which charges none and returns an Err).
+        // The verdict-less re-drive, the opposite of the mismatch halt (which returns an Err
+        // and never re-drives): a fresh attempt of `u`'s review is parked.
         assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
-            "the genuine empty-verdict reject folds as an ordinary reject that charges an attempt"
+            spawn::is_recorded(&events, &spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1)),
+            "the verdict-less result re-parks a fresh attempt of the same review"
         );
         // Nothing was approved on `u`'s result channel, so no `reviewed` status is folded - the
         // sibling's approve never leaked into `u`'s gate.

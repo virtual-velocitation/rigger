@@ -1545,7 +1545,50 @@ fn degenerate_reviewer(
     ))
 }
 
-/// The sentinel a runtime verdict-channel-mismatch HALT (spec 18, unit 3) embeds in its
+/// The most of a verdict-less reviewer's output [`output_tail`] carries as evidence.
+const OUTPUT_TAIL_CHARS: usize = 600;
+
+/// The last [`OUTPUT_TAIL_CHARS`] characters of `output`, trimmed - the evidence a
+/// verdict-less fault names, since a reviewer's final words say what it was waiting on.
+fn output_tail(output: &str) -> String {
+    let trimmed = output.trim();
+    let skip = trimmed.chars().count().saturating_sub(OUTPUT_TAIL_CHARS);
+    trimmed.chars().skip(skip).collect()
+}
+
+/// The fault [`run_reviewer`](RunCtx::run_reviewer) says through [`Deps::log`] when the
+/// GATING spawn `id` (`agent`'s `tier` in `stage`) exits with no verdict line and its review is
+/// re-driven: what happened, that the unit is charged nothing, and the output's tail.
+fn no_verdict_line(stage: &str, tier: &str, agent: &str, id: &str, output: &str) -> String {
+    format!(
+        "stage {stage:?} {tier} {agent:?}: the reviewer exited with no verdict line on spawn \
+         {id:?} - an infrastructure fault on the spawn, not a reject; the review is re-driven \
+         once as a fresh attempt and the unit is charged nothing. Its output ended: {}",
+        output_tail(output)
+    )
+}
+
+/// Construct the LOUD-HALT error the review path returns when a GATING spawn `id` exits with
+/// no verdict line and its review has no re-drive left: a verdict-less result already re-drove
+/// this round's review once, or the round has no retry id left. It carries
+/// [`MISMATCH_MARKER`], so it halts through the same no-lesson arm as
+/// [`SpawnHalt::VerdictChannelMismatch`] - the run stops, the unit is charged no attempt - and
+/// it names the reviewer, the spawn, the output's tail and the recovery.
+fn verdictless_reviewer(stage: &str, tier: &str, agent: &str, id: &str, output: &str) -> Error {
+    Error(format!(
+        "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?}: the reviewer exited with no verdict \
+         line on spawn {id:?} and its review has no re-drive left (a verdict-less result \
+         re-drives the review once). A verdict-less result is an infrastructure fault on the \
+         spawn, not a reject: the run halts and the unit is NOT charged a remediation attempt. A \
+         reviewer ends this way when its session closes while work it started is still running. \
+         Recover by recording the reviewer's verdict for the spawn with `rigger result {id:?} \
+         --supersede <output ending in the verdict line>`, then re-run. Its output ended: {}",
+        output_tail(output)
+    ))
+}
+
+/// The sentinel a runtime verdict-channel-mismatch HALT (spec 18, unit 3) - or a gating
+/// reviewer's second verdict-less result ([`verdictless_reviewer`]) - embeds in its
 /// error so [`run_wave`](RunCtx::run_wave) and the plan-critique gate recognize it through
 /// their own error wrapping and route it through a DEDICATED arm - like
 /// [`DEGENERATE_MARKER`] it uses control characters no real error text carries. The
@@ -7182,7 +7225,12 @@ impl RunCtx<'_> {
         // The round's first retry id is the reviewer's ORIGINAL spawn (its plain `spawn_id` on
         // a stage's first run); each later id is a `~retry{n}` respawn. At most
         // `1 + REVIEWER_RESPAWN_BOUND` spawns per round.
-        for retry in review_retry_window(ordinal) {
+        let window = review_retry_window(ordinal);
+        let last_retry = *window.end();
+        // Whether a gating result of this round already came back with no verdict line: the
+        // first re-drives the review, a second halts (one bounded re-drive, never a loop).
+        let mut verdictless = false;
+        for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
@@ -7298,6 +7346,35 @@ impl RunCtx<'_> {
                         tier,
                         agent_id,
                     ));
+                }
+                // A GATING result with NO verdict line and no emitted verdict is an
+                // INFRASTRUCTURE fault on the spawn, never a reject: a reviewer whose session
+                // closed while work it started was still running (a helper it waits on, its
+                // battery) exits with its narration and no verdict, and folding that as a
+                // reject would charge the unit an attempt it never earned. The SAME re-drive
+                // the error re-park and the degenerate respawn ride: loop to the next retry id
+                // - an in-process respawn on a blocking host, a fresh park on the stepwise one -
+                // charging nothing, and say the fault with the output's tail. A second
+                // verdict-less result (or one with no retry id left) halts loudly instead.
+                if output != ReviewerOutput::Findings && !has_verdict_line(&result.output) {
+                    if verdictless || retry == last_retry {
+                        return Err(verdictless_reviewer(
+                            &st.name,
+                            tier,
+                            agent_id,
+                            &id,
+                            &result.output,
+                        ));
+                    }
+                    (self.deps.log)(&no_verdict_line(
+                        &st.name,
+                        tier,
+                        agent_id,
+                        &id,
+                        &result.output,
+                    ));
+                    verdictless = true;
+                    continue;
                 }
                 return Ok(result);
             }
@@ -23952,6 +24029,181 @@ mod tests {
         assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
+    /// What a gating reviewer prints when it ended its turn to wait on work it started and
+    /// its session closed before that work reported back: prose, no verdict line.
+    const WAITING_NARRATION: &str =
+        "Constraints recheck is clean. I'm waiting on the still-running lane log before the verdict.";
+
+    /// Whether `events` carry a `UnitFailed` or a `UnitEscalated`: a charged attempt.
+    fn charged_an_attempt(events: &[Event]) -> bool {
+        events
+            .iter()
+            .any(|e| e.type_ == ledger::TYPE_UNIT_FAILED || e.type_ == ledger::TYPE_UNIT_ESCALATED)
+    }
+
+    #[test]
+    fn a_verdictless_adjudicator_result_re_drives_the_review_once_and_charges_no_attempt() {
+        // A gating result with NO verdict line (and no emitted verdict) is an infrastructure
+        // fault on the spawn, never a reject: on the blocking host the review is re-driven
+        // in-process under the next deterministic retry id, the unit is charged nothing, the
+        // fault is said through `Deps::log` with the output's tail, and the retry's real
+        // verdict folds normally.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            output_by_spawn_id: HashMap::from([
+                (
+                    spawn_id("u", ROLE_ADJUDICATOR, 0),
+                    WAITING_NARRATION.to_string(),
+                ),
+                (
+                    spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1),
+                    r#"{"verdict":"approve"}"#.to_string(),
+                ),
+            ]),
+            output_by_agent: HashMap::from([("sdet".to_string(), "lens: no blocker".to_string())]),
+            ..Stub::new()
+        };
+        let said = Mutex::new(Vec::<String>::new());
+        let log = |line: &str| said.lock().unwrap().push(line.to_string());
+        let deps = Deps {
+            log: &log,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        run_isolated(&cfg, &deps).expect("the re-driven review's real verdict folds normally");
+
+        assert_eq!(
+            occurrences(&driver.call_order, "judge"),
+            2,
+            "the verdict-less adjudicator is re-driven exactly once"
+        );
+        assert!(driver
+            .spawn_ids()
+            .contains(&spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1)));
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(has_status(&events, "reviewed"), "the retry's approve folds");
+        assert!(
+            !charged_an_attempt(&events),
+            "a verdict-less result charges the unit no attempt"
+        );
+        assert_eq!(occurrences(&driver.call_order, "worker"), 1);
+        let said = said.lock().unwrap();
+        assert!(
+            said.iter()
+                .any(|l| l.contains("exited with no verdict line")
+                    && l.contains(&spawn_id("u", ROLE_ADJUDICATOR, 0))
+                    && l.contains("still-running lane log")),
+            "the fault is said with the spawn id and the output's tail: {said:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_verdictless_adjudicator_result_halts_loudly_and_charges_no_attempt() {
+        // One bounded re-drive, never a silent loop: when the re-driven review ALSO exits with
+        // no verdict line, the run halts loudly (marker stripped, the reviewer and the output's
+        // tail named), the review is not spawned a third time, and the unit is charged nothing.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("sdet".to_string(), "lens: no blocker".to_string()),
+                ("judge".to_string(), WAITING_NARRATION.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let Err(err) = run_isolated(&cfg, &deps) else {
+            panic!("a second verdict-less result must halt the run, never fold as a reject");
+        };
+
+        assert_eq!(
+            occurrences(&driver.call_order, "judge"),
+            2,
+            "the halt fires on the second verdict-less result, not after the whole window"
+        );
+        assert!(err.0.contains("no verdict line"), "{}", err.0);
+        // The verdict-channel-mismatch backstop fires only on the CONJUNCTION (no verdict line
+        // AND an emitted approve): with nothing emitted this is the verdict-less halt, which
+        // re-drove the review first, never the mismatch halt, which never re-drives.
+        assert!(
+            !err.0.contains("emitted an approve-shaped verdict"),
+            "a verdict-less result with no emitted approve is not a mismatch: {}",
+            err.0
+        );
+        assert!(
+            err.0.contains("\"judge\""),
+            "the halt names the reviewer: {}",
+            err.0
+        );
+        assert!(
+            err.0.contains("still-running lane log"),
+            "the halt carries the output's tail: {}",
+            err.0
+        );
+        assert!(
+            !err.0.contains(MISMATCH_MARKER),
+            "the halt marker is stripped before it surfaces: {:?}",
+            err.0
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !charged_an_attempt(&events),
+            "a verdict-less halt charges the unit no attempt"
+        );
+        assert!(!has_status(&events, "reviewed"));
+    }
+
+    #[test]
+    fn a_recorded_verdictless_adjudicator_result_re_parks_the_review_on_the_stepwise_host() {
+        // The same fault on the stepwise host: a recorded verdict-less adjudicator result
+        // re-parks a fresh `~retry1` attempt of the same review instead of folding a reject,
+        // and the retry's recorded verdict then folds normally - no attempt charged.
+        let store = Store::open(":memory:").unwrap();
+        let cfg = degenerate_reviewer_cfg();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store, "");
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: String::new(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+                log: &|_| {},
+            };
+            run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
+        };
+        let record = |id: &str, output: &str| {
+            crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(id, output))
+                .unwrap();
+        };
+        let adj0 = spawn_id("u", ROLE_ADJUDICATOR, 0);
+        let adj_retry1 = spawn_retry_id("u", ROLE_ADJUDICATOR, 0, 1);
+
+        replay_step(&store);
+        record(&spawn_id("u", ROLE_IMPLEMENTER, 0), "the diff");
+        replay_step(&store);
+        record(&spawn_id("u", &lens_role("sdet"), 0), "lens: no blocker");
+        replay_step(&store);
+        record(&adj0, WAITING_NARRATION);
+
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &adj_retry1),
+            "the verdict-less review re-parks a fresh ~retry1 attempt"
+        );
+        assert!(!charged_an_attempt(&events));
+        assert!(!has_status(&events, "reviewed"));
+
+        record(&adj_retry1, r#"{"verdict":"approve"}"#);
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(has_status(&events, "reviewed"), "the retry's approve folds");
+        assert!(!charged_an_attempt(&events));
+    }
+
     #[test]
     fn a_review_stage_error_result_re_parks_a_fresh_attempt_no_charge_then_a_real_verdict_folds() {
         // Spec 51, criterion 1 (REVIEWER ERROR RE-PARK): a REVIEW-stage spawn whose RECORDED
@@ -24336,19 +24588,6 @@ mod tests {
                     json!({"id": "verdict", "verdict": "approve"}),
                 )],
                 "a result-channel reject is a normal reject, not a mismatch halt",
-            );
-        /// The backstop fires on the CONJUNCTION (no verdict line AND an emitted approve). This
-        /// pins the emitted_approve leg in ISOLATION (carry-forward
-        /// sdet-u18-3-emitted-approve-conjunct-untested): a non-degenerate result carrying NO
-        /// verdict line AND emitting NO approve is an ordinary empty verdict - the gate reads no
-        /// approval, so it folds as a reject and remediates, NEVER the hard-error halt. Guards the
-        /// store-sourced backstop from widening to fire on ANY missing verdict line (which would
-        /// misread a genuine empty-verdict reject as a mismatch).
-        a_gating_spawn_with_no_verdict_line_and_no_emitted_approve_is_an_ordinary_reject:
-            assert_ordinary_reject(
-                "I have reviewed the unit and it looks good to me.",
-                Vec::new(),
-                "an empty verdict with no emitted approve is a normal reject, not a halt",
             );
     }
 
@@ -35686,8 +35925,9 @@ mod tests {
     #[test]
     fn unparseable_adjudicator_output_blocks_integration() {
         // Item 2 (fail-closed): an adjudicator whose output has no parseable verdict
-        // does NOT approve - integration is blocked and the unit escalates, even with
-        // no static gates. (Prose, not JSON.)
+        // does NOT approve - integration is blocked even with no static gates. (Prose, not
+        // JSON.) A verdict-less result is an infrastructure fault on the spawn, so the review
+        // is re-driven once and the second verdict-less result halts the run, never approving.
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("adj".into(), agent("adj"));
@@ -35704,15 +35944,22 @@ mod tests {
             output: "the diff looks fine to me, ship it".into(), // no JSON verdict
             ..Stub::new()
         };
-        let (rs, events) = run_logged(&cfg, &driver);
-        assert_eq!(
-            rs.units["review"].status,
-            ledger::Status::Escalated,
-            "an unparseable adjudicator verdict must NOT approve (fail-closed)"
+        let st = Store::open(":memory:").unwrap();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        assert!(
+            run_isolated(&cfg, &deps).is_err(),
+            "an unparseable adjudicator verdict must NOT approve (fail-closed): the run halts"
         );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
         assert!(
             count_of_type(&events, ledger::TYPE_UNIT_INTEGRATED) == 0,
             "an unapproved unit must emit no UnitIntegrated"
+        );
+        assert!(
+            !has_status(&events, "reviewed"),
+            "an unparseable adjudicator verdict folds no approval"
         );
     }
 
