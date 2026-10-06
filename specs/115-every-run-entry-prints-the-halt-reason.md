@@ -64,13 +64,27 @@ line: no line starting with `halted: `, the form `halted_line` returns. The clea
 `tests/cli.rs:6134` gains criterion 1's such assertion on its stdout. `McpSession`
 (`tests/common/mcp.rs:9-96`) is the one stdio session authority; criterion 2 makes its
 `start_with` build through `rigger_command(root, args, &[], root)` (`tests/common/cli.rs:122`), so
-every session carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME`, and adds one NEW
-handshake helper beside it (`initialize`, then `rigger_next` polled until it hands out a spawn,
-answering that spawn's id); nothing is moved. `tests/workflow_driver_resolved_model_periphery.rs`
-is re-expressed over both, its `call`, `call_tool`, `drain_stderr` and piped spawn deleted, its
-assertions unchanged. The helper's first caller is criterion 2's test, which reads stderr from
+every session carries `RIGGER_NO_DASH` and an isolated `XDG_STATE_HOME`. `rigger mcp` reads
+neither variable (`cmd_mcp`, `src/cli/dashboard.rs:814`, reaches neither the registry nor the
+dash), so every existing `McpSession` caller is unchanged and the builder change is a consequence
+of criterion 2's test, not a second mitigation. Criterion 2 adds four `McpSession` methods in
+`tests/common/mcp.rs`, nothing moved: `tool_call(name, arguments)`, the one `tools/call`
+authority, which `peers` calls and whose private copy in
+`tests/compaction_generations_periphery.rs:3530` is deleted, its callers calling the method and
+its assertions unchanged; `initialize()`, once per session; `next_spawn(deadline) ->
+Option<String>`, polling `rigger_next` 20 ms apart until it hands out a spawn id (`Some`) or
+answers `done: true` (`None`); and `fail(why)`, which ends its own child by its handle
+(`Child::kill()`, the no-os-kill gate's sanctioned form), drains its stderr and panics naming
+`why` and that stderr. `finish` is the clean-run exit (stdin closed after the run reports done)
+and `fail` the deadline exit, 15 s, because `run_workflow` waits for a pending spawn and never
+exits on stdin closing (issue #59). `tests/workflow_driver_resolved_model_periphery.rs` is
+re-expressed over `McpSession` and these methods, its `call`, `call_tool`, `drain_stderr` and
+piped spawn deleted, its `events.db` poll miss calling `fail`, its assertions unchanged. Their
+first caller is criterion 2's test, which uses `tool_call` for `rigger_result`, reads stderr from
 `McpSession::finish`'s `Output` and also drives `TWO_STAGE_WORKFLOW` (`tests/cli.rs:4140`, budget
-60) clean, answering each spawn `rigger_next` hands out, asserting the per-line absence.
+60) clean, looping `next_spawn` and answering each id until `None`, asserting the per-line
+absence. A session is for short fixtures whose stderr stays under the 64 KiB pipe buffer, as these
+two runs do; a longer run drains stderr on a thread first (not this spec's).
 
 **DOCUMENT EDITS.** None: no passage in `docs/`, the skills directories and the README says what
 a run entry prints on a halt; the rustdoc naming `rigger step` the stamper stays true.
@@ -93,11 +107,12 @@ shim's end-of-run text after a halted serve.
   `halted: `. This criterion OWNS `halted_line` and `run_cli`'s call; `run_workflow`'s call is
   criterion 2's, NOT this one's.
 - [ ] a test proves THE WORKFLOW DRIVER PRINTS THE HALT REASON: `rigger run --driver workflow` over the budget-one fixture prints `halted: budget exhausted: 1/1 spawns` on stderr when its conductor returns,
-  asserted in `tests/cli.rs` on a `McpSession` with `--base HEAD` through the NEW handshake helper
-  beside it in `tests/common/mcp.rs`, answered with one `rigger_result` for the `*/implementer#0`
-  spawn `rigger_next` hands out, its stderr read from `McpSession::finish`, while a clean
-  two-stage workflow run's stderr holds no line starting with `halted: `. This criterion OWNS
-  `run_workflow`'s call, its stream, `McpSession::start_with`'s builder change, the helper and the
-  periphery test's re-expression over them; `halted_line` is criterion 1's, NOT this one's.
+  asserted in `tests/cli.rs` on a `McpSession` with `--base HEAD` through its NEW `initialize`
+  and `next_spawn` methods in `tests/common/mcp.rs`, answered with one `rigger_result` for the
+  `*/implementer#0` spawn `next_spawn` hands out, its stderr read from `McpSession::finish`, while
+  a clean two-stage workflow run's stderr holds no line starting with `halted: `. This criterion
+  OWNS `run_workflow`'s call, its stream, `McpSession::start_with`'s builder change, the
+  `tool_call`, `initialize`, `next_spawn` and `fail` methods, and the re-expression of the
+  periphery and compaction suites over them; `halted_line` is criterion 1's, NOT this one's.
 - [ ] both feature lanes green (fmt, clippy, test on default and --no-default-features). This
   criterion OWNS only the lanes over the integrated result.
