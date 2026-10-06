@@ -99,7 +99,7 @@ inferred.
 | process cwd | the spawn's worktree | a prompt sentence naming a directory |
 | `--session-id` | a UUID rigger mints and records as `SpawnLaunched` | searching harness files |
 | `--output-format stream-json --input-format stream-json --verbose` | the typed message stream, both directions | blocking on exit, parsing stdout afterwards |
-| `--system-prompt` | the persona | unchanged |
+| `--system-prompt-file` | the persona, written to a file in the spawn's scratch: Linux caps one argument at 131072 bytes, which a full persona can cross | unchanged |
 | `--model`, `--fallback-model` | the attempt's rung, the configured fallback | a self-reported model |
 | `--tools`, `--allowed-tools` | the spawn's tool list | unchanged |
 | `--permission-mode` with `--permission-prompts none` | whatever would prompt is denied and reported in the stream | a silent wait on a prompt nobody sees |

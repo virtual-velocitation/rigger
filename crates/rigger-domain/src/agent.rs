@@ -73,10 +73,10 @@ pub struct SpawnOpts {
     /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
     /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
     /// is the SINGLE place that sets it (from `agent_def.prompt`), so BOTH drivers
-    /// consume the same persona source and cannot diverge: the cli driver passes it as
-    /// `--system-prompt`, the workflow driver carries it to the shim which passes it to
-    /// the Agent SDK `query()` as `options.systemPrompt`. Empty when the agent declared
-    /// no body.
+    /// consume the same persona source and cannot diverge: the cli driver writes it to the
+    /// file `--system-prompt-file` names, the workflow driver carries it to the shim which
+    /// passes it to the Agent SDK `query()` as `options.systemPrompt`. Empty when the
+    /// agent declared no body.
     pub system_prompt: String,
     /// The working directory the agent runs in: an isolated worktree, or "" for
     /// the current dir.
