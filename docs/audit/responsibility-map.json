@@ -7937,14 +7937,6 @@
   },
   {
     "file": "src/cli/mod.rs",
-    "name": "reap_then_remove_dir",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7c31804a3b4f3626"
-  },
-  {
-    "file": "src/cli/mod.rs",
     "name": "reap_then_remove_worktree",
     "is_test": false,
     "proposed_module": null,
