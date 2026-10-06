@@ -261,7 +261,7 @@ measurable and cannot contend with appends because it never takes the lock.
 Compaction is structural work: only the mount owner does it, under the machine-scope
 `maintenance.lock`, one project at a time. Three operations, each a whole-segment act:
 
-- **Archive** (spec 107): a finished run's segments are written as one blob at
+- **Archive** (spec 114): a finished run's segments are written as one blob at
   `refs/rigger/archive/<run-id>`, a `RunArchived` record is appended, and the segments are
   replaced by their KNOWLEDGE RESIDUE, a new sealed segment holding only the run's knowledge
   records at their original positions. Positions are never renumbered.

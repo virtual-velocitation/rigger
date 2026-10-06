@@ -6217,6 +6217,12 @@ stages:
          ENOENT spawning the adversary in the now-deleted worktree instead; stderr: {err}\n\
          stdout: {out}"
     );
+    // Spec 115, criterion 1: a clean run carries no halt reason, so no halt line prints.
+    assert_eq!(
+        lines_starting_with(&out, "halted: "),
+        Vec::<&str>::new(),
+        "a clean run must print no halt line; stdout: {out}"
+    );
 
     // Non-vacuity: the lens's own fake-agent process really did delete the worktree
     // wholesale, self-reported from a location outside the worktree the deletion itself
@@ -7402,6 +7408,333 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
         "a budget halt that is also the budget's final tenth must stamp both run-scoped \
          attention entries, in order, on the real binary's own stdout; got: {line:?}"
     );
+}
+
+/// Spec 115, criterion 1: the blocking `rigger run` prints the conductor's halt reason. Budget 1
+/// with two independent units: one implementer spawn is admitted and answered by the fake agent,
+/// the other is refused, so the run ends incomplete with the budget breaker's reason, printed as
+/// `halted: <reason>` on stdout right after the run state. The process still exits 0: a halt is
+/// a run outcome, as it is for `rigger step`.
+#[cfg(unix)]
+#[test]
+fn run_prints_the_budget_halt_reason_after_the_run_state() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    assert!(
+        ok,
+        "a budget-halted run still exits 0; stderr: {err}\nstdout: {out}"
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    let state_end = lines
+        .iter()
+        .position(|l| *l == "incomplete: not every unit integrated")
+        .unwrap_or_else(|| panic!("the run state must end incomplete; stdout: {out}"));
+    assert_eq!(
+        lines.get(state_end + 1).copied(),
+        Some("halted: budget exhausted: 1/1 spawns"),
+        "the halt reason must print right after the run state; stdout: {out}"
+    );
+}
+
+/// Spec 115, criterion 2: `rigger run --driver workflow` prints the conductor's halt reason on
+/// stderr (stdout is the MCP transport). Budget 1 with two independent units: the one admitted
+/// implementer spawn is handed out and answered, the other is refused and never handed out, so
+/// `rigger_next` answers done and the conductor's `halted: <reason>` line is on the session's
+/// stderr.
+#[test]
+fn run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
+    mcp.initialize();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let Some(spawn) = mcp.next_spawn(deadline) else {
+        mcp.fail("the run reported done before its one admitted spawn was handed out");
+    };
+    if !spawn.ends_with("/implementer#0") {
+        mcp.fail(&format!(
+            "the one handed-out spawn must be an implementer#0; got {spawn:?}"
+        ));
+    }
+    let answer = mcp.tool_call(
+        "rigger_result",
+        serde_json::json!({"id": spawn, "output": "did the unit"}),
+    );
+    if answer.get("result").is_none() {
+        mcp.fail(&format!("rigger_result must succeed; got {answer}"));
+    }
+    if let Some(second) = mcp.next_spawn(deadline) {
+        mcp.fail(&format!(
+            "the refused second unit's spawn must never be handed out; got {second:?}"
+        ));
+    }
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        lines_starting_with(&err, "halted: "),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "the workflow driver prints the budget halt reason once on stderr; stderr: {err}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "rigger dash"),
+        Vec::<&str>::new(),
+        "a session carrying RIGGER_NO_DASH starts no dash; stderr: {err}"
+    );
+}
+
+/// Spec 115, criterion 2, the clean half: a two-stage workflow run whose every handed-out spawn
+/// is answered converges, and its stderr holds no `halted: ` line.
+#[test]
+fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
+    let answered = answer_every_spawn(&mut mcp);
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        answered,
+        ["a/implementer#0", "b/implementer#0"],
+        "both units' implementer spawns are handed out and answered; stderr: {err}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "halted: "),
+        Vec::<&str>::new(),
+        "a clean workflow run prints no halted line; stderr: {err}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "rigger dash"),
+        Vec::<&str>::new(),
+        "a session carrying RIGGER_NO_DASH starts no dash; stderr: {err}"
+    );
+}
+
+/// Spec 115, criterion 2, the other entry over `run_workflow`: given the budget-one fixture,
+/// when the shim's entry `rigger serve` runs it and the one admitted implementer spawn is
+/// answered, then `rigger_next` answers done and the conductor's halt reason is on the serve
+/// session's stderr exactly once.
+#[test]
+fn rigger_serve_prints_the_budget_halt_reason_on_stderr_when_its_conductor_returns() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let mut mcp = McpSession::start_with(root, &["serve", "--base", "HEAD"]);
+    let answered = answer_every_spawn(&mut mcp);
+    let out = mcp.finish();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let [spawn] = answered.as_slice() else {
+        panic!("exactly one spawn is admitted and handed out; got {answered:?}; stderr: {err}");
+    };
+    assert!(
+        spawn.ends_with("/implementer#0"),
+        "the one handed-out spawn is an implementer#0; got {spawn:?}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "halted: "),
+        ["halted: budget exhausted: 1/1 spawns"],
+        "rigger serve prints the budget halt reason once on stderr; stderr: {err}"
+    );
+}
+
+/// Run `mcp`'s workflow session to its end: the `initialize` handshake, then every spawn
+/// `rigger_next` hands out answered with one successful `rigger_result` until it answers done
+/// (a failed answer or a missed 15 s deadline [`McpSession::fail`]s the session); returns the
+/// answered spawn ids, sorted.
+fn answer_every_spawn(mcp: &mut McpSession) -> Vec<String> {
+    mcp.initialize();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut answered = Vec::new();
+    while let Some(spawn) = mcp.next_spawn(deadline) {
+        let answer = mcp.tool_call(
+            "rigger_result",
+            serde_json::json!({"id": spawn, "output": "did the unit"}),
+        );
+        if answer.get("result").is_none() {
+            mcp.fail(&format!(
+                "rigger_result must succeed for {spawn}; got {answer}"
+            ));
+        }
+        answered.push(spawn);
+    }
+    answered.sort();
+    answered
+}
+
+/// Every line of `text` starting with `prefix`, in order.
+fn lines_starting_with<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
+    text.lines().filter(|l| l.starts_with(prefix)).collect()
+}
+
+/// What one run entry left behind about its always-on dash: whether it exited 0, every stderr
+/// line the dash start prints (`rigger dash: serving ...` or the could-not-start notice), and the
+/// `.rigger/` breadcrumbs a started dash writes (`dash.url`) and an attempted one stamps
+/// (`dash.attempt`), `None` when absent.
+struct DashTrace {
+    ok: bool,
+    stderr: String,
+    dash_lines: Vec<String>,
+    url: Option<String>,
+    attempt: Option<String>,
+}
+
+/// The `rigger <args>` command in `root` an entry test runs, the fake agent's `PATH` when
+/// `path_env` is given, with the environment dash opt-out `RIGGER_NO_DASH` kept when
+/// `env_opt_out` and removed otherwise; `state` must outlive the process.
+fn dash_entry_command(
+    root: &Path,
+    args: &[&str],
+    path_env: Option<&str>,
+    env_opt_out: bool,
+    state: &Path,
+) -> Command {
+    let envs: Vec<(&str, &str)> = path_env.map(|p| ("PATH", p)).into_iter().collect();
+    let mut cmd = common::cli::rigger_command(root, args, &envs, state);
+    if !env_opt_out {
+        cmd.env_remove("RIGGER_NO_DASH");
+    }
+    cmd
+}
+
+/// The [`DashTrace`] of the finished entry `out` that ran in `root`.
+fn dash_trace(root: &Path, out: &std::process::Output) -> DashTrace {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let dash_lines = stderr
+        .lines()
+        .filter(|l| {
+            l.starts_with("rigger dash")
+                || l.starts_with("rigger: could not auto-start the dashboard")
+        })
+        .map(str::to_string)
+        .collect();
+    let read = |name: &str| std::fs::read_to_string(root.join(".rigger").join(name)).ok();
+    DashTrace {
+        ok: out.status.success(),
+        dash_lines,
+        url: read("dash.url"),
+        attempt: read("dash.attempt"),
+        stderr,
+    }
+}
+
+/// The entry ran past its dash start (it exited 0) and started and attempted no dash at all.
+fn assert_no_dash(trace: &DashTrace, entry: &str) {
+    let err = &trace.stderr;
+    assert!(trace.ok, "{entry} must exit 0; stderr: {err}");
+    assert_eq!(
+        trace.dash_lines,
+        Vec::<String>::new(),
+        "{entry} under a dash opt-out prints no dash line; stderr: {err}"
+    );
+    assert_eq!(
+        trace.url, None,
+        "{entry} under a dash opt-out records no dash.url"
+    );
+    assert_eq!(
+        trace.attempt, None,
+        "{entry} under a dash opt-out stamps no dash.attempt"
+    );
+}
+
+/// The entry exited 0, started exactly one dash, printed its URL once on stderr, recorded that
+/// same URL in `dash.url` and stamped a non-empty run id in `dash.attempt`. The started dash's
+/// own `rigger dash: serving on ...` line shares the entry's stderr, so only the entry's
+/// run-start line is counted here.
+fn assert_one_dash(trace: &DashTrace, entry: &str) {
+    let err = &trace.stderr;
+    assert!(trace.ok, "{entry} must exit 0; stderr: {err}");
+    let urls: Vec<&str> = trace
+        .dash_lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("rigger dash: serving this run at "))
+        .collect();
+    let [url] = urls.as_slice() else {
+        panic!("{entry} prints exactly one run-start dash line; stderr: {err}");
+    };
+    let url = *url;
+    assert!(
+        url.starts_with("http://127.0.0.1:"),
+        "{entry}'s dash serves on loopback; got {url:?}"
+    );
+    assert_eq!(
+        trace.url.as_deref().map(str::trim),
+        Some(url),
+        "{entry} records the URL it printed in dash.url"
+    );
+    let attempt = trace.attempt.as_deref().unwrap_or_default();
+    assert_ne!(
+        attempt.trim(),
+        "",
+        "{entry} stamps the run id it attempted a dash for in dash.attempt"
+    );
+}
+
+/// Spec 115 (the dash opt-out every McpSession relies on): given a workflow whose config says
+/// `dash: off` and NO environment opt-out, when the operator drives the workflow driver through
+/// either entry (`rigger serve`, `rigger run --driver workflow`) to the end of its run, then no
+/// dash starts and no dash breadcrumb is written - the config opt-out alone suffices, as on the
+/// step path.
+#[test]
+fn the_workflow_driver_entries_honor_the_config_dash_off_opt_out() {
+    for args in [
+        &["serve", "--base", "HEAD"][..],
+        &["run", "--driver", "workflow", "--base", "HEAD"][..],
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+        append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
+        let mut mcp = McpSession::from_command(dash_entry_command(root, args, None, false, root));
+        let answered = answer_every_spawn(&mut mcp);
+        let out = mcp.finish();
+        let entry = format!("rigger {}", args.join(" "));
+        assert_eq!(
+            answered,
+            ["a/implementer#0", "b/implementer#0"],
+            "{entry} runs both units to the end"
+        );
+        assert_no_dash(&dash_trace(root, &out), &entry);
+    }
+}
+
+/// Spec 115 (the dash opt-out on the blocking entry): given a workflow the fake agent completes,
+/// when the operator runs `rigger run` with `RIGGER_NO_DASH` set, or with `dash: off` and no
+/// environment opt-out, then no dash starts; with neither, exactly one does.
+#[cfg(unix)]
+#[test]
+fn rigger_run_honors_each_dash_opt_out_and_starts_its_dash_without_one() {
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+    let run = |dash_off: bool, env_opt_out: bool| {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+        if dash_off {
+            append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
+        }
+        let out = dash_entry_command(root, &["run"], Some(&path_env), env_opt_out, root)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("failed to spawn the rigger binary");
+        dash_trace(root, &out)
+    };
+    assert_no_dash(&run(false, true), "rigger run with RIGGER_NO_DASH");
+    assert_no_dash(&run(true, false), "rigger run with dash: off");
+    assert_one_dash(&run(false, false), "rigger run with no opt-out");
 }
 
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
@@ -15352,6 +15685,9 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     let mut child = common::rigger_courier()
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
+        // The run entry honors the RIGGER_NO_DASH opt-out, so an ambient headless/CI opt-out is
+        // removed: this test proves the dash comes up when nothing opts out.
+        .env_remove("RIGGER_NO_DASH")
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
         // tree so this served run registers under `root/rigger`, never the operator's real
         // ~/.local/state/rigger/instances.

@@ -880,9 +880,9 @@
     "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store's current run, the on-disk run stream) and take the id from it."
   },
   {
-    "id": "dup-3f117fd28c02",
+    "id": "dup-4f6fb68b58e5",
     "disposition": "not-a-duplicate",
-    "reason": "`McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor; six call sites open a plain `rigger mcp` session through it."
+    "reason": "`McpSession::from_command` is the one session constructor; `start_with` is a one-line call to it over the isolated `rigger_command`, and `start` a one-line default-arguments call to `start_with`; seven call sites open a plain `rigger mcp` session through `start`."
   },
   {
     "id": "dup-e3a49d3d408e",
