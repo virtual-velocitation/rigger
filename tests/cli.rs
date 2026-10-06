@@ -6217,6 +6217,11 @@ stages:
          ENOENT spawning the adversary in the now-deleted worktree instead; stderr: {err}\n\
          stdout: {out}"
     );
+    // Spec 115, criterion 1: a clean run carries no halt reason, so no halt line prints.
+    assert!(
+        !out.lines().any(|l| l.starts_with("halted: ")),
+        "a clean run must print no halt line; stdout: {out}"
+    );
 
     // Non-vacuity: the lens's own fake-agent process really did delete the worktree
     // wholesale, self-reported from a location outside the worktree the deletion itself
@@ -7401,6 +7406,41 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
         ),
         "a budget halt that is also the budget's final tenth must stamp both run-scoped \
          attention entries, in order, on the real binary's own stdout; got: {line:?}"
+    );
+}
+
+/// Spec 115, criterion 1: the blocking `rigger run` prints the conductor's halt reason. Budget 1
+/// with two independent units: one implementer spawn is admitted and answered by the fake agent,
+/// the other is refused, so the run ends incomplete with the budget breaker's reason, printed as
+/// `halted: <reason>` on stdout right after the run state. The process still exits 0: a halt is
+/// a run outcome, as it is for `rigger step`.
+#[cfg(unix)]
+#[test]
+fn run_prints_the_budget_halt_reason_after_the_run_state() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
+    assert!(
+        ok,
+        "a budget-halted run still exits 0; stderr: {err}\nstdout: {out}"
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    let state_end = lines
+        .iter()
+        .position(|l| *l == "incomplete: not every unit integrated")
+        .unwrap_or_else(|| panic!("the run state must end incomplete; stdout: {out}"));
+    assert_eq!(
+        lines.get(state_end + 1).copied(),
+        Some("halted: budget exhausted: 1/1 spawns"),
+        "the halt reason must print right after the run state; stdout: {out}"
     );
 }
 
