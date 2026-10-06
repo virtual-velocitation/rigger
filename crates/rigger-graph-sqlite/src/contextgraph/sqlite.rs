@@ -575,12 +575,11 @@ impl Projector {
         }
     }
 
-    /// Fold `events` in ONE transaction, rolled back whole on any failure.
-    fn fold_batch(&self, events: &[Event]) -> Result<(), Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        fold_new(&tx, events, &self.project)?;
-        tx.commit().map_err(be)
+    /// Run `body` in ONE transaction on this file's connection, held under its lock for the
+    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> commit frame,
+    /// taken by each method that writes in a transaction. The lock is released when this returns.
+    fn transact<T>(&self, body: impl FnOnce(&Transaction) -> Result<T, Error>) -> Result<T, Error> {
+        in_transaction(&mut self.conn.lock().unwrap(), body)
     }
 
     /// Run `fold` under the two guards every fold into this file keeps. It refuses before
@@ -612,16 +611,6 @@ impl Projector {
              rebuilds it",
             lost.0
         )))
-    }
-
-    /// Fold the ledger entry `entry` with its batch ([`fold_entry`]) in ONE transaction, rolled
-    /// back whole on any failure.
-    fn fold_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        let outcome = fold_entry(&tx, entry, &self.project, batch)?;
-        tx.commit().map_err(be)?;
-        Ok(outcome)
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -698,11 +687,7 @@ impl Projector {
         node_ids: &[String],
         superseded_before: Option<i64>,
     ) -> Result<PruneStats, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        let stats = prune_in(&tx, &self.project, node_ids, superseded_before)?;
-        tx.commit().map_err(be)?;
-        Ok(stats)
+        self.transact(|tx| prune_in(tx, &self.project, node_ids, superseded_before))
     }
 
     /// A read-only PREVIEW of what [`prune`] would remove (spec 68, "the reset surface"): the
@@ -821,23 +806,20 @@ impl Projector {
     /// never collides. A no-op returning 0 when nothing is tagged `from`, so a re-open after the
     /// migration re-keys nothing (idempotent, mirroring `rename_stream_prefix`).
     pub fn migrate_project(&self, from: &str, to: &str) -> Result<usize, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        // Edges and nodes re-key in the same transaction so a crash never leaves an edge under
-        // the old scope while its endpoint node moved (or the reverse) on a shared backend.
-        tx.execute(
-            "UPDATE edges SET project = ?2 WHERE project = ?1",
-            params![from, to],
-        )
-        .map_err(be)?;
-        let moved = tx
-            .execute(
-                "UPDATE nodes SET project = ?2 WHERE project = ?1",
+        self.transact(|tx| {
+            // Edges and nodes re-key in the same transaction so a crash never leaves an edge under
+            // the old scope while its endpoint node moved (or the reverse) on a shared backend.
+            tx.execute(
+                "UPDATE edges SET project = ?2 WHERE project = ?1",
                 params![from, to],
             )
             .map_err(be)?;
-        tx.commit().map_err(be)?;
-        Ok(moved)
+            tx.execute(
+                "UPDATE nodes SET project = ?2 WHERE project = ?1",
+                params![from, to],
+            )
+            .map_err(be)
+        })
     }
 
     /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
@@ -1243,6 +1225,19 @@ fn prune_in(
     })
 }
 
+/// Run `body` in ONE transaction on `conn` and commit it: the one transaction -> body -> commit
+/// frame of this file. A `body` that fails, or a commit that does, leaves nothing written - the
+/// transaction rolls back whole as it drops.
+fn in_transaction<T>(
+    conn: &mut Connection,
+    body: impl FnOnce(&Transaction) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let tx = conn.transaction().map_err(be)?;
+    let answer = body(&tx)?;
+    tx.commit().map_err(be)?;
+    Ok(answer)
+}
+
 /// Apply to the pruned copy behind `conn` the run-closure prune `rigger reset --runs` applies
 /// (spec 21, spec 101): the drop set and the superseded-edge boundary derived, through the one
 /// rule ([`rigger_domain::run::superseded_graph_nodes`], [`rigger_domain::run::superseded_edge_boundary`]),
@@ -1252,33 +1247,34 @@ fn prune_in(
 /// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
 /// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
-    let tx = conn.transaction().map_err(be)?;
-    let gathered = tx
-        .prepare(
-            "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
+    in_transaction(conn, |tx| {
+        let gathered = tx
+            .prepare(
+                "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
+            )
+            .map_err(be)?
+            .query_map([], |r| {
+                let mut e = Event::new(&r.get::<_, String>(1)?, r.get(2)?);
+                e.position = r.get::<_, i64>(0)? as Position;
+                e.valid_from = from_nanos(r.get(3)?);
+                Ok(e)
+            })
+            .map_err(be)?
+            .collect::<Result<Vec<Event>, _>>()
+            .map_err(be)?;
+        let pruned = prune_in(
+            tx,
+            project,
+            &rigger_domain::run::superseded_graph_nodes(&gathered),
+            rigger_domain::run::superseded_edge_boundary(&gathered),
+        )?;
+        tx.execute(
+            "UPDATE rebuild_cursor SET pruned_nodes = ?1, reclaimed_edges = ?2",
+            params![pruned.nodes as i64, pruned.superseded_edges as i64],
         )
-        .map_err(be)?
-        .query_map([], |r| {
-            let mut e = Event::new(&r.get::<_, String>(1)?, r.get(2)?);
-            e.position = r.get::<_, i64>(0)? as Position;
-            e.valid_from = from_nanos(r.get(3)?);
-            Ok(e)
-        })
-        .map_err(be)?
-        .collect::<Result<Vec<Event>, _>>()
         .map_err(be)?;
-    let pruned = prune_in(
-        &tx,
-        project,
-        &rigger_domain::run::superseded_graph_nodes(&gathered),
-        rigger_domain::run::superseded_edge_boundary(&gathered),
-    )?;
-    tx.execute(
-        "UPDATE rebuild_cursor SET pruned_nodes = ?1, reclaimed_edges = ?2",
-        params![pruned.nodes as i64, pruned.superseded_edges as i64],
-    )
-    .map_err(be)?;
-    tx.commit().map_err(be)
+        Ok(())
+    })
 }
 
 /// The private copy a [`Projector::rebuild`] of the graph file at `path` prunes and swaps in: it
@@ -1390,33 +1386,34 @@ fn fold_source(
     let mut folded = 0;
     let mut passed_over = 0;
     source(start, &mut |events, head| {
-        let tx = conn.transaction().map_err(be)?;
-        for e in events {
-            tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-            if let Err(failed) = fold_new(&tx, std::slice::from_ref(e), project) {
-                if super::check_fold_payload(&e.type_, &e.data).is_ok() {
-                    return Err(failed);
+        let through = in_transaction(conn, |tx| {
+            for e in events {
+                tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
+                if let Err(failed) = fold_new(tx, std::slice::from_ref(e), project) {
+                    if super::check_fold_payload(&e.type_, &e.data).is_ok() {
+                        return Err(failed);
+                    }
+                    tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
+                    record_applied(tx, e.position)?;
+                    passed_over += 1;
                 }
-                tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
-                record_applied(&tx, e.position)?;
-                passed_over += 1;
+                tx.execute_batch("RELEASE fold_event").map_err(be)?;
+                if gather_run_closure
+                    && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
+                {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
+                    )
+                    .map_err(be)?;
+                }
             }
-            tx.execute_batch("RELEASE fold_event").map_err(be)?;
-            if gather_run_closure
-                && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
-            {
-                tx.execute(
-                    "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
-                )
+            let through = events.last().map_or(start, |e| e.position);
+            tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
                 .map_err(be)?;
-            }
-        }
-        let through = events.last().map_or(start, |e| e.position);
-        tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
-            .map_err(be)?;
-        tx.commit().map_err(be)?;
+            Ok(through)
+        })?;
         folded += events.len();
         progress(RebuildProgress {
             start,
@@ -1650,7 +1647,7 @@ impl Projection for Projector {
     /// It folds under the two guards of [`Projector::guarded`]: refused on a file that owes its
     /// rebuild, and a batch that fails to fold marks the file owed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        self.guarded(|| self.fold_batch(events))
+        self.guarded(|| self.transact(|tx| fold_new(tx, events, &self.project)))
     }
 
     /// Fold `entry` with its batch in ONE transaction ([`fold_entry`]), under the same two guards
@@ -1659,7 +1656,7 @@ impl Projection for Projector {
     /// whose payload does not parse, a batch function that fails, a batch event the fold rejects
     /// - rolls back whole, its `applied` row included, and marks the file owed.
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
-        self.guarded(|| self.fold_generation(entry, batch))
+        self.guarded(|| self.transact(|tx| fold_entry(tx, entry, &self.project, batch)))
     }
 
     /// A plain read of the `generations` table ([`current_generation`]): it consults no owed
