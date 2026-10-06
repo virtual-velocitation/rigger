@@ -68,17 +68,21 @@ pub use crate::run::STREAM;
 /// complete, just never more than MAX_CONCURRENCY at once.
 pub const MAX_CONCURRENCY: usize = 4;
 
-/// Gate-autonomy ratchet events: a gate's trust moving up or down.
-pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
-pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
-/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8).
-pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
+/// Gate-autonomy ratchet events: a gate's trust moving up or down. The strings live in the
+/// ledger as the single source and these are re-exports.
+pub const TYPE_GATE_PROMOTED: &str = ledger::TYPE_GATE_PROMOTED;
+pub const TYPE_GATE_DEMOTED: &str = ledger::TYPE_GATE_DEMOTED;
+/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8). A re-export of
+/// `ledger::TYPE_SCOPE_CREEP`, the single source of the string.
+pub const TYPE_SCOPE_CREEP: &str = ledger::TYPE_SCOPE_CREEP;
 pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;
 /// The run is halting because the plan left a spec criterion uncovered - the
-/// coverage gap is a spec defect, not something to silently deviate around (§4.4).
-pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
-/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4).
-pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
+/// coverage gap is a spec defect, not something to silently deviate around (§4.4). A re-export
+/// of `ledger::TYPE_SPEC_DEFECT`, the single source of the string.
+pub const TYPE_SPEC_DEFECT: &str = ledger::TYPE_SPEC_DEFECT;
+/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4). A re-export
+/// of `ledger::TYPE_TASK_ABORTED`, the single source of the string.
+pub const TYPE_TASK_ABORTED: &str = ledger::TYPE_TASK_ABORTED;
 /// A Manual-autonomy gate pauses its unit awaiting human review (§4.3). The ledger folds
 /// it into `RunState::manual_review` (the action-needed inbox), so the string lives there
 /// as the single source and this is a re-export. Kept in sync with

@@ -330,14 +330,29 @@ fn a_string_literal_declares_its_type_and_an_alias_declares_none() {
     );
 }
 
-#[test]
-#[should_panic(expected = "neither a string literal nor a TYPE_ alias")]
-fn a_right_side_that_is_neither_a_literal_nor_an_alias_fails_the_scan() {
-    declared_type("const TYPE_X: &str = concat!(\"a\", \"b\");");
+/// The message `declared_type` fails the scan with on `statement`.
+fn scan_failure(statement: &str) -> String {
+    let failure = std::panic::catch_unwind(|| declared_type(statement))
+        .expect_err("the scan classifies the statement instead of failing");
+    failure
+        .downcast_ref::<String>()
+        .cloned()
+        .expect("the scan fails with a formatted message")
 }
 
 #[test]
-#[should_panic(expected = "neither a string literal nor a TYPE_ alias")]
-fn an_alias_of_a_constant_not_named_type_fails_the_scan() {
-    declared_type("const TYPE_X: &str = other::NAME;");
+fn a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it() {
+    for statement in [
+        "const TYPE_X: &str = concat!(\"a\", \"b\");",
+        "const TYPE_X: &str = other::NAME;",
+        "const TYPE_X: &str = \"Open;",
+        "const TYPE_X: &str",
+    ] {
+        assert_eq!(
+            scan_failure(statement),
+            format!("`{statement}`: the right side is neither a string literal nor a TYPE_ alias"),
+            "a macro call, an alias of a constant not named TYPE_, an unclosed literal and a \
+             statement with no right side each fail the scan"
+        );
+    }
 }

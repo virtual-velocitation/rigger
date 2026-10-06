@@ -37,7 +37,8 @@ that feeds that injection:
   project hit are "the agent did not know the governing rule/intent" failures.
 
 ### Non-goals / anti-fixes
-- Do NOT prune the event log — it is the source of truth (§2.1).
+- Do NOT prune KNOWLEDGE from the event log - the log is the source of truth for knowledge and
+  the tree for structure (§2.1).
 - Do NOT scope grounding to the active run by default — cross-run memory is deliberate;
   the fix is expiry + consolidation + provenance, not amnesia.
 - Do NOT re-add a vector/embedding grounder to "fix" natural-language recall - measurement retired it as zero marginal recall over the graph's own structural retrieval (§2.5).
@@ -47,13 +48,32 @@ that feeds that injection:
 
 ## 2. Load-bearing decisions — invariants the design must carry
 
-### 2.1 The event log is the source of truth; the graph is a rebuildable projection
-Every context-management operation — expiry, dedup, consolidation, KG folding — mutates the
-**graph/projection only**, never the event log. `reset --runs` already states this ("the
-event log is untouched"). The graph must stay rebuildable from the log by an idempotent
-`apply`, and supersession invalidates (sets `valid_to`), never deletes. This is what lets a
-corrupted or pruned graph be rebuilt, and it is why a mutable `graph.json`-on-disk +
-git-union-merge storage model is rejected.
+### 2.1 The log is the source of truth for knowledge and the tree for structure; the graph is a rebuildable projection
+Every context-management operation - expiry, dedup, consolidation, KG folding - mutates the
+**graph/projection only**, never the knowledge the event log holds. `reset --runs` already
+states this ("the event log is untouched"). The log is the source of truth for KNOWLEDGE: what
+the project decided, learned and did. The tree is the source of truth for STRUCTURE: the code
+entities, document concepts and links an ingest extracts from the project's files, of which the
+log keeps one ledger entry per ingested file generation (`GenerationIngested`: the file, its
+generation and the blob it was extracted from) and no extracted event. The graph must stay
+rebuildable from the log and the tree, as THIS binary extracts it, by an idempotent fold, and
+supersession invalidates (sets `valid_to`), never deletes. This is what lets a corrupted or
+pruned graph be rebuilt, and it is why a mutable `graph.json`-on-disk + git-union-merge storage
+model is rejected.
+
+Event types fall in three classes, decided by type in one table (`retention`): DERIVED, the
+derived index the tree re-derives; EPISODIC, a run's mechanics, which no cross-run fold reads
+and whose fold changes nothing in the graph; and KNOWLEDGE, every other type, the ledger entry
+among them.
+
+Why the derived index is not knowledge: a file's extracted structure is a function of its bytes
+and of the extractor, so a log that records every extracted batch stores what the tree already
+holds, once per generation of every file, and that volume buries the knowledge every fold
+reads. The ledger entry keeps the one thing the tree cannot answer by itself - which generation
+of which file was perceived, and when - and a rebuild re-extracts the rest. A generation is the
+hash of what this binary extracts, so a rebuild reproduces an entry only while the extractor
+that recorded it is the one rebuilding; after a change of extractor the derived layer returns
+through the next ingest.
 
 ### 2.2 Project-scoping is an invariant — enforced, not incidental
 The event store is namespaced by project identity (`proj-<identity>-`, `eventstore/namespace.rs`):
@@ -245,10 +265,12 @@ mutable side artifact (§2.1).
                           AGENT PROMPT  (bounded, fact-complete, design-intent-aware)
 ```
 
-Because it is a projection, the whole graph — code structure included — is **rebuildable from
-the log**, and re-extraction after a file changes SUPERSEDES the old entity's edges rather than
-overwriting them. That is strictly stronger than an overwrite-and-git-merge `graph.json` on
-disk, and it is why rigger builds the data model natively rather than adopting that storage (§2.5).
+Because it is a projection, the whole graph - code structure included - is **rebuildable from
+the log and the tree**: the log replays the knowledge and names each file generation an ingest
+perceived, and the tree re-derives that generation's structure (§2.1). Re-extraction after a
+file changes SUPERSEDES the old entity's edges rather than overwriting them. That is strictly
+stronger than an overwrite-and-git-merge `graph.json` on disk, and it is why rigger builds the
+data model natively rather than adopting that storage (§2.5).
 
 ### 6.4 Why bi-temporal matters — the graph knows what it knew, when
 
