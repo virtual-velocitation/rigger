@@ -7480,11 +7480,14 @@ fn run_workflow_prints_the_budget_halt_reason_on_stderr_when_its_conductor_retur
     let out = mcp.finish();
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
-        err.lines()
-            .filter(|l| l.starts_with("halted: "))
-            .collect::<Vec<_>>(),
+        lines_starting_with(&err, "halted: "),
         ["halted: budget exhausted: 1/1 spawns"],
         "the workflow driver prints the budget halt reason once on stderr; stderr: {err}"
+    );
+    assert_eq!(
+        lines_starting_with(&err, "rigger dash"),
+        Vec::<&str>::new(),
+        "a session carrying RIGGER_NO_DASH starts no dash; stderr: {err}"
     );
 }
 
@@ -7520,12 +7523,20 @@ fn a_clean_run_workflow_prints_no_halted_line_on_stderr() {
         "both units' implementer spawns are handed out and answered; stderr: {err}"
     );
     assert_eq!(
-        err.lines()
-            .filter(|l| l.starts_with("halted: "))
-            .collect::<Vec<_>>(),
+        lines_starting_with(&err, "halted: "),
         Vec::<&str>::new(),
         "a clean workflow run prints no halted line; stderr: {err}"
     );
+    assert_eq!(
+        lines_starting_with(&err, "rigger dash"),
+        Vec::<&str>::new(),
+        "a session carrying RIGGER_NO_DASH starts no dash; stderr: {err}"
+    );
+}
+
+/// Every line of `text` starting with `prefix`, in order.
+fn lines_starting_with<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
+    text.lines().filter(|l| l.starts_with(prefix)).collect()
 }
 
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - PROVEN
