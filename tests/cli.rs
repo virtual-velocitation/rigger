@@ -6218,8 +6218,9 @@ stages:
          stdout: {out}"
     );
     // Spec 115, criterion 1: a clean run carries no halt reason, so no halt line prints.
-    assert!(
-        !out.lines().any(|l| l.starts_with("halted: ")),
+    assert_eq!(
+        lines_starting_with(&out, "halted: "),
+        Vec::<&str>::new(),
         "a clean run must print no halt line; stdout: {out}"
     );
 
@@ -15657,6 +15658,9 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     let mut child = common::rigger_courier()
         .args(["serve", "--base", "HEAD"])
         .current_dir(root)
+        // The run entry honors the RIGGER_NO_DASH opt-out, so an ambient headless/CI opt-out is
+        // removed: this test proves the dash comes up when nothing opts out.
+        .env_remove("RIGGER_NO_DASH")
         // Redirect the machine-global registry (spec 50, criterion 2) into the test's own temp
         // tree so this served run registers under `root/rigger`, never the operator's real
         // ~/.local/state/rigger/instances.
