@@ -356,6 +356,49 @@ mod dedup_tests {
         );
     }
 
+    /// The type list decides which rows the reference reads (spec 107): under the perception types
+    /// a ledger entry is a recording like a derived row, so an identity's latest recording is its
+    /// entry; under the derived types the entry is passed over and the derived row before it
+    /// stands; and under no type nothing is a recording.
+    #[test]
+    fn the_reference_reads_only_the_types_it_is_handed() {
+        use crate::ingest::{project_scoped_latest_generations, DERIVED_INDEX_TYPES};
+        use crate::retention::{PERCEPTION_TYPES, TYPE_GENERATION_INGESTED};
+        use std::collections::HashMap;
+
+        let stream = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_GENERATION_INGESTED, "gc/src/a.rs@h9#3"),
+            keyed(TYPE_GENERATION_INGESTED, "gd/docs/a.md@h4#1"),
+            keyed(TYPE_REVIEW_FINDING, "gc/src/b.rs@h1#0"),
+        ];
+        let answer = |identity: &str, generation: &str, key: &str| {
+            (
+                identity.to_string(),
+                (generation.to_string(), vec![key.to_string()]),
+            )
+        };
+
+        assert_eq!(
+            project_scoped_latest_generations(&stream, &PERCEPTION_TYPES),
+            HashMap::from([
+                answer("gc/src/a.rs", "h9", "gc/src/a.rs@h9#3"),
+                answer("gd/docs/a.md", "h4", "gd/docs/a.md@h4#1"),
+            ]),
+            "a ledger entry is the latest recording of its identity"
+        );
+        assert_eq!(
+            project_scoped_latest_generations(&stream, &DERIVED_INDEX_TYPES),
+            HashMap::from([answer("gc/src/a.rs", "h1", "gc/src/a.rs@h1#0")]),
+            "the derived types pass a ledger entry over"
+        );
+        assert_eq!(
+            project_scoped_latest_generations(&stream, &[]),
+            HashMap::new(),
+            "no type, no recording"
+        );
+    }
+
     #[test]
     fn two_files_whose_paths_contain_an_at_sign_stay_two_batch_identities() {
         // The identity/generation split direction is load-bearing and rigger is project-agnostic:

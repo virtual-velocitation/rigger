@@ -1801,3 +1801,383 @@ fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
     );
     assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
 }
+
+// Spec 107, criterion 6 - THE REBUILD REPORTS WHAT THE NEXT INGEST RECORDS.
+//
+// Once a rebuild ends, `rigger setup` prints one number: the identities whose generation in
+// `graph.db` is not their latest recording's and whose file the tree holds. In the default lane a
+// number above zero carries a note; a zero and the light lane's line carry none.
+
+/// The report line a rebuild prints, before its number.
+const REPORT_LEAD: &str = "identities the tree holds a file for whose generation in graph.db is \
+                           not their latest recording's: ";
+
+/// The note the default lane's report line ends with when its number is above zero.
+#[cfg(feature = "symbols")]
+const REPORT_NOTE: &str = " (each records an entry at its next ingest of the file)";
+
+/// A generation no source extracts to.
+const UNREPRODUCED: &str = "0badc0de";
+
+/// A source file under a hidden directory, which the walk never enters.
+const HIDDEN_PATH: &str = ".hidden/lib.rs";
+
+/// A design document whose bytes are not UTF-8, which the design half maps to the empty batch.
+const UNDECODED_PATH: &str = "docs/undecoded.md";
+
+/// A source file the tree does not hold.
+const ABSENT_PATH: &str = "src/absent.rs";
+
+/// The report lines among what `rigger setup` printed.
+fn report_lines(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|line| line.starts_with("identities "))
+        .collect()
+}
+
+/// The recording of `generation` under `prefix` for `file` at `secs`, naming no blob.
+fn named_recording(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    excluded: bool,
+    secs: u64,
+) -> Recording {
+    Recording {
+        named: generation_ingested(prefix, file, generation, "", excluded),
+        secs,
+        batch: None,
+    }
+}
+
+/// A repository whose tree and log hold every kind of identity the report tells apart, with a
+/// `graph.db` standing behind the log: the project identity and each entry's position.
+///
+/// - `gc/src/lib.rs`: an entry of the generation its file extracts to, then a later entry no
+///   source reproduces, so the rebuilt graph holds the EARLIER generation of a file the tree holds.
+/// - `gc/src/checks.rs`: one entry of the generation its file extracts to, so the rebuilt graph
+///   holds the latest recording's.
+/// - `gd/docs/architecture.md`: one entry no source reproduces, so the rebuilt graph holds NO
+///   generation of a file the tree holds.
+/// - `gc/src/absent.rs`: one entry no source reproduces, of a file the tree does not hold.
+/// - `gc/.hidden/lib.rs`: one entry no source reproduces, of a regular readable file outside the
+///   walk's scope.
+/// - `gd/docs/undecoded.md`: one entry no source reproduces, of a file the tree holds whose bytes
+///   the design half maps to the empty batch.
+fn report_fixture(root: &Path) -> (String, Vec<u64>) {
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, common::fixtures::TEST_MODULE_BODY);
+    write_text(root, DOCUMENT_PATH, common::fixtures::DOCUMENT_BODY);
+    write_text(root, HIDDEN_PATH, common::fixtures::SOURCE_BODY);
+    std::fs::write(root.join(UNDECODED_PATH), [0xff, 0xfe, b'\n']).unwrap();
+    let project = settled(root);
+    assert_eq!(
+        (
+            std::fs::read_to_string(root.join(HIDDEN_PATH)).unwrap(),
+            root.join(ABSENT_PATH).exists(),
+        ),
+        (common::fixtures::SOURCE_BODY.to_string(), false),
+        "the out-of-scope path holds a regular readable file, and the absent one holds none"
+    );
+    let positions = record(
+        root,
+        &[
+            named_recording(
+                "gc",
+                SOURCE_PATH,
+                walked_generation("gc", SOURCE_PATH),
+                false,
+                10,
+            ),
+            named_recording(
+                "gc",
+                TEST_MODULE_PATH,
+                walked_generation("gc", TEST_MODULE_PATH),
+                true,
+                11,
+            ),
+            named_recording("gc", SOURCE_PATH, UNREPRODUCED, false, 12),
+            named_recording("gd", DOCUMENT_PATH, UNREPRODUCED, false, 13),
+            named_recording("gc", ABSENT_PATH, UNREPRODUCED, false, 14),
+            named_recording("gc", HIDDEN_PATH, UNREPRODUCED, false, 15),
+            named_recording("gd", UNDECODED_PATH, UNREPRODUCED, false, 16),
+        ],
+    );
+    stand_graph(root, &project);
+    (project, positions)
+}
+
+/// The identities of [`report_fixture`], in the order its doc lists them.
+const REPORT_IDENTITIES: [&str; 6] = [
+    "gc/src/lib.rs",
+    "gc/src/checks.rs",
+    "gd/docs/architecture.md",
+    "gc/src/absent.rs",
+    "gc/.hidden/lib.rs",
+    "gd/docs/undecoded.md",
+];
+
+/// The generation the rebuilt graph holds for each of [`REPORT_IDENTITIES`]: where an extraction
+/// is compiled, the two entries the tree's files reproduce; where none is, nothing.
+fn report_fixture_generations() -> Vec<Option<String>> {
+    #[cfg(feature = "symbols")]
+    let reproduced = [
+        held_generation("gc", SOURCE_PATH),
+        held_generation("gc", TEST_MODULE_PATH),
+    ];
+    #[cfg(not(feature = "symbols"))]
+    let reproduced = [None, None];
+    reproduced.into_iter().chain(vec![None; 4]).collect()
+}
+
+/// The report line of a rebuild over [`report_fixture`]. Where an extraction is compiled it
+/// counts the two identities whose file the tree holds and whose graph generation is not their
+/// latest recording's - one held at an earlier generation, one at none - and neither the gone
+/// file, the out-of-scope one nor the one extracting to the empty batch, and carries the note.
+/// Where none is compiled no entry folds and no half is asked, so it counts the four identities
+/// whose file the tree holds, and carries no note.
+fn report_fixture_line() -> String {
+    #[cfg(feature = "symbols")]
+    let counted = format!("2{REPORT_NOTE}");
+    #[cfg(not(feature = "symbols"))]
+    let counted = "4";
+    format!("{REPORT_LEAD}{counted}")
+}
+
+/// Given a log whose latest entry of one identity resolves and of five others does not - a file
+/// the tree holds at another generation, one it holds that the graph holds no generation of, one
+/// it does not hold, one outside the walk's scope and one extracting to the empty batch - when the
+/// operator runs `rigger setup`, then the rebuild prints the number of identities whose graph
+/// generation is not their latest recording's and whose file the tree holds, with the note in the
+/// default lane and none in the light lane; and a setup that rebuilds nothing prints no report.
+#[test]
+fn the_rebuild_reports_the_identities_behind_their_latest_recording_whose_file_the_tree_holds() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (project, positions) = report_fixture(root);
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(report_lines(&out), vec![report_fixture_line()]);
+    assert_eq!(
+        out.lines().skip_while(|line| *line != REBUILT_LINE).nth(2),
+        Some(report_fixture_line().as_str()),
+        "the report follows the rebuild's own lines; stdout: {out}"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        (
+            generations(root, &project, &REPORT_IDENTITIES),
+            positions
+                .iter()
+                .map(|position| applied(&graph_db, *position))
+                .collect::<Vec<_>>(),
+        ),
+        (report_fixture_generations(), vec![true; 7]),
+        "the number is read from the rebuilt graph these generations stand in"
+    );
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        (report_lines(&out), out.lines().any(|l| l == REBUILT_LINE)),
+        (Vec::<&str>::new(), false),
+        "a setup that rebuilds nothing reports nothing"
+    );
+}
+
+/// Given the same log and tree, and a rebuild that stopped after its third committed batch,
+/// leaving its shadow beside an untouched `graph.db`, when the operator runs `rigger setup`, then
+/// the resumed rebuild prints the number a single pass prints.
+#[test]
+fn a_rebuild_interrupted_and_resumed_reports_the_number_a_single_pass_does() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (project, positions) = report_fixture(root);
+    let graph_db = rigger_file(root, "graph.db");
+    let log = read_run_events(root);
+    let through = log
+        .iter()
+        .position(|event| event.position == positions[2])
+        .unwrap();
+
+    let interrupted = Projector::rebuild(
+        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+        &project,
+        true,
+        &mut |after, sink: &mut RebuildSink| {
+            rigger::contextgraph::sqlite::stream_past(&log[..=through], after, 1, sink)?;
+            Err(Error("interrupted".to_string()))
+        },
+        &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
+        &mut no_progress,
+    );
+    assert_eq!(interrupted.map_err(|e| e.0), Err("interrupted".to_string()));
+    let shadow = rigger_file(root, "graph.db.rebuild");
+    assert_eq!(
+        (
+            applied(&shadow, positions[2]),
+            applied(&shadow, positions[3]),
+            applied(&graph_db, positions[0]),
+        ),
+        (true, false, false),
+        "the stopped rebuild committed three entries to its shadow and left graph.db untouched"
+    );
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(
+        (
+            report_lines(&out),
+            out.lines().any(|l| l == REBUILT_LINE),
+            generations(root, &project, &REPORT_IDENTITIES),
+            positions
+                .iter()
+                .map(|position| applied(&graph_db, *position))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            vec![report_fixture_line().as_str()],
+            true,
+            report_fixture_generations(),
+            vec![true; 7],
+        ),
+        "the resumed rebuild reports what a single pass reports; stdout: {out}"
+    );
+}
+
+/// Given a log whose only identities behind their latest recording are a file the tree does not
+/// hold and a regular readable file outside the walk's scope, when the operator runs `rigger
+/// setup`, then the rebuild prints a zero, and no note in either lane.
+#[test]
+fn a_rebuild_with_no_identity_to_record_again_reports_a_zero_without_the_note() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, HIDDEN_PATH, common::fixtures::SOURCE_BODY);
+    let project = settled(root);
+    record(
+        root,
+        &[
+            named_recording("gc", ABSENT_PATH, UNREPRODUCED, false, 10),
+            named_recording("gc", HIDDEN_PATH, UNREPRODUCED, false, 11),
+        ],
+    );
+    stand_graph(root, &project);
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}0")]);
+    assert_eq!(
+        generations(root, &project, &["gc/src/absent.rs", "gc/.hidden/lib.rs"]),
+        vec![None, None],
+        "both identities are behind their latest recording, and neither is counted"
+    );
+}
+
+/// Given a run stream holding keyed derived rows that carry no group, an unkeyed derived row, a
+/// knowledge event keyed like a content key, and ledger entries, when the log side of the report
+/// is read, then `ingest::perceived_generations` answers each identity's latest recording, entry
+/// or derived row alike, and makes ONE typed read of the perception types from the stream's
+/// start: no whole-stream read and no lookup.
+#[test]
+fn the_log_side_of_the_report_is_one_typed_read_of_the_perception_types() {
+    use common::fixtures::{CountedRead, ReadCountingStore};
+    use rigger::ingest::META_REPLAY_KEY;
+    use std::collections::HashMap;
+
+    let dir = temp_project();
+    let root = dir.path();
+    settled(root);
+    let keyed =
+        |type_: &str, key: &str| Event::new(type_, b"{}".to_vec()).with_meta(META_REPLAY_KEY, key);
+    for event in [
+        keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/old.rs@h1#0"),
+        keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/lib.rs@h1#0"),
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()),
+        keyed("ReviewFinding", "gc/src/finding.rs@h1#0"),
+        entry_of(&named_recording("gc", SOURCE_PATH, "h2", false, 10)),
+        entry_of(&named_recording("gd", DOCUMENT_PATH, "h3", false, 11)),
+        entry_of(&named_recording("gd", DOCUMENT_PATH, "h4", false, 12)),
+    ] {
+        append_unfolded(root, event);
+    }
+
+    let (answered, reads) = with_run_store(root, |store| {
+        let counting = ReadCountingStore::new(store);
+        let answered =
+            rigger::ingest::perceived_generations(&counting, rigger::conductor::STREAM).unwrap();
+        (answered, counting.reads())
+    });
+
+    let answer = |identity: &str, generation: &str, key: &str| {
+        (
+            identity.to_string(),
+            (generation.to_string(), vec![key.to_string()]),
+        )
+    };
+    assert_eq!(
+        answered,
+        HashMap::from([
+            answer("gc/src/old.rs", "h1", "gc/src/old.rs@h1#0"),
+            answer("gc/src/lib.rs", "h2", "gc/src/lib.rs@h2#1"),
+            answer(
+                "gd/docs/architecture.md",
+                "h4",
+                "gd/docs/architecture.md@h4#1"
+            ),
+        ])
+    );
+    assert_eq!(
+        reads,
+        vec![CountedRead::Typed {
+            stream: rigger::conductor::STREAM.to_string(),
+            from: 0,
+            only: true,
+            types: rigger::retention::PERCEPTION_TYPES
+                .map(str::to_string)
+                .to_vec(),
+            materialized: 6,
+        }]
+    );
+}
+
+/// Given a store whose `.rigger/` sits in a subdirectory of a repository, and three identities
+/// behind their latest recording - a file of the top level, a file of the subdirectory named by
+/// its path from the top level, and that file named by its path from the working directory - when
+/// the operator runs `rigger setup` in the subdirectory, then the report reads the tree from the
+/// repository's top level: it counts the first two and not the third.
+#[test]
+fn the_report_reads_the_tree_from_the_top_level_of_a_store_in_a_repository_subdirectory() {
+    let dir = temp_project();
+    let top = dir.path();
+    let sub = top.join("sub");
+    write_text(top, SOURCE_PATH, common::fixtures::SOURCE_BODY);
+    write_text(&sub, "src/only.rs", "fn only() {}\n");
+    let project = settled(&sub);
+    record(
+        &sub,
+        &[
+            named_recording("gc", SOURCE_PATH, UNREPRODUCED, false, 10),
+            named_recording("gc", "sub/src/only.rs", UNREPRODUCED, false, 11),
+            named_recording("gc", "src/only.rs", UNREPRODUCED, false, 12),
+        ],
+    );
+    stand_graph(&sub, &project);
+    assert_eq!(
+        (
+            sub.join(SOURCE_PATH).exists(),
+            sub.join("src/only.rs").is_file(),
+            top.join("src/only.rs").exists(),
+        ),
+        (false, true, false),
+        "the working directory holds the third identity's file and not the first's"
+    );
+
+    let (out, err, ok) = setup(&sub);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    #[cfg(feature = "symbols")]
+    let counted = format!("2{REPORT_NOTE}");
+    #[cfg(not(feature = "symbols"))]
+    let counted = "2";
+    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
+}

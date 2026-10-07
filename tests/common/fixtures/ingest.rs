@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 /// identity's latest recorded generation. The one flattening of that reference every test boundary
 /// (the domain crate's tests, the conductor's, the root suites) calls, never an inline copy.
 pub fn reference_replay_keys(prior: &[Event]) -> BTreeSet<String> {
-    rigger::ingest::project_scoped_latest_generations(prior)
+    rigger::ingest::project_scoped_latest_generations(prior, &rigger::ingest::DERIVED_INDEX_TYPES)
         .into_values()
         .flat_map(|(_, keys)| keys)
         .collect()

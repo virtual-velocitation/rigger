@@ -3087,7 +3087,8 @@ impl ReleaseEraStore {
 /// the operator runs `rigger setup`, then that `graph.db` is rebuilt cold from the log - setup says
 /// it is rebuilding and reports how far along it is - the superseded facts are gone, the old table
 /// is dropped, the file records the current rule, and it holds exactly the graph a fresh fold of
-/// the whole log reaches. A second `rigger setup` owes and reports no rebuild.
+/// the whole log reaches, and the rebuild's report reads the keyed derived rows of the log as the
+/// recordings they are. A second `rigger setup` owes and reports no rebuild.
 #[test]
 fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule() {
     use rigger::contextgraph::sqlite::Projector;
@@ -3108,9 +3109,13 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
                 .to_string(),
             format!("rebuilt 3 events, through position {head} of {head} (100%)"),
             "rebuilt graph.db from the event log".to_string(),
+            "identities the tree holds a file for whose generation in graph.db is not their \
+             latest recording's: 0"
+                .to_string(),
         ],
         "setup says it is rebuilding and how far along it is, folding only the live selection - \
-         h1's three superseded recordings are never folded; stdout: {out}"
+         h1's three superseded recordings are never folded - and reports no identity the next \
+         ingest records again; stdout: {out}"
     );
     assert!(
         !store
