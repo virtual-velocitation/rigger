@@ -2561,3 +2561,49 @@ fn the_index_lag_readers_pass_a_ledger_entry_over() {
     );
     assert_eq!(lag(&prior), fresh);
 }
+
+/// Given a tree holding two source files, a log whose keyed derived row records the first at a
+/// generation the rebuilt graph then holds and whose entry of the second no source reproduces,
+/// when the operator runs `rigger setup`, then the rebuild counts the second alone: an identity
+/// the graph holds at its latest recording is not counted though the tree holds its file,
+/// whether or not an extraction is compiled.
+#[test]
+fn an_identity_the_graph_holds_at_its_latest_recording_is_not_counted_though_its_file_stands() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, common::fixtures::TEST_MODULE_BODY);
+    let project = settled(root);
+    append_unfolded(
+        root,
+        common::fixtures::event_of(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            common::fixtures::def_json(SOURCE_PATH, "product", 1, true),
+        )
+        .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/lib.rs@h1#0"),
+    );
+    record(
+        root,
+        &[named_recording(
+            "gc",
+            TEST_MODULE_PATH,
+            UNREPRODUCED,
+            false,
+            10,
+        )],
+    );
+    stand_graph(root, &project);
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    #[cfg(feature = "symbols")]
+    let counted = format!("1{REPORT_NOTE}");
+    #[cfg(not(feature = "symbols"))]
+    let counted = "1";
+    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
+    assert_eq!(
+        generations(root, &project, &["gc/src/lib.rs", "gc/src/checks.rs"]),
+        vec![Some("h1".to_string()), None],
+        "the graph holds the first identity's latest recording and none of the second's"
+    );
+}
