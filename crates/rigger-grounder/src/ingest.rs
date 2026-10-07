@@ -576,6 +576,7 @@ pub fn ingest_project_batched(_root: &str, _on_batch: impl BatchSink) {}
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
     use super::{ingest_project_batched_paced, IngestStats};
+    use crate::extraction_tree::planted_extraction_tree;
 
     /// Drive a walk at `workers` width and capture the exact `(key, type, data)` triples the sink
     /// sees, in emit order - the observable the byte-identical contract is defined over.
@@ -778,13 +779,6 @@ mod tests {
         );
     }
 
-    /// The extraction tree planted in a fresh directory, kept alive by the returned guard.
-    fn extraction_tree() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        crate::extraction_tree::plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
-        dir
-    }
-
     /// The paths an index holds, in its own sorted order.
     fn indexed_paths(index: &crate::grounder::symbols::model::SymbolIndex) -> Vec<&str> {
         index.files().keys().map(String::as_str).collect()
@@ -797,7 +791,7 @@ mod tests {
     fn walk_exclusions_names_the_out_of_line_test_modules_gc_identity_and_no_other() {
         use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
 
-        let dir = extraction_tree();
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
         let root = dir.path().to_str().unwrap();
 
         let (index, excluded) = super::walk_exclusions(root);
@@ -819,7 +813,7 @@ mod tests {
     fn walk_exclusions_answers_the_persisted_index_ahead_of_the_tree() {
         use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
 
-        let dir = extraction_tree();
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
         let root = dir.path().to_str().unwrap();
         let persisted = crate::grounder::symbols::build_index(root, None);
         crate::grounder::symbols::store::save(&persisted, root).unwrap();
@@ -840,7 +834,7 @@ mod tests {
     /// keyed `<prefix>/<path>@<generation>#<i>` with the type and bytes the walk lowers.
     #[test]
     fn the_walk_keys_the_extraction_trees_batches_as_recorded() {
-        let dir = extraction_tree();
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
 
         let (seq, stats) = walk(dir.path().to_str().unwrap(), 1);
         let expected: Vec<(String, String, Vec<u8>)> = crate::extraction_tree::WALKED
@@ -868,7 +862,7 @@ mod tests {
     /// tree records and the one every key of the batch carries.
     #[test]
     fn batch_generation_answers_the_generation_key_batch_keys() {
-        let dir = extraction_tree();
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
 
         let mut generations: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();

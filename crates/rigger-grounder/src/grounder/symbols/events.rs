@@ -1791,12 +1791,11 @@ mod tests {
     #[test]
     fn lower_file_answers_the_batch_both_walks_lower_from_each_file_of_the_extraction_tree() {
         use crate::extraction_tree::{
-            plant_extraction_tree, walked_batch, SOURCE_PATH, TEST_MODULE_PATH,
+            planted_extraction_tree, walked_batch, SOURCE_PATH, TEST_MODULE_PATH,
         };
         use crate::test_support::wire;
 
-        let dir = tempfile::tempdir().unwrap();
-        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
         let root = dir.path().to_str().unwrap();
         let idx = crate::grounder::symbols::build_index(root, None);
         let files = [TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()];
@@ -1826,11 +1825,10 @@ mod tests {
     /// carries its own definition and reference with the evidence boundary after them.
     #[test]
     fn lower_file_hollows_an_excluded_file_and_adds_evidence_to_one_that_is_not() {
-        use crate::extraction_tree::{plant_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
+        use crate::extraction_tree::{planted_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
         use crate::test_support::wire;
 
-        let dir = tempfile::tempdir().unwrap();
-        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
         let idx = crate::grounder::symbols::build_index(dir.path().to_str().unwrap(), None);
 
         let hollowed = super::lower_file(SOURCE_PATH, &idx.files()[SOURCE_PATH], true);

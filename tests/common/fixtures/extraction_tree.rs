@@ -219,15 +219,17 @@ pub fn walked_batch(prefix: &str, path: &str) -> &'static [(&'static str, &'stat
         .events
 }
 
-/// Plant the four files under `root` through `write_file`, the caller's writer of one file with
-/// its parent directories.
-pub fn plant_extraction_tree(root: &Path, write_file: impl Fn(&Path, &[u8])) {
+/// The tree planted in a fresh directory, kept alive by the returned guard: the four files
+/// written through `write_file`, the caller's writer of one file with its parent directories.
+pub fn planted_extraction_tree(write_file: impl Fn(&Path, &[u8])) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a fresh directory for the extraction tree");
     for (path, body) in [
         (SOURCE_PATH, SOURCE_BODY),
         (TEST_MODULE_PATH, TEST_MODULE_BODY),
         (DOCUMENT_PATH, DOCUMENT_BODY),
         (WORKFLOW_PATH, WORKFLOW_BODY),
     ] {
-        write_file(&root.join(path), body.as_bytes());
+        write_file(&dir.path().join(path), body.as_bytes());
     }
+    dir
 }

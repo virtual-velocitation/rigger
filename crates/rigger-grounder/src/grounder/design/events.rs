@@ -380,13 +380,12 @@ mod tests {
     #[test]
     fn text_batch_answers_the_batch_file_batch_lowers_from_each_file_of_the_extraction_tree() {
         use crate::extraction_tree::{
-            plant_extraction_tree, walked_batch, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
+            planted_extraction_tree, walked_batch, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
             SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
         };
         use crate::test_support::wire;
 
-        let dir = tempfile::tempdir().unwrap();
-        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
         let root = dir.path().to_str().unwrap();
 
         for (path, body) in [
