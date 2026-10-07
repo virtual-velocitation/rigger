@@ -1,7 +1,7 @@
 //! THE EXTRACTION TREE: the one small project tree the bytes-form tests extract, holding one file
 //! of each kind an ingest reads - a `gc` source file, the out-of-line test module it declares, a
-//! `gd` design document and the workflow definition. It names no crate, so every lane and every
-//! crate's tests compile it.
+//! `gd` design document and the workflow definition. It names no workspace crate and needs
+//! `tempfile` from the including crate's dev-dependencies.
 
 use std::path::Path;
 

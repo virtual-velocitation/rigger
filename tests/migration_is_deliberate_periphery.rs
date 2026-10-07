@@ -12,7 +12,7 @@
 //!    down to nothing" case (an in-file `#[cfg(test)]` re-wrap of a product item) - PLUS the
 //!    OUT-OF-LINE `#[cfg(test)] mod name;` shape (round 5,
 //!    adj-u86c3-r4-out-of-line-exclusion-still-unmigrated), which is a distinct, CALLER-level
-//!    routing fix (`project_batches_paced`'s own `for_extraction` hollowing) rather
+//!    routing fix (`lower_file`'s `for_extraction` hollowing) rather
 //!    than a third branch inside `extract_events` itself - that exclusion set can only be computed
 //!    where every file's path in the project is known together, never from one file's own parse.
 //!    The implementer's own coverage of the first two shapes is either in-crate with a HAND-BUILT
@@ -310,8 +310,8 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 /// is computed one layer above `extract_events` itself (only there is every file's path in the
 /// project known together, so only there can the DECLARING file's attribute be resolved against
 /// its TARGET file) - by the whole-project ingest, `project_batches_paced`, which dropped the
-/// excluded file's batch entirely before round 5's fix gave it its own `for_extraction`
-/// hollowing call. Parameterized over `entry`, the ingest pipeline under test - see the
+/// excluded file's batch entirely before round 5's fix hollowed it through `for_extraction`,
+/// the call `lower_file` makes. Parameterized over `entry`, the ingest pipeline under test - see the
 /// `#[test]` below, reproducing the exact probe the adjudicator's own rejection ran by hand
 /// (`tests/_adjudicator_probe_out_of_line.rs`, reverted) through this crate's permanent test
 /// suite instead.

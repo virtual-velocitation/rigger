@@ -59,7 +59,8 @@ mod test_support;
 mod read_fault_fixtures;
 
 /// THE EXTRACTION TREE the bytes-form tests extract, compiled here from the same file as the root
-/// crate's tests. It names no crate; only the default lane's tests plant it.
+/// crate's tests. It names no workspace crate and needs `tempfile` from this crate's
+/// dev-dependencies; only the default lane's tests plant it.
 #[cfg(all(
     test,
     feature = "symbols",

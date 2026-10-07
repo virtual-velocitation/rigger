@@ -350,7 +350,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// marking the boundary of THIS file's own evidence batch. Re-extraction supersession is
 /// criterion 2's OWN mechanism for evidence (`contextgraph::sqlite::supersede_file_proof`),
 /// distinct from `extract_events`'s structural boundary on the SAME event list
-/// (`project_batches_paced` concatenates both, so a file can carry two independent boundaries - one
+/// ([`lower_file`] concatenates both, so a file can carry two independent boundaries - one
 /// per concern) - without it, editing a test file (adding an unrelated test, fixing a comment)
 /// re-extracts the whole file and re-records every unchanged is_test reference as brand-new
 /// evidence, permanently inflating `proven_by`.
@@ -361,7 +361,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// used to return an empty `Vec` here, so this function stamped no boundary. That was fine for a
 /// file that NEVER had evidence, but silently wrong for one TRANSITIONING from evidence to none: a
 /// file's WHOLE batch (`extract_events` alongside this function, concatenated by
-/// `project_batches_paced`) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
+/// [`lower_file`]) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
 /// empty - so the file's batch was dropped entirely and `fold_test_evidence`/`supersede_file_proof`
 /// never even ran, stranding this file's own prior `proof_evidence` contribution on whichever
 /// entities it named, forever. Mirroring criterion 3's own already-established empty-after-
@@ -379,8 +379,9 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
 /// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
 /// ([`out_of_line_test_module_files`]) still contributes a STRUCTURAL batch since round 5
-/// (`extract_events` runs on it hollowed, via `project_batches_paced`'s own
-/// [`for_extraction`] - see either function's doc), but this function is deliberately never called
+/// (`extract_events` runs on it hollowed, via [`lower_file`], the composition that hollows it
+/// through [`for_extraction`] - see either function's doc), but this function is deliberately
+/// never called
 /// for it (its own references carry no `is_test` marking of their own - the attribute lives on the
 /// DECLARING file's side, invisible to this per-file view, per [`out_of_line_test_module_files`]'s
 /// own doc), so a test-only file reached only that way contributes no evidence. Not named by spec
@@ -1735,13 +1736,14 @@ fn an_integration_test() {
     }
 
     /// [`file_batches`] EXTENDS an ordinary (non-excluded) file's batch with its
-    /// [`proof_events`] - the polarity of `if !is_excluded { events.extend(proof_events(..)) }`
+    /// [`proof_events`] - the polarity of `if !excluded { events.extend(proof_events(..)) }`
+    /// inside [`lower_file`]
     /// pinned directly: `product.rs` here is not an out-of-line test-module target
-    /// (`out_of_line_test_module_files` returns it empty), so `is_excluded` is false and the
+    /// (`out_of_line_test_module_files` returns it empty), so `excluded` is false and the
     /// extension MUST happen. `extract_events` filters every `is_test` def/ref OUT (see its own
     /// doc); `proof_events` is the ONLY emitter of `is_test: true` events, so their presence in
     /// the batch is observable only through this extension - a flipped polarity (`if
-    /// is_excluded` instead) would extend the WRONG files and this batch would carry none.
+    /// excluded` instead) would extend the WRONG files and this batch would carry none.
     #[test]
     fn file_batches_extends_a_non_excluded_files_batch_with_its_proof_events() {
         let dir = tempfile::tempdir().unwrap();
@@ -1778,8 +1780,8 @@ mod tests {
             proof_names,
             vec!["product_fn".to_string()],
             "an ordinary file's batch must carry its proof_events test-evidence edge \
-             (`is_test: true`, naming the referenced product entity); a `!is_excluded` polarity \
-             flip drops it entirely. got batch: {:?}",
+             (`is_test: true`, naming the referenced product entity); a polarity flip of \
+             `if !excluded` inside `lower_file` drops it entirely. got batch: {:?}",
             batches[0].1
         );
     }
