@@ -1225,9 +1225,10 @@ fn prune_in(
     })
 }
 
-/// Run `body` in ONE transaction on `conn` and commit it: the one transaction -> body -> commit
-/// frame of this file. A `body` that fails, or a commit that does, leaves nothing written - the
-/// transaction rolls back whole as it drops.
+/// Run `body` in ONE transaction on `conn` and commit it: the one DEFERRED transaction -> body ->
+/// commit frame of this file; [`open_current`] keeps its own immediate transaction on the shared
+/// connection it is handed. A `body` that fails, or a commit that does, leaves nothing written -
+/// the transaction rolls back whole as it drops.
 fn in_transaction<T>(
     conn: &mut Connection,
     body: impl FnOnce(&Transaction) -> Result<T, Error>,
