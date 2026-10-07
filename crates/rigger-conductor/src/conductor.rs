@@ -513,12 +513,85 @@ fn input_digest(command: &str, commit_sha: &str) -> String {
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
-/// for the ratchet's evidence. `evidence` defaults so a legacy verdict without it decodes.
+/// for the ratchet's evidence. `gate` and `evidence` default so a legacy verdict without
+/// them decodes.
 #[derive(Deserialize)]
 struct GateVerdictData {
+    #[serde(default)]
+    gate: String,
     pass: bool,
     #[serde(default)]
     evidence: String,
+}
+
+/// `unit`'s own gate-RUN verdicts in log order, each as its event, its replay key and its
+/// decoded payload: every [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) whose replay key
+/// [`unit_of_gate_key`] resolves to `unit`. A skip, a post-merge re-gate and a deferred phase
+/// gate key under other infixes, so none of them is mistaken for the unit's own gate run. The
+/// one selection behind [`recorded_gate_outcome`] and [`gate_evidence_block`].
+fn unit_gate_runs<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+) -> impl Iterator<Item = (&'a Event, &'a str, GateVerdictData)> + 'a {
+    events.iter().filter_map(move |e| {
+        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+            return None;
+        }
+        let key = e.meta.get(META_REPLAY_KEY)?;
+        if unit_of_gate_key(key) != Some(unit) {
+            return None;
+        }
+        let data = serde_json::from_slice::<GateVerdictData>(&e.data).ok()?;
+        Some((e, key.as_str(), data))
+    })
+}
+
+/// THE GATES GRADE, THE REVIEWERS JUDGE THE RESIDUE: the block every review tier's prompt
+/// carries naming what the deterministic gates already proved on the exact tree it judges -
+/// git tree `tree`, the tree half of each gate's [`META_INPUT_DIGEST`] - so no reviewer spends
+/// its round re-running an instrument the log shows green on that digest. One line per gate,
+/// in the order the gates ran, carrying its verdict, its input digest and its recorded evidence
+/// lines; a gate recorded more than once on this tree (an infra rerun, a later attempt over
+/// the same tree, a cache hit) shows its latest verdict. Empty - and so claiming nothing - when
+/// there is no tree (a worktree-less review) or no gate of `unit` ran on it.
+fn gate_evidence_block(events: &[Event], unit: &str, tree: &str) -> String {
+    if tree.is_empty() {
+        return String::new();
+    }
+    let on_tree = format!(":{tree}");
+    let mut rows: Vec<(String, bool, String, String)> = Vec::new();
+    for (e, _, v) in unit_gate_runs(events, unit) {
+        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
+            continue;
+        };
+        if !digest.ends_with(&on_tree) {
+            continue;
+        }
+        let row = (v.gate, v.pass, digest.clone(), v.evidence);
+        match rows.iter_mut().find(|r| r.0 == row.0) {
+            Some(slot) => *slot = row,
+            None => rows.push(row),
+        }
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut b = format!(
+        "\n\nGATE EVIDENCE for the tree under review (git tree {tree}, which `git rev-parse \
+         HEAD^{{tree}}` prints in the unit's worktree): every gate below already ran on exactly \
+         this tree. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
+         gate is the instrument that proves it, and your judgment covers what no gate sees. \
+         Reproduce only a specific suspicion - one named test, a reversion probe, a single-crate \
+         `cargo test -p <crate> <test>` - in your own scratch worktree, never the whole battery.\n"
+    );
+    for (gate, pass, digest, evidence) in rows {
+        let verdict = if pass { "PASS" } else { "FAIL" };
+        b.push_str(&format!("- {gate}: {verdict} (input digest {digest})\n"));
+        for line in evidence.lines() {
+            b.push_str(&format!("    {line}\n"));
+        }
+    }
+    b
 }
 
 /// The CURRENT gate outcome for `unit` as RECORDED in the event stream: `Some(true)` if the
@@ -561,25 +634,14 @@ pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
         (u32, u32),
         std::collections::BTreeMap<&str, bool>,
     > = std::collections::BTreeMap::new();
-    for e in events {
-        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
-            continue;
-        }
-        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
-            continue;
-        };
-        if unit_of_gate_key(key) != Some(unit) {
-            continue;
-        }
+    for (_, key, v) in unit_gate_runs(events, unit) {
         let Some(attempt) = gate_key_attempt(key) else {
             continue;
         };
-        if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
-            by_attempt
-                .entry((attempt, spawn::retry_of(key)))
-                .or_default()
-                .insert(key.as_str(), v.pass);
-        }
+        by_attempt
+            .entry((attempt, spawn::retry_of(key)))
+            .or_default()
+            .insert(key, v.pass);
     }
     // The latest gate run's outcome is the AND across its gates: any failing gate => `Some(false)`.
     let (_, latest) = by_attempt.iter().next_back()?;
@@ -7165,7 +7227,7 @@ impl RunCtx<'_> {
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
+        let prompt = self.build_review_prompt(st, dir, &lens_role(agent_id), round)?;
         let resume = round.map(|r| self.review_resume_task(st, r));
         self.run_reviewer(
             st,
@@ -7601,7 +7663,7 @@ impl RunCtx<'_> {
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
+        let prompt = self.build_review_prompt(st, dir, ROLE_ADVERSARY, round)?;
         let resume = round.map(|r| self.review_resume_task(st, r));
         self.run_reviewer(
             st,
@@ -7668,7 +7730,7 @@ impl RunCtx<'_> {
         // `review_protocol` (spec 103, criterion 6), appended directly here.
         let prompt = format!(
             "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round.map(|r| self.review_resume_task(st, r));
@@ -10910,7 +10972,8 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewers raised about the unit's files) with the gate evidence of the tree in `dir`
+    /// ([`Self::review_base_prompt`]), plus the [`review_protocol`] telling this
     /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
     /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
     /// emits findings, the adversary and adjudicator (which ground after it) read them back
@@ -10921,15 +10984,26 @@ impl RunCtx<'_> {
     fn build_review_prompt(
         &self,
         st: &Stage,
+        dir: &str,
         actor: &str,
         round: Option<&ReviewRound>,
     ) -> Result<String, Error> {
         Ok(format!(
             "{}{}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             review_protocol(actor),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
+    }
+
+    /// The base every review tier's prompt opens with - the lenses and the adversary through
+    /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
+    /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the tree the reviewer
+    /// judges, the committed HEAD tree of `dir`, read from this run's log.
+    fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        let tree = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
+        let evidence = gate_evidence_block(&self.read_current_run()?, &st.name, &tree);
+        Ok(format!("{}{evidence}", self.build_prompt(st)?))
     }
 
     /// Build a stage's prompt. Sections, in order: the first-class prior-failure block
@@ -19145,7 +19219,7 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens", None).unwrap();
+        let review = ctx.build_review_prompt(&unit, "", "lens", None).unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -36507,6 +36581,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A verdict-carrying GateVerdict for `unit`'s `gate` at `attempt`, digested over `tree`.
+    fn digested_verdict(unit: &str, gate: &str, attempt: u32, pass: bool, tree: &str) -> Event {
+        Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": gate, "pass": pass, "evidence": format!("{gate}-{attempt}\nline two")
+            }))
+            .unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Verdict, unit, attempt, 0, gate),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest(gate, tree))
+    }
+
+    /// The gate evidence block names, for the one tree under review, each gate of the unit in
+    /// the order it ran with its latest verdict on that tree, its digest and every evidence
+    /// line - and nothing recorded for another unit, another tree, a skip or a post-merge
+    /// re-gate. No tree, or no gate run on it, claims nothing.
+    #[test]
+    fn the_gate_evidence_block_lists_only_the_units_gates_on_the_tree_under_review() {
+        let skip = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "skipped", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Skip, "u", 1, 0, "skipped"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("skipped", "T1"));
+        let postmerge = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "pm", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::PostMergeVerdict, "u", 1, 0, "pm"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("pm", "T1"));
+        let events = vec![
+            digested_verdict("u", "fmt", 0, true, "T0"),
+            digested_verdict("u", "test", 1, false, "T1"),
+            digested_verdict("u", "fmt", 1, true, "T1"),
+            digested_verdict("other", "lint", 1, true, "T1"),
+            skip,
+            postmerge,
+            digested_verdict("u", "test", 2, true, "T1"),
+        ];
+        let block = gate_evidence_block(&events, "u", "T1");
+        let rows = block.split_once("battery.\n").unwrap().1;
+        assert_eq!(
+            rows,
+            format!(
+                "- test: PASS (input digest {})\n    test-2\n    line two\n\
+                 - fmt: PASS (input digest {})\n    fmt-1\n    line two\n",
+                input_digest("test", "T1"),
+                input_digest("fmt", "T1"),
+            )
+        );
+        assert!(block.starts_with("\n\nGATE EVIDENCE for the tree under review (git tree T1,"));
+        let failing = gate_evidence_block(&events[..2], "u", "T1");
+        assert!(
+            failing.ends_with(&format!(
+                "- test: FAIL (input digest {})\n    test-1\n    line two\n",
+                input_digest("test", "T1")
+            )),
+            "{failing}"
+        );
+        assert_eq!(gate_evidence_block(&events, "u", ""), "");
+        assert_eq!(gate_evidence_block(&events, "u", "T9"), "");
+        assert_eq!(gate_evidence_block(&events, "nobody", "T1"), "");
     }
 
     /// A reviewer's own cargo runs never build into the unit's cache: the lenses, the adversary
