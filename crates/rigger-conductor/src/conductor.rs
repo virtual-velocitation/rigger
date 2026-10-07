@@ -4483,6 +4483,9 @@ impl RunCtx<'_> {
         // adjudicator - always the CALLER's already-computed value (`run_reviewer`'s own
         // `reviews` parameter), never re-derived here.
         reviews: &[String],
+        // The unit cache this spawn builds into ([`Self::spawn_env`]): the review cache for a
+        // review tier, the unit's own for the sdet-author, which builds the unit's tree.
+        cache: &str,
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
@@ -4516,13 +4519,13 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
-            // The ONE build-environment authority (spec 65) PLUS this spawn's own
-            // per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): a reviewer
-            // verifying inside the unit's worktree gets the same wrapper/cache/
-            // incremental vars a gate build and the implementer got, AND the same
-            // per-unit cache a gate build for this `dir` gets, so its own `cargo`
-            // invocations share both.
-            env: Self::spawn_env(&build_env, dir),
+            // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
+            // CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
+            // incremental vars a gate build and the implementer got, and the `cache` sibling
+            // of this `dir` the caller names - the unit's own for the sdet-author, the unit's
+            // review cache for a review tier - so a reviewer's reproduction never builds into
+            // the cache the unit's gates use.
+            env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
             // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
             // is not wired in here yet.
@@ -5251,6 +5254,9 @@ impl RunCtx<'_> {
             // The sdet-author writes periphery tests - it is not a review tier judging
             // another agent's output, so it carries no roster (spec 67, criterion 4).
             &[],
+            // It builds the unit's own tree, so it keeps the unit's own cache, warm for
+            // the gates that run right after it.
+            crate::worktree::UNIT_CACHE_PREFIX,
         ) {
             // A log that cannot be read is a fault, propagated - never a cold start.
             Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
@@ -5750,7 +5756,7 @@ impl RunCtx<'_> {
                         // vars a gate build gets, AND land in the same per-unit
                         // cache a gate build for this `dir` gets, instead of
                         // embedding a `target/` dir inside the worktree itself.
-                        env: Self::spawn_env(&build_env, dir),
+                        env: Self::spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -6372,7 +6378,7 @@ impl RunCtx<'_> {
                         // every speculation candidate's own `cargo` invocations share the
                         // same wrapper cache AND land in its own lane's per-unit cache,
                         // never a `target/` dir embedded in its own lane worktree.
-                        env: Self::spawn_env(&build_env, &dir),
+                        env: Self::spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // A speculation candidate is an implementer lane, never a review
                         // tier: no roster to render (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -7333,8 +7339,17 @@ impl RunCtx<'_> {
         let mut verdictless = false;
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts =
-                self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            let opts = self.reviewer_spawn_opts(
+                &id,
+                tier,
+                agent_id,
+                dir,
+                attempt,
+                parallel,
+                st,
+                reviews,
+                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
+            )?;
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
@@ -7998,7 +8013,7 @@ impl RunCtx<'_> {
                     // every other call site (spec 77 c1); the planner's own `dir` is
                     // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                     // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                    env: Self::spawn_env(&build_env, ""),
+                    env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
                     // The planner/re-planner is never a review tier: no roster to render
                     // (spec 67, criterion 4).
                     reviews: Vec::new(),
@@ -8417,10 +8432,17 @@ impl RunCtx<'_> {
     /// [`run_single_stage`](Self::run_single_stage), each lane in
     /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
     /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
-    fn spawn_env(build_env: &gate::BuildEnv, dir: &str) -> Vec<(String, String)> {
+    ///
+    /// `cache` names WHICH of the unit's caches the spawn builds into: the unit's own
+    /// [`worktree::UNIT_CACHE_PREFIX`] sibling for every spawn that builds the unit's tree (the
+    /// implementer, the sdet-author, the planner), or the unit's
+    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`] sibling for a review tier, whose reproductions run
+    /// in scratch worktrees at whatever sha they probe and must never swap a binary in the cache
+    /// the unit's gates use.
+    fn spawn_env(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        if let Some(cache) = crate::worktree::unit_cache_sibling(dir) {
-            vars.push(("CARGO_TARGET_DIR".to_string(), cache));
+        if let Some(target) = crate::worktree::unit_sibling(dir, cache) {
+            vars.push(("CARGO_TARGET_DIR".to_string(), target));
         }
         vars
     }
@@ -10728,7 +10750,7 @@ impl RunCtx<'_> {
                 title: format!("resolve integrate conflict: {}", st.name),
                 attempt,
                 run_id: self.run_id.clone(),
-                env: Self::spawn_env(&build_env, &wt.dir),
+                env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
                 launch: 0,
@@ -32374,7 +32396,11 @@ mod tests {
         // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
         let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
 
-        let with_worktree = RunCtx::spawn_env(&wrapper_vars, "/scratch/rigger-wt-unit-a");
+        let with_worktree = RunCtx::spawn_env(
+            &wrapper_vars,
+            "/scratch/rigger-wt-unit-a",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-a")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert!(
@@ -32390,7 +32416,7 @@ mod tests {
         );
 
         for dir in ["", "/scratch/rigger-review-stage-0"] {
-            let got = RunCtx::spawn_env(&wrapper_vars, dir);
+            let got = RunCtx::spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
             assert_eq!(
                 got,
                 wrapper_vars.vars().to_vec(),
@@ -32399,9 +32425,27 @@ mod tests {
             );
         }
 
+        // A review tier names the unit's review cache: the same worktree derives the
+        // `review-target-<slug>` sibling instead, never the unit's own cache.
+        assert_eq!(
+            RunCtx::spawn_env(
+                &gate::BuildEnv::default(),
+                "/scratch/rigger-wt-unit-a",
+                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
+            ),
+            vec![(
+                "CARGO_TARGET_DIR".to_string(),
+                "/scratch/review-target-unit-a".to_string()
+            )],
+        );
+
         // No wrapper configured: a real unit worktree dir still gets its
         // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
-        let off = RunCtx::spawn_env(&gate::BuildEnv::default(), "/scratch/rigger-wt-unit-b");
+        let off = RunCtx::spawn_env(
+            &gate::BuildEnv::default(),
+            "/scratch/rigger-wt-unit-b",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_off_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-b")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert_eq!(
