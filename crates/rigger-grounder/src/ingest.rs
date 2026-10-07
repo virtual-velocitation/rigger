@@ -1020,8 +1020,7 @@ mod scoped_reindex_tests {
         let root = dir.path().to_str().unwrap();
         std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
         std::fs::write(dir.path().join("ignored.rs"), "fn ignored() {}\n").unwrap();
-        std::fs::create_dir_all(dir.path().join(".hidden")).unwrap();
-        std::fs::write(dir.path().join(".hidden/h.rs"), "fn h() {}\n").unwrap();
+        crate::host_fixtures::write_file(&dir.path().join(".hidden/h.rs"), b"fn h() {}\n");
         let template = derived_template(root, "kept.rs");
         let prior = stale_recordings(&template, &[".hidden/h.rs", "ignored.rs", "kept.rs"]);
 
