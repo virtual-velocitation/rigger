@@ -530,10 +530,10 @@ mod tests {
         assert_eq!(idx, fresh);
     }
 
-    /// An entry the index holds for a path no grammar resolves stands while the file can be
-    /// read and is removed once it cannot, as any unreadable file's entry is.
+    /// A path no grammar resolves is left alone without its file being asked for: an entry the
+    /// index holds for it stands whether the file reads or cannot be read at all.
     #[test]
-    fn an_entry_under_no_grammar_stands_while_its_file_reads_and_is_removed_once_it_does_not() {
+    fn an_entry_under_no_grammar_stands_whether_or_not_its_file_can_be_read() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         std::fs::write(dir.path().join("notes.txt"), "fn in_prose() {}\n").unwrap();
@@ -544,17 +544,23 @@ mod tests {
         assert_eq!(defs_named(&idx, "in_prose").len(), 1);
 
         reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        assert_eq!(idx, forced, "a file no grammar resolves is untouched");
+
+        // A directory at the path cannot be read as text under any uid.
+        std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
+        std::fs::create_dir(dir.path().join("notes.txt")).unwrap();
+        reindex_files(root, &mut idx, &["notes.txt".into()], None);
         assert_eq!(
             idx, forced,
-            "a readable file no grammar resolves is untouched"
+            "no grammar resolves, so the unreadable path is never asked for"
         );
 
-        std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
-        reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        // The same unreadable path under a grammar has its entry removed.
+        reindex_files(root, &mut idx, &["notes.txt".into()], Some(Lang::Rust));
         assert_eq!(
             idx,
             SymbolIndex::default(),
-            "an unreadable file's entry goes"
+            "an unreadable file's entry goes once a grammar resolves"
         );
     }
 
