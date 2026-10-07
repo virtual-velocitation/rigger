@@ -37262,6 +37262,104 @@ mod tests {
         );
     }
 
+    /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing
+    /// touches a file in `beta`'s blast radius, and `beta` lands as a fast-forward, WHEN `beta`'s
+    /// post-merge gate runs over the tree its pre-merge gate already proved green, THEN the
+    /// post-merge gate is a logged cache-hit, never a second run of the command. The digest is the
+    /// whole committed tree, so an upstream landing that changed what `beta` gates would already
+    /// have changed the digest.
+    #[test]
+    fn a_fast_forward_landing_whose_tree_was_gated_replays_its_post_merge_gates() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("aw".into(), agent("aw"));
+        cfg.agents.insert("bw".into(), agent("bw"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let mk = |name: &str, worker: &str, coverage: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: worker.into(),
+            coverage: coverage.into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("alpha".into(), mk("alpha", "aw", "alpha", vec![]));
+        cfg.workflow.stages.insert(
+            "beta".into(),
+            mk("beta", "bw", "widget", vec!["alpha".into()]),
+        );
+        // alpha's file carries beta's grounding word, so alpha's landing reaches beta's radius.
+        let driver = Stub {
+            commits_by_agent: HashMap::from([
+                (
+                    "aw".to_string(),
+                    vec![("shared.rs".to_string(), "// widget helper\n".to_string())],
+                ),
+                (
+                    "bw".to_string(),
+                    vec![("beta_work.rs".to_string(), "fn beta() {}\n".to_string())],
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: repo_path.clone(),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        for name in ["alpha", "beta"] {
+            assert_eq!(rs.units[name].status, ledger::Status::Integrated);
+        }
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let post_merge = |unit: &str| {
+            let key = gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && e.meta.get(META_REPLAY_KEY) == Some(&key)
+                })
+                .unwrap_or_else(|| panic!("no post-merge verdict recorded for {key}"))
+        };
+        let beta_post = post_merge("beta");
+        assert_eq!(
+            beta_post.meta.get(META_INPUT_DIGEST),
+            gate_verdict_event(&events, "beta", 0)
+                .meta
+                .get(META_INPUT_DIGEST),
+            "premise: beta landed as a fast-forward, so the landed tree is the gated tree"
+        );
+        for unit in ["alpha", "beta"] {
+            assert!(
+                post_merge(unit).meta.contains_key(META_CACHE_HIT),
+                "{unit}'s post-merge gate replays its pre-merge green over the same tree"
+            );
+        }
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "each unit's tree is gated once; no post-merge gate re-runs the command: {:?}",
+            runner.calls()
+        );
+    }
+
     #[test]
     fn a_content_change_misses_the_cache_and_re_runs_the_gate() {
         // spec 12, unit 1 (MISS on content change): when attempt 1 CHANGES the tree, its
