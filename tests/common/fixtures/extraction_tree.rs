@@ -51,8 +51,16 @@ The entry is `src/lib.rs`.
 See the [handbook](docs/handbook.md).
 ";
 
+/// The workflow definition's path, spelled once for the constant and for the payloads of
+/// [`WALKED`] that carry it.
+macro_rules! workflow_path {
+    () => {
+        ".rigger/workflow.yml"
+    };
+}
+
 /// The workflow definition: one stage run by one agent under one gate.
-pub const WORKFLOW_PATH: &str = ".rigger/workflow.yml";
+pub const WORKFLOW_PATH: &str = workflow_path!();
 pub const WORKFLOW_BODY: &str = "\
 stages:
   implement:
@@ -168,15 +176,27 @@ pub const WALKED: [WalkedBatch; 6] = [
         events: &[
             (
                 "DocConceptExtracted",
-                r#"{"kind":"agent","id":"agent:rust-engineer","title":"rust-engineer","doc":".rigger/workflow.yml"}"#,
+                concat!(
+                    r#"{"kind":"agent","id":"agent:rust-engineer","title":"rust-engineer","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
             ),
             (
                 "DocConceptExtracted",
-                r#"{"kind":"gate","id":"gate:fmt","title":"fmt","doc":".rigger/workflow.yml"}"#,
+                concat!(
+                    r#"{"kind":"gate","id":"gate:fmt","title":"fmt","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
             ),
             (
                 "DocConceptExtracted",
-                r#"{"kind":"stage","id":"stage:implement","title":"implement","doc":".rigger/workflow.yml"}"#,
+                concat!(
+                    r#"{"kind":"stage","id":"stage:implement","title":"implement","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
             ),
             (
                 "DocLinkExtracted",
