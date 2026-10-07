@@ -2671,6 +2671,204 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 }
 
 #[cfg(test)]
+mod blob_batch_tests {
+    //! Tests for [`BlobBatch`] (spec 107, THE REBUILD RE-EXTRACTS THE LEDGER): the one
+    //! `git cat-file --batch` process a rebuild reads its entries' blobs from.
+
+    use super::BlobBatch;
+    use crate::test_support::{git_init_quiet, git_ok_with_identity, git_out, write_file};
+    use std::path::{Path, PathBuf};
+
+    /// A fresh repository with no commit.
+    fn repository() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        dir
+    }
+
+    /// Write `bytes` at `name` under `root` and to the repository's object database as a loose
+    /// object, and answer its object id.
+    fn held(root: &Path, name: &str, bytes: &[u8]) -> String {
+        write_file(&root.join(name), bytes);
+        git_out(root, &["hash-object", "-w", name])
+    }
+
+    /// The object file of the loose object `id` in the repository at `root`, made writable.
+    fn loose_object(root: &Path, id: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root
+            .join(".git")
+            .join("objects")
+            .join(&id[..2])
+            .join(&id[2..]);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        path
+    }
+
+    /// What `batch` answers for `id`: the bytes, none, or the error's text.
+    fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
+        batch.blob(id).map_err(|e| e.0)
+    }
+
+    /// What a batch process that stopped while answering `id` is reported as.
+    fn stopped(id: &str) -> String {
+        format!(
+            "git cat-file --batch stopped while answering object {id}: restore the object or \
+             remove it, after which git answers it missing and its entry resolves from the tree"
+        )
+    }
+
+    /// One process answers every object asked of it, in any order and more than once: a blob's
+    /// exact bytes - empty, binary, ending without a newline - and none for an id the
+    /// repository does not hold, with the answers after a miss still each their own object's.
+    #[test]
+    fn one_process_answers_each_blob_it_holds_and_none_for_one_it_does_not() {
+        let dir = repository();
+        let root = dir.path();
+        let text = held(root, "a.txt", b"first line\nsecond line");
+        let binary = held(root, "b.bin", &[0, 159, 146, 150, b'\n', b'\n', 255]);
+        let empty = held(root, "empty", b"");
+        let absent = "1111111111111111111111111111111111111111";
+
+        let mut batch = BlobBatch::start(root).expect("a repository starts the batch process");
+        assert_eq!(
+            asked(&mut batch, &text),
+            Ok(Some(b"first line\nsecond line".to_vec()))
+        );
+        assert_eq!(asked(&mut batch, absent), Ok(None));
+        assert_eq!(
+            asked(&mut batch, &binary),
+            Ok(Some(vec![0, 159, 146, 150, b'\n', b'\n', 255]))
+        );
+        assert_eq!(asked(&mut batch, &empty), Ok(Some(Vec::new())));
+        assert_eq!(
+            asked(&mut batch, &text),
+            Ok(Some(b"first line\nsecond line".to_vec()))
+        );
+    }
+
+    /// An id that is not all hexadecimal digits is never written to the process - an empty one, one
+    /// holding a space, one holding a line break that would read as two requests - and answers
+    /// not held, the next answer still its own object's. An object that is not a blob is read
+    /// whole like any other, so the answer after it is aligned too.
+    #[test]
+    fn an_id_that_is_not_hexadecimal_is_not_held_and_never_shifts_the_answers_after_it() {
+        let dir = repository();
+        let root = dir.path();
+        let text = held(root, "a.txt", b"the body\n");
+        git_ok_with_identity(root, &["add", "a.txt"]);
+        git_ok_with_identity(root, &["commit", "-q", "-m", "one"]);
+        let tree = git_out(root, &["rev-parse", "HEAD^{tree}"]);
+        let tree_bytes = crate::subprocess::git_in(root)
+            .args(["cat-file", "tree", &tree])
+            .output()
+            .unwrap()
+            .stdout;
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        for id in [
+            "",
+            "zz zz",
+            "HEAD",
+            &format!("{text}\n{text}"),
+            &format!("{text} "),
+        ] {
+            assert_eq!(asked(&mut batch, id), Ok(None), "the id {id:?}");
+            assert_eq!(
+                asked(&mut batch, &text),
+                Ok(Some(b"the body\n".to_vec())),
+                "the answer after the id {id:?}"
+            );
+        }
+        assert_ne!(tree_bytes, Vec::<u8>::new());
+        assert_eq!(asked(&mut batch, &tree), Ok(Some(tree_bytes)));
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+    }
+
+    /// Outside a repository there is no object database to ask: no batch process is started.
+    #[test]
+    fn outside_a_repository_no_batch_process_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(BlobBatch::start(dir.path()).is_none());
+    }
+
+    /// A loose object whose body is truncated kills the process mid-answer: the read fails
+    /// naming the object and its remedy, and so does every read after it. An object asked before
+    /// it was answered whole.
+    #[test]
+    fn a_truncated_loose_object_fails_the_read_naming_the_object_and_its_remedy() {
+        let dir = repository();
+        let root = dir.path();
+        let whole = held(root, "a.txt", b"an object git holds whole\n");
+        let cut = held(root, "b.txt", b"an object whose body is cut short\n");
+        let object = loose_object(root, &cut);
+        let bytes = std::fs::read(&object).unwrap();
+        std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(
+            asked(&mut batch, &whole),
+            Ok(Some(b"an object git holds whole\n".to_vec()))
+        );
+        assert_eq!(asked(&mut batch, &cut), Err(stopped(&cut)));
+        assert_eq!(asked(&mut batch, &whole), Err(stopped(&whole)));
+    }
+
+    /// A loose object whose header is corrupt is one git answers `missing` for: it is not held,
+    /// and the process goes on answering.
+    #[test]
+    fn a_loose_object_with_a_corrupt_header_is_not_held_and_the_process_goes_on() {
+        let dir = repository();
+        let root = dir.path();
+        let whole = held(root, "a.txt", b"an object git holds whole\n");
+        let corrupt = held(root, "b.txt", b"an object whose header is garbage\n");
+        std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(asked(&mut batch, &corrupt), Ok(None));
+        assert_eq!(
+            asked(&mut batch, &whole),
+            Ok(Some(b"an object git holds whole\n".to_vec()))
+        );
+    }
+
+    /// The ids of the live processes whose command line names `dir`.
+    fn processes_naming(dir: &Path) -> Vec<u32> {
+        let needle = dir.to_str().unwrap();
+        std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| {
+                std::fs::read(format!("/proc/{pid}/cmdline"))
+                    .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(needle))
+            })
+            .collect()
+    }
+
+    /// The batch is one process for as long as it is held, and dropping it ends that process by
+    /// closing its input and waits for it: nothing of it is left, not even an unreaped child.
+    #[test]
+    fn dropping_the_batch_ends_its_process_and_reaps_it() {
+        let dir = repository();
+        let root = dir.path();
+        let text = held(root, "a.txt", b"the body\n");
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+        let running = processes_naming(root);
+        assert_eq!(running.len(), 1, "one batch process: {running:?}");
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+        assert_eq!(processes_naming(root), running, "still the one process");
+
+        drop(batch);
+        assert!(
+            !Path::new(&format!("/proc/{}", running[0])).exists(),
+            "the process is gone and reaped once the batch is dropped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::eventstore::Event;

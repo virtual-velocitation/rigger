@@ -417,4 +417,33 @@ mod tests {
         assert_eq!(wire(&file_batch(root, "plain.rs")), vec![]);
         assert_eq!(wire(&file_batch(root, "absent.md")), vec![]);
     }
+
+    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over a `gd` file's UTF-8
+    /// bytes answers the batch the walk lowers from that file, whatever the flag says, and the
+    /// empty batch for no bytes and for bytes that are not UTF-8.
+    #[test]
+    fn bytes_batch_answers_the_walks_batch_for_utf8_bytes_and_the_empty_batch_otherwise() {
+        use crate::extraction_tree::{walked_batch, DOCUMENT_BODY, DOCUMENT_PATH};
+        use crate::test_support::wire;
+
+        let expected = walked_batch("gd", DOCUMENT_PATH).to_vec();
+        for excluded in [false, true] {
+            assert_eq!(
+                wire(&bytes_batch(
+                    DOCUMENT_PATH,
+                    Some(DOCUMENT_BODY.as_bytes()),
+                    excluded
+                )),
+                expected,
+                "excluded {excluded}"
+            );
+        }
+        // A design document's title, cut inside a UTF-8 sequence.
+        let not_utf8: &[u8] = &[b'#', b' ', b'A', 0xe2, 0x82];
+        assert_eq!(wire(&bytes_batch(DOCUMENT_PATH, None, false)), vec![]);
+        assert_eq!(
+            wire(&bytes_batch(DOCUMENT_PATH, Some(not_utf8), false)),
+            vec![]
+        );
+    }
 }

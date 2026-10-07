@@ -1861,4 +1861,88 @@ mod tests {
             ]
         );
     }
+
+    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over a `gc` file's UTF-8
+    /// bytes answers the batch the walk lowers from that file - the source file's whole batch,
+    /// and the out-of-line test module hollowed to its one boundary event under `excluded`.
+    #[test]
+    fn bytes_batch_answers_the_batch_the_walk_lowers_from_a_files_bytes() {
+        use crate::extraction_tree::{
+            walked_batch, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+        };
+        use crate::test_support::wire;
+
+        for (path, body, excluded) in [
+            (SOURCE_PATH, SOURCE_BODY, false),
+            (TEST_MODULE_PATH, TEST_MODULE_BODY, true),
+        ] {
+            assert_eq!(
+                wire(&super::bytes_batch(path, Some(body.as_bytes()), excluded)),
+                walked_batch("gc", path).to_vec(),
+                "the bytes of {path}"
+            );
+        }
+    }
+
+    /// `excluded` changes a parsed batch: the source file's bytes under the flag are hollowed to
+    /// one boundary event of the file's own language.
+    #[test]
+    fn bytes_batch_hollows_a_parsed_file_under_the_excluded_flag() {
+        use crate::extraction_tree::{SOURCE_BODY, SOURCE_PATH};
+        use crate::test_support::wire;
+
+        assert_eq!(
+            wire(&super::bytes_batch(
+                SOURCE_PATH,
+                Some(SOURCE_BODY.as_bytes()),
+                true
+            )),
+            vec![(
+                TYPE_EDGE_INFERRED,
+                r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true}"#
+            )]
+        );
+    }
+
+    /// Every input `bytes_batch` cannot parse - no bytes, bytes that are not UTF-8, a path no
+    /// grammar resolves - answers exactly the one boundary event of an unknown language, whatever
+    /// the flag says, as the named walk gives a path the index lacks.
+    #[test]
+    fn bytes_batch_answers_the_unknown_boundary_for_every_input_it_cannot_parse() {
+        use crate::extraction_tree::{SOURCE_BODY, SOURCE_PATH};
+        use crate::test_support::wire;
+
+        let boundary = |path: &str| {
+            vec![(
+                TYPE_EDGE_INFERRED.to_string(),
+                format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#),
+            )]
+        };
+        let owned = |events: &[Event]| -> Vec<(String, String)> {
+            wire(events)
+                .into_iter()
+                .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
+                .collect()
+        };
+        let not_utf8: &[u8] = &[b'f', b'n', 0xff, 0xfe];
+        for (path, bytes, excluded) in [
+            (SOURCE_PATH, None, false),
+            (SOURCE_PATH, None, true),
+            (SOURCE_PATH, Some(not_utf8), false),
+            (SOURCE_PATH, Some(not_utf8), true),
+            ("notes.txt", Some(SOURCE_BODY.as_bytes()), false),
+            ("notes.txt", Some(SOURCE_BODY.as_bytes()), true),
+        ] {
+            assert_eq!(
+                owned(&super::bytes_batch(path, bytes, excluded)),
+                boundary(path),
+                "{path} with bytes {bytes:?} under excluded {excluded}"
+            );
+        }
+        // The named walk's batch for a path the index lacks is that same event.
+        let dir = tempfile::tempdir().unwrap();
+        let named =
+            super::file_batches(dir.path().to_str().unwrap(), &["src/absent.rs".to_string()]);
+        assert_eq!(owned(&named[0].1), boundary("src/absent.rs"));
+    }
 }

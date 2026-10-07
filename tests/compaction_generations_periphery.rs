@@ -26,8 +26,12 @@
 
 mod common;
 
+use common::cli::applied;
 use common::cli::assert_stopped_at_the_grounder;
 use common::cli::escalate_solo_unit;
+use common::cli::exists;
+use common::cli::fold_state;
+use common::cli::graph_identity;
 use common::cli::keyed;
 use common::cli::nanos;
 use common::cli::read_run_events;
@@ -459,49 +463,6 @@ fn head(name: &str, line: u32, partial: bool) -> Vec<u8> {
     serde_json::to_vec(&v).unwrap()
 }
 
-/// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
-/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
-/// identity's current generation, the node and edge assertions of live generations (edges by their
-/// columns, never their row ids), and the detached attachments a returning node revives. Everything
-/// else in the file is history a compacted log no longer replays.
-fn fold_state(graph_db: &Path) -> Vec<String> {
-    let conn = rusqlite::Connection::open(graph_db).unwrap();
-    [
-        "SELECT project, name, file, evidence, source, target FROM proofs
-          ORDER BY project, name, file, source, evidence",
-        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
-        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
-        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
-          ORDER BY project, identity, node_id",
-        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
-                e.valid_from, e.valid_to, e.source
-           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
-          ORDER BY 1, 2, 3, 4, 5, 6, 7",
-        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
-           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
-          ORDER BY 1, 2, 3, 4",
-    ]
-    .into_iter()
-    .flat_map(|sql| {
-        let mut stmt = conn.prepare(sql).unwrap();
-        let width = stmt.column_count();
-        stmt.query_map([], |r| {
-            Ok((0..width)
-                .map(|i| match r.get_ref(i).unwrap() {
-                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-                    other => format!("{other:?}"),
-                })
-                .collect::<Vec<_>>()
-                .join(" | "))
-        })
-        .unwrap()
-        .map(Result::unwrap)
-        .map(|row| format!("{sql}: {row}"))
-        .collect::<Vec<_>>()
-    })
-    .collect()
-}
-
 /// The events folded into both rebuilds AFTER the comparison, so a divergence latent in the fold
 /// state surfaces: a later file defining every name the fixtures drop, and a decision naming the
 /// dropped entity, which brings a retired node - and whatever detached from it - back.
@@ -538,14 +499,9 @@ fn later_events() -> Vec<Event> {
         .collect()
 }
 
-/// The whole live projection and the [`fold_state`] of `graph_db`, as one comparable value.
+/// The [`graph_identity`] of `graph_db` under [`PROJECT`].
 fn identity_of(graph_db: &Path) -> (String, Vec<String>) {
-    use rigger::contextgraph::sqlite::Projector;
-    let whole = Projector::open(graph_db.to_str().unwrap(), PROJECT)
-        .unwrap()
-        .whole()
-        .unwrap();
-    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+    graph_identity(graph_db, PROJECT)
 }
 
 /// Fold `events` whole, compact the log with the shipped policy, fold it again, and require the
@@ -3115,17 +3071,9 @@ impl ReleaseEraStore {
     /// The live projection and fold state of the project's `graph.db`, beside those of a fresh
     /// fold of the whole log.
     fn graph_and_a_fresh_fold_of_the_log(&self) -> ((String, Vec<String>), (String, Vec<String>)) {
-        use rigger::contextgraph::sqlite::Projector;
-        let whole = Projector::open(self.graph_db.to_str().unwrap(), &self.project())
-            .unwrap()
-            .whole()
-            .unwrap();
         let fresh = self.root().join("fresh.db");
         (
-            (
-                serde_json::to_string(&whole).unwrap(),
-                fold_state(&self.graph_db),
-            ),
+            graph_identity(&self.graph_db, &self.project()),
             (
                 fold_in_batches(&fresh, &self.project(), &[self.log()]),
                 fold_state(&fresh),
@@ -3888,23 +3836,6 @@ fn holds_table(db: &Path, table: &str) -> bool {
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
         table,
     )
-}
-
-/// Whether `db`'s applied ledger records `position`.
-fn applied(db: &Path, position: u64) -> bool {
-    exists(
-        db,
-        "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
-        position,
-    )
-}
-
-/// What the `SELECT EXISTS` query `sql` answers over `db` with `param` bound to `?1`.
-fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
-    rusqlite::Connection::open(db)
-        .unwrap()
-        .query_row(sql, [param], |r| r.get(0))
-        .unwrap()
 }
 
 /// Given `rigger setup`'s rebuild has swapped its shadow in and is about to fold the tail the log

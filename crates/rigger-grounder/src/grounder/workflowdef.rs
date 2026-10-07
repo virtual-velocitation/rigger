@@ -613,4 +613,42 @@ run: cargo fmt --check\n";
         assert!(has_concept(KIND_STAGE, "stage:implement"));
         assert!(has_concept(KIND_AGENT, "agent:rust-engineer"));
     }
+
+    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over the workflow
+    /// definition's UTF-8 bytes answers the batch the walk lowers from that file, whatever the
+    /// flag says, and the empty batch for no bytes, for bytes that are not UTF-8 and for text
+    /// the workflow parse refuses.
+    #[test]
+    fn bytes_batch_answers_the_walks_batch_for_a_parsed_definition_and_the_empty_batch_otherwise() {
+        use crate::extraction_tree::{walked_batch, WORKFLOW_BODY, WORKFLOW_PATH};
+        use crate::test_support::wire;
+
+        let expected = walked_batch("gw", WORKFLOW_PATH).to_vec();
+        for excluded in [false, true] {
+            assert_eq!(
+                wire(&bytes_batch(
+                    WORKFLOW_PATH,
+                    Some(WORKFLOW_BODY.as_bytes()),
+                    excluded
+                )),
+                expected,
+                "excluded {excluded}"
+            );
+        }
+        let not_utf8 = [WORKFLOW_BODY.as_bytes(), &[0xff]].concat();
+        let unknown_key = format!("{WORKFLOW_BODY}\nnot_a_key: 1\n");
+        assert_eq!(wire(&bytes_batch(WORKFLOW_PATH, None, false)), vec![]);
+        assert_eq!(
+            wire(&bytes_batch(WORKFLOW_PATH, Some(&not_utf8), false)),
+            vec![]
+        );
+        assert_eq!(
+            wire(&bytes_batch(
+                WORKFLOW_PATH,
+                Some(unknown_key.as_bytes()),
+                false
+            )),
+            vec![]
+        );
+    }
 }

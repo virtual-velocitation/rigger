@@ -346,6 +346,76 @@ pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
     out
 }
 
+/// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
+/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
+/// identity's current generation, the node and edge assertions of live generations (edges by their
+/// columns, never their row ids), and the detached attachments a returning node revives. Everything
+/// else in the file is history a compacted log no longer replays.
+pub fn fold_state(graph_db: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(graph_db).unwrap();
+    [
+        "SELECT project, name, file, evidence, source, target FROM proofs
+          ORDER BY project, name, file, source, evidence",
+        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
+        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
+        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
+          ORDER BY project, identity, node_id",
+        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
+                e.valid_from, e.valid_to, e.source
+           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
+          ORDER BY 1, 2, 3, 4, 5, 6, 7",
+        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
+           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
+          ORDER BY 1, 2, 3, 4",
+    ]
+    .into_iter()
+    .flat_map(|sql| {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let width = stmt.column_count();
+        stmt.query_map([], |r| {
+            Ok((0..width)
+                .map(|i| match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" | "))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|row| format!("{sql}: {row}"))
+        .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+/// The whole live projection of the graph at `graph_db`, read under `project`, and its
+/// [`fold_state`], as one comparable value: spec 101's comparison surface.
+pub fn graph_identity(graph_db: &Path, project: &str) -> (String, Vec<String>) {
+    let whole = Projector::open(graph_db.to_str().unwrap(), project)
+        .unwrap()
+        .whole()
+        .unwrap();
+    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+}
+
+/// Whether `db`'s applied ledger records `position`.
+pub fn applied(db: &Path, position: u64) -> bool {
+    exists(
+        db,
+        "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
+        position,
+    )
+}
+
+/// What the `SELECT EXISTS` query `sql` answers over `db` with `param` bound to `?1`.
+pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .query_row(sql, [param], |r| r.get(0))
+        .unwrap()
+}
+
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);

@@ -12252,4 +12252,31 @@ mod tests {
             "a marker naming a real serving dash must report no anomaly: {anomalies:?}"
         );
     }
+
+    /// THE ONE ROOT (spec 107): the tree a store's entries are relative to is the git top-level
+    /// of the directory holding the store's `.rigger/` - from the top level itself and from a
+    /// subdirectory of the repository alike - and that directory itself outside a repository.
+    #[test]
+    fn tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory() {
+        let repo = tempfile::tempdir().unwrap();
+        git_init_quiet(repo.path());
+        let top = repo.path().canonicalize().unwrap();
+        let sub = top.join("nested").join("deeper");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(tree_root(&top.join(RIGGER_DIR)), top);
+        assert_eq!(
+            tree_root(&sub.join(RIGGER_DIR)),
+            top,
+            "a store in a subdirectory is rooted at the repository's top level"
+        );
+
+        let bare = tempfile::tempdir().unwrap();
+        let holder = bare.path().join("project");
+        std::fs::create_dir_all(&holder).unwrap();
+        assert_eq!(
+            tree_root(&holder.join(RIGGER_DIR)),
+            holder,
+            "outside a repository the root is the directory holding the store"
+        );
+    }
 }

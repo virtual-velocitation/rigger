@@ -118,8 +118,8 @@ mod tests {
     use super::*;
 
     /// Every type whose payload the fold reads has its payload judged - so a rebuild passes over
-    /// exactly the events the fold rejects - and a type whose payload the fold does not read
-    /// passes unchecked.
+    /// exactly the events the fold rejects, a ledger entry of perception among them - and a type
+    /// whose payload the fold does not read passes unchecked.
     #[test]
     fn every_type_whose_payload_the_fold_reads_is_judged_and_no_other() {
         let judged = [
@@ -136,6 +136,7 @@ mod tests {
             TYPE_COMMUNITY_ASSIGNED,
             TYPE_CONCEPT_DERIVED,
             TYPE_CONCEPT_REALIZED,
+            rigger_domain::retention::TYPE_GENERATION_INGESTED,
         ];
         assert_eq!(
             judged
@@ -151,7 +152,7 @@ mod tests {
         // One object carrying every field any judged type requires, so each type accepts it -
         // and the same object followed by trailing bytes, which the fold's own parse
         // (`serde_json::from_slice`) rejects, so the judge must too.
-        let every_field = br#"{"id":"i","mention":"m","file":"f","name":"n","kind":"k","line":1,"from":"a","to":"b","rel":"r","alias":"a","canonical":"c","node":"n","community":"c","concept":"c"}"#;
+        let every_field = br#"{"id":"i","mention":"m","file":"f","name":"n","kind":"k","line":1,"from":"a","to":"b","rel":"r","alias":"a","canonical":"c","node":"n","community":"c","concept":"c","prefix":"gc","generation":"h1","blob":"","excluded":false}"#;
         let trailing = [&every_field[..], b" x"].concat();
         assert_eq!(
             judged
@@ -177,6 +178,32 @@ mod tests {
             [TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, "Unheard"].map(|t| check_fold_payload(t, b"x")),
             [Ok(()), Ok(()), Ok(())],
             "a type whose payload the fold does not read passes unchecked"
+        );
+    }
+
+    /// A ledger entry is judged by the parse its fold reads it with: a payload missing a field is
+    /// refused in that parse's own words, and one carrying all five passes.
+    #[test]
+    fn a_ledger_entry_is_judged_by_the_parse_its_fold_reads_it_with() {
+        let type_ = rigger_domain::retention::TYPE_GENERATION_INGESTED;
+        let whole =
+            br#"{"prefix":"gc","file":"src/f.rs","generation":"h1","blob":"","excluded":false}"#;
+        assert_eq!(check_fold_payload(type_, whole), Ok(()));
+        assert_eq!(
+            check_fold_payload(type_, b"{}"),
+            Err(
+                "GenerationIngested payload: missing field `prefix` at line 1 column 2".to_string()
+            )
+        );
+        assert_eq!(
+            check_fold_payload(
+                type_,
+                br#"{"prefix":"gc","file":"src/f.rs","generation":"h1","blob":""}"#
+            ),
+            Err(
+                "GenerationIngested payload: missing field `excluded` at line 1 column 61"
+                    .to_string()
+            )
         );
     }
 }

@@ -937,6 +937,353 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "symbols"))]
+mod resolve_entry_tests {
+    //! Tests for [`resolve_entry`] (spec 107, THE REBUILD RE-EXTRACTS THE LEDGER): resolution by
+    //! generation from the blob, the tree's file and no bytes, in that order.
+
+    use super::{batch_generation, resolve_entry};
+    use crate::contextgraph::Error;
+    use crate::eventstore::Event;
+    use crate::extraction_tree::{
+        planted_extraction_tree, walked_batch, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
+        TEST_MODULE_PATH, WORKFLOW_PATH,
+    };
+    use crate::host_fixtures::write_file;
+    use crate::test_support::{entry_event, wire};
+    use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+    use std::path::Path;
+
+    /// The generation the extraction tree's fixture records for the source file's `gc` batch.
+    const SOURCE_GENERATION: &str = "f81a57a5c4f55f52";
+
+    /// A source file the fixture does not hold, the `gc` batch it extracts to at `src/lib.rs`,
+    /// and the `gc` batch of that path for no bytes.
+    const OTHER_BODY: &str = "fn tree_only() {}\n";
+    const OTHER_BATCH: [(&str, &str); 2] = [
+        (
+            "CodeEntityExtracted",
+            r#"{"file":"src/lib.rs","name":"tree_only","kind":"function","line":1,"lang":"rust","fresh":true}"#,
+        ),
+        (
+            "EdgeInferred",
+            r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#,
+        ),
+    ];
+    const NO_BYTES_BATCH: [(&str, &str); 1] = [(
+        "EdgeInferred",
+        r#"{"file":"src/lib.rs","name":"","lang":"unknown","fresh":true}"#,
+    )];
+
+    /// The generation of the batch holding `events`, `(type, payload text)` pairs.
+    fn generation_of(events: &[(&str, &str)]) -> String {
+        let batch: Vec<Event> = events
+            .iter()
+            .map(|(type_, payload)| Event::new(*type_, payload.as_bytes().to_vec()))
+            .collect();
+        batch_generation(&batch)
+    }
+
+    /// The ledger entry of `<prefix>/<file>` at `generation`, extracted from `blob` under the
+    /// walk's flag `excluded`.
+    fn entry(prefix: &str, file: &str, generation: &str, blob: &str, excluded: bool) -> Event {
+        entry_event(
+            &GenerationIngested {
+                prefix: prefix.to_string(),
+                file: file.to_string(),
+                generation: generation.to_string(),
+                blob: blob.to_string(),
+                excluded,
+            },
+            1,
+        )
+    }
+
+    /// Resolve `entry` under `root` against a blob source holding `held` - `(object id, bytes)`
+    /// pairs - and answer the resolved batch as `(type, payload text)` pairs beside the object
+    /// ids the source was asked for, in order.
+    fn resolved(
+        root: &Path,
+        entry: &Event,
+        held: &[(&str, &str)],
+    ) -> (Option<Vec<(String, String)>>, Vec<String>) {
+        let mut asked: Vec<String> = Vec::new();
+        let mut source = |id: &str| -> Result<Option<Vec<u8>>, Error> {
+            asked.push(id.to_string());
+            Ok(held
+                .iter()
+                .find(|(held_id, _)| *held_id == id)
+                .map(|(_, bytes)| bytes.as_bytes().to_vec()))
+        };
+        let batch = resolve_entry(root, entry, Some(&mut source)).unwrap();
+        (batch.as_deref().map(owned), asked)
+    }
+
+    /// `events` as owned `(type, payload text)` pairs.
+    fn owned(events: &[Event]) -> Vec<(String, String)> {
+        wire(events)
+            .into_iter()
+            .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
+            .collect()
+    }
+
+    /// `events`, borrowed `(type, payload text)` pairs, as owned ones.
+    fn pairs(events: &[(&str, &str)]) -> Vec<(String, String)> {
+        events
+            .iter()
+            .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
+            .collect()
+    }
+
+    /// A tree holding [`OTHER_BODY`] at the source file's path.
+    fn tree_holding_the_other_body() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join(SOURCE_PATH), OTHER_BODY.as_bytes());
+        dir
+    }
+
+    /// The blob is where to look first, the tree's file second and no bytes last: with the blob
+    /// holding one generation and the tree's file another, an entry of each resolves to its own
+    /// batch, an entry of the generation of no bytes resolves to that boundary, and an entry of a
+    /// generation none of the three extracts to resolves nothing. The blob is asked for every
+    /// one of them.
+    #[test]
+    fn an_entry_resolves_at_the_first_source_whose_batch_has_its_generation() {
+        let dir = tree_holding_the_other_body();
+        let held = [("b1", SOURCE_BODY)];
+        let cases = [
+            (
+                SOURCE_GENERATION.to_string(),
+                Some(pairs(walked_batch("gc", SOURCE_PATH))),
+            ),
+            (generation_of(&OTHER_BATCH), Some(pairs(&OTHER_BATCH))),
+            (generation_of(&NO_BYTES_BATCH), Some(pairs(&NO_BYTES_BATCH))),
+            ("0000000000000000".to_string(), None),
+        ];
+        for (generation, expected) in cases {
+            assert_eq!(
+                resolved(
+                    dir.path(),
+                    &entry("gc", SOURCE_PATH, &generation, "b1", false),
+                    &held
+                ),
+                (expected, vec!["b1".to_string()]),
+                "the entry at {generation}"
+            );
+        }
+    }
+
+    /// An entry that names no blob never asks the blob source, and one whose blob the source
+    /// does not hold falls to the tree's file.
+    #[test]
+    fn an_entry_naming_no_blob_asks_no_source_and_a_blob_not_held_falls_to_the_tree() {
+        let dir = tree_holding_the_other_body();
+        let other = generation_of(&OTHER_BATCH);
+        assert_eq!(
+            resolved(
+                dir.path(),
+                &entry("gc", SOURCE_PATH, &other, "", false),
+                &[("", SOURCE_BODY)]
+            ),
+            (Some(pairs(&OTHER_BATCH)), Vec::<String>::new())
+        );
+        assert_eq!(
+            resolved(
+                dir.path(),
+                &entry("gc", SOURCE_PATH, &other, "b2", false),
+                &[("b1", SOURCE_BODY)]
+            ),
+            (Some(pairs(&OTHER_BATCH)), vec!["b2".to_string()])
+        );
+    }
+
+    /// With no blob source, the first source is skipped: an entry whose generation only its blob
+    /// extracts to resolves nothing, and one the tree's file extracts to resolves from it.
+    #[test]
+    fn without_a_blob_source_an_entry_resolves_from_the_tree_or_not_at_all() {
+        let dir = tree_holding_the_other_body();
+        let resolve = |generation: &str| {
+            resolve_entry(
+                dir.path(),
+                &entry("gc", SOURCE_PATH, generation, "b1", false),
+                None,
+            )
+            .unwrap()
+            .as_deref()
+            .map(owned)
+        };
+        assert_eq!(resolve(SOURCE_GENERATION), None);
+        assert_eq!(
+            resolve(&generation_of(&OTHER_BATCH)),
+            Some(pairs(&OTHER_BATCH))
+        );
+    }
+
+    /// A blob source that fails fails the resolution with its error, though the tree's file
+    /// extracts to the entry's generation.
+    #[test]
+    fn a_failing_blob_source_fails_the_resolution_the_tree_could_have_answered() {
+        let dir = tree_holding_the_other_body();
+        let mut failing =
+            |_: &str| -> Result<Option<Vec<u8>>, Error> { Err(Error("the batch died".into())) };
+        let answer = resolve_entry(
+            dir.path(),
+            &entry("gc", SOURCE_PATH, &generation_of(&OTHER_BATCH), "b1", false),
+            Some(&mut failing),
+        );
+        assert_eq!(
+            answer
+                .map(|batch| batch.as_deref().map(owned))
+                .map_err(|e| e.0),
+            Err("the batch died".to_string())
+        );
+    }
+
+    /// Each prefix resolves through its own half's function over the extraction tree: the source
+    /// file's path under `gc` and under `gd`, the design document, the workflow definition from
+    /// `.rigger/workflow.yml`, and the out-of-line test module only under the flag its entry
+    /// records. A prefix no half owns resolves nothing.
+    #[test]
+    fn each_prefix_resolves_through_its_own_half_under_the_entrys_flag() {
+        let dir = planted_extraction_tree(write_file);
+        let from_tree = |prefix: &str, path: &str, generation: &str, excluded: bool| {
+            resolved(
+                dir.path(),
+                &entry(prefix, path, generation, "", excluded),
+                &[],
+            )
+            .0
+        };
+        for (prefix, path, generation, excluded) in [
+            ("gc", SOURCE_PATH, SOURCE_GENERATION, false),
+            ("gd", SOURCE_PATH, "88eadaf4024b4a86", false),
+            ("gd", DOCUMENT_PATH, "ea5177040caf5338", false),
+            ("gw", WORKFLOW_PATH, "08eb9cb734e95dc1", false),
+            ("gc", TEST_MODULE_PATH, "878ec204b714de6b", true),
+        ] {
+            assert_eq!(
+                from_tree(prefix, path, generation, excluded),
+                Some(pairs(walked_batch(prefix, path))),
+                "{prefix}/{path}"
+            );
+        }
+        assert_eq!(
+            from_tree("gc", TEST_MODULE_PATH, "878ec204b714de6b", false),
+            None,
+            "the test module's boundary batch is not what its bytes extract to without the flag"
+        );
+        assert_eq!(
+            from_tree("gc", SOURCE_PATH, SOURCE_GENERATION, true),
+            None,
+            "the source file's batch is not what its bytes extract to under the flag"
+        );
+        assert_eq!(from_tree("gx", SOURCE_PATH, SOURCE_GENERATION, false), None);
+    }
+
+    /// An empty batch resolves no entry: an entry naming the generation of no events, for a
+    /// design document the tree does not hold, resolves nothing rather than the empty batch.
+    #[test]
+    fn an_entry_naming_the_generation_of_the_empty_batch_resolves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = batch_generation(&[]);
+        for prefix in ["gd", "gw"] {
+            assert_eq!(
+                resolved(
+                    dir.path(),
+                    &entry(prefix, "docs/absent.md", &empty, "", false),
+                    &[]
+                ),
+                (None, Vec::<String>::new()),
+                "{prefix}"
+            );
+        }
+    }
+
+    /// The tree's file is read by the tree's one read rule: a `gc` path under a hidden directory
+    /// is handed no bytes, so an entry of the generation its file extracts to resolves nothing
+    /// and an entry of the generation of no bytes resolves.
+    #[test]
+    fn a_path_outside_the_walks_scope_is_read_as_no_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = ".hidden/lib.rs";
+        write_file(&dir.path().join(path), OTHER_BODY.as_bytes());
+        let extracted = [
+            (
+                "CodeEntityExtracted",
+                r#"{"file":".hidden/lib.rs","name":"tree_only","kind":"function","line":1,"lang":"rust","fresh":true}"#,
+            ),
+            (
+                "EdgeInferred",
+                r#"{"file":".hidden/lib.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#,
+            ),
+        ];
+        let no_bytes = [(
+            "EdgeInferred",
+            r#"{"file":".hidden/lib.rs","name":"","lang":"unknown","fresh":true}"#,
+        )];
+        let from_tree = |generation: &str| {
+            resolved(dir.path(), &entry("gc", path, generation, "", false), &[]).0
+        };
+        assert_eq!(from_tree(&generation_of(&extracted)), None);
+        assert_eq!(from_tree(&generation_of(&no_bytes)), Some(pairs(&no_bytes)));
+        // The same bytes, handed as the entry's blob, do extract to the first generation.
+        assert_eq!(
+            resolved(
+                dir.path(),
+                &entry("gc", path, &generation_of(&extracted), "b1", false),
+                &[("b1", OTHER_BODY)]
+            )
+            .0,
+            Some(pairs(&extracted))
+        );
+    }
+
+    /// An entry whose payload does not parse resolves nothing and asks no source.
+    #[test]
+    fn an_entry_whose_payload_does_not_parse_resolves_nothing() {
+        let dir = tree_holding_the_other_body();
+        assert_eq!(
+            resolved(
+                dir.path(),
+                &Event::new(TYPE_GENERATION_INGESTED, b"{}".to_vec()),
+                &[("", OTHER_BODY)]
+            ),
+            (None, Vec::<String>::new())
+        );
+    }
+}
+
+#[cfg(all(test, not(feature = "symbols")))]
+mod resolve_entry_stub_tests {
+    use super::resolve_entry;
+    use crate::contextgraph::Error;
+    use crate::eventstore::Event;
+
+    /// The light lane compiles no extraction: an entry whose path holds a file, naming a blob,
+    /// resolves nothing, and the blob source is never asked.
+    #[test]
+    fn without_an_extraction_no_entry_resolves_and_no_blob_is_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lib.rs"), "fn product() {}\n").unwrap();
+        let entry = Event::new(
+            "GenerationIngested",
+            br#"{"prefix":"gc","file":"lib.rs","generation":"h1","blob":"b1","excluded":false}"#
+                .to_vec(),
+        );
+        let mut asked = 0;
+        let mut source = |_: &str| -> Result<Option<Vec<u8>>, Error> {
+            asked += 1;
+            Ok(Some(b"fn product() {}\n".to_vec()))
+        };
+        let answer = resolve_entry(dir.path(), &entry, Some(&mut source));
+        assert_eq!(
+            answer.map(|batch| batch.is_none()).map_err(|e| e.0),
+            Ok(true)
+        );
+        assert_eq!(asked, 0);
+    }
+}
+
+#[cfg(all(test, feature = "symbols"))]
 mod scoped_reindex_tests {
     //! Tests for [`ingest_files_batched`] and [`graph_index_lag`] (spec 92, FRESH ON EVERY
     //! INTEGRATION): the scoped-reindex entry an integration's own graph freshening calls, and the
