@@ -37180,6 +37180,68 @@ mod tests {
         );
     }
 
+    /// A [`CacheDriver`] whose implementer, from attempt 1 on, first COMMITS a detour edit to
+    /// `work.rs` and then writes the attempt's content back - so the attempt's tree is
+    /// byte-identical to attempt 0's while its commit history is not.
+    struct DetourDriver(CacheDriver);
+    impl AgentDriver for DetourDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id.contains("/implementer#") && attempt_of(&opts.id) >= 1 {
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "detour\n").unwrap();
+                run_git(&opts.dir, &["add", "-A"]);
+                run_git(&opts.dir, &["commit", "-q", "-m", "detour"]);
+            }
+            self.0.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// A gate verdict is replayed only when every input the gate reads is unchanged, and a
+    /// gate may read commit history (red-before-green walks it; the content gates diff from
+    /// the run-branch ref): GIVEN attempt 1 reproduces attempt 0's tree through a different
+    /// history, WHEN its gate runs, THEN the digests differ and the gate runs again.
+    #[test]
+    fn an_identical_tree_reached_through_different_history_is_not_replayed() {
+        let repo = temp_git_project_with_commit();
+        let cfg = review_stage_cfg("g");
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = DetourDriver(CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        });
+        let deps = Deps {
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, "s", 0);
+        let v1 = gate_verdict_event(&events, "s", 1);
+        assert_ne!(
+            v0.meta.get(META_INPUT_DIGEST),
+            v1.meta.get(META_INPUT_DIGEST),
+            "a different history is a different gate input, so the digest differs"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 re-ran over its different history rather than replay attempt 0's green"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "the gate ran on both attempts: {:?}",
+            runner.calls()
+        );
+    }
+
     #[test]
     fn a_content_change_misses_the_cache_and_re_runs_the_gate() {
         // spec 12, unit 1 (MISS on content change): when attempt 1 CHANGES the tree, its
