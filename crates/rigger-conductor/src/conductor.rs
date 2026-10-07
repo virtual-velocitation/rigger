@@ -4141,16 +4141,12 @@ impl RunCtx<'_> {
         };
         // Each unit is partitioned by its SAFE-SUPERSET view (spec 16 unit 3): the union of the
         // structural cross-reference graph and grep, uncapped, so a name-level miss can never
-        // co-schedule two conflicting units. On the non-symbols default the safe view equals the
-        // old `ground(query, 8)` file set, so a NON-empty partition is byte-for-byte the pre-unit-3
-        // one. A HUB radius (`serialize`) OR an EMPTY radius (a total, unassessable grounding miss)
-        // fails SAFE by taking its OWN singleton batch rather than joining the disjointness grouping
-        // - the empty-radius own-batch matches the SAME fail-safe `route_review_tier` takes (empty
-        // -> full panel), closing the fail-OPEN where an empty want-set is disjoint from every batch
-        // and would collapse into the first shared one. The shareable radii go through the ONE
-        // `partition_by_blast_radius` authority; both fail-safes ride the shared
-        // `partition_with_serialize` writer, the same own-batch model unit 2's eval froze.
-        let items: Vec<(String, Vec<String>, bool)> = ready
+        // co-schedule two conflicting units. A hub's whole neighborhood is in that view, so a hub
+        // needs no rule of its own. The radii go through the ONE `partition_by_blast_radius`
+        // authority over `radii_conflict`: two radii sharing a file never share a batch, and an
+        // EMPTY radius (a total, unassessable grounding miss) takes its own batch - the same
+        // fail-safe `route_review_tier` takes (empty -> full panel).
+        let items: Vec<(String, Vec<String>)> = ready
             .iter()
             .map(|name| {
                 let st = &stages[name];
@@ -4159,11 +4155,13 @@ impl RunCtx<'_> {
                 } else {
                     st.coverage.as_str()
                 };
-                let radius = grounder.blast_radius(query, GROUNDED_SEED_K);
-                (name.clone(), radius.safe, radius.serialize)
+                (
+                    name.clone(),
+                    grounder.blast_radius(query, GROUNDED_SEED_K).safe,
+                )
             })
             .collect();
-        partition_with_serialize(&items)
+        partition_by_blast_radius(&items)
     }
 
     /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
@@ -9729,8 +9727,8 @@ impl RunCtx<'_> {
                     worktree::MergeOutcome::Conflict(conflicting) => {
                         // TABLE row 1's after-record: conflicted (names the conflicting paths).
                         self.record_merge_outcome(&st.name, attempt, pass, &conflicting)?;
-                        // An unpredicted overlap the partitioner did not serialize (two
-                        // batch-mates the grounder placed together that edit the same region)
+                        // An unpredicted overlap the scheduler did not keep apart (two
+                        // co-scheduled units whose radii missed the region they both edit)
                         // is NOT a defect of this unit. `merge_into_worktree` already merged the
                         // run branch INTO this worktree, leaving conflict markers there and the
                         // unit's branch (every prior commit) untouched.
@@ -10858,9 +10856,8 @@ impl RunCtx<'_> {
     /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
     /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
     /// missed reference could co-schedule two conflicting units or route a wide/high-risk
-    /// change to the light panel); `.serialize` marks a hub radius
-    /// for its OWN batch. The `.safe` view and `.serialize` verdict are the `BlastRadiusComputed`
-    /// audit's payload; the audit's `precise` is instead the actual prompt SEED
+    /// change to the light panel). The `.safe` view is the `BlastRadiusComputed` audit's
+    /// payload; the audit's `precise` is instead the actual prompt SEED
     /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
     /// structural rank - DIVERGES from the seed (distinct FILES of the k-LINE `ground` pass) past
     /// the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
@@ -10875,8 +10872,8 @@ impl RunCtx<'_> {
     /// confidence-tier filters over the ONE seeded subgraph ([`confidence_tier_radius`]) instead of
     /// the grounder's structural/grep split - `.precise` becomes the EXTRACTED sub-graph and `.safe`
     /// is UNIONED with the grounder's grep superset so it only ever WIDENS (the addendum 2.4
-    /// grep-superset invariant is preserved unconditionally). The `.serialize` hub verdict is carried
-    /// from the grounder. With no graph the grounder radius is returned verbatim (the fallback above).
+    /// grep-superset invariant is preserved unconditionally). With no graph the grounder radius is
+    /// returned verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
         let base = match self.deps.grounder {
             Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
@@ -10889,9 +10886,8 @@ impl RunCtx<'_> {
         // `grounded_seed` - so this never perturbs a safety consumer); `safe` is UNIONED with the
         // graph's all-tier view so it can only WIDEN, never narrow below the grep union - the
         // addendum 2.4 correctness invariant holds unconditionally, even on an under-populated graph.
-        // The grounder's `serialize` hub fail-safe is carried, never silently dropped. With no graph
-        // (or a graph read error) this returns the grounder radius byte-for-byte, so every
-        // graph-absent consumer and test is unchanged.
+        // With no graph (or a graph read error) this returns the grounder radius byte-for-byte, so
+        // every graph-absent consumer and test is unchanged.
         let graph = match self.deps.graph {
             Some(g) => g,
             None => return base,
@@ -10909,7 +10905,6 @@ impl RunCtx<'_> {
         BlastRadius {
             precise: tiers.precise,
             safe: safe.into_iter().collect(),
-            serialize: base.serialize,
         }
     }
 
@@ -10949,8 +10944,8 @@ impl RunCtx<'_> {
     /// nop / no-grounder path emits nothing new and stays byte-for-byte unchanged. When
     /// structural, it is emitted on EVERY path INCLUDING the empty-radius fail-safe (the index, and
     /// so the stamp, is present even when a query grounds to nothing), so "why the full panel?" is
-    /// always answerable. The payload carries the unit, both views, the serialize verdict, and the
-    /// index provenance - enough to reconstruct the partition and drive the runtime
+    /// always answerable. The payload carries the unit, both views, and the index provenance -
+    /// enough to reconstruct the partition and drive the runtime
     /// parallelism-retention metric offline (`metrics::project`). It is pure audit: the
     /// context-graph projector matches no fold arm for it, so it folds to no node/edge idempotently.
     ///
@@ -10961,7 +10956,7 @@ impl RunCtx<'_> {
     /// `precise` is a k-FILE structural rank, so beyond the cap the recorded files would otherwise
     /// name files the prompt was never seeded on. The same `seed` seeds the spawn and is recorded
     /// here (derive-both-from-one-pass), so the audit provenance always matches what the agent saw.
-    /// The `safe` view and `serialize` verdict still come from the two-view `radius`, and
+    /// The `safe` view still comes from the two-view `radius`, and
     /// `metrics::project` reads only those - so recording the seed as `precise` does not perturb the
     /// retention metric.
     fn record_blast_radius(
@@ -10989,7 +10984,6 @@ impl RunCtx<'_> {
                 "unit": st.name,
                 "precise": seed,
                 "safe": radius.safe,
-                "serialize": radius.serialize,
                 "index_stamp": stamp,
             }),
         )
@@ -13177,9 +13171,7 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
 /// always in both tiers (a touched file is in its own radius). Deterministic by construction: the
 /// views are `BTreeSet`-collected, so the returned lists are sorted regardless of traversal order.
 ///
-/// `serialize` (the hub fail-safe) is NOT set here - it is a property of the traversal degree the
-/// caller layers on from the grounder verdict (never silently dropped); this filter owns only the
-/// precise/safe tier split.
+/// This filter owns only the precise/safe tier split.
 fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
     let precise = files_reachable(g, seed, &[contextgraph::TIER_EXTRACTED]);
     let safe = files_reachable(
@@ -13194,7 +13186,6 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
     BlastRadius {
         precise: precise.into_iter().collect(),
         safe: safe.into_iter().collect(),
-        serialize: false,
     }
 }
 
@@ -14055,8 +14046,6 @@ fn integrates(st: &Stage) -> bool {
 }
 
 pub use crate::metrics::partition_by_blast_radius;
-
-pub use crate::metrics::partition_with_serialize;
 
 /// Which grounding slice a spawn's prompt renders (spec 36). It is an INJECTED discriminator chosen
 /// by the call site, NOT derivable from the `Stage` alone: the SAME `Stage` assembles both an
@@ -36343,15 +36332,18 @@ mod tests {
         ];
         assert_eq!(batches, expected);
 
-        // Disjoint sets all share the first batch; empty radii conflict with nothing.
+        // Disjoint sets share the first batch; an EMPTY radius (an unassessable grounding miss)
+        // conflicts with everything, so it takes its own batch.
         let disjoint = vec![
             ("p".to_string(), vec!["p.rs".to_string()]),
             ("q".to_string(), vec!["q.rs".to_string()]),
             ("r".to_string(), Vec::new()),
         ];
-        let expected_one: Vec<Vec<String>> =
-            vec![vec!["p".to_string(), "q".to_string(), "r".to_string()]];
-        assert_eq!(partition_by_blast_radius(&disjoint), expected_one);
+        let expected: Vec<Vec<String>> = vec![
+            vec!["p".to_string(), "q".to_string()],
+            vec!["r".to_string()],
+        ];
+        assert_eq!(partition_by_blast_radius(&disjoint), expected);
     }
 
     #[test]
@@ -38325,8 +38317,7 @@ mod tests {
 
     /// A grounder that returns a CANNED two-view blast radius per query and a configurable
     /// `index_stamp`, so a unit-3 wiring test controls the precise SEED view, the uncapped SAFE
-    /// view, the hub `serialize` verdict, AND the structural-active audit signal independently of
-    /// any real tree. `ground` returns the PRECISE view as refs (what `build_prompt` seeds from).
+    /// view, AND the structural-active audit signal independently of any real tree. `ground` returns the PRECISE view as refs (what `build_prompt` seeds from).
     struct StructuralStubGrounder {
         by_query: HashMap<String, BlastRadius>,
         stamp: String,
@@ -38356,8 +38347,8 @@ mod tests {
         }
     }
 
-    /// The BlastRadiusComputed events a run recorded, decoded to `(unit, safe, serialize)`.
-    fn blast_radius_audits(events: &[Event]) -> Vec<(String, Vec<String>, bool)> {
+    /// The BlastRadiusComputed events a run recorded, decoded to `(unit, safe)`.
+    fn blast_radius_audits(events: &[Event]) -> Vec<(String, Vec<String>)> {
         events
             .iter()
             .filter(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
@@ -38369,11 +38360,7 @@ mod tests {
                     .iter()
                     .map(|f| f.as_str().unwrap().to_string())
                     .collect();
-                (
-                    v["id"].as_str().unwrap().to_string(),
-                    safe,
-                    v["serialize"].as_bool().unwrap(),
-                )
+                (v["id"].as_str().unwrap().to_string(), safe)
             })
             .collect()
     }
@@ -38433,26 +38420,18 @@ mod tests {
     /// fires and the ONLY thing that can force full is the beyond-cap high-risk membership over
     /// the safe view (routing over precise would go light). The unit integrates, its
     /// blast-radius audit (`audit_why`) records the safe view carrying the beyond-cap file, and
-    /// its review tier routes FULL on that file (`route_why`). Returns the log and the audit's
-    /// `serialize`.
+    /// its review tier routes FULL on that file (`route_why`). Returns the log.
     fn assert_beyond_cap_high_risk_routes_full(
         stage: Stage,
         audit_why: &str,
         route_why: &str,
-    ) -> (Vec<Event>, bool) {
+    ) -> Vec<Event> {
         let repo = temp_git_project_with_commit();
         let precise: Vec<String> = (0..8).map(|i| format!("src/f{i}.rs")).collect();
         let mut safe = precise.clone();
         safe.push("specs/core.md".to_string());
         let grounder = StructuralStubGrounder {
-            by_query: HashMap::from([(
-                "s".to_string(),
-                BlastRadius {
-                    precise,
-                    safe,
-                    serialize: false,
-                },
-            )]),
+            by_query: HashMap::from([("s".to_string(), BlastRadius { precise, safe })]),
             stamp: "idxhash/ts-tags-v1".to_string(),
         };
         let cfg = tiered_cfg(stage);
@@ -38473,7 +38452,7 @@ mod tests {
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let audits = blast_radius_audits(&events);
-        let (unit, safe_recorded, serialize) = audits.first().expect(audit_why).clone();
+        let (unit, safe_recorded) = audits.first().expect(audit_why).clone();
         assert_eq!(unit, "s");
         assert!(
             safe_recorded.iter().any(|f| f == "specs/core.md"),
@@ -38487,28 +38466,27 @@ mod tests {
             "{route_why}: {evidence}"
         );
         assert_eq!(evidence["high-risk-path"], json!("specs/core.md"));
-        (events, serialize)
+        events
     }
 
     /// spec 16 unit 3, the symbols-ACTIVE pins: with a STRUCTURAL grounder (a non-empty
     /// `index_stamp`) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
-    /// audit event carrying the SAFE view + `serialize` (so the partition is reconstructable from
+    /// audit event carrying the SAFE view (so the partition is reconstructable from
     /// the log), (2) routes the review tier over the UNCAPPED SAFE view - so a high-risk file
     /// present ONLY in the safe view (BEYOND the precise k-cap) still forces the FULL panel, which
     /// routing over the capped precise seed would miss - and (3) drives the runtime
     /// parallelism-retention metric from those events.
     #[test]
     fn a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file() {
-        // (1) the audit event is recorded, carrying the safe view + serialize (reconstructable);
+        // (1) the audit event is recorded, carrying the safe view (reconstructable);
         // (2) the review-tier routed FULL because the beyond-cap high-risk file is in the SAFE
         // view (routing the capped precise seed - which excludes specs/core.md - would have gone
         // light).
-        let (events, serialize) = assert_beyond_cap_high_risk_routes_full(
+        let events = assert_beyond_cap_high_risk_routes_full(
             tiered_stage(20, &["specs/"]),
             "a structural grounder records the blast-radius audit",
             "a beyond-cap high-risk file in the safe view forces the full panel",
         );
-        assert!(!serialize);
         // (3) the audit events DRIVE the runtime retention metric (a lone disjoint unit: 0/1).
         let m = crate::metrics::project(&events);
         assert!(
@@ -38686,7 +38664,7 @@ mod tests {
     }
 
     /// spec 29c criterion 2 (`u29c-2`): the CONFIDENCE-TIER blast radius is TWO filters over the ONE
-    /// tiered edge set, replacing `BlastRadius{precise,safe,serialize}`. `precise` is the EXTRACTED
+    /// tiered edge set, replacing the grounder's `BlastRadius{precise,safe}`. `precise` is the EXTRACTED
     /// sub-graph; `safe` is `EXTRACTED u INFERRED u AMBIGUOUS`; `safe` stays a superset of the grep
     /// union (the AMBIGUOUS = grep-visible-only tail rides in `safe`). Proven over the addendum 6.2
     /// fixture: from seed `combat.rs`, only `combat.rs` is EXTRACTED-reachable, while the INFERRED
@@ -38740,18 +38718,13 @@ mod tests {
             r.precise.iter().all(|f| r.safe.contains(f)),
             "precise must be a subset of safe"
         );
-        // This filter owns only the tier split; the hub verdict is layered on by the caller.
-        assert!(
-            !r.serialize,
-            "the tier filter itself never sets the hub verdict"
-        );
     }
 
     /// spec 29c criterion 2 wiring: `grounded_blast_radius` COMPUTES the two-view radius by
     /// tier-filtering the ONE seeded subgraph when a graph is present (the tier filter is live, not
     /// dead code), and it PRESERVES the safety floor - `safe` is unioned with the grounder's grep
-    /// superset so it can only widen, never narrow below the grep union (addendum 2.4), and the
-    /// grounder's `serialize` hub verdict is carried, never silently dropped. The `graph: None` arm
+    /// superset so it can only widen, never narrow below the grep union (addendum 2.4). The
+    /// `graph: None` arm
     /// falls back to the grounder radius byte-for-byte, so the two arms observably differ: the graph
     /// arm surfaces the INFERRED/AMBIGUOUS files the grep radius alone never would.
     #[test]
@@ -38798,7 +38771,7 @@ mod tests {
         );
 
         // WITH the graph, the tier filter is live: safe widens to the all-tier reachable set while
-        // still containing the grep floor, precise is the EXTRACTED sub-graph, serialize is carried.
+        // still containing the grep floor, and precise is the EXTRACTED sub-graph.
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -38829,10 +38802,6 @@ mod tests {
             vec!["combat.rs".to_string()],
             "precise is the EXTRACTED sub-graph; got {:?}",
             r.precise
-        );
-        assert_eq!(
-            r.serialize, base.serialize,
-            "the grounder's hub (serialize) verdict is carried through, never dropped"
         );
     }
 
@@ -39019,12 +38988,33 @@ mod tests {
         }
     }
 
-    /// Drive ONE `run_wave` call at width `width` over `units` - each `(name, safe radius,
-    /// hub flag)`, its own agent named after it, partitioned by blast radius over a structural
-    /// grounder - under `probe`; returns the stages the call integrated.
+    /// A structural grounder answering each `(query, safe files)` pair with that radius.
+    fn stub_radii(units: &[(&str, &[&str])]) -> StructuralStubGrounder {
+        StructuralStubGrounder {
+            by_query: units
+                .iter()
+                .map(|(query, files)| {
+                    let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+                    (
+                        query.to_string(),
+                        BlastRadius {
+                            precise: files.clone(),
+                            safe: files,
+                        },
+                    )
+                })
+                .collect(),
+            stamp: String::new(),
+        }
+    }
+
+    /// Drive ONE `run_wave` call at width `width` over the stages `names` - each grounding on its
+    /// own name, run by its own agent of that name, partitioned by blast radius over `grounder` -
+    /// under `probe`; returns the stages the call integrated.
     fn probe_one_wave(
         width: u32,
-        units: &[(&str, &[&str], bool)],
+        names: &[&str],
+        grounder: &dyn Grounder,
         probe: &OverlapProbe,
     ) -> HashSet<String> {
         let mut cfg = Config::default();
@@ -39032,8 +39022,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        let mut by_query = HashMap::new();
-        for (name, files, hub) in units {
+        for name in names {
             cfg.agents.insert(name.to_string(), agent(name));
             cfg.workflow.stages.insert(
                 name.to_string(),
@@ -39046,28 +39035,15 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
-            by_query.insert(
-                name.to_string(),
-                BlastRadius {
-                    precise: files.clone(),
-                    safe: files,
-                    serialize: *hub,
-                },
-            );
         }
-        let grounder = StructuralStubGrounder {
-            by_query,
-            stamp: String::new(),
-        };
         let store = Store::open(":memory:").unwrap();
         let deps = Deps {
-            grounder: Some(&grounder),
+            grounder: Some(grounder),
             ..stub_deps(&store, probe, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let stages = cfg.workflow.stages.clone();
-        let ready: Vec<String> = units.iter().map(|(n, _, _)| n.to_string()).collect();
+        let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
         let (mut integrated, mut terminal, mut in_flight) =
             (HashSet::new(), HashSet::new(), HashSet::new());
         ctx.run_wave(
@@ -39081,50 +39057,74 @@ mod tests {
         integrated
     }
 
-    /// Two units are kept apart only when their blast radii OVERLAP: units whose criteria both
-    /// name a hub symbol, but whose radii (which already carry the hub's whole neighborhood) are
-    /// disjoint, genuinely run side by side.
+    /// Units whose criteria each name a HUB symbol - a name referenced across many files - still
+    /// run side by side when their radii are disjoint: each radius carries its hub's whole
+    /// neighborhood, and the two neighborhoods share no file. Over the real `symbols` grounder.
+    #[cfg(feature = "symbols")]
     #[test]
     fn run_wave_co_schedules_units_naming_a_hub_when_their_radii_are_disjoint() {
+        let dir = tempfile::tempdir().unwrap();
+        for (hub, side) in [("spawn", "a"), ("parse", "b")] {
+            std::fs::write(
+                dir.path().join(format!("{side}_def.rs")),
+                format!("fn {hub}() {{}}\n"),
+            )
+            .unwrap();
+            for i in 0..12 {
+                std::fs::write(
+                    dir.path().join(format!("{side}{i}.rs")),
+                    format!("fn {side}_caller_{i}() {{ {hub}(); }}\n"),
+                )
+                .unwrap();
+            }
+        }
+        // A long tail of once-referenced names, so `spawn` and `parse` are the tree's
+        // high-degree outliers.
+        for i in 0..30 {
+            std::fs::write(
+                dir.path().join(format!("tail{i}.rs")),
+                format!("fn t{i}() {{ once_{i}(); }}\n"),
+            )
+            .unwrap();
+        }
+        let grounder =
+            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
         let probe = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(
-            2,
-            &[("u_a", &["a.rs"], true), ("u_b", &["b.rs"], true)],
-            &probe,
-        );
+        let integrated = probe_one_wave(2, &["spawn", "parse"], &grounder, &probe);
         assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
         assert_eq!(
             probe.peak(),
             2,
-            "disjoint radii run side by side even when each criterion names a hub"
+            "units naming different hubs with disjoint neighborhoods run side by side"
         );
     }
 
-    /// The overlap rule still holds: two units whose radii share a file never run at the same
-    /// time, and a unit whose radius is EMPTY (an unassessable grounding miss) runs alone.
+    /// Two units are kept apart only when their blast radii CONFLICT: disjoint radii genuinely run
+    /// side by side, radii sharing a file never run at the same time, and a unit whose radius is
+    /// EMPTY (an unassessable grounding miss) runs alone.
     #[test]
-    fn run_wave_never_runs_overlapping_or_unassessable_radii_side_by_side() {
-        let overlap = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(
+    fn run_wave_runs_units_side_by_side_only_when_their_radii_are_disjoint() {
+        let assert_peak = |radii: &[(&str, &[&str])], peak: usize, why: &str| {
+            let probe = OverlapProbe::new(&[]);
+            let integrated = probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe);
+            assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+            assert_eq!(probe.peak(), peak, "{why}");
+        };
+        assert_peak(
+            &[("u_a", &["a.rs"]), ("u_b", &["b.rs"])],
             2,
-            &[("u_a", &["x.rs", "a.rs"], false), ("u_b", &["x.rs"], false)],
-            &overlap,
+            "disjoint radii run side by side",
         );
-        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
-        assert_eq!(
-            overlap.peak(),
+        assert_peak(
+            &[("u_a", &["x.rs", "a.rs"]), ("u_b", &["x.rs"])],
             1,
-            "overlapping radii run one after the other"
+            "overlapping radii run one after the other",
         );
-
-        let empty = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(
-            2,
-            &[("u_a", &["a.rs"], false), ("u_empty", &[], false)],
-            &empty,
+        assert_peak(
+            &[("u_a", &["a.rs"]), ("u_b", &[])],
+            1,
+            "an empty radius never co-schedules",
         );
-        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
-        assert_eq!(empty.peak(), 1, "an empty radius never co-schedules");
     }
 
     /// A unit finishing frees its slot INSIDE the wave: at width 2, while the slow unit still
@@ -39133,15 +39133,13 @@ mod tests {
     #[test]
     fn run_wave_gives_a_freed_slot_to_the_next_ready_unit_before_the_wave_ends() {
         let probe = OverlapProbe::new(&[("u_a_slow", 1500), ("u_b_fast", 50), ("u_c_next", 50)]);
-        let integrated = probe_one_wave(
-            2,
-            &[
-                ("u_a_slow", &["s.rs"], false),
-                ("u_b_fast", &["f.rs"], false),
-                ("u_c_next", &["n.rs"], false),
-            ],
-            &probe,
-        );
+        let grounder = stub_radii(&[
+            ("u_a_slow", &["s.rs"]),
+            ("u_b_fast", &["f.rs"]),
+            ("u_c_next", &["n.rs"]),
+        ]);
+        let integrated =
+            probe_one_wave(2, &["u_a_slow", "u_b_fast", "u_c_next"], &grounder, &probe);
         assert_eq!(
             integrated.len(),
             3,
@@ -39156,93 +39154,6 @@ mod tests {
             "the next ready unit takes the fast unit's freed slot while the slow unit still runs"
         );
         assert!(probe.peak() <= 2, "the width bound still holds");
-    }
-
-    /// spec 16 unit 3, the BLOCKING empty-radius partition fail-safe (adj-u3-empty-radius-partitions-
-    /// fail-open): `partition_wave` must UNPARTITION an EMPTY radius - a total, unassessable grounding
-    /// miss - into its OWN singleton batch, exactly like a HUB (`serialize`) radius, and NEVER
-    /// co-schedule it with a real unit. An empty want-set is disjoint from every batch, so the
-    /// pre-fix code collapsed it into the FIRST shared batch (the fail-OPEN direction, the OPPOSITE
-    /// of `route_review_tier`'s empty -> full stance). This MULTI-unit test drives `partition_wave`
-    /// directly over a structural grounder and pins the whole own-batch + append path: two disjoint
-    /// shareable units co-schedule, while the empty-radius unit AND the hub unit each take their own
-    /// batch. Runs in BOTH lanes (the StructuralStubGrounder is not symbols-gated).
-    #[test]
-    fn partition_wave_own_batches_an_empty_radius_never_co_scheduling_it() {
-        let br = |files: &[&str], serialize: bool| BlastRadius {
-            precise: files.iter().map(|s| s.to_string()).collect(),
-            safe: files.iter().map(|s| s.to_string()).collect(),
-            serialize,
-        };
-        // u_a / u_b are disjoint shareable radii; u_empty grounds to NOTHING (no by_query entry
-        // => BlastRadius::default, empty safe, serialize false); u_hub is a hub (serialize true).
-        let grounder = StructuralStubGrounder {
-            by_query: HashMap::from([
-                ("u_a".to_string(), br(&["a.rs"], false)),
-                ("u_b".to_string(), br(&["b.rs"], false)),
-                ("u_hub".to_string(), br(&["h.rs"], true)),
-            ]),
-            stamp: "idxhash/ts-tags-v1".to_string(),
-        };
-        let cfg = Config::default();
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        let ready: Vec<String> = ["u_a", "u_b", "u_empty", "u_hub"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        for name in &ready {
-            stages.insert(
-                name.clone(),
-                Stage {
-                    name: name.clone(),
-                    coverage: name.clone(),
-                    partition: "by-blast-radius".into(),
-                    ..Default::default()
-                },
-            );
-        }
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: String::new(),
-            grounder: Some(&grounder),
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let batches = ctx.partition_wave(&stages, &ready);
-
-        let batch_of = |unit: &str| {
-            batches
-                .iter()
-                .find(|b| b.iter().any(|n| n == unit))
-                .cloned()
-                .unwrap_or_else(|| panic!("{unit} landed in no batch: {batches:?}"))
-        };
-        let a_batch = batch_of("u_a");
-        assert!(
-            a_batch.contains(&"u_b".to_string()),
-            "two disjoint shareable units co-schedule in one batch: {batches:?}"
-        );
-        assert!(
-            !a_batch.contains(&"u_empty".to_string()),
-            "an EMPTY radius must NOT co-schedule with a real unit (the fail-open is closed): {batches:?}"
-        );
-        assert_eq!(
-            batch_of("u_empty"),
-            vec!["u_empty".to_string()],
-            "an empty radius is unassessable and takes its OWN singleton batch: {batches:?}"
-        );
-        assert_eq!(
-            batch_of("u_hub"),
-            vec!["u_hub".to_string()],
-            "a hub radius takes its OWN singleton batch: {batches:?}"
-        );
     }
 
     /// spec 16 unit 3, the SPECULATION-path wiring (sdet-u16-3-speculation-wiring-untested): the
@@ -39296,7 +39207,6 @@ mod tests {
                     BlastRadius {
                         precise: vec!["u1.rs".to_string()],
                         safe: vec!["u1.rs".to_string(), "shared_macro.rs".to_string()],
-                        serialize: false,
                     },
                 ),
                 (
@@ -39304,7 +39214,6 @@ mod tests {
                     BlastRadius {
                         precise: vec!["u2.rs".to_string()],
                         safe: vec!["u2.rs".to_string(), "shared_macro.rs".to_string()],
-                        serialize: false,
                     },
                 ),
             ]),

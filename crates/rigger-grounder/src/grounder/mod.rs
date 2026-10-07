@@ -280,13 +280,13 @@ mod tests {
     }
 
     /// The DEFAULT `blast_radius` (the one a non-symbols grounder inherits) is EXACTLY the
-    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds, and it
-    /// NEVER serializes. This is the contract that keeps unit 3's symbols-inactive `grounded_seed`
+    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds. This is
+    /// the contract that keeps unit 3's symbols-inactive `grounded_seed`
     /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set.
     /// This test is ungated: it holds identically in both feature lanes because the default impl
     /// touches no structural index.
     #[test]
-    fn default_blast_radius_is_the_grounders_own_top_k_radius_both_views_never_serialize() {
+    fn default_blast_radius_is_the_grounders_own_top_k_radius_in_both_views() {
         let dir = tempfile::tempdir().unwrap();
         // Two files both matching the needle so the radius has more than one file.
         std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
@@ -312,16 +312,15 @@ mod tests {
             "the default radius is exactly the two files grep matches; got {br:?}"
         );
         // Both views are the SAME grep radius - equal element-for-element, in the same order (safe is
-        // the trivial superset of precise on the default path) - and it never serializes.
+        // the trivial superset of precise on the default path).
         assert_eq!(
             br.precise, br.safe,
             "the default safe view equals the precise view (grep radius, a trivial superset)"
         );
-        assert!(!br.serialize, "the default path never serializes");
 
         // An empty query / k=0 grounds nothing, so both views are empty (the empty fail-safe).
         let empty = g.blast_radius("apply_damage", 0);
-        assert!(empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize);
+        assert!(empty.precise.is_empty() && empty.safe.is_empty());
     }
 
     /// The shared walk (here via the grep grounder, the ungated default) scopes to the project's

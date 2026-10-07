@@ -8,22 +8,15 @@
 //! `BlastRadius` STRUCT. Nothing pins the behavior at the PUBLIC edge where it actually matters: a
 //! real run computes the radius over an INJECTED graph and RECORDS it as a serialized
 //! `BlastRadiusComputed` audit event - the observable artifact the runtime parallelism-retention
-//! metric and the operator read back. Two load-bearing invariants must survive that record path, on
-//! the branch where criterion 2's new code runs (a graph is present):
+//! metric and the operator read back. The load-bearing invariant that must survive that record path,
+//! on the branch where criterion 2's new code runs (a graph is present), is that the SAFE superset
+//! stays a superset of the grep union (section 2.4) - the tier-filter arm UNIONS the grounder's grep
+//! radius, so a grep-only file is never dropped.
 //!
-//!   1. the SAFE superset stays a superset of the grep union (section 2.4) - the tier-filter arm
-//!      UNIONS the grounder's grep radius, so a grep-only file is never dropped; and
-//!   2. the `serialize` hub fail-safe is CARRIED from the grounder, never silently dropped by the
-//!      new tier-filter arm (the concern an earlier review raised: an implementer could drop it and
-//!      every gate would stay green).
-//!
-//! The inside-out test cannot pin (2) non-vacuously: it grounds through a grep grounder whose
-//! `serialize` is ALWAYS `false`, so `recorded == grep` is `false == false` and would still pass if
-//! the graph arm hard-coded `serialize: false`. These tests inject a STRUCTURAL grounder double
-//! whose radius carries `serialize: true` (and a non-empty `index_stamp`, so the audit is emitted at
-//! all), populate the unified graph through the public `contextgraph` event API (the same serialized
-//! events a real run folds), drive the public `conductor::run` entry, and assert on the recorded
-//! `BlastRadiusComputed` event. They exercise the new cross-module seam end-to-end:
+//! These tests inject a STRUCTURAL grounder double (a non-empty `index_stamp`, so the audit is
+//! emitted at all), populate the unified graph through the public `contextgraph` event API (the
+//! same serialized events a real run folds), drive the public `conductor::run` entry, and assert
+//! on the recorded `BlastRadiusComputed` event. They exercise the new cross-module seam end-to-end:
 //! `grounded_blast_radius` reading the injected `graph` port, tier-filtering the ONE subgraph, and
 //! the two-view radius reaching the serialized audit.
 //!
@@ -50,9 +43,7 @@ use common::fixtures::NoopDriver;
 ///   - it seeds the traversal on `combat.rs` (so the graph `subgraph(seed, 2)` reads the tiered
 ///     neighborhood populated below);
 ///   - its `blast_radius` is the GREP FLOOR the tier-filter arm must union into `safe`: it carries a
-///     `grep_only.rs` file the graph does not, and it flags `serialize: true` (the hub fail-safe the
-///     arm must carry). A real grep grounder's `serialize` is always `false`, which is exactly why
-///     the inside-out test cannot pin the carry non-vacuously;
+///     `grep_only.rs` file the graph does not;
 ///   - its `index_stamp` is NON-EMPTY: that is the structural-active signal `record_blast_radius`
 ///     keys the `BlastRadiusComputed` audit off, so the radius is actually serialized to an event.
 struct StampedGrounder;
@@ -74,9 +65,6 @@ impl Grounder for StampedGrounder {
         BlastRadius {
             precise: vec!["combat.rs".into(), GREP_ONLY_FILE.into()],
             safe: vec!["combat.rs".into(), GREP_ONLY_FILE.into()],
-            // The hub fail-safe. A grep grounder can never set this, so an injected structural
-            // double is the only way to prove the graph arm carries a TRUE verdict through.
-            serialize: true,
         }
     }
 
@@ -205,36 +193,11 @@ fn the_graph_path_records_a_safe_radius_that_stays_a_grep_superset() {
     );
 }
 
-/// The `serialize` hub fail-safe, pinned at the PUBLIC serialized boundary: the grounder's radius
-/// flags `serialize: true`, and the recorded `BlastRadiusComputed.serialize` on the GRAPH path (the
-/// branch that constructs the new two-view radius) must carry that verdict through - never silently
-/// drop it.
-///
-/// This is the assertion the inside-out unit test cannot make non-vacuously: it grounds through a
-/// grep grounder whose `serialize` is always `false`, so its `recorded == grep` check is
-/// `false == false` and would pass even if the graph arm hard-coded `serialize: false`. Here the
-/// injected structural double carries `true`, so hard-coding `serialize: false` in the graph arm
-/// would flip the recorded value and redden this test.
-#[test]
-fn the_graph_path_carries_the_hub_serialize_verdict_into_the_recorded_audit() {
-    let graph = tiered_projector();
-    let payload = recorded_blast_radius(Some(&graph))
-        .expect("a BlastRadiusComputed audit IS emitted under the structural grounder");
-
-    assert_eq!(
-        payload["serialize"].as_bool(),
-        Some(true),
-        "the graph/tier-filter arm must carry the grounder's serialize hub verdict into the \
-         recorded audit, never drop it; payload was {payload}"
-    );
-}
-
 /// The `graph: None` fallback, pinned at the same serialized boundary: with no graph the recorded
 /// radius is the grounder's radius verbatim - the tier-filter arm is skipped and the grep floor
-/// (including `grep_only.rs`) and the `serialize` verdict pass through unchanged. This is the
-/// precondition that makes the graph-path tests above meaningful: the graph arm is what runs the new
-/// code, and it must preserve everything the fallback preserves (it may only WIDEN `safe`, never
-/// narrow it, and never drop `serialize`).
+/// (including `grep_only.rs`) passes through unchanged. This is the precondition that makes the
+/// graph-path test above meaningful: the graph arm is what runs the new code, and it must preserve
+/// everything the fallback preserves (it may only WIDEN `safe`, never narrow it).
 #[test]
 fn the_no_graph_fallback_records_the_grounder_radius_verbatim() {
     let payload = recorded_blast_radius(None)
@@ -244,10 +207,5 @@ fn the_no_graph_fallback_records_the_grounder_radius_verbatim() {
     assert!(
         safe.contains(&"combat.rs".to_string()) && safe.contains(&GREP_ONLY_FILE.to_string()),
         "the no-graph fallback records the grounder's grep radius verbatim; got {safe:?}"
-    );
-    assert_eq!(
-        payload["serialize"].as_bool(),
-        Some(true),
-        "the no-graph fallback carries the grounder's serialize verdict; payload was {payload}"
     );
 }

@@ -12,12 +12,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// The degree percentile at or above which a symbol is treated as a HUB and its blast radius
-/// SERIALIZES (architecture 5.5.2). Drawn from the repo's OWN per-language reference-degree
-/// distribution (not an absolute constant a monorepo would blow past): the 90th percentile flags
-/// only the top decile of highest-degree names, so a hub serializes conservatively rather than
-/// truncating. Unit 2's eval measures the parallelism this knob retains; unit 3 owns any retune.
-const HUB_DEGREE_PERCENTILE: f64 = 0.90;
+/// The percentile of the tree-wide name-ambiguity distribution above which a name counts as
+/// AMBIGUOUS for the ranked-by-intent page (spec 92 criterion 3): drawn from the repo's OWN
+/// distribution, not an absolute constant a monorepo would blow past, so only the top decile of
+/// most-defined names is down-weighted.
+const AMBIGUITY_PERCENTILE: f64 = 0.90;
 
 /// The `symbols` grounder over the persisted index. `open` loads the persisted index (building and
 /// persisting it on a cold start); `ground` ranks name matches by the precise contract; `reindex`
@@ -128,8 +127,7 @@ fn query_terms(query: &str) -> Vec<&str> {
 /// `(name, Lang)`, never a bare name (spec 92 criterion 3 remediation round 5,
 /// adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages): a bare-name
 /// key sums an entity's popularity/ambiguity across every language sharing that name, exactly
-/// the cross-language collision [`SymbolIndex::reference_degree`] and [`SymbolIndex::is_hub`]
-/// already guard against (5.5.2) - a `run` over-defined in Python must never inflate the same
+/// the cross-language collision [`SymbolIndex::reference_degree`] already guards against (5.5.2) - a `run` over-defined in Python must never inflate the same
 /// bare name's Rust count, in either direction.
 fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, Lang), usize> {
     let mut counts: BTreeMap<(&str, Lang), usize> = BTreeMap::new();
@@ -171,10 +169,8 @@ fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
 /// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
 /// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
 /// on - never [`commonness_map`]'s raw def+ref occurrence volume, which conflates one entity's
-/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Shares its
-/// percentile-cutoff formula with [`SymbolIndex::is_hub`] via
-/// [`crate::grounder::symbols::model::percentile_cutoff`] rather than re-deriving it, per
-/// arch-u92c3-cutoff-formula-duplicated-not-shared.
+/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Its cutoff
+/// is [`crate::grounder::symbols::model::percentile_cutoff`].
 fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
     name_occurrence_map(idx, false)
 }
@@ -285,7 +281,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             // ignoring `fs.lang` (round-4 defect, adv-u92c3r4-ambiguity-map-bleeds-across-
             // languages), pooled a same-named entity's commonness across every language sharing
             // it; `(name, fs.lang)` scopes the lookup to this hit's OWN language, exactly as
-            // `SymbolIndex::reference_degree`/`is_hub` already scope the fan-out signal (5.5.2).
+            // `SymbolIndex::reference_degree` already scopes the fan-out signal (5.5.2).
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
@@ -409,10 +405,10 @@ impl Grounder for Symbols {
     ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
     ///   a symbol); the grep union recovers them, so the partitioning consumer can never
     ///   under-partition.
-    /// - `serialize` is set when ANY query term is a HUB in ANY present language (its per-language
-    ///   reference degree clears [`HUB_DEGREE_PERCENTILE`] of that language's OWN degree
-    ///   distribution). A hub's radius fails SAFE by conflict-with-everything - the consumer gives
-    ///   the unit its own batch - NEVER by truncating `safe` (which still carries every file).
+    /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
+    ///   every file that defines or references it is in the view, never truncated, so the
+    ///   partitioning consumer's overlap test keeps the unit apart from exactly the units that
+    ///   share one of those files - and pairs it with every unit that shares none.
     ///
     /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
     /// files in sorted path order (the ranked `precise` / structural head of `safe`), and the
@@ -439,16 +435,15 @@ impl Grounder for Symbols {
         // through to the UNCAPPED `grep.ground(query, usize::MAX)` below, and a one-char query would
         // match nearly every line in the tree - an unbounded whole-repo grep that leaves `precise`
         // empty but `safe` covering almost the entire repo, forcing the full panel and corrupting
-        // the retention metric. `BlastRadius::default()` is empty precise, empty safe, not-serialize
-        // - the same empty fail-safe unit 3 routes to the full, unpartitioned panel.
+        // the retention metric. `BlastRadius::default()` is empty precise and empty safe - the same
+        // empty fail-safe unit 3 routes to the full, unpartitioned panel.
         if terms.is_empty() {
             return BlastRadius::default();
         }
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
-        // plus the hub verdict - all computed under ONE read lock over the index, returned as a
-        // tuple so neither binding needs a dead pre-initialization before the locked block.
-        let (structural, serialize): (Vec<String>, bool) = {
+        // computed under ONE read lock over the index.
+        let structural: Vec<String> = {
             let idx = self.idx.lock().unwrap();
             // Iterate `files()` directly to KEEP each hit's owning file.
             // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
@@ -472,16 +467,7 @@ impl Grounder for Symbols {
                     ranked.push((*f).to_string());
                 }
             }
-            // Hub composition: serialize if ANY term is a hub WITHIN ANY language the index holds.
-            // The per-language scope is drawn from the languages actually present, so a name that
-            // over-links in another language never flags this one (the 5.5.2 cross-language fix).
-            let langs: BTreeSet<Lang> = idx.files().values().map(|f| f.lang).collect();
-            let hub = terms.iter().any(|t| {
-                langs
-                    .iter()
-                    .any(|&l| idx.is_hub(t, l, HUB_DEGREE_PERCENTILE))
-            });
-            (ranked, hub)
+            ranked
         };
 
         // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
@@ -514,11 +500,7 @@ impl Grounder for Symbols {
         // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
         let mut precise = structural;
         precise.truncate(k);
-        BlastRadius {
-            precise,
-            safe,
-            serialize,
-        }
+        BlastRadius { precise, safe }
     }
 
     /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event: the content-hash of
@@ -554,7 +536,7 @@ impl Grounder for Symbols {
     /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
     /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
-    /// language - the same primitive [`SymbolIndex::is_hub`] already uses, not an approximate
+    /// language, not an approximate
     /// count of what happened to be visible in this page - EXCEPT on an ambiguous name's own
     /// Def row, which reports 0 rather than the tree-wide count (spec 92 criterion 3
     /// remediation round 6, adj-u92c3-r5-verdict-reject /
@@ -656,7 +638,7 @@ impl Grounder for Symbols {
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
-    /// own name-ambiguity distribution's [`HUB_DEGREE_PERCENTILE`] cutoff (spec 92 criterion 3:
+    /// own name-ambiguity distribution's [`AMBIGUITY_PERCENTILE`] cutoff (spec 92 criterion 3:
     /// "a query with no strong token returns the honest 'no entity matches strongly' line
     /// instead of noise"). Two fixes over the first round of this unit (spec 92 criterion 3
     /// remediation, adj-u92c3-verdict-reject):
@@ -676,7 +658,7 @@ impl Grounder for Symbols {
     /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
     ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
     ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages),
-    ///    mirroring [`SymbolIndex::is_hub`]'s own per-language cutoff exactly: a name defined
+    ///    as [`SymbolIndex::reference_degree`] scopes its count: a name defined
     ///    once in Rust and, separately, once in an unrelated language is genuinely unambiguous
     ///    in EACH language alone; pooling the two definition counts into one bare-name bucket
     ///    manufactures a tree-wide-ambiguous verdict neither language's own distribution
@@ -697,8 +679,7 @@ impl Grounder for Symbols {
         let ambiguity = ambiguity_map(&idx);
         // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
         // distinct-definition distribution - never one pooled cutoff across every language
-        // present, exactly as `SymbolIndex::is_hub` draws its degree cutoff from only the
-        // queried language's own reference-degree distribution (5.5.2). A language absent from
+        // present (5.5.2). A language absent from
         // `ambiguity` (no definition anywhere in it) falls back to 0: nothing has EVER been
         // observed as ambiguous there, so every hit in that language trivially clears the
         // cutoff, matching `ambiguity.get(..).unwrap_or(0)` below for every such hit regardless.
@@ -711,7 +692,7 @@ impl Grounder for Symbols {
             let cutoff = if degrees.is_empty() {
                 0
             } else {
-                percentile_cutoff(&mut degrees, HUB_DEGREE_PERCENTILE)
+                percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
             };
             cutoffs.insert(lang, cutoff);
         }
@@ -824,12 +805,6 @@ mod tests {
             "// apply_damage is discussed but never called here\n",
         )
         .unwrap();
-        // A higher-degree symbol (`helper`, referenced twice) so the per-language degree
-        // distribution is non-degenerate: `apply_damage` (degree 1) then sits BELOW the hub
-        // percentile, making the `!serialize` assertion below meaningful rather than a single-name
-        // artifact (a lone referenced name would trivially be its own 100th percentile).
-        std::fs::write(dir.path().join("h1.rs"), "fn a() { helper(); }\n").unwrap();
-        std::fs::write(dir.path().join("h2.rs"), "fn b() { helper(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
         let br = g.blast_radius("apply_damage", 8);
@@ -867,10 +842,6 @@ mod tests {
                 "safe must be a superset of precise; missing {f} in {br:?}"
             );
         }
-        assert!(
-            !br.serialize,
-            "apply_damage is not a hub, so this radius does not serialize; got {br:?}"
-        );
     }
 
     /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
@@ -881,8 +852,7 @@ mod tests {
     #[test]
     fn a_hub_symbol_s_safe_view_carries_its_whole_neighborhood_untruncated() {
         let dir = tempfile::tempdir().unwrap();
-        // `spawn` is referenced across many files (a hub); `rare_call` in exactly one, so the
-        // per-language degree distribution has a genuine high-degree name to clear the percentile.
+        // `spawn` is referenced across many files (a hub).
         std::fs::write(dir.path().join("def.rs"), "fn spawn() {}\n").unwrap();
         let mut expected: Vec<String> = vec!["def.rs".to_string()];
         for i in 0..12 {
@@ -890,15 +860,10 @@ mod tests {
             std::fs::write(dir.path().join(&name), "fn c() { spawn(); }\n").unwrap();
             expected.push(name);
         }
-        std::fs::write(dir.path().join("rare.rs"), "fn r() { rare_call(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
         let br = g.blast_radius("spawn", 8);
-        assert!(
-            !br.serialize,
-            "a hub radius is no conflict-with-everything flag; its files decide; got {br:?}"
-        );
         for f in &expected {
             assert!(
                 br.safe.contains(f),
@@ -911,16 +876,10 @@ mod tests {
             expected.len(),
             br.safe.len()
         );
-        // A degree-1 symbol in the SAME repo is NOT a hub and does not serialize.
-        let rare = g.blast_radius("rare_call", 8);
-        assert!(
-            !rare.serialize,
-            "a degree-1 symbol is not a hub; got {rare:?}"
-        );
     }
 
     /// The blast-radius fail-safe paths (spec 16 unit 1): an empty query and a no-match query each
-    /// return EMPTY views and never serialize (unit 3 routes an empty radius to the full,
+    /// return EMPTY views (unit 3 routes an empty radius to the full,
     /// unpartitioned panel). A `k=0` cap collapses the PRECISE view to empty, but the SAFE view is
     /// UNCAPPED by design - it still carries the full structural-union-grep radius so the
     /// partitioning consumer can never under-include just because the prompt budget was zero.
@@ -932,18 +891,18 @@ mod tests {
         std::fs::write(dir.path().join("call.rs"), "fn run() { parse(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
-        // Empty query -> no terms -> empty views, never serialize.
+        // Empty query -> no terms -> empty views.
         let empty = g.blast_radius("", 8);
         assert!(
-            empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize,
-            "an empty query is the empty fail-safe: both views empty, no serialize; got {empty:?}"
+            empty.precise.is_empty() && empty.safe.is_empty(),
+            "an empty query is the empty fail-safe: both views empty; got {empty:?}"
         );
 
         // A name that appears nowhere -> nothing structural AND nothing grep -> empty views.
         let none = g.blast_radius("nonexistent_symbol_zzz", 8);
         assert!(
-            none.precise.is_empty() && none.safe.is_empty() && !none.serialize,
-            "a no-match query is the empty fail-safe: both views empty, no serialize; got {none:?}"
+            none.precise.is_empty() && none.safe.is_empty(),
+            "a no-match query is the empty fail-safe: both views empty; got {none:?}"
         );
 
         // k=0 caps the PRECISE view to empty; the SAFE view is uncapped and still carries the radius.
@@ -999,7 +958,7 @@ mod tests {
             one_char,
             BlastRadius::default(),
             "a degenerate single-char query is the empty fail-safe radius (empty precise, empty \
-             safe, no serialize), not an unbounded whole-repo grep; got {one_char:?}"
+             safe), not an unbounded whole-repo grep; got {one_char:?}"
         );
 
         // A single MULTIBYTE character (U+00E9: 2 UTF-8 bytes, but still ONE Unicode character).
@@ -1686,7 +1645,7 @@ mod tests {
     /// strongly". A single-definition entity is UNAMBIGUOUS no matter how many places call it;
     /// the old cutoff conflated one entity's own reference VOLUME with tree-wide name
     /// AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
-    /// shape at a scale that clears `HUB_DEGREE_PERCENTILE` under the OLD (broken) raw
+    /// shape at a scale that clears `AMBIGUITY_PERCENTILE` under the OLD (broken) raw
     /// occurrence-count cutoff, proving the fix measures ambiguity, not popularity.
     #[test]
     fn has_strong_match_is_true_for_a_single_definition_referenced_many_times() {

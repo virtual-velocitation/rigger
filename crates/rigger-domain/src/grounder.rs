@@ -36,17 +36,14 @@ pub struct RankedRef {
 ///   agent's prompt. A spurious extra file here merely wastes a little context, so precision
 ///   is what it optimizes for.
 /// - `safe` - the SAFE-SUPERSET view (the union of the structural view and grep, uncapped) that
-///   the conductor partitions and routes review tiers by. `partition_by_blast_radius` co-schedules
-///   two units only when their file sets are DISJOINT, so a MISSED reference could co-schedule two
-///   conflicting units in one parallel batch. Over-inclusion is the safe error; this view is
-///   therefore never narrower than the grep radius it augments and is never capped.
+///   the conductor schedules and routes review tiers by. [`radii_conflict`] keeps two units apart
+///   only when their file sets SHARE a file, so a MISSED reference could co-schedule two
+///   conflicting units. Over-inclusion is the safe error; this view is therefore never narrower
+///   than the grep radius it augments and is never capped. A HUB symbol (a name referenced across
+///   much of the tree) needs no flag of its own: its whole neighborhood is in `safe`, so the
+///   overlap test keeps it apart from exactly the units that share one of those files.
 ///
-/// `serialize` is the fail-safe for a HUB symbol - one whose per-language reference degree
-/// exceeds the repo's degree-distribution percentile (5.5.2). Rather than truncating its huge
-/// (often whole-repo) file set, a hub radius is flagged conflict-with-everything: the partitioning
-/// consumer (unit 3) places such a unit in its own batch instead of co-scheduling it. Correctness
-/// is kept, parallelism reduced - never the reverse. `safe` still carries the real files (never
-/// truncated); `serialize` only tells the consumer to conflict this radius against all others.
+/// [`radii_conflict`]: crate::metrics::radii_conflict
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlastRadius {
     /// The precise / ranked view: definer files first, then referencer files, capped at `k`.
@@ -54,10 +51,6 @@ pub struct BlastRadius {
     /// The safe-superset view: the union of `precise` and grep, uncapped - always a superset of the
     /// grep radius.
     pub safe: Vec<String>,
-    /// Whether this radius must serialize (conflict-with-everything) because the queried symbol
-    /// is a hub. The partitioning consumer never co-schedules a serialize radius; the files in
-    /// `safe` are NOT truncated when this is set.
-    pub serialize: bool,
 }
 
 /// Grounder returns up to k locations relevant to a query.
@@ -71,12 +64,11 @@ pub trait Grounder: Send + Sync {
 
     /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
     /// one a grep / nop grounder inherits - returns this grounder's OWN top-`k` radius
-    /// (the distinct files it grounds, in ground order) as BOTH views and never serializes. So a
-    /// non-symbols grounder's blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no
-    /// hub composition, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
+    /// (the distinct files it grounds, in ground order) as BOTH views. So a non-symbols grounder's
+    /// blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
     /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set
     /// it produces today. Only the `symbols` grounder overrides this to union the structural
-    /// cross-reference graph with an uncapped grep and to flag hub symbols as serialize.
+    /// cross-reference graph with an uncapped grep.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         let mut files: Vec<String> = Vec::new();
         for r in self.ground(query, k) {
@@ -87,7 +79,6 @@ pub trait Grounder: Send + Sync {
         BlastRadius {
             precise: files.clone(),
             safe: files,
-            serialize: false,
         }
     }
 
