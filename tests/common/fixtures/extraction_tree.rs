@@ -63,25 +63,33 @@ gates:
   fmt: { run: \"cargo fmt --check\" }
 ";
 
-/// What the walk hands a sink for the tree, in emit order: each batch's prefix, path and
-/// generation, then its events as `(type, payload text)`. The out-of-line test module's `gc`
+/// One batch the walk hands a sink: the identity's prefix and path, the batch's generation, and
+/// its events as `(type, payload text)`.
+pub struct WalkedBatch {
+    pub prefix: &'static str,
+    pub path: &'static str,
+    pub generation: &'static str,
+    pub events: &'static [(&'static str, &'static str)],
+}
+
+/// What the walk hands a sink for the tree, in emit order. The out-of-line test module's `gc`
 /// batch is the one boundary event of a hollowed file; the source file's last event is the
 /// evidence its in-file test module gives.
-pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
-    (
-        "gc",
-        TEST_MODULE_PATH,
-        "878ec204b714de6b",
-        &[(
+pub const WALKED: [WalkedBatch; 6] = [
+    WalkedBatch {
+        prefix: "gc",
+        path: TEST_MODULE_PATH,
+        generation: "878ec204b714de6b",
+        events: &[(
             "EdgeInferred",
             r#"{"file":"src/checks.rs","name":"","lang":"rust","fresh":true}"#,
         )],
-    ),
-    (
-        "gc",
-        SOURCE_PATH,
-        "f81a57a5c4f55f52",
-        &[
+    },
+    WalkedBatch {
+        prefix: "gc",
+        path: SOURCE_PATH,
+        generation: "f81a57a5c4f55f52",
+        events: &[
             (
                 "CodeEntityExtracted",
                 r#"{"file":"src/lib.rs","name":"helper","kind":"function","line":6,"lang":"rust","fresh":true}"#,
@@ -99,12 +107,12 @@ pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
                 r#"{"file":"src/lib.rs","name":"product","lang":"rust","fresh":true,"line":15,"is_test":true}"#,
             ),
         ],
-    ),
-    (
-        "gd",
-        DOCUMENT_PATH,
-        "ea5177040caf5338",
-        &[
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: DOCUMENT_PATH,
+        generation: "ea5177040caf5338",
+        events: &[
             (
                 "DocConceptExtracted",
                 r#"{"kind":"design-doc","id":"docs/architecture.md","title":"Reference architecture","doc":"docs/architecture.md"}"#,
@@ -122,12 +130,12 @@ pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
                 r#"{"from":"docs/architecture.md","to":"docs/handbook.md","rel":"references"}"#,
             ),
         ],
-    ),
-    (
-        "gd",
-        TEST_MODULE_PATH,
-        "8c6020acb1774c78",
-        &[
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: TEST_MODULE_PATH,
+        generation: "8c6020acb1774c78",
+        events: &[
             (
                 "DocConceptExtracted",
                 r#"{"kind":"rationale","id":"src/checks.rs#L1","title":"WHY: the checks live out of line so the product file stays short","doc":"src/checks.rs"}"#,
@@ -137,12 +145,12 @@ pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
                 r#"{"from":"src/checks.rs#L1","to":"src/checks.rs","rel":"explains"}"#,
             ),
         ],
-    ),
-    (
-        "gd",
-        SOURCE_PATH,
-        "88eadaf4024b4a86",
-        &[
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: SOURCE_PATH,
+        generation: "88eadaf4024b4a86",
+        events: &[
             (
                 "DocConceptExtracted",
                 r#"{"kind":"rationale","id":"src/lib.rs#L1","title":"WHY: the entry stays small so the walk has one product file","doc":"src/lib.rs"}"#,
@@ -152,12 +160,12 @@ pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
                 r#"{"from":"src/lib.rs#L1","to":"src/lib.rs","rel":"explains"}"#,
             ),
         ],
-    ),
-    (
-        "gw",
-        WORKFLOW_PATH,
-        "08eb9cb734e95dc1",
-        &[
+    },
+    WalkedBatch {
+        prefix: "gw",
+        path: WORKFLOW_PATH,
+        generation: "08eb9cb734e95dc1",
+        events: &[
             (
                 "DocConceptExtracted",
                 r#"{"kind":"agent","id":"agent:rust-engineer","title":"rust-engineer","doc":".rigger/workflow.yml"}"#,
@@ -179,16 +187,16 @@ pub const WALKED: [(&str, &str, &str, &[(&str, &str)]); 6] = [
                 r#"{"from":"stage:implement","to":"gate:fmt","rel":"RUNS"}"#,
             ),
         ],
-    ),
+    },
 ];
 
 /// The events of the batch [`WALKED`] holds under `prefix` for `path`.
 pub fn walked_batch(prefix: &str, path: &str) -> &'static [(&'static str, &'static str)] {
     WALKED
         .iter()
-        .find(|(p, f, _, _)| *p == prefix && *f == path)
-        .map(|(_, _, _, events)| *events)
+        .find(|batch| batch.prefix == prefix && batch.path == path)
         .expect("the walk lowers a batch under the prefix for the path")
+        .events
 }
 
 /// Plant the four files under `root` through `write_file`, the caller's writer of one file with

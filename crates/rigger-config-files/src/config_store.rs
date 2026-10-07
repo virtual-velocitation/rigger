@@ -174,8 +174,15 @@ pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
 /// one. [`load`] above stays the FULL, validating entry every run-starting path uses.
 pub fn load_workflow(path: &Path) -> Result<Workflow, Error> {
     let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
-    let mut wf: Workflow =
-        parse_yaml_naming_unknown_keys(&b).map_err(|msg| err(format!("parse workflow: {msg}")))?;
+    parse_workflow(&b)
+}
+
+/// The parse [`load_workflow`] applies to a workflow definition's text `body` (spec 107): the
+/// unknown-key-naming YAML parse, then every stage named after its key. It reads no file, so the
+/// same text yields the same workflow wherever the text came from.
+pub fn parse_workflow(body: &str) -> Result<Workflow, Error> {
+    let mut wf: Workflow = parse_yaml_naming_unknown_keys(body)
+        .map_err(|msg| err(format!("parse workflow: {msg}")))?;
     let names: Vec<String> = wf.stages.keys().cloned().collect();
     for name in names {
         if let Some(st) = wf.stages.get_mut(&name) {

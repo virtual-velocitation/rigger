@@ -501,18 +501,64 @@ pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
     Vec::new()
 }
 
-/// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
-/// `on_batch` at once. `hash` fingerprints the WHOLE batch's bytes with the SAME line-ending-
-/// normalized content primitive the symbols reindex freshening keys on (reused, not a fresh copy, so
-/// the change-detection key is one content-identity authority), so every event of a file shares one
-/// `<hash>`. The batch bytes are JSON the emit pass just serialized, so they are valid UTF-8.
+/// The index the walk's code half lowers and the identities it excludes (spec 107): the index
+/// loaded as the walk loads it - the `symbols` grounder's persisted one when the tree holds one,
+/// else a fresh build of the tree, in memory only and never persisted - and the `gc/<path>`
+/// identity of every file that index resolves as an out-of-line test module's target
+/// ([`out_of_line_test_module_files`](crate::grounder::symbols::events::out_of_line_test_module_files)).
+/// Only `gc` identities are named, so the same path's batch under another prefix is never excluded.
 #[cfg(feature = "symbols")]
-fn key_batch(prefix: &str, file: &str, batch: &[Event], on_batch: &mut impl BatchSink) {
+pub fn walk_exclusions(
+    root: &str,
+) -> (
+    crate::grounder::symbols::model::SymbolIndex,
+    std::collections::BTreeSet<String>,
+) {
+    let index = crate::grounder::symbols::store::load(root)
+        .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
+    let excluded = crate::grounder::symbols::events::out_of_line_test_module_files(&index)
+        .iter()
+        .map(|path| format!("gc/{path}"))
+        .collect();
+    (index, excluded)
+}
+
+/// Light lane: no extraction pass is compiled, so there is no index to load and no file to
+/// exclude - the empty index and the empty set (mirrors [`graph_index_lag_sample`]'s own
+/// light-lane stub).
+#[cfg(not(feature = "symbols"))]
+pub fn walk_exclusions(
+    _root: &str,
+) -> (
+    crate::grounder::symbols::model::SymbolIndex,
+    std::collections::BTreeSet<String>,
+) {
+    (
+        crate::grounder::symbols::model::SymbolIndex::default(),
+        std::collections::BTreeSet::new(),
+    )
+}
+
+/// The generation of an unkeyed `batch` (spec 107): the content hash of its events' bytes
+/// concatenated in order, by the SAME line-ending-normalized content primitive the symbols reindex
+/// freshening keys on (reused, not a fresh copy, so the change-detection key is one
+/// content-identity authority). The batch bytes are JSON the emit pass just serialized, so they
+/// are valid UTF-8.
+#[cfg(feature = "symbols")]
+pub fn batch_generation(batch: &[Event]) -> String {
     let concat: String = batch
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
         .collect();
-    let hash = crate::grounder::symbols::store::content_hash(&concat);
+    crate::grounder::symbols::store::content_hash(&concat)
+}
+
+/// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
+/// `on_batch` at once. `hash` is the batch's generation ([`batch_generation`]), so every event of
+/// a file shares one `<hash>`.
+#[cfg(feature = "symbols")]
+fn key_batch(prefix: &str, file: &str, batch: &[Event], on_batch: &mut impl BatchSink) {
+    let hash = batch_generation(batch);
     let keyed: Vec<(String, &Event)> = batch
         .iter()
         .enumerate()
@@ -799,14 +845,18 @@ mod tests {
         let (seq, stats) = walk(dir.path().to_str().unwrap(), 1);
         let expected: Vec<(String, String, Vec<u8>)> = crate::extraction_tree::WALKED
             .iter()
-            .flat_map(|(prefix, path, generation, events)| {
-                events.iter().enumerate().map(move |(i, (type_, data))| {
-                    (
-                        format!("{prefix}/{path}@{generation}#{i}"),
-                        type_.to_string(),
-                        data.as_bytes().to_vec(),
-                    )
-                })
+            .flat_map(|batch| {
+                batch
+                    .events
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, (type_, data))| {
+                        (
+                            format!("{}/{}@{}#{i}", batch.prefix, batch.path, batch.generation),
+                            type_.to_string(),
+                            data.as_bytes().to_vec(),
+                        )
+                    })
             })
             .collect();
         assert_eq!(seq, expected);
@@ -837,7 +887,7 @@ mod tests {
 
         let recorded: Vec<&str> = crate::extraction_tree::WALKED
             .iter()
-            .map(|(_, _, generation, _)| *generation)
+            .map(|batch| batch.generation)
             .collect();
         assert_eq!(generations, recorded);
         assert_eq!(keys, expected_keys);
@@ -862,7 +912,10 @@ mod tests {
             super::batch_generation(&[b.clone(), a.clone()]),
             "10432fcb82c8721f"
         );
-        assert_eq!(super::batch_generation(&[a.clone()]), "9c3e82dd6fcae8b1");
+        assert_eq!(
+            super::batch_generation(std::slice::from_ref(&a)),
+            "9c3e82dd6fcae8b1"
+        );
         assert_eq!(super::batch_generation(&[]), "cbf29ce484222325");
         assert_eq!(
             super::batch_generation(&[a, not_utf8, b]),

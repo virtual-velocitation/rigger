@@ -130,18 +130,25 @@ fn batches_within(root: &str, named: Option<&[String]>) -> Vec<(String, Vec<Even
     batches
 }
 
-/// One file's design-intent events, through the shared `extract_concepts` / `extract_links`
-/// scope-gated authority: a design doc yields concept + link events, a source file its `# WHY:` /
-/// `# NOTE:` rationale, and a usage doc or an unreadable / binary file (which `read_to_string`
-/// rejects) nothing.
+/// One file's design-intent events: [`text_batch`] over the file's text, and nothing for an
+/// unreadable / binary file (which `read_to_string` rejects).
 fn file_batch(root: &str, rel: &str) -> Vec<Event> {
-    use crate::grounder::design::extract::{extract_concepts, extract_links};
-
     let Ok(contents) = std::fs::read_to_string(std::path::Path::new(root).join(rel)) else {
         return Vec::new();
     };
-    let mut events = concept_events(&extract_concepts(rel, &contents));
-    events.extend(link_events(&extract_links(rel, &contents)));
+    text_batch(rel, &contents)
+}
+
+/// The design-intent events of the file at `rel` holding `text` (spec 107), through the shared
+/// `extract_concepts` / `extract_links` scope-gated authority: a design doc yields concept then
+/// link events, a source file its `# WHY:` / `# NOTE:` rationale, and a usage doc or text with no
+/// design intent nothing. It reads no file, so the same text yields the same batch wherever the
+/// text came from.
+fn text_batch(rel: &str, text: &str) -> Vec<Event> {
+    use crate::grounder::design::extract::{extract_concepts, extract_links};
+
+    let mut events = concept_events(&extract_concepts(rel, text));
+    events.extend(link_events(&extract_links(rel, text)));
     events
 }
 
