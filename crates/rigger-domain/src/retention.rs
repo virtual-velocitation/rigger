@@ -118,4 +118,29 @@ mod tests {
     fn identity_is_the_prefix_and_the_file_joined_by_a_slash() {
         assert_eq!(named().identity(), "gc/src/a.rs");
     }
+
+    #[test]
+    fn identity_parts_cuts_an_identity_at_its_first_slash_and_refuses_an_empty_prefix() {
+        assert_eq!(
+            [
+                "gc/src/a.rs",
+                named().identity().as_str(),
+                "gd/",
+                "/src/a.rs",
+                "/",
+                "gc",
+                "",
+            ]
+            .map(GenerationIngested::identity_parts),
+            [
+                Some(("gc", "src/a.rs")),
+                Some(("gc", "src/a.rs")),
+                Some(("gd", "")),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+    }
 }
