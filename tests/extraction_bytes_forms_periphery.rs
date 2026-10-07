@@ -23,7 +23,7 @@ use rigger::config_store::{load_workflow, parse_workflow};
 #[cfg(feature = "symbols")]
 use common::cli::read_run_events;
 #[cfg(feature = "symbols")]
-use common::fixtures::{minted_events, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED};
+use common::fixtures::{minted_events, wire, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED};
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
 
@@ -38,8 +38,8 @@ type Batch = (String, String, Vec<(String, String)>);
 fn grouped(keyed: &[(String, Event)]) -> Vec<(String, String, Vec<Event>)> {
     let mut out: Vec<(String, String, Vec<Event>)> = Vec::new();
     for (key, event) in keyed {
-        let (identity, rest) = key.rsplit_once('@').expect("a key names its generation");
-        let (generation, _) = rest.split_once('#').expect("a key names its index");
+        let (identity, generation) =
+            rigger::ingest::derived_key_parts(key).expect("a key names its generation");
         match out.last_mut() {
             Some((i, g, events)) if i == identity && g == generation => events.push(event.clone()),
             _ => out.push((
@@ -58,12 +58,9 @@ fn batches(keyed: &[(String, Event)]) -> Vec<Batch> {
     grouped(keyed)
         .into_iter()
         .map(|(identity, generation, events)| {
-            let events = events
+            let events = wire(&events)
                 .into_iter()
-                .map(|e| {
-                    let payload = String::from_utf8(e.data).expect("a derived payload is UTF-8");
-                    (e.type_, payload)
-                })
+                .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
                 .collect();
             (identity, generation, events)
         })
@@ -197,7 +194,8 @@ fn the_named_walk_hands_the_batches_the_whole_walk_hands_for_the_files_it_is_nam
     let whole: Vec<(String, Event)> = minted_events(root)
         .into_iter()
         .filter(|(key, _)| {
-            let (identity, _) = key.rsplit_once('@').expect("a key names its generation");
+            let (identity, _) =
+                rigger::ingest::derived_key_parts(key).expect("a key names its generation");
             let (_, path) = identity
                 .split_once('/')
                 .expect("an identity names its prefix");

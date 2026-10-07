@@ -890,7 +890,7 @@ mod tests {
                 batch.iter().map(|(_, event)| (*event).clone()).collect();
             let generation = super::batch_generation(&events);
             for (i, (key, _)) in batch.iter().enumerate() {
-                let identity = key.split('@').next().unwrap();
+                let identity = super::derived_key_parts(key).unwrap().0;
                 keys.push(key.clone());
                 expected_keys.push(format!("{identity}@{generation}#{i}"));
             }
