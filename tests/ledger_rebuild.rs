@@ -285,6 +285,23 @@ fn generations(cwd: &Path, project: &str, identities: &[&str]) -> Vec<Option<Str
         .collect()
 }
 
+/// The generation `cwd`'s `graph.db` holds for the identity of each of `recordings`, in order.
+fn recorded_generations(
+    cwd: &Path,
+    project: &str,
+    recordings: &[Recording],
+) -> Vec<Option<String>> {
+    let identities: Vec<String> = recordings
+        .iter()
+        .map(|recording| recording.named.identity())
+        .collect();
+    generations(
+        cwd,
+        project,
+        &identities.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+}
+
 /// The graph file `db`, opened under `project`.
 #[cfg(feature = "symbols")]
 fn open(db: &Path, project: &str) -> Projector {
@@ -1456,7 +1473,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     assert_eq!(
         git_invocations_of_setup(bare.path()),
         SETUP_OWN_GIT,
-        "a rebuild that folds no entry asks git for neither a root nor an object database"
+        "a rebuild that folds no entry and reports no identity behind its recording asks git for \
+         neither a root nor an object database"
     );
     assert!(
         applied(&rigger_file(bare.path(), "graph.db"), position),
@@ -1813,8 +1831,31 @@ const REPORT_LEAD: &str = "identities the tree holds a file for whose generation
                            not their latest recording's: ";
 
 /// The note the default lane's report line ends with when its number is above zero.
-#[cfg(feature = "symbols")]
 const REPORT_NOTE: &str = " (each records an entry at its next ingest of the file)";
+
+/// The report line a rebuild prints for `counted` identities: the note after a number above zero
+/// where an extraction is compiled, and none after a zero or where none is.
+fn report_line(counted: usize) -> String {
+    let note = if cfg!(feature = "symbols") && counted > 0 {
+        REPORT_NOTE
+    } else {
+        ""
+    };
+    format!("{REPORT_LEAD}{counted}{note}")
+}
+
+/// The latest recording the log side of the report answers for `identity`: its `generation` and
+/// the one `key` that names it.
+fn latest_recording(
+    identity: &str,
+    generation: &str,
+    key: &str,
+) -> (String, (String, Vec<String>)) {
+    (
+        identity.to_string(),
+        (generation.to_string(), vec![key.to_string()]),
+    )
+}
 
 /// A generation no source extracts to.
 const UNREPRODUCED: &str = "0badc0de";
@@ -1937,11 +1978,7 @@ fn report_fixture_generations() -> Vec<Option<String>> {
 /// Where none is compiled no entry folds and no half is asked, so it counts the four identities
 /// whose file the tree holds, and carries no note.
 fn report_fixture_line() -> String {
-    #[cfg(feature = "symbols")]
-    let counted = format!("2{REPORT_NOTE}");
-    #[cfg(not(feature = "symbols"))]
-    let counted = "4";
-    format!("{REPORT_LEAD}{counted}")
+    report_line(if cfg!(feature = "symbols") { 2 } else { 4 })
 }
 
 /// Given a log whose latest entry of one identity resolves and of five others does not - a file
@@ -2055,20 +2092,18 @@ fn a_rebuild_with_no_identity_to_record_again_reports_a_zero_without_the_note() 
     let root = dir.path();
     write_text(root, HIDDEN_PATH, common::fixtures::SOURCE_BODY);
     let project = settled(root);
-    record(
-        root,
-        &[
-            named_recording("gc", ABSENT_PATH, UNREPRODUCED, false, 10),
-            named_recording("gc", HIDDEN_PATH, UNREPRODUCED, false, 11),
-        ],
-    );
+    let recordings = [
+        named_recording("gc", ABSENT_PATH, UNREPRODUCED, false, 10),
+        named_recording("gc", HIDDEN_PATH, UNREPRODUCED, false, 11),
+    ];
+    record(root, &recordings);
     stand_graph(root, &project);
 
     let (out, err, ok) = setup(root);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
-    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}0")]);
+    assert_eq!(report_lines(&out), vec![report_line(0)]);
     assert_eq!(
-        generations(root, &project, &["gc/src/absent.rs", "gc/.hidden/lib.rs"]),
+        recorded_generations(root, &project, &recordings),
         vec![None, None],
         "both identities are behind their latest recording, and neither is counted"
     );
@@ -2109,18 +2144,12 @@ fn the_log_side_of_the_report_is_one_typed_read_of_the_perception_types() {
         (answered, counting.reads())
     });
 
-    let answer = |identity: &str, generation: &str, key: &str| {
-        (
-            identity.to_string(),
-            (generation.to_string(), vec![key.to_string()]),
-        )
-    };
     assert_eq!(
         answered,
         HashMap::from([
-            answer("gc/src/old.rs", "h1", "gc/src/old.rs@h1#0"),
-            answer("gc/src/lib.rs", "h2", "gc/src/lib.rs@h2#1"),
-            answer(
+            latest_recording("gc/src/old.rs", "h1", "gc/src/old.rs@h1#0"),
+            latest_recording("gc/src/lib.rs", "h2", "gc/src/lib.rs@h2#1"),
+            latest_recording(
                 "gd/docs/architecture.md",
                 "h4",
                 "gd/docs/architecture.md@h4#1"
@@ -2175,11 +2204,7 @@ fn the_report_reads_the_tree_from_the_top_level_of_a_store_in_a_repository_subdi
 
     let (out, err, ok) = setup(&sub);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
-    #[cfg(feature = "symbols")]
-    let counted = format!("2{REPORT_NOTE}");
-    #[cfg(not(feature = "symbols"))]
-    let counted = "2";
-    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
+    assert_eq!(report_lines(&out), vec![report_line(2)]);
 }
 
 // Spec 107, criterion 6 - the report's boundaries, from outside the crates that own them: the
@@ -2330,21 +2355,9 @@ fn a_rebuild_with_one_identity_to_record_again_reports_a_one_with_the_note() {
 
     let (out, err, ok) = setup(root);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
-    #[cfg(feature = "symbols")]
-    let counted = format!("1{REPORT_NOTE}");
-    #[cfg(not(feature = "symbols"))]
-    let counted = "1";
-    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
-    let identities: Vec<String> = recorded
-        .iter()
-        .map(|(prefix, path)| format!("{prefix}/{path}"))
-        .collect();
+    assert_eq!(report_lines(&out), vec![report_line(1)]);
     assert_eq!(
-        generations(
-            root,
-            &project,
-            &identities.iter().map(String::as_str).collect::<Vec<_>>()
-        ),
+        recorded_generations(root, &project, &recordings),
         vec![None; 5],
         "all five identities are behind their latest recording, and one is counted"
     );
@@ -2400,8 +2413,8 @@ fn unparsable_source_entry() -> Event {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_report_asks_git_for_the_root_only_once_an_identity_is_behind_its_recording() {
-    let zero = format!("{REPORT_LEAD}0");
-    let one = format!("{REPORT_LEAD}1{REPORT_NOTE}");
+    let zero = report_line(0);
+    let one = report_line(1);
     let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
     let behind = || {
         let mut rows = keyed_source_rows();
@@ -2496,10 +2509,7 @@ fn the_log_side_of_the_report_reads_the_one_stream_it_is_handed() {
     });
 
     let answer = |identity: &str, generation: &str, key: &str| {
-        HashMap::from([(
-            identity.to_string(),
-            (generation.to_string(), vec![key.to_string()]),
-        )])
+        HashMap::from([latest_recording(identity, generation, key)])
     };
     assert_eq!(
         (run, other),
@@ -2596,11 +2606,7 @@ fn an_identity_the_graph_holds_at_its_latest_recording_is_not_counted_though_its
 
     let (out, err, ok) = setup(root);
     assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
-    #[cfg(feature = "symbols")]
-    let counted = format!("1{REPORT_NOTE}");
-    #[cfg(not(feature = "symbols"))]
-    let counted = "1";
-    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
+    assert_eq!(report_lines(&out), vec![report_line(1)]);
     assert_eq!(
         generations(root, &project, &["gc/src/lib.rs", "gc/src/checks.rs"]),
         vec![Some("h1".to_string()), None],
