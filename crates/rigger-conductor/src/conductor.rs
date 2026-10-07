@@ -4833,7 +4833,11 @@ impl RunCtx<'_> {
             })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
-        // their findings; it tries to prove them wrong and emits its own findings.
+        // their findings; it tries to prove them wrong and emits its own findings. It waits
+        // for every lens to FINISH, never for the first findings to appear: it weighs each
+        // lens's final position (a lens with no finding reads as "clean" only once it has
+        // ended - until then it may still be about to raise one), and the lens tier's join is
+        // where a lens's park or error surfaces before any later tier spends a spawn.
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
