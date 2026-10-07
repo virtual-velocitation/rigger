@@ -1882,7 +1882,7 @@ mod tests {
             ],
             &[("units_started", 1), ("first_pass_clean", 0)],
         );
-        // Two units' events interleave in the append-only stream (run_batch spawns
+        // Two units' events interleave in the append-only stream (run_wave spawns
         // under a thread scope). Per-id state must not bleed: `a` approves, `b`
         // rejects.
         interleaved_units_keep_per_id_review_state: assert_counters(

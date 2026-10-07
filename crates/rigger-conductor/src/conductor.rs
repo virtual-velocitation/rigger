@@ -137,7 +137,7 @@ pub use crate::metrics::META_MODEL_RESOLVED;
 /// approve-shaped verdict a GATING spawn records via `rigger_emit` on the in-process (cli)
 /// path is attributable to THAT spawn EXACTLY - the correlation the store-sourced
 /// verdict-channel-mismatch backstop needs to exclude a CONCURRENT sibling's approve under
-/// the `run_batch` fan-out. Audit metadata on events that already exist, never a new event
+/// the `run_wave` fan-out. Audit metadata on events that already exist, never a new event
 /// type (spec 18's Global constraints); folds and projections ignore it, exactly like
 /// [`META_MODEL_ALIAS`] and [`contextgraph::META_ACTOR`]. An out-of-process emit is stamped
 /// too, so EVERY driver names its emitting spawn at RECORD time and the same one identity
@@ -3977,6 +3977,23 @@ impl RunCtx<'_> {
     }
 
     /// Run one wave of `ready` stages and answer whether the width bound admitted any of them.
+    ///
+    /// Admission is CONTINUOUS: the wave admits, in `ready` order, every stage [`admissible`]
+    /// allows, then waits for ANY running stage to resolve and admits again - so a stage that
+    /// finishes frees its slot for the next waiting one at once, instead of every admitted
+    /// stage waiting for the slowest of its batch. The wave returns when nothing runs and
+    /// nothing more can be admitted; a stage still waiting then (its slot or its files held
+    /// by a unit in flight off-process) is left neither integrated nor terminal, so a later
+    /// wave (or a resumed step) offers it again.
+    ///
+    /// The width bound (spec 102, criterion 1): `defaults.max_parallel_units` caps how many
+    /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
+    /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
+    /// at run start (see `run`'s own seed), so a crash-resumed process counts a spawn still in
+    /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): when a
+    /// grounder is present and `partition: by-blast-radius` is requested, a stage is admitted
+    /// only while its safe radius conflicts with no unit in flight ([`radii_conflict`]: a
+    /// shared file, or an empty radius), so two overlapping units never run at once.
     fn run_wave(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -3985,183 +4002,187 @@ impl RunCtx<'_> {
         terminal: &mut HashSet<String>,
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
-        // The wave-width bound (spec 102, criterion 1): `defaults.max_parallel_units`
-        // caps how many units may be in flight AT ONCE across the WHOLE run, not just
-        // this wave's own batches. `0` (the default) is unbounded - the historical
-        // behavior, byte-for-byte. A name already in `in_flight` (seeded from the log at
-        // run start, so a crash-resumed process still counts it - see `run`'s own seed)
-        // is ALWAYS admitted: it already holds its slot and must be free to continue,
-        // never blocked by its own occupancy. Only names NOT already in flight compete
-        // for whatever slots remain. A ready stage the width refuses is left OUT of
-        // `admitted` entirely - neither integrated nor terminal - so a later wave (this
-        // step's, once a slot frees, or a resumed step's) offers it again.
         let width = self.cfg.workflow.defaults.max_parallel_units as usize;
-        let admitted: Vec<String> = if width == 0 {
-            ready.to_vec()
-        } else {
-            let mut fresh_budget = width.saturating_sub(in_flight.len());
-            let mut admitted = Vec::with_capacity(ready.len());
-            for name in ready {
-                if in_flight.contains(name) {
-                    admitted.push(name.clone());
-                } else if fresh_budget > 0 {
-                    fresh_budget -= 1;
-                    admitted.push(name.clone());
-                }
-            }
-            admitted
-        };
-        in_flight.extend(admitted.iter().cloned());
-
-        // Safe-parallelism partitioning (§3.2, §8): when partitioning is requested
-        // and a grounder can compute blast radii, split the ready stages into
-        // batches that are DISJOINT by blast-radius and run the batches SEQUENTIALLY
-        // (each batch still concurrent under the pool cap), so two stages whose blast
-        // radii overlap never run at the same time and never share a worktree. With
-        // no grounder or no partition request, the whole wave is one batch - the
-        // historical single-wave behavior. Runs over `admitted` only - the width bound
-        // above already excluded whatever this wave has no slot for.
-        let batches = self.partition_wave(stages, &admitted);
+        let radii = self.wave_radii(stages, ready);
+        let mut waiting: Vec<String> = ready.to_vec();
+        let mut running: HashSet<String> = HashSet::new();
+        let mut admitted_any = false;
         let mut first_err = None;
-        for batch in &batches {
-            let results = self.run_batch(stages, batch);
-            for (name, r) in results {
-                terminal.insert(name.clone());
-                // Freed for every genuine resolution; the PARKED arm below re-occupies
-                // the slot - the spawn is still actually running, off-process, and a
-                // fresh candidate must not be admitted in its place.
-                in_flight.remove(&name);
-                match r {
-                    Ok(true) => {
-                        integrated.insert(name);
-                    }
-                    Ok(false) => {}
-                    // A PARKED unit (the stepwise/replay driver hit an unrecorded
-                    // frontier) is neither integrated nor failed: it left a
-                    // SpawnRequested for the courier and unwound cleanly. Record no
-                    // lesson and do not collapse the wave to an error - the run loop
-                    // finds no newly-ready units and returns, so the step process ends
-                    // once every in-flight spawn in the wave is parked. Flag the park so
-                    // the phase boundary holds the deferred gate until a later step
-                    // drains the frontier and the tree is fully assembled.
-                    Err(e) if is_parked(&e) => {
-                        in_flight.insert(name);
-                        self.parked.store(true, Ordering::SeqCst);
-                    }
-                    // A budget-refused review-tier spawn (lens/adversary/adjudicator) is
-                    // NOT a stage failure either: [`reserve_spawn`] already set
-                    // `budget_broke` before returning the refusal, so - exactly like the
-                    // implementer's `Ok(false)` refusal - we unwind the unit cleanly here
-                    // (no lesson, no first_err collapse) and let the run loop's mid-wave
-                    // `budget_broke()` check trip the ONE breaker path, which records
-                    // `BudgetExhausted` and halts. Without this branch a review-tier
-                    // refusal would collapse the wave to a raw error that propagates out of
-                    // `run` BEFORE the `budget_broke()` check, aborting with NO
-                    // `BudgetExhausted` event and asymmetric with the implementer path -
-                    // the exact defect the criterion 5 fold makes load-bearing once a
-                    // resume starts with the budget already spent on a recorded implementer
-                    // and then reaches its first review tier (findings
-                    // budget-review-tier-no-exhausted,
-                    // adv-confirm-review-tier-no-budgetexhausted,
-                    // adv-budget-guard-cannot-assemble-reviewed-unit).
-                    Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
-                    // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
-                    // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
-                    // landing refused by the run checkout's local changes, a unit's infra reruns
-                    // past the taxonomy's infra limit) - is an infrastructure or configuration
-                    // fault, not the unit's failure. ONE arm for all of them: propagate the loud
-                    // halt as the wave's error with the recognition marker stripped (so the
-                    // operator's message stays clean), emit NO per-unit lesson here (it would
-                    // misattribute the fault to the unit under work; `land_refused` records its
-                    // own path-naming lesson before minting its marker), and charge no attempt -
-                    // no UnitFailed/UnitEscalated is written on any halt's path.
-                    Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
-                        if first_err.is_none() {
-                            first_err = Some(Error(
-                                HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
-                            ));
-                        }
-                    }
-                    Err(e) => {
-                        // EVERY erroring stage leaves a record, not just the first
-                        // (item 8): the wave collapses to a single returned error, so
-                        // without this the run record could not explain the stages
-                        // whose errors were dropped. Emit a lesson naming the stage
-                        // and its error before the collapse, so the log accounts for
-                        // each terminal stage. The error never propagated up
-                        // mid-stage, so the lesson is best-effort: its outcome is
-                        // discarded and the stage's own error is what returns.
-                        //
-                        // adj-u104c5 REQUIRED FIX 2
-                        // (sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-
-                        // text): this is the LAST arm any driver spawn `Err` reaches before
-                        // becoming operator-facing text - strip a FAILURE_MARKER-bracketed
-                        // class here too, as defense in depth alongside the leaf sites that
-                        // already strip it (`spawn_err`, the review-tier and plan-critique
-                        // wraps), so no current or future call site that lets an `Err`
-                        // reach this generic fallback unformatted can leak the raw marker.
-                        // A no-op for every marker-free error (every other driver, or text
-                        // a leaf site already cleaned).
-                        let msg = strip_failure_marker(&e);
-                        let _ = self.emit_lesson(
-                            None,
-                            &name,
-                            &format!("stage {name:?} failed in its wave: {msg}"),
-                            None,
-                            None,
-                        );
-                        if first_err.is_none() {
-                            first_err = Some(Error(msg));
-                        }
-                    }
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| loop {
+            let mut i = 0;
+            while i < waiting.len() {
+                if !admissible(&waiting[i], width, &running, in_flight, radii.as_ref()) {
+                    i += 1;
+                    continue;
                 }
+                let name = waiting.remove(i);
+                admitted_any = true;
+                running.insert(name.clone());
+                in_flight.insert(name.clone());
+                let st = stages[&name].clone();
+                let done_tx = done_tx.clone();
+                s.spawn(move || {
+                    // A panicking stage is re-raised on the wave's own thread below, exactly as
+                    // joining it would, instead of leaving the wave waiting on a stage that will
+                    // never report.
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.start_and_run_stage(&name, &st)
+                    }));
+                    let _ = done_tx.send((name, r));
+                });
             }
-        }
+            if running.is_empty() {
+                break;
+            }
+            let (name, r) = done_rx
+                .recv()
+                .expect("a running stage always reports before the wave ends");
+            running.remove(&name);
+            let r = r.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            self.settle_stage(name, r, integrated, terminal, in_flight, &mut first_err);
+        });
         match first_err {
             Some(e) => Err(e),
-            None => Ok(!admitted.is_empty()),
+            None => Ok(admitted_any),
         }
     }
 
-    /// Split a wave's ready stages into the batches that run sequentially (§3.2, §8).
-    /// Partitioning applies when a grounder is present AND partitioning is requested
-    /// (any ready stage sets `partition == "by-blast-radius"`, or `defaults.partition`
-    /// does). Then each ready stage's blast-radius file set is computed by grounding
-    /// its `coverage` (or name) and collecting the touched files, and the stages are
-    /// partitioned disjoint by [`partition_by_blast_radius`]. Otherwise the whole wave
-    /// is a single batch (the historical behavior).
-    fn partition_wave(
+    /// Record one resolved stage of a wave: it is terminal for this process and frees its slot,
+    /// except that a PARKED stage keeps it (its spawn is still running off-process). The first
+    /// wave-collapsing error is kept in `first_err`.
+    fn settle_stage(
+        &self,
+        name: String,
+        r: Result<bool, Error>,
+        integrated: &mut HashSet<String>,
+        terminal: &mut HashSet<String>,
+        in_flight: &mut HashSet<String>,
+        first_err: &mut Option<Error>,
+    ) {
+        terminal.insert(name.clone());
+        // Freed for every genuine resolution; the PARKED arm below re-occupies the slot - the
+        // spawn is still actually running, off-process, and a fresh candidate must not be
+        // admitted in its place.
+        in_flight.remove(&name);
+        match r {
+            Ok(true) => {
+                integrated.insert(name);
+            }
+            Ok(false) => {}
+            // A PARKED unit (the stepwise/replay driver hit an unrecorded
+            // frontier) is neither integrated nor failed: it left a
+            // SpawnRequested for the courier and unwound cleanly. Record no
+            // lesson and do not collapse the wave to an error - the run loop
+            // finds no newly-ready units and returns, so the step process ends
+            // once every in-flight spawn in the wave is parked. Flag the park so
+            // the phase boundary holds the deferred gate until a later step
+            // drains the frontier and the tree is fully assembled.
+            Err(e) if is_parked(&e) => {
+                in_flight.insert(name);
+                self.parked.store(true, Ordering::SeqCst);
+            }
+            // A budget-refused review-tier spawn (lens/adversary/adjudicator) is
+            // NOT a stage failure either: [`reserve_spawn`] already set
+            // `budget_broke` before returning the refusal, so - exactly like the
+            // implementer's `Ok(false)` refusal - we unwind the unit cleanly here
+            // (no lesson, no first_err collapse) and let the run loop's mid-wave
+            // `budget_broke()` check trip the ONE breaker path, which records
+            // `BudgetExhausted` and halts. Without this branch a review-tier
+            // refusal would collapse the wave to a raw error that propagates out of
+            // `run` BEFORE the `budget_broke()` check, aborting with NO
+            // `BudgetExhausted` event and asymmetric with the implementer path -
+            // the exact defect the criterion 5 fold makes load-bearing once a
+            // resume starts with the budget already spent on a recorded implementer
+            // and then reaches its first review tier (findings
+            // budget-review-tier-no-exhausted,
+            // adv-confirm-review-tier-no-budgetexhausted,
+            // adv-budget-guard-cannot-assemble-reviewed-unit).
+            Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
+            // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
+            // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
+            // landing refused by the run checkout's local changes, a unit's infra reruns
+            // past the taxonomy's infra limit) - is an infrastructure or configuration
+            // fault, not the unit's failure. ONE arm for all of them: propagate the loud
+            // halt as the wave's error with the recognition marker stripped (so the
+            // operator's message stays clean), emit NO per-unit lesson here (it would
+            // misattribute the fault to the unit under work; `land_refused` records its
+            // own path-naming lesson before minting its marker), and charge no attempt -
+            // no UnitFailed/UnitEscalated is written on any halt's path.
+            Err(e) if HALT_MARKERS.iter().any(|m| carries_marker(&e, m)) => {
+                if first_err.is_none() {
+                    *first_err = Some(Error(
+                        HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
+                    ));
+                }
+            }
+            Err(e) => {
+                // EVERY erroring stage leaves a record, not just the first
+                // (item 8): the wave collapses to a single returned error, so
+                // without this the run record could not explain the stages
+                // whose errors were dropped. Emit a lesson naming the stage
+                // and its error before the collapse, so the log accounts for
+                // each terminal stage. The error never propagated up
+                // mid-stage, so the lesson is best-effort: its outcome is
+                // discarded and the stage's own error is what returns.
+                //
+                // adj-u104c5 REQUIRED FIX 2
+                // (sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-
+                // text): this is the LAST arm any driver spawn `Err` reaches before
+                // becoming operator-facing text - strip a FAILURE_MARKER-bracketed
+                // class here too, as defense in depth alongside the leaf sites that
+                // already strip it (`spawn_err`, the review-tier and plan-critique
+                // wraps), so no current or future call site that lets an `Err`
+                // reach this generic fallback unformatted can leak the raw marker.
+                // A no-op for every marker-free error (every other driver, or text
+                // a leaf site already cleaned).
+                let msg = strip_failure_marker(&e);
+                let _ = self.emit_lesson(
+                    None,
+                    &name,
+                    &format!("stage {name:?} failed in its wave: {msg}"),
+                    None,
+                    None,
+                );
+                if first_err.is_none() {
+                    *first_err = Some(Error(msg));
+                }
+            }
+        }
+    }
+
+    /// Each ready stage's SAFE-SUPERSET radius (spec 16 unit 3) for the wave's co-scheduling
+    /// rule, or `None` when the rule does not apply - no grounder, or no ready stage requests
+    /// `partition: by-blast-radius` - so every stage is free to pair. A radius is computed by
+    /// grounding the stage's `coverage` (or its name): the union of the structural
+    /// cross-reference graph and grep, uncapped, so a name-level miss can never co-schedule two
+    /// conflicting units. A hub's whole neighborhood is in it, so a hub needs no rule of its own.
+    fn wave_radii(
         &self,
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
-    ) -> Vec<Vec<String>> {
+    ) -> Option<HashMap<String, Vec<String>>> {
         let grounder = match self.deps.grounder {
             Some(g) if self.partition_requested(stages, ready) => g,
-            _ => return vec![ready.to_vec()],
+            _ => return None,
         };
-        // Each unit is partitioned by its SAFE-SUPERSET view (spec 16 unit 3): the union of the
-        // structural cross-reference graph and grep, uncapped, so a name-level miss can never
-        // co-schedule two conflicting units. A hub's whole neighborhood is in that view, so a hub
-        // needs no rule of its own. The radii go through the ONE `partition_by_blast_radius`
-        // authority over `radii_conflict`: two radii sharing a file never share a batch, and an
-        // EMPTY radius (a total, unassessable grounding miss) takes its own batch - the same
-        // fail-safe `route_review_tier` takes (empty -> full panel).
-        let items: Vec<(String, Vec<String>)> = ready
-            .iter()
-            .map(|name| {
-                let st = &stages[name];
-                let query = if st.coverage.is_empty() {
-                    name.as_str()
-                } else {
-                    st.coverage.as_str()
-                };
-                (
-                    name.clone(),
-                    grounder.blast_radius(query, GROUNDED_SEED_K).safe,
-                )
-            })
-            .collect();
-        partition_by_blast_radius(&items)
+        Some(
+            ready
+                .iter()
+                .map(|name| {
+                    let st = &stages[name];
+                    let query = if st.coverage.is_empty() {
+                        name.as_str()
+                    } else {
+                        st.coverage.as_str()
+                    };
+                    (
+                        name.clone(),
+                        grounder.blast_radius(query, GROUNDED_SEED_K).safe,
+                    )
+                })
+                .collect(),
+        )
     }
 
     /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
@@ -4177,35 +4198,6 @@ impl RunCtx<'_> {
                 by_blast(&self.cfg.workflow.defaults.partition)
             }
         })
-    }
-
-    /// Run one batch of stage names concurrently under the bounded fan-out pool
-    /// (§6): chunks of at most MAX_CONCURRENCY, each chunk a scoped thread group.
-    /// Every stage in the batch runs; never more than MAX_CONCURRENCY at once.
-    fn run_batch(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        batch: &[String],
-    ) -> Vec<(String, Result<bool, Error>)> {
-        let mut results: Vec<(String, Result<bool, Error>)> = Vec::with_capacity(batch.len());
-        for chunk in batch.chunks(MAX_CONCURRENCY) {
-            let chunk_results: Vec<(String, Result<bool, Error>)> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk
-                    .iter()
-                    .map(|name| {
-                        let name = name.clone();
-                        let st = stages[&name].clone();
-                        s.spawn(move || {
-                            let r = self.start_and_run_stage(&name, &st);
-                            (name, r)
-                        })
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
-            });
-            results.extend(chunk_results);
-        }
-        results
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
@@ -7401,7 +7393,7 @@ impl RunCtx<'_> {
                 // this spawn's deterministic id ([`META_SPAWN`]) so an approve-shaped verdict
                 // a GATING adjudicator records via `rigger_emit` on the in-process (cli) path
                 // is attributable to THAT spawn EXACTLY - not just its shared role token,
-                // which a concurrent sibling adjudicator (`run_batch` fan-out) carries too -
+                // which a concurrent sibling adjudicator (`run_wave` fan-out) carries too -
                 // the per-spawn correlation the mismatch backstop (`gating_spawn_emitted_approve`)
                 // keys on to exclude a sibling's approve.
                 self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
@@ -7526,7 +7518,7 @@ impl RunCtx<'_> {
     ///
     /// CORRELATED to THIS spawn's OWN emit by its [`META_SPAWN`] STAMP - matched EXACTLY by
     /// spawn id, NEVER a shared-stream position window a CONCURRENT sibling adjudicator (up to
-    /// `MAX_CONCURRENCY` units run in parallel in [`run_batch`](RunCtx::run_batch), all emitting
+    /// `MAX_CONCURRENCY` units run in parallel in [`run_wave`](RunCtx::run_wave), all emitting
     /// to the ONE store) could fall inside. Every driver stamps the emit with the emitting
     /// spawn's id at RECORD time, so the same one identity check works on all three:
     /// - the cli emit callback stamps it in-process;
@@ -7796,7 +7788,7 @@ impl RunCtx<'_> {
     /// guarded here defensively), and is not the gate itself. Each unit's blast radius is the
     /// SAFE-superset view [`grounded_blast_radius`](Self::grounded_blast_radius) computes, NOT the
     /// precise seed (spec 17 unit 3, 3b): rule-6 conflict detection is a SAFETY consumer, so it
-    /// grounds on the same safe superset `partition_wave` uses - two units that share a reference
+    /// grounds on the same safe superset `run_wave` schedules by - two units that share a reference
     /// visible only to grep (a macro body, a re-export, a reflection string) are detected as
     /// conflicting at decomposition time, not merely serialized at runtime. Computed in the stages'
     /// stable (BTreeMap) name order so the analysis is deterministic across steps.
@@ -10852,7 +10844,7 @@ impl RunCtx<'_> {
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
     /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
-    /// `.safe`-superset view is what every SAFETY consumer keys on: `partition_wave` and
+    /// `.safe`-superset view is what every SAFETY consumer keys on: `run_wave` and
     /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
     /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
     /// missed reference could co-schedule two conflicting units or route a wide/high-risk
@@ -14046,6 +14038,38 @@ fn integrates(st: &Stage) -> bool {
 }
 
 pub use crate::metrics::partition_by_blast_radius;
+
+pub use crate::metrics::radii_conflict;
+
+/// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
+/// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
+/// (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
+/// under `width` (`0` = unbounded) AND, when `radii` is present, its radius conflicts with no
+/// unit in flight. Only the in-flight units this wave grounded are compared; an in-flight unit
+/// that already holds its slot is admitted without the check, since it started under it.
+fn admissible(
+    name: &str,
+    width: usize,
+    running: &HashSet<String>,
+    in_flight: &HashSet<String>,
+    radii: Option<&HashMap<String, Vec<String>>>,
+) -> bool {
+    if running.len() >= MAX_CONCURRENCY {
+        return false;
+    }
+    if in_flight.contains(name) {
+        return true;
+    }
+    if width != 0 && in_flight.len() >= width {
+        return false;
+    }
+    radii.is_none_or(|radii| {
+        in_flight
+            .iter()
+            .filter_map(|other| radii.get(other))
+            .all(|other| !radii_conflict(&radii[name], other))
+    })
+}
 
 /// Which grounding slice a spawn's prompt renders (spec 36). It is an INJECTED discriminator chosen
 /// by the call site, NOT derivable from the `Stage` alone: the SAME `Stage` assembles both an
@@ -37599,7 +37623,7 @@ mod tests {
 
     #[test]
     fn two_erroring_stages_both_leave_a_record() {
-        // Item 8: run_wave collapses a batch to a single returned error, dropping the
+        // Item 8: run_wave collapses a wave to a single returned error, dropping the
         // rest. Both erroring stages must still leave a record (a lesson) naming the
         // stage and its error. Two independent stages each reference an agent missing
         // from cfg.agents, so each errors inside run_single_stage.
