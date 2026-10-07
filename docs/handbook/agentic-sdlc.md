@@ -71,7 +71,7 @@ The economics: every finding is a win for the adversary and a failure for everyo
 
 ### Integration: merge on green, remediate on red
 
-Only `adjudicator: approve` + green gates integrates a unit (`on_pass: merge`). A reject or a gate failure re-enters that same unit's remediation loop - the implementer is re-run with the feedback and a re-grounding pass - bounded by `max_retries` (default 3). Exhausting the bound **escalates to a human**; it never silently drops the unit and never silently merges it.
+Only `adjudicator: approve` + green gates integrates a unit (`on_pass: merge`). A reject or a gate failure re-enters that same unit's remediation loop - the implementer resumes its own session with the feedback, and each reviewer resumes its session with the round's delta - bounded by `max_retries` (default 3). Exhausting the bound **escalates to a human**; it never silently drops the unit and never silently merges it.
 
 ### Documentation: the scribe owns accuracy
 

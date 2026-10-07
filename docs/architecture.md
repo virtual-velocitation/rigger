@@ -333,8 +333,14 @@ each wave, and projects the final `RunState`. The canonical pipeline above is si
 unit runs its OWN complete lifecycle in `run_single_stage`: ground -> implement (red ->
 green TDD in a worktree) -> the unit's gates -> the three-tier review OF THIS UNIT'S DIFF
 (lenses -> adversary -> adjudicator) -> integrate. A reject or a gate failure feeds back
-into that same unit's remediation loop (re-ground, re-implement with the feedback) and
-escalates after the retry bound; it does NOT integrate.
+into that same unit's remediation loop and escalates after the retry bound; it does NOT
+integrate. A re-attempt continues each persona's session rather than starting a cold one: every
+spawn's Claude Code session id is recorded in the run log on a `spawn-session` mark, and the
+next attempt's implementer and sdet-author, and the next review round's lenses, adversary and
+adjudicator, resume the session their role last ran as on the unit (`claude -p --resume`),
+sent only what changed - the prior-failure block, or the round's delta and REQUIRED list. A
+role with no recorded session, or whose session transcript is gone, starts fresh on the full
+prompt.
 
 ```mermaid
 flowchart LR
@@ -351,7 +357,7 @@ flowchart LR
     GATES -->|green| REV["three-tier review of THIS unit<br/>(lenses -> adversary -> adjudicator)"]
     GATES -->|red| REMED
     REV -->|approve| INT["integrate<br/>commit . land . emit events . reindex"]
-    REV -->|reject| REMED["remediate<br/>(re-ground, re-implement;<br/>escalate after N)"]
+    REV -->|reject| REMED["remediate<br/>(resume each session with the feedback;<br/>escalate after N)"]
     REMED --> IMPL
   end
   FAN --> IMPL
