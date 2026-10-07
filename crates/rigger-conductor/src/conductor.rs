@@ -15735,6 +15735,9 @@ mod tests {
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
+        /// The `CARGO_TARGET_DIR` each spawn of an agent carried (empty when it carried none),
+        /// in spawn order, keyed by agent id - where that agent's own cargo runs build.
+        targets_by_agent: Mutex<HashMap<String, Vec<String>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
         /// before returning success - simulating a REVIEWER's own side effect
         /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
@@ -15813,6 +15816,7 @@ mod tests {
                 reviews_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
+                targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
@@ -15837,6 +15841,11 @@ mod tests {
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
             cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
+        }
+
+        /// The `CARGO_TARGET_DIR` each spawn of the named agent carried, in spawn order.
+        fn targets_for(&self, agent_id: &str) -> Vec<String> {
+            cached(&self.targets_by_agent, agent_id).unwrap_or_default()
         }
 
         /// Every working dir (cwd) the named agent was spawned with, in spawn order.
@@ -15935,6 +15944,18 @@ mod tests {
                 opts.resumed_from.clone(),
                 opts.resume_task.clone(),
             ));
+            self.targets_by_agent
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push(
+                    opts.env
+                        .iter()
+                        .find(|(name, _)| name == "CARGO_TARGET_DIR")
+                        .map(|(_, dir)| dir.clone())
+                        .unwrap_or_default(),
+                );
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
             // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
             // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
@@ -36431,6 +36452,106 @@ mod tests {
                 .any(|n| n.id == "f1" && n.kind == contextgraph::KIND_FINDING),
             "the emitted ReviewFinding must fold into a KIND_FINDING node in the graph"
         );
+    }
+
+    /// The input digest of the `ok` gate's verdict the `implement` unit recorded at `attempt`.
+    fn ok_gate_digest(events: &[Event], attempt: u32) -> String {
+        let key = gate_key(GateKey::Verdict, "implement", attempt, 0, "ok");
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key)
+            })
+            .and_then(|e| e.meta.get(META_INPUT_DIGEST).cloned())
+            .unwrap_or_else(|| panic!("no digested verdict under {key}"))
+    }
+
+    /// The gates are the instrument; the reviewers judge the residue. Every review tier's prompt
+    /// carries the gate evidence of the exact tree it judges - each gate's id, its verdict, its
+    /// input digest and its evidence lines - so no reviewer re-runs a gate the evidence shows
+    /// green. A later round judges a new tree, so it carries that tree's evidence and never the
+    /// earlier round's.
+    #[test]
+    fn every_review_tier_prompt_carries_the_gate_evidence_of_the_tree_it_judges() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let digests = [ok_gate_digest(&events, 0), ok_gate_digest(&events, 1)];
+        assert_ne!(digests[0], digests[1], "each round judges a different tree");
+        for agent_id in ["lens", "adversary", "adj"] {
+            let prompts = driver.prompts_for(agent_id);
+            assert_eq!(prompts.len(), 2, "{agent_id} reviews both rounds");
+            for (round, prompt) in prompts.iter().enumerate() {
+                let (digest, other) = (&digests[round], &digests[1 - round]);
+                let tree = digest.split_once(':').unwrap().1;
+                let block = format!(
+                    "GATE EVIDENCE for the tree under review (git tree {tree}, which `git \
+                     rev-parse HEAD^{{tree}}` prints in the unit's worktree): every gate below \
+                     already ran on exactly this tree. Never re-run a gate shown PASS here, by \
+                     hand or through a verify helper: the gate is the instrument that proves \
+                     it, and your judgment covers what no gate sees. Reproduce only a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - in your own scratch worktree, never the whole \
+                     battery.\n- ok: PASS (input digest {digest})\n    PASS\n"
+                );
+                assert!(
+                    prompt.contains(&block),
+                    "{agent_id} round {round} must carry its tree's gate evidence:\n{prompt}"
+                );
+                assert!(
+                    !prompt.contains(other.as_str()),
+                    "{agent_id} round {round} must not carry another round's evidence:\n{prompt}"
+                );
+            }
+        }
+    }
+
+    /// A reviewer's own cargo runs never build into the unit's cache: the lenses, the adversary
+    /// and the adjudicator each get the unit's review cache, so a reproduction in a reviewer's
+    /// scratch worktree can never swap a binary the unit's gates or another tier's test is
+    /// using. The implementer and the sdet-author build the unit's own tree and keep its cache.
+    #[test]
+    fn a_reviewer_builds_into_the_units_review_cache_never_the_units_own() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_cache = format!("{scratch}/cargo-target-implement");
+        let review_cache = format!("{scratch}/review-target-implement");
+        for (agent_id, want) in [
+            ("worker", &unit_cache),
+            (ROLE_SDET_AUTHOR, &unit_cache),
+            ("lens", &review_cache),
+            ("adversary", &review_cache),
+            ("adj", &review_cache),
+        ] {
+            assert_eq!(
+                driver.targets_for(agent_id),
+                vec![want.clone()],
+                "{agent_id} builds into {want}"
+            );
+        }
     }
 
     /// The prompts one approving review round hands its three tiers, `(lens, adversary,
