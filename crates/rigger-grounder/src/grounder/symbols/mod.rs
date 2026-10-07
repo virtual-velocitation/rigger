@@ -566,6 +566,34 @@ mod tests {
         );
     }
 
+    /// The text is asked for only once a grammar resolves: a path under no grammar answers the
+    /// outer none with the text never asked, and a path under a grammar asks exactly once and
+    /// hands back the very text it was given beside the symbols extracted from it.
+    #[test]
+    fn extracted_asks_for_the_text_only_once_a_grammar_resolves() {
+        let asked = std::cell::Cell::new(0_u32);
+        let source = || {
+            asked.set(asked.get() + 1);
+            Some(String::from("fn one() {}\n"))
+        };
+
+        assert_eq!(extracted("notes.txt", source, None), None);
+        assert_eq!(asked.get(), 0, "no grammar resolves, so no text is asked");
+
+        let (text, symbols) = extracted("a.rs", source, None)
+            .expect("a grammar resolves for a.rs")
+            .expect("the handed text extracts");
+        assert_eq!(asked.get(), 1, "the text is asked exactly once");
+        assert_eq!(text, "fn one() {}\n");
+        assert_eq!(symbols.lang, Lang::Rust);
+        let defs: Vec<(&str, Kind, u32)> = symbols
+            .defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.kind, d.line))
+            .collect();
+        assert_eq!(defs, [("one", Kind::Function, 1)]);
+    }
+
     #[test]
     fn index_one_file_records_the_content_hash_alongside_the_symbols() {
         // spec 68: a successfully indexed file's content hash is persisted alongside its
