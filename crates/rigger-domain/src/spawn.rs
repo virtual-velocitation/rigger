@@ -62,13 +62,23 @@ pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
 /// `worktree`.
 pub const UNIT_GATE_SCRATCH_PREFIX: &str = "rigger-gate-";
 
+/// Filesystem prefix of a unit's REVIEW build cache (`review-target-<slug>`), a SIBLING of its
+/// worktree under the scratch root: the `CARGO_TARGET_DIR` every review tier of the unit is
+/// spawned with, so a reviewer's own reproduction - in its scratch worktree, at whatever sha it
+/// probes - never builds into, or swaps a binary in, the unit's own cache that the implementer,
+/// the sdet-author and the gates share. See [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives
+/// here rather than in `worktree`.
+pub const UNIT_REVIEW_CACHE_PREFIX: &str = "review-target-";
+
 /// The unit slug of a scratch-root entry that is one of a unit's per-unit caches - its build
-/// cache (`cargo-target-<slug>`) or its gate scratch root (`rigger-gate-<slug>`) - or `None`
-/// for any other name. The slug may be empty (a bare `cargo-target-`). Every scratch walk
-/// classifies by this one predicate (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), so
-/// a unit's gate scratch root is reported, measured and reclaimed exactly as its cache is.
+/// cache (`cargo-target-<slug>`), its review build cache (`review-target-<slug>`) or its gate
+/// scratch root (`rigger-gate-<slug>`) - or `None` for any other name. The slug may be empty
+/// (a bare `cargo-target-`). Every scratch walk classifies by this one predicate (spec 113,
+/// THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), so each is reported, measured and reclaimed
+/// exactly as the unit's build cache is.
 pub fn unit_scratch_slug(name: &str) -> Option<&str> {
     name.strip_prefix(UNIT_CACHE_PREFIX)
+        .or_else(|| name.strip_prefix(UNIT_REVIEW_CACHE_PREFIX))
         .or_else(|| name.strip_prefix(UNIT_GATE_SCRATCH_PREFIX))
 }
 
@@ -1035,6 +1045,9 @@ mod tests {
     fn unit_scratch_slug_names_the_unit_of_a_cache_or_gate_scratch_root_and_nothing_else() {
         assert_eq!(unit_scratch_slug("cargo-target-unit-7"), Some("unit-7"));
         assert_eq!(unit_scratch_slug("rigger-gate-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("review-target-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("review-target-"), Some(""));
+        assert_eq!(unit_scratch_slug("review-target"), None);
         assert_eq!(unit_scratch_slug("cargo-target-"), Some(""));
         assert_eq!(unit_scratch_slug("rigger-gate-"), Some(""));
         assert_eq!(unit_scratch_slug("cargo-target"), None);
