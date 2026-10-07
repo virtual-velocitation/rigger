@@ -36812,11 +36812,13 @@ mod tests {
         );
     }
 
-    /// Mutation testing belongs to the gate that sweeps, never to a review: every review tier -
-    /// lens, adversary and adjudicator - is told never to run a mutation sweep, itself or
-    /// through a verify helper.
+    /// The gates grade the work, a review judges the residue: every review tier - lens,
+    /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
+    /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
+    /// the unit's review cache, and never to run a mutation sweep, itself or through a verify
+    /// helper, since mutation testing belongs to the gate that sweeps.
     #[test]
-    fn every_reviewer_prompt_forbids_a_mutation_sweep() {
+    fn every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -36830,21 +36832,6 @@ mod tests {
                 ),
                 "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
             );
-        }
-    }
-
-    /// The gates grade the work and a review judges the residue: every review tier - lens,
-    /// adversary and adjudicator - is told never to re-run the battery or a gate already green
-    /// on its tree, to reproduce only a specific suspicion in its own scratch worktree, and
-    /// that its build cache is the unit's review cache.
-    #[test]
-    fn every_reviewer_prompt_leaves_the_gate_battery_to_the_gates() {
-        let (lens, adversary, adjudicator) = review_tier_prompts();
-        for (tier, prompt) in [
-            ("lens", lens),
-            ("adversary", adversary),
-            ("adjudicator", adjudicator),
-        ] {
             assert!(
                 prompt.contains(
                     "Never re-run the gate battery, or any gate the gate evidence shows green on \
