@@ -1020,9 +1020,9 @@
     "reason": "Two runtime driver tests running the one worker-prompts harness, each completed by a different check (the heartbeat instruction every marked spawn gets, the stop clause every worker gets for a spawn that already ended), through the one shared `assert_driver_harness_holds` helper; only the one-call shape is shared."
   },
   {
-    "id": "dup-285c043f6562",
+    "id": "dup-57930b804935",
     "disposition": "not-a-duplicate",
-    "reason": "Four one-call `format!` builders of different values: the workflow file's path under the rigger directory, the unit size cap's sentence the plan protocol and the DAG critique share, the test-side requirement refusal expected for the fixture `sweep` gate, and the gate scratch periphery's recording gate command; they share only the single-format-call token shape."
+    "reason": "Three one-call `format!` builders of different values: the unit size cap's sentence the plan protocol and the DAG critique share, the test-side requirement refusal expected for the fixture `sweep` gate, and the gate scratch periphery's recording gate command; they share only the single-format-call token shape."
   },
   {
     "id": "dup-64eda8b7ffd5",

@@ -453,17 +453,21 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 /// event stream and its working tree, exactly like every other validate advisory.
 ///
 /// Candidates are every file identity `prior`'s derived stream has recorded a `gc/` generation for
-/// (via [`project_scoped_latest_generations`]) that STILL EXISTS on disk right now, sorted for
-/// determinism, then truncated to [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] - mirroring
-/// `grounder::symbols::staleness`'s own sorted-intersection-then-take sampling shape. Two kinds of
-/// file are deliberately left OUT of the candidate set, not merely filtered from the result:
+/// (via [`project_scoped_latest_generations`]) that the tree's one read rule
+/// ([`crate::grounder::tree_bytes`]) hands bytes for right now, sorted for determinism, then
+/// truncated to [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] - mirroring `grounder::symbols::staleness`'s own
+/// sorted-intersection-then-take sampling shape. Two kinds of file are deliberately left OUT of
+/// the candidate set, not merely filtered from the result:
 ///
 /// - a file the graph has NEVER recorded (present on disk, absent from `prior`) - that is the
 ///   COVERAGE question (criterion 2's), never double-counted as this advisory's lag;
-/// - a file the graph recorded that no longer exists on disk - an integration's own reindex
-///   retires it directly through the boundary-sentinel supersession (Design/Constraints Walk: "a
-///   file deleted by the integration - its entities are retired through the existing supersession,
-///   not left dangling"), so this bounded sample has nothing useful to re-check for it.
+/// - a file the graph recorded that the read rule hands no bytes for, so this bounded sample has
+///   nothing to re-check for it: one that no longer exists on disk, which an integration's own
+///   reindex retires directly through the boundary-sentinel supersession (Design/Constraints
+///   Walk: "a file deleted by the integration - its entities are retired through the existing
+///   supersession, not left dangling"); one outside the walk's scope (under a hidden directory,
+///   or named by a committed `.gitignore`), which no walk reads; and one this process cannot
+///   read.
 ///
 /// Returns `[]` when there is nothing to sample (an empty `prior`, or every candidate already
 /// pruned by the two rules above) or when every sampled file agrees with the graph's own recording -
@@ -475,7 +479,7 @@ pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
     let mut candidates: Vec<String> = latest
         .keys()
         .filter_map(|identity| identity.strip_prefix("gc/"))
-        .filter(|file| root_path.join(file).is_file())
+        .filter(|file| crate::grounder::tree_bytes(root_path, "gc", file).is_some())
         .map(str::to_string)
         .collect();
     candidates.sort();

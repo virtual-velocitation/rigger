@@ -503,17 +503,12 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-285c043f6562",
+    "id": "dup-57930b804935",
     "classification": "exact",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "unit_size_cap",
-        "content_hash": "c28c81e0bdeb1759"
-      },
-      {
-        "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
-        "name": "workflow_doc",
         "content_hash": "c28c81e0bdeb1759"
       },
       {
@@ -527,7 +522,7 @@
         "content_hash": "c28c81e0bdeb1759"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-grounder/src/grounder/workflowdef.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, tests/cli.rs, tests/gate_scratch_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -697,7 +692,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-96aa5aa624f2",
+    "id": "dup-decc12fbf756",
     "classification": "semantic",
     "sites": [
       {
@@ -739,6 +734,11 @@
         "file": "crates/rigger-gates-shell/src/gate.rs",
         "name": "Command::new",
         "content_hash": "1f01b7aba566e9fb"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "Command::new",
+        "content_hash": "7bc9b4eef80706b2"
       },
       {
         "file": "crates/rigger-process/src/budget.rs",
@@ -1142,11 +1142,11 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 88 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 89 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-da5c9dfefd76",
+    "id": "dup-eca57d97584c",
     "classification": "semantic",
     "sites": [
       {
@@ -1318,6 +1318,11 @@
         "file": "crates/rigger-grounder/src/grounder/mod.rs",
         "name": "\".rigger\"",
         "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "crates/rigger-grounder/src/grounder/mod.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "b2076679cfb7fe07"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -4091,7 +4096,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 588 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 589 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

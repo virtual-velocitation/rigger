@@ -9,9 +9,10 @@
 //! why the two are never unioned). This is the emit half; the fold half lives in
 //! `contextgraph::sqlite` and stays compiled in both lanes.
 
+use super::workflow_doc;
 #[cfg(test)]
 use crate::config;
-use crate::config::{push_reviewers, ReviewPanel, Stage, Workflow, RIGGER_DIR};
+use crate::config::{push_reviewers, ReviewPanel, Stage, Workflow};
 use crate::config_store;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
@@ -21,13 +22,6 @@ use crate::eventstore::Event;
 use rigger_domain::wave::reviews_through_panel;
 use std::collections::BTreeSet;
 use std::path::Path;
-
-/// The one relative path every entity/edge this pass extracts is attributed to (the `doc` attr on
-/// every folded node): `.rigger/workflow.yml` is ALWAYS the source, so it is derived here, never a
-/// parameter threaded through every call.
-fn workflow_doc() -> String {
-    format!("{RIGGER_DIR}/workflow.yml")
-}
 
 fn stage_id(name: &str) -> String {
     format!("stage:{name}")

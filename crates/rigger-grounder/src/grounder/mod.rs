@@ -27,6 +27,7 @@ pub mod design;
 #[cfg(feature = "symbols")]
 pub mod workflowdef;
 
+use crate::config::RIGGER_DIR;
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -116,6 +117,52 @@ where
         }
     }
     ControlFlow::Continue(())
+}
+
+/// The workflow definition's path relative to a project root, its ONE spelling: the path the
+/// workflow-definition pass reads and attributes every entity it extracts to (the `doc` attr on
+/// every folded node), and the one path [`in_walk_scope`] admits for `gw`.
+pub(crate) fn workflow_doc() -> String {
+    format!("{RIGGER_DIR}/workflow.yml")
+}
+
+/// Whether an ingest reads `path` (relative to `root`) under the identity prefix `prefix`: the
+/// ONE answer every reader of the tree asks. For `gw` it is the workflow definition's path
+/// ([`workflow_doc`]) and no other, a predicate of the path alone, since that pass reads its one
+/// file directly and the file sits under a hidden directory the walk never enters. For every
+/// other prefix it is whether [`walk_guarded_within`] over that one name visits the path, so the
+/// scope is the walk's own (the committed `.gitignore` files, the hidden entries, no symlink
+/// followed) and can never drift from it.
+///
+/// The scoped walk admits every ancestor of the name, so a regular file AT an ancestor (`a`, for
+/// the name `a/b`) is visited too: the answer is whether the walk visits the named path itself.
+pub fn in_walk_scope(root: &Path, prefix: &str, path: &str) -> bool {
+    if prefix == "gw" {
+        return path == workflow_doc();
+    }
+    let wanted = root.join(path);
+    walk_guarded_within(root, Some(&[path.to_string()]), &mut |visited| {
+        if visited == wanted {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_break()
+}
+
+/// The bytes of the file at `path` (relative to `root`) as an ingest under `prefix` reads it:
+/// the tree's ONE read rule. It hands the bytes of a regular file [`in_walk_scope`] admits that
+/// this process can read, and none for any other path - outside the scope, absent, not a regular
+/// file, or a read that fails for any reason - so no reader of the tree fails on a file: it
+/// holds the bytes or it holds none. The regular-file test comes before the read because `gw`'s
+/// scope is the path alone: a FIFO there would hold the read waiting for a writer.
+pub fn tree_bytes(root: &Path, prefix: &str, path: &str) -> Option<Vec<u8>> {
+    let file = root.join(path);
+    if !in_walk_scope(root, prefix, path) || !file.is_file() {
+        return None;
+    }
+    std::fs::read(file).ok()
 }
 
 pub use rigger_domain::grounder::{BlastRadius, Grounder, RankedRef, Ref};
@@ -874,20 +921,21 @@ mod tests {
     #[test]
     fn in_walk_scope_admits_the_workflow_definition_for_gw_and_no_other_path() {
         assert_eq!(workflow_doc(), ".rigger/workflow.yml");
+        let workflow = workflow_doc();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, ".rigger/workflow.yml", b"stages: {}\n");
+        plant_file(root, &workflow, b"stages: {}\n");
         plant_file(root, "other.yml", b"stages: {}\n");
 
-        assert!(in_walk_scope(root, "gw", ".rigger/workflow.yml"));
+        assert!(in_walk_scope(root, "gw", &workflow));
         assert_eq!(
-            tree_bytes(root, "gw", ".rigger/workflow.yml"),
+            tree_bytes(root, "gw", &workflow),
             Some(b"stages: {}\n".to_vec())
         );
-        assert!(!in_walk_scope(root, "gc", ".rigger/workflow.yml"));
-        assert_eq!(tree_bytes(root, "gc", ".rigger/workflow.yml"), None);
-        assert!(!in_walk_scope(root, "gd", ".rigger/workflow.yml"));
-        assert_eq!(tree_bytes(root, "gd", ".rigger/workflow.yml"), None);
+        assert!(!in_walk_scope(root, "gc", &workflow));
+        assert_eq!(tree_bytes(root, "gc", &workflow), None);
+        assert!(!in_walk_scope(root, "gd", &workflow));
+        assert_eq!(tree_bytes(root, "gd", &workflow), None);
         assert!(!in_walk_scope(root, "gw", "other.yml"));
         assert_eq!(tree_bytes(root, "gw", "other.yml"), None);
         assert!(in_walk_scope(root, "gc", "other.yml"));
@@ -897,53 +945,42 @@ mod tests {
         );
 
         let empty = tempfile::tempdir().unwrap();
-        assert!(in_walk_scope(empty.path(), "gw", ".rigger/workflow.yml"));
-        assert_eq!(
-            tree_bytes(empty.path(), "gw", ".rigger/workflow.yml"),
-            None
-        );
+        assert!(in_walk_scope(empty.path(), "gw", &workflow));
+        assert_eq!(tree_bytes(empty.path(), "gw", &workflow), None);
     }
 
     /// A workflow definition's path that holds no regular file is handed no bytes: a directory,
     /// and a FIFO, which a read would otherwise wait on for a writer that never comes.
     #[test]
     fn tree_bytes_hands_none_for_a_workflow_definition_that_is_not_a_regular_file() {
+        let workflow = workflow_doc();
         let with_directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(with_directory.path().join(".rigger/workflow.yml")).unwrap();
-        assert_eq!(
-            tree_bytes(with_directory.path(), "gw", ".rigger/workflow.yml"),
-            None
-        );
+        std::fs::create_dir_all(with_directory.path().join(&workflow)).unwrap();
+        assert_eq!(tree_bytes(with_directory.path(), "gw", &workflow), None);
 
         let with_fifo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(with_fifo.path().join(".rigger")).unwrap();
+        std::fs::create_dir_all(with_fifo.path().join(RIGGER_DIR)).unwrap();
         let made = std::process::Command::new("mkfifo")
-            .arg(with_fifo.path().join(".rigger/workflow.yml"))
+            .arg(with_fifo.path().join(&workflow))
             .status()
             .unwrap();
         assert!(made.success(), "fixture precondition: mkfifo made the FIFO");
-        assert_eq!(
-            tree_bytes(with_fifo.path(), "gw", ".rigger/workflow.yml"),
-            None
-        );
+        assert_eq!(tree_bytes(with_fifo.path(), "gw", &workflow), None);
     }
 
     /// A symlinked workflow definition is handed its target's bytes, as the `gw` ingest reads
     /// it: the bytes are handed exactly where an ingest reads them.
     #[test]
     fn tree_bytes_reads_a_symlinked_workflow_definition_as_the_ingest_does() {
+        let workflow = workflow_doc();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         plant_file(root, "elsewhere.yml", b"stages: {}\n");
-        std::fs::create_dir_all(root.join(".rigger")).unwrap();
-        std::os::unix::fs::symlink(
-            root.join("elsewhere.yml"),
-            root.join(".rigger/workflow.yml"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.yml"), root.join(&workflow)).unwrap();
 
         assert_eq!(
-            tree_bytes(root, "gw", ".rigger/workflow.yml"),
+            tree_bytes(root, "gw", &workflow),
             Some(b"stages: {}\n".to_vec())
         );
     }
