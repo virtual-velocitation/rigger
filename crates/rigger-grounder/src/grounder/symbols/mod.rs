@@ -57,11 +57,10 @@ use crate::grounder::symbols::model::Lang;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
 /// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
-/// which files count), and for each file whose extension the registry resolves, extract its symbols
-/// under its
-/// normalized relative path. A file whose extension is unregistered is skipped; a file that
-/// cannot be read, or whose parse recovers to no symbols, contributes whatever the tags run
-/// produced and NEVER crashes the walk. `override_lang` forces one language for every file
+/// which files count), read each file, and for each whose extension the registry resolves, extract
+/// its symbols under its normalized relative path. A file whose extension is unregistered is read
+/// and skipped; a file that cannot be read or fails to extract contributes no entry; a parse that
+/// recovers to no symbols contributes an empty one. None of them crashes the walk. `override_lang` forces one language for every file
 /// (the `--language` override); `None` auto-detects per extension.
 #[cfg(feature = "symbols")]
 pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
@@ -147,8 +146,8 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
 /// re-parsed here (one mutation authority; the two paths cannot drift). A named file that can no
 /// longer be read (deleted or unreadable) or that fails to extract has its entry REMOVED, so
 /// reindexing a deletion leaves the index equal to a fresh `build_index` over the surviving tree;
-/// a file with an unregistered extension leaves `idx` untouched, exactly as `index_one_file` does
-/// on the whole-tree walk.
+/// a readable file with an unregistered extension leaves `idx` untouched, exactly as
+/// `index_one_file` does on the whole-tree walk.
 #[cfg(feature = "symbols")]
 pub fn reindex_files(
     root: &str,
