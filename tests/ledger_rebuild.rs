@@ -1356,6 +1356,17 @@ fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Every `git` invocation of a `rigger setup` whose rebuild folds no entry, in order: the ones its
+/// scaffold and its identity make, and none for a root or an object database.
+#[cfg(feature = "symbols")]
+const SETUP_OWN_GIT: [&str; 5] = [
+    "rev-parse --show-toplevel",
+    "rev-parse --show-toplevel",
+    "rev-parse --show-toplevel",
+    "rev-parse --git-common-dir",
+    "rev-parse --git-path hooks",
+];
+
 /// How often `rigger setup` in `cwd` asked git whether an object database stands there, and how
 /// many `git cat-file --batch` processes it started.
 fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
@@ -1432,9 +1443,9 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
         "each entry resolved from the blob the one process answered"
     );
     assert_eq!(
-        blob_source_starts_of_setup(root),
-        (0, 0),
-        "a setup that owes no rebuild asks nothing of the object database"
+        git_invocations_of_setup(root),
+        SETUP_OWN_GIT,
+        "a setup that owes no rebuild starts no git process beyond its scaffold's own"
     );
 
     // A rebuild that meets no entry never starts the process.
@@ -1445,7 +1456,11 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
         bare.path(),
         Event::new(TYPE_CODE_ENTITY_EXTRACTED, common::cli::code_entity()),
     );
-    assert_eq!(blob_source_starts_of_setup(bare.path()), (0, 0));
+    assert_eq!(
+        git_invocations_of_setup(bare.path()),
+        SETUP_OWN_GIT,
+        "a rebuild that folds no entry asks git for neither a root nor an object database"
+    );
     assert!(
         applied(&rigger_file(bare.path(), "graph.db"), position),
         "the rebuild that started no process did fold the log"
