@@ -1589,13 +1589,14 @@ mod tests {
             (vec!["c.rs".to_string()], false),
         ];
         assert_eq!(parallelism_retention_of(&all), Some(1.0));
-        // Flip one to a hub: it serializes into its own batch, so only 2/3 co-schedule.
+        // A radius whose criterion named a hub still co-schedules when its files are disjoint:
+        // only an overlap keeps two units apart, so 3/3.
         let one_hub = [
             (vec!["a.rs".to_string()], false),
             (vec!["b.rs".to_string()], false),
             (vec!["h.rs".to_string()], true),
         ];
-        assert_eq!(parallelism_retention_of(&one_hub), Some(2.0 / 3.0));
+        assert_eq!(parallelism_retention_of(&one_hub), Some(1.0));
         // Two radii sharing a file cannot co-schedule => 0/2.
         let overlap = [
             (vec!["x.rs".to_string()], false),
@@ -1635,11 +1636,21 @@ mod tests {
         assert_eq!(healthy.parallelism_retention, Some(1.0));
         assert!(!healthy.parallelism_retention_warns());
 
-        // A silently-serializing fleet: every unit a hub => 0.0 retention => warn.
-        let serialized = project(&[
+        // A log recorded with a hub flag on every unit (the shape older runs left) reads the
+        // real share: the radii are disjoint, so all three co-schedule => 1.0, no warn.
+        let hub_flagged = project(&[
             blast_radius_ev("a", &["a.rs"], true),
             blast_radius_ev("b", &["b.rs"], true),
             blast_radius_ev("c", &["c.rs"], true),
+        ]);
+        assert_eq!(hub_flagged.parallelism_retention, Some(1.0));
+        assert!(!hub_flagged.parallelism_retention_warns());
+
+        // A genuinely serializing fleet: every radius overlaps the others => 0.0 => warn.
+        let serialized = project(&[
+            blast_radius_ev("a", &["shared.rs", "a.rs"], false),
+            blast_radius_ev("b", &["shared.rs", "b.rs"], false),
+            blast_radius_ev("c", &["shared.rs"], false),
         ]);
         assert_eq!(serialized.parallelism_retention, Some(0.0));
         assert!(serialized.parallelism_retention_warns());

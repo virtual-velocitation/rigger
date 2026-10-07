@@ -873,13 +873,13 @@ mod tests {
         );
     }
 
-    /// Spec 16 unit 1, the criterion-1 hub fixture: a HUB symbol (degree at or above the repo's
-    /// per-language degree percentile) fails SAFE by SERIALIZING (flagged conflict-with-everything)
-    /// rather than TRUNCATING its large file set. The safe view still carries EVERY file (never
-    /// dropped, even past the `k` cap); `serialize` tells the partitioning consumer to give the
-    /// unit its own batch. A degree-1 symbol in the same repo does not serialize.
+    /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
+    /// truncating it and never by a conflict-with-everything flag: the safe view carries EVERY file
+    /// of the hub's neighborhood (even past the `k` cap), so the overlap test keeps it apart from
+    /// exactly the units that share one of those files and pairs it with every unit that shares
+    /// none.
     #[test]
-    fn a_hub_symbol_serializes_and_its_safe_view_is_not_truncated() {
+    fn a_hub_symbol_s_safe_view_carries_its_whole_neighborhood_untruncated() {
         let dir = tempfile::tempdir().unwrap();
         // `spawn` is referenced across many files (a hub); `rare_call` in exactly one, so the
         // per-language degree distribution has a genuine high-degree name to clear the percentile.
@@ -896,8 +896,8 @@ mod tests {
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
         let br = g.blast_radius("spawn", 8);
         assert!(
-            br.serialize,
-            "a hub symbol must serialize (conflict-with-everything), never truncate; got {br:?}"
+            !br.serialize,
+            "a hub radius is no conflict-with-everything flag; its files decide; got {br:?}"
         );
         for f in &expected {
             assert!(

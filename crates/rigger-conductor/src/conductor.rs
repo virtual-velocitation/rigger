@@ -35077,13 +35077,12 @@ mod tests {
     }
 
     #[test]
-    fn run_wave_admits_at_most_max_parallel_units_leaving_the_rest_neither_failed_nor_terminal() {
+    fn run_wave_hands_each_freed_slot_to_the_next_ready_stage_under_max_parallel_units() {
         // Spec 102, criterion 1 (THE WIDTH IS ENFORCED): three independent ready stages,
-        // `max_parallel_units: 1`. Each `run_wave` call must admit exactly one - the other
-        // two are left OUT of `admitted` entirely, so they land in neither `integrated`
-        // nor `terminal` (a stage the width refuses is never failed). Pinned directly at
-        // `run_wave` (white-box, like `partition_wave_own_batches_...` above) across
-        // three successive calls, modeling "this step's wave or a later one".
+        // `max_parallel_units: 1`. The wave admits one at a time, and a stage resolving frees
+        // its slot for the next waiting stage within the SAME `run_wave` call (the real
+        // concurrency bound is pinned by `run_wave_gives_a_freed_slot_...` and the width
+        // periphery test).
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = 1;
         // Repo-less, so pin the scratch root (see `run_isolated`) rather than the current dir.
@@ -35113,7 +35112,8 @@ mod tests {
         let mut in_flight: HashSet<String> = HashSet::new();
         let all_ready: Vec<String> = names.iter().map(|s| s.to_string()).collect();
 
-        // Wave 1: all three are READY, but only one may be ADMITTED.
+        // ONE wave: all three are READY, only one may run at a time, and each finishing
+        // stage hands its slot to the next waiting one inside the same wave.
         ctx.run_wave(
             &stages,
             &all_ready,
@@ -35123,58 +35123,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            integrated.len(),
-            1,
-            "max_parallel_units:1 must admit exactly one stage this wave: {integrated:?}"
-        );
-        assert_eq!(
-            terminal.len(),
-            1,
-            "the two un-admitted stages must be neither failed nor terminal: {terminal:?}"
-        );
-
-        // Wave 2 (this step's next wave): the two still-ready stages are offered again;
-        // one more slot frees and is admitted.
-        let ready2: Vec<String> = all_ready
-            .iter()
-            .filter(|n| !terminal.contains(*n))
-            .cloned()
-            .collect();
-        assert_eq!(
-            ready2.len(),
-            2,
-            "precondition: two stages still wait for a slot"
-        );
-        ctx.run_wave(
-            &stages,
-            &ready2,
-            &mut integrated,
-            &mut terminal,
-            &mut in_flight,
-        )
-        .unwrap();
-        assert_eq!(integrated.len(), 2);
-        assert_eq!(terminal.len(), 2);
-
-        // Wave 3: the last waiting stage finally gets its slot.
-        let ready3: Vec<String> = all_ready
-            .iter()
-            .filter(|n| !terminal.contains(*n))
-            .cloned()
-            .collect();
-        assert_eq!(ready3.len(), 1);
-        ctx.run_wave(
-            &stages,
-            &ready3,
-            &mut integrated,
-            &mut terminal,
-            &mut in_flight,
-        )
-        .unwrap();
-        assert_eq!(
             integrated,
             all_ready.iter().cloned().collect::<HashSet<_>>(),
-            "every stage eventually integrates once its slot frees"
+            "every stage integrates in one wave as each slot frees in turn"
         );
         assert!(
             in_flight.is_empty(),
@@ -39000,6 +38951,211 @@ mod tests {
             "the recorded precise must NOT carry a beyond-cap structural file the prompt never \
              seeded on: {recorded_precise:?}"
         );
+    }
+
+    /// A driver whose every spawn holds for its agent's configured time (`hold`, else 400 ms) and
+    /// records its wall-clock window, so a wave test reads how many spawns GENUINELY overlapped and
+    /// in which order they started - which the synchronous [`Stub`] can never show.
+    struct OverlapProbe {
+        hold: HashMap<String, std::time::Duration>,
+        windows: Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>,
+    }
+    impl OverlapProbe {
+        fn new(hold: &[(&str, u64)]) -> Self {
+            OverlapProbe {
+                hold: hold
+                    .iter()
+                    .map(|(a, ms)| (a.to_string(), std::time::Duration::from_millis(*ms)))
+                    .collect(),
+                windows: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The most spawns that were ever running at one instant.
+        fn peak(&self) -> usize {
+            let windows = self.windows.lock().unwrap();
+            windows
+                .iter()
+                .map(|(_, start, _)| {
+                    windows
+                        .iter()
+                        .filter(|(_, s, e)| s <= start && start < e)
+                        .count()
+                })
+                .max()
+                .unwrap_or(0)
+        }
+
+        /// The recorded `(start, end)` window of `agent`'s spawn.
+        fn window(&self, agent: &str) -> (std::time::Instant, std::time::Instant) {
+            let windows = self.windows.lock().unwrap();
+            let (_, s, e) = windows
+                .iter()
+                .find(|(a, _, _)| a == agent)
+                .unwrap_or_else(|| panic!("{agent} never spawned: {windows:?}"));
+            (*s, *e)
+        }
+    }
+    impl AgentDriver for OverlapProbe {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            _prompt: &str,
+            _opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            let start = std::time::Instant::now();
+            let hold = self
+                .hold
+                .get(&a.id)
+                .copied()
+                .unwrap_or(std::time::Duration::from_millis(400));
+            std::thread::sleep(hold);
+            self.windows
+                .lock()
+                .unwrap()
+                .push((a.id.clone(), start, std::time::Instant::now()));
+            Ok(AgentResult::default())
+        }
+    }
+
+    /// Drive ONE `run_wave` call at width `width` over `units` - each `(name, safe radius,
+    /// hub flag)`, its own agent named after it, partitioned by blast radius over a structural
+    /// grounder - under `probe`; returns the stages the call integrated.
+    fn probe_one_wave(
+        width: u32,
+        units: &[(&str, &[&str], bool)],
+        probe: &OverlapProbe,
+    ) -> HashSet<String> {
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_parallel_units = width;
+        let scratch = tempfile::tempdir().unwrap();
+        cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        let mut by_query = HashMap::new();
+        for (name, files, hub) in units {
+            cfg.agents.insert(name.to_string(), agent(name));
+            cfg.workflow.stages.insert(
+                name.to_string(),
+                Stage {
+                    name: name.to_string(),
+                    agent: name.to_string(),
+                    coverage: name.to_string(),
+                    gates: vec!["ok".into()],
+                    partition: "by-blast-radius".into(),
+                    ..Default::default()
+                },
+            );
+            let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+            by_query.insert(
+                name.to_string(),
+                BlastRadius {
+                    precise: files.clone(),
+                    safe: files,
+                    serialize: *hub,
+                },
+            );
+        }
+        let grounder = StructuralStubGrounder {
+            by_query,
+            stamp: String::new(),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            ..stub_deps(&store, probe, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stages = cfg.workflow.stages.clone();
+        let ready: Vec<String> = units.iter().map(|(n, _, _)| n.to_string()).collect();
+        let (mut integrated, mut terminal, mut in_flight) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+        ctx.run_wave(
+            &stages,
+            &ready,
+            &mut integrated,
+            &mut terminal,
+            &mut in_flight,
+        )
+        .unwrap();
+        integrated
+    }
+
+    /// Two units are kept apart only when their blast radii OVERLAP: units whose criteria both
+    /// name a hub symbol, but whose radii (which already carry the hub's whole neighborhood) are
+    /// disjoint, genuinely run side by side.
+    #[test]
+    fn run_wave_co_schedules_units_naming_a_hub_when_their_radii_are_disjoint() {
+        let probe = OverlapProbe::new(&[]);
+        let integrated = probe_one_wave(
+            2,
+            &[("u_a", &["a.rs"], true), ("u_b", &["b.rs"], true)],
+            &probe,
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        assert_eq!(
+            probe.peak(),
+            2,
+            "disjoint radii run side by side even when each criterion names a hub"
+        );
+    }
+
+    /// The overlap rule still holds: two units whose radii share a file never run at the same
+    /// time, and a unit whose radius is EMPTY (an unassessable grounding miss) runs alone.
+    #[test]
+    fn run_wave_never_runs_overlapping_or_unassessable_radii_side_by_side() {
+        let overlap = OverlapProbe::new(&[]);
+        let integrated = probe_one_wave(
+            2,
+            &[("u_a", &["x.rs", "a.rs"], false), ("u_b", &["x.rs"], false)],
+            &overlap,
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        assert_eq!(
+            overlap.peak(),
+            1,
+            "overlapping radii run one after the other"
+        );
+
+        let empty = OverlapProbe::new(&[]);
+        let integrated = probe_one_wave(
+            2,
+            &[("u_a", &["a.rs"], false), ("u_empty", &[], false)],
+            &empty,
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        assert_eq!(empty.peak(), 1, "an empty radius never co-schedules");
+    }
+
+    /// A unit finishing frees its slot INSIDE the wave: at width 2, while the slow unit still
+    /// runs, the fast unit's slot goes to the next ready unit, which starts before the slow one
+    /// ends - instead of waiting for every running unit to finish.
+    #[test]
+    fn run_wave_gives_a_freed_slot_to_the_next_ready_unit_before_the_wave_ends() {
+        let probe = OverlapProbe::new(&[("u_a_slow", 1500), ("u_b_fast", 50), ("u_c_next", 50)]);
+        let integrated = probe_one_wave(
+            2,
+            &[
+                ("u_a_slow", &["s.rs"], false),
+                ("u_b_fast", &["f.rs"], false),
+                ("u_c_next", &["n.rs"], false),
+            ],
+            &probe,
+        );
+        assert_eq!(
+            integrated.len(),
+            3,
+            "the unit the width held back integrates in the SAME wave once a slot frees: \
+             {integrated:?}"
+        );
+        let (_, slow_end) = probe.window("u_a_slow");
+        let (_, fast_end) = probe.window("u_b_fast");
+        let (next_start, _) = probe.window("u_c_next");
+        assert!(
+            fast_end <= next_start && next_start < slow_end,
+            "the next ready unit takes the fast unit's freed slot while the slow unit still runs"
+        );
+        assert!(probe.peak() <= 2, "the width bound still holds");
     }
 
     /// spec 16 unit 3, the BLOCKING empty-radius partition fail-safe (adj-u3-empty-radius-partitions-
