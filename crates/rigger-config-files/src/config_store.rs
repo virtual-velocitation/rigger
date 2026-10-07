@@ -2522,4 +2522,81 @@ class: product\n";
             "auto must never fail validation regardless of cache-dir writability"
         );
     }
+
+    /// THE EXTRACTION READS BYTES (spec 107): `parse_workflow` answers, for the text of the
+    /// extraction tree's workflow definition, the parse `load_workflow` gives the file holding
+    /// it - the one stage named after its key with its agent and gate, and the one gate.
+    #[test]
+    fn parse_workflow_answers_the_parse_load_workflow_gives_the_trees_workflow_definition() {
+        use crate::extraction_tree::WORKFLOW_BODY;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("workflow.yml");
+        std::fs::write(&path, WORKFLOW_BODY).expect("write workflow.yml");
+
+        let parsed = parse_workflow(WORKFLOW_BODY).expect("the definition parses");
+        let loaded = load_workflow(&path).expect("the definition loads");
+        assert_eq!(format!("{parsed:?}"), format!("{loaded:?}"));
+
+        let stages: Vec<(&str, &str, &str, Vec<&str>)> = parsed
+            .stages
+            .iter()
+            .map(|(key, stage)| {
+                (
+                    key.as_str(),
+                    stage.name.as_str(),
+                    stage.agent.as_str(),
+                    stage.gates.iter().map(String::as_str).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            stages,
+            vec![("implement", "implement", "rust-engineer", vec!["fmt"])]
+        );
+        let gates: Vec<(&str, &str)> = parsed
+            .gates
+            .iter()
+            .map(|(key, gate)| (key.as_str(), gate.run.as_str()))
+            .collect();
+        assert_eq!(gates, vec![("fmt", "cargo fmt --check")]);
+    }
+
+    /// `parse_workflow` names every stage after its own key, whatever the stage's body says.
+    #[test]
+    fn parse_workflow_names_every_stage_after_its_key() {
+        let parsed = parse_workflow(
+            "stages:\n  plan:\n    agent: planner\n  implement:\n    agent: rust-engineer\n",
+        )
+        .expect("the definition parses");
+
+        let names: Vec<(&str, &str)> = parsed
+            .stages
+            .iter()
+            .map(|(key, stage)| (key.as_str(), stage.name.as_str()))
+            .collect();
+        assert_eq!(names, vec![("implement", "implement"), ("plan", "plan")]);
+    }
+
+    /// Text `parse_workflow` refuses is refused in the same words by `load_workflow` over a file
+    /// holding it, and a file `load_workflow` cannot read never reaches the parse.
+    #[test]
+    fn parse_workflow_refuses_an_unknown_key_as_load_workflow_does() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("workflow.yml");
+        std::fs::write(&path, "bogus: 1\n").expect("write workflow.yml");
+
+        let refused = "config: parse workflow: bogus: unknown key";
+        assert_eq!(
+            parse_workflow("bogus: 1\n").unwrap_err().to_string(),
+            refused
+        );
+        assert_eq!(load_workflow(&path).unwrap_err().to_string(), refused);
+        assert_eq!(
+            load_workflow(&tmp.path().join("absent.yml"))
+                .unwrap_err()
+                .to_string(),
+            "config: read workflow: No such file or directory (os error 2)"
+        );
+    }
 }

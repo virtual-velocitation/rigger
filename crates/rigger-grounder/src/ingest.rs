@@ -731,6 +731,144 @@ mod tests {
             "the walk ingests only the project's own in-root source; got {files:?}"
         );
     }
+
+    /// The extraction tree planted in a fresh directory, kept alive by the returned guard.
+    fn extraction_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        crate::extraction_tree::plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        dir
+    }
+
+    /// The paths an index holds, in its own sorted order.
+    fn indexed_paths(index: &crate::grounder::symbols::model::SymbolIndex) -> Vec<&str> {
+        index.files().keys().map(String::as_str).collect()
+    }
+
+    /// THE EXTRACTION READS BYTES (spec 107): over the extraction tree, whose out-of-line test
+    /// module also has a `gd` batch, `walk_exclusions` names that module's `gc` identity and
+    /// nothing else, beside the index it read the tree into - built in memory, never persisted.
+    #[test]
+    fn walk_exclusions_names_the_out_of_line_test_modules_gc_identity_and_no_other() {
+        use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
+
+        let dir = extraction_tree();
+        let root = dir.path().to_str().unwrap();
+
+        let (index, excluded) = super::walk_exclusions(root);
+        assert_eq!(
+            excluded,
+            std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
+        );
+        assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
+        assert!(
+            !crate::grounder::symbols::store::index_path(root).exists(),
+            "the fallback build is in memory only"
+        );
+    }
+
+    /// `walk_exclusions` loads the index as the walk does: a persisted index answers ahead of
+    /// the tree, so a source file deleted since the index was saved is still indexed and still
+    /// declares the test module, which a fresh build of the tree would no longer exclude.
+    #[test]
+    fn walk_exclusions_answers_the_persisted_index_ahead_of_the_tree() {
+        use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
+
+        let dir = extraction_tree();
+        let root = dir.path().to_str().unwrap();
+        let persisted = crate::grounder::symbols::build_index(root, None);
+        crate::grounder::symbols::store::save(&persisted, root).unwrap();
+        std::fs::remove_file(dir.path().join(SOURCE_PATH)).unwrap();
+
+        let (index, excluded) = super::walk_exclusions(root);
+        assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
+        assert_eq!(
+            excluded,
+            std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
+        );
+
+        let rebuilt = crate::grounder::symbols::build_index(root, None);
+        assert_eq!(indexed_paths(&rebuilt), vec![TEST_MODULE_PATH]);
+    }
+
+    /// The walk's keyed batches over the extraction tree: every batch in emit order, each event
+    /// keyed `<prefix>/<path>@<generation>#<i>` with the type and bytes the walk lowers.
+    #[test]
+    fn the_walk_keys_the_extraction_trees_batches_as_recorded() {
+        let dir = extraction_tree();
+
+        let (seq, stats) = walk(dir.path().to_str().unwrap(), 1);
+        let expected: Vec<(String, String, Vec<u8>)> = crate::extraction_tree::WALKED
+            .iter()
+            .flat_map(|(prefix, path, generation, events)| {
+                events.iter().enumerate().map(move |(i, (type_, data))| {
+                    (
+                        format!("{prefix}/{path}@{generation}#{i}"),
+                        type_.to_string(),
+                        data.as_bytes().to_vec(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(seq, expected);
+        assert_eq!(stats.batches_emitted, 6);
+    }
+
+    /// `batch_generation` answers the generation `key_batch` keys: for every batch the walk hands
+    /// its sink over the extraction tree, the generation of the batch's events is the one the
+    /// tree records and the one every key of the batch carries.
+    #[test]
+    fn batch_generation_answers_the_generation_key_batch_keys() {
+        let dir = extraction_tree();
+
+        let mut generations: Vec<String> = Vec::new();
+        let mut keys: Vec<String> = Vec::new();
+        let mut expected_keys: Vec<String> = Vec::new();
+        ingest_project_batched_paced(dir.path().to_str().unwrap(), 1, |batch| {
+            let events: Vec<crate::eventstore::Event> =
+                batch.iter().map(|(_, event)| (*event).clone()).collect();
+            let generation = super::batch_generation(&events);
+            for (i, (key, _)) in batch.iter().enumerate() {
+                let identity = key.split('@').next().unwrap();
+                keys.push(key.clone());
+                expected_keys.push(format!("{identity}@{generation}#{i}"));
+            }
+            generations.push(generation);
+        });
+
+        let recorded: Vec<&str> = crate::extraction_tree::WALKED
+            .iter()
+            .map(|(_, _, generation, _)| *generation)
+            .collect();
+        assert_eq!(generations, recorded);
+        assert_eq!(keys, expected_keys);
+    }
+
+    /// `batch_generation` is the content hash of the batch's event bytes concatenated in order:
+    /// FNV-1a over `{"a":1}{"b":2}`, another value for the reverse order, the offset basis for
+    /// no events, and an event whose bytes are not UTF-8 contributing nothing.
+    #[test]
+    fn batch_generation_hashes_the_batchs_event_bytes_in_order() {
+        use crate::eventstore::Event;
+
+        let a = Event::new("A", br#"{"a":1}"#.to_vec());
+        let b = Event::new("B", br#"{"b":2}"#.to_vec());
+        let not_utf8 = Event::new("C", vec![0xff, 0xfe]);
+
+        assert_eq!(
+            super::batch_generation(&[a.clone(), b.clone()]),
+            "bbc8136738fb1e2b"
+        );
+        assert_eq!(
+            super::batch_generation(&[b.clone(), a.clone()]),
+            "10432fcb82c8721f"
+        );
+        assert_eq!(super::batch_generation(&[a.clone()]), "9c3e82dd6fcae8b1");
+        assert_eq!(super::batch_generation(&[]), "cbf29ce484222325");
+        assert_eq!(
+            super::batch_generation(&[a, not_utf8, b]),
+            "bbc8136738fb1e2b"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "symbols"))]

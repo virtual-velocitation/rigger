@@ -365,4 +365,50 @@ mod tests {
             g.edges
         );
     }
+
+    /// THE EXTRACTION READS BYTES (spec 107): `text_batch` answers, for the text of each file of
+    /// the extraction tree that carries design intent, the batch `file_batch` lowers from that
+    /// file on disk - the design document's two concepts then its two links, and each source
+    /// file's rationale with the link that explains its file.
+    #[test]
+    fn text_batch_answers_the_batch_file_batch_lowers_from_each_file_of_the_extraction_tree() {
+        use crate::extraction_tree::{
+            plant_extraction_tree, walked_batch, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
+            SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+        };
+        use crate::test_support::wire;
+
+        let dir = tempfile::tempdir().unwrap();
+        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+
+        for (path, body) in [
+            (DOCUMENT_PATH, DOCUMENT_BODY),
+            (TEST_MODULE_PATH, TEST_MODULE_BODY),
+            (SOURCE_PATH, SOURCE_BODY),
+        ] {
+            let expected = walked_batch("gd", path).to_vec();
+            assert_eq!(
+                wire(&text_batch(path, body)),
+                expected,
+                "the text of {path}"
+            );
+            assert_eq!(wire(&file_batch(root, path)), expected, "the file {path}");
+        }
+    }
+
+    /// Text with no design intent lowers to the empty batch, as does a file `file_batch` cannot
+    /// read: neither is a batch the walk keeps.
+    #[test]
+    fn text_batch_is_empty_for_text_without_design_intent_as_file_batch_is_for_no_file() {
+        use crate::test_support::wire;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("plain.rs"), "fn plain() {}\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        assert_eq!(wire(&text_batch("plain.rs", "fn plain() {}\n")), vec![]);
+        assert_eq!(wire(&file_batch(root, "plain.rs")), vec![]);
+        assert_eq!(wire(&file_batch(root, "absent.md")), vec![]);
+    }
 }

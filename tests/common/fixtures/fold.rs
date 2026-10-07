@@ -22,6 +22,20 @@ pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
     Event::new(type_, serde_json::to_vec(&json).unwrap())
 }
 
+/// Each event of `events` as `(type, payload text)`, in order: the form a test compares a batch
+/// by, an event having no equality of its own.
+pub fn wire(events: &[Event]) -> Vec<(&str, &str)> {
+    events
+        .iter()
+        .map(|e| {
+            (
+                e.type_.as_str(),
+                std::str::from_utf8(&e.data).expect("an extraction payload is UTF-8"),
+            )
+        })
+        .collect()
+}
+
 /// The ledger entry recording `entry`, the generation of a batch of `n` events: its payload, its
 /// identity as the group and `<identity>@<generation>#<n>` as the replay key. Position and
 /// valid-time are the caller's to set.

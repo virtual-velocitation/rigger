@@ -31,6 +31,12 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/config.rs"]
 mod config_fixtures;
+/// THE EXTRACTION TREE whose workflow definition the bytes-form test parses, compiled here from
+/// the same file as the root crate's tests. It names no crate.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
+mod extraction_tree;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::config_fixtures::*;

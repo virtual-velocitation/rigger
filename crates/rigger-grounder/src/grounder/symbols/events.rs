@@ -1777,4 +1777,82 @@ mod tests {
             batches[0].1
         );
     }
+
+    /// THE EXTRACTION READS BYTES (spec 107): `lower_file` answers, for each `gc` file of the
+    /// extraction tree, the batch the whole walk and the named walk lower from it - the
+    /// out-of-line test module hollowed to its one boundary event, the source file carrying its
+    /// definitions, its reference and the evidence of its in-file test module.
+    #[test]
+    fn lower_file_answers_the_batch_both_walks_lower_from_each_file_of_the_extraction_tree() {
+        use crate::extraction_tree::{
+            plant_extraction_tree, walked_batch, SOURCE_PATH, TEST_MODULE_PATH,
+        };
+        use crate::test_support::wire;
+
+        let dir = tempfile::tempdir().unwrap();
+        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+        let idx = crate::grounder::symbols::build_index(root, None);
+        let files = [TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()];
+
+        let walked = super::project_batches_paced(root, 1).0;
+        let named = super::file_batches(root, &files);
+        let paths = |batches: &[(String, Vec<crate::eventstore::Event>)]| -> Vec<String> {
+            batches.iter().map(|(file, _)| file.clone()).collect()
+        };
+        assert_eq!(paths(&walked), files.to_vec());
+        assert_eq!(paths(&named), files.to_vec());
+
+        for (i, (path, excluded)) in [(TEST_MODULE_PATH, true), (SOURCE_PATH, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let expected = walked_batch("gc", path).to_vec();
+            let lowered = super::lower_file(path, &idx.files()[path], excluded);
+            assert_eq!(wire(&lowered), expected, "lower_file over {path}");
+            assert_eq!(wire(&walked[i].1), expected, "the whole walk over {path}");
+            assert_eq!(wire(&named[i].1), expected, "the named walk over {path}");
+        }
+    }
+
+    /// `lower_file`'s `excluded` decides the batch on the SAME symbols: the source file excluded
+    /// is hollowed to one boundary event with no evidence, and the test module not excluded
+    /// carries its own definition and reference with the evidence boundary after them.
+    #[test]
+    fn lower_file_hollows_an_excluded_file_and_adds_evidence_to_one_that_is_not() {
+        use crate::extraction_tree::{plant_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
+        use crate::test_support::wire;
+
+        let dir = tempfile::tempdir().unwrap();
+        plant_extraction_tree(dir.path(), crate::host_fixtures::write_file);
+        let idx = crate::grounder::symbols::build_index(dir.path().to_str().unwrap(), None);
+
+        let hollowed = super::lower_file(SOURCE_PATH, &idx.files()[SOURCE_PATH], true);
+        assert_eq!(
+            wire(&hollowed),
+            vec![(
+                TYPE_EDGE_INFERRED,
+                r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true}"#
+            )]
+        );
+
+        let kept = super::lower_file(TEST_MODULE_PATH, &idx.files()[TEST_MODULE_PATH], false);
+        assert_eq!(
+            wire(&kept),
+            vec![
+                (
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    r#"{"file":"src/checks.rs","name":"checks_product","kind":"function","line":2,"lang":"rust","fresh":true}"#
+                ),
+                (
+                    TYPE_EDGE_INFERRED,
+                    r#"{"file":"src/checks.rs","name":"product","lang":"rust","caller":"checks_product"}"#
+                ),
+                (
+                    TYPE_EDGE_INFERRED,
+                    r#"{"file":"src/checks.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#
+                ),
+            ]
+        );
+    }
 }

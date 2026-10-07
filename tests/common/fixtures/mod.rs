@@ -13,6 +13,7 @@
 
 mod config;
 mod events;
+mod extraction_tree;
 mod git;
 mod graph;
 mod host;
@@ -21,6 +22,7 @@ mod read_fault;
 mod spawn;
 pub use config::*;
 pub use events::*;
+pub use extraction_tree::*;
 pub use git::*;
 pub use graph::*;
 pub use host::*;

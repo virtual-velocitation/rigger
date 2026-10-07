@@ -58,6 +58,17 @@ mod test_support;
 #[path = "../../../tests/common/fixtures/read_fault.rs"]
 mod read_fault_fixtures;
 
+/// THE EXTRACTION TREE the bytes-form tests extract, compiled here from the same file as the root
+/// crate's tests. It names no crate; only the default lane's tests plant it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
+mod extraction_tree;
+
 /// The host fixtures the tree's read-rule tests write their files through, compiled here from the
 /// same file as the root crate's tests. It names the reaper and the open-files reader as
 /// `rigger::reap` and `rigger::holders`, which the import below makes resolve in this crate.
