@@ -76,8 +76,8 @@ class; closing it is a prerequisite for §5 and §6.
 
 ### 2.4 Safe-superset recall is a correctness invariant, not a token cost
 Pruning, dedup, and tier filtering apply to **prompt rendering only** — never to the safety
-consumers `partition_by_blast_radius`, `partition_wave`, `route_review_tier` and rule-6
-conflict detection (`dag_unit_blast_radii`), which require over-inclusion. The `safe` view stays an uncapped
+consumers `radii_conflict` (wave admission and `partition_by_blast_radius`), `route_review_tier`
+and rule-6 conflict detection (`dag_unit_blast_radii`), which require over-inclusion. The `safe` view stays an uncapped
 grep-superset; any confidence-tier mapping (§6) must keep the wide tier a superset of grep.
 Dropping a reference a safety consumer needs is a correctness regression, not a saving.
 
@@ -213,7 +213,7 @@ unit ──needs──► unit,  unit ──GATED_BY──► gate,  unit ──
 The confidence tier IS the two-view blast radius, unified: the **precise seed** for a prompt is
 the `EXTRACTED` sub-graph; the **safe superset** the safety consumers need (§2.4) is
 `EXTRACTED ∪ INFERRED ∪ AMBIGUOUS`, which must remain a superset of the grep union. One edge
-set, two filters — replacing the hand-rolled `BlastRadius{precise,safe,serialize}` struct and
+set, two filters - replacing the hand-rolled `BlastRadius{precise,safe}` struct and
 the documented seed-vs-precise divergence.
 
 ### 6.3 How it is built — structure ingested AS EVENTS, folded like decisions
@@ -318,8 +318,8 @@ is grounded on the *design intent*, not just the code and prior decisions.
 **Impact:** ~2000–2400 LOC removed *(est.)* — `symbols` (2,607) folds into the projection, and
 the two-view `BlastRadius` struct + the seed-vs-precise divergence workaround collapse into
 confidence-tier filters (`EXTRACTED` = precise seed; `EXTRACTED∪INFERRED∪AMBIGUOUS` = the safe
-superset, which must stay a grep-superset per §2.4). The hub-percentile heuristic gives way to
-community detection. And the genuinely new capability: **deterministic design-intent grounding**
+superset, which must stay a grep-superset per §2.4). Hubs surface through community
+detection. And the genuinely new capability: **deterministic design-intent grounding**
 — an agent whose blast radius touches file F traverses `F → GOVERNED_BY → handbook-rule` and
 injects the governing rule by traversal, not embedding luck, attacking the rule-7 /
 spec-authoring failure class. The graph's own structural retrieval serves the symbol-free NL queries too, so no vector sidecar is needed (§2.5).

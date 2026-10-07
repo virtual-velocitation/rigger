@@ -261,7 +261,7 @@ stages:
     needs: [plan]
     agent: implementer
     strategy: fan-out                       # one agent per ready unit, in worktrees
-    partition: by-blast-radius              # disjoint batches => safe parallelism
+    partition: by-blast-radius              # overlapping radii never run at once
     gates: [build, test, lint, custom]      # red -> green enforced; the full final set
     on_pass: merge                          # land + reindex + record, per unit
 ```
@@ -351,7 +351,7 @@ flowchart LR
   G --> P["run the DAG stage-by-stage<br/>(needs = edges)"]
   P --> COV{"coverage gate<br/>every criterion has a unit?"}
   COV -->|gap| BLK2["block: plan missed a requirement"]
-  COV -->|ok| PAR["partition ready units<br/>(disjoint by blast-radius)"]
+  COV -->|ok| PAR["admit ready units as slots free<br/>(radius disjoint from every unit in flight)"]
   PAR --> FAN["fan-out: AgentDriver per unit"]
   subgraph UNIT["each unit's lifecycle (run_single_stage)"]
     IMPL["implement<br/>(red -> green)"] --> GATES["the unit's gates"]
@@ -904,7 +904,7 @@ Grounding seeds each agent with exactly the code and memory it needs, on two axe
   does changing this file reach". It is the UNSET default - an unset `defaults.grounder`
   resolves to it and it ships in the default build (the `symbols` cargo feature is on by
   default) - and it serves both a precise/ranked contract for grounding and a safe-superset
-  (`structural union grep`) contract for the conductor's partitioning and review-tier routing,
+  (`structural union grep`) contract for the conductor's co-scheduling and review-tier routing,
   where under-inclusion is a correctness bug. `grep` (a self-contained literal search, no
   index, no dependency) and `nop` are the explicit, named-only opt-outs, reachable ONLY when a
   workflow writes the name. Selecting a grounder NEVER silently degrades to grep: a binary
@@ -969,8 +969,8 @@ side-car filters peer decisions against exactly the files the agent was grounded
   while agents record decisions live. The Rust core is identical; only the spawn seam changes.
 
 **Runaway-proof by construction:** the implementer agent def declares `recurse: false` (no
-Agent/spawn capability), and units are partitioned disjoint, so parallel worktrees cannot
-conflict and an agent cannot fan out.
+Agent/spawn capability), and a unit runs only while its blast radius is disjoint from every unit in flight, so parallel
+worktrees cannot conflict and an agent cannot fan out.
 
 ---
 
@@ -1084,7 +1084,7 @@ structurally.
 | Spec has no enumerable Done-when criteria | `loop-ready` gate blocks; ask the human to add them (never guess "done") |
 | A discovered unit has no `spec_criterion` | `spawnUnit` refuses + emits a `scope_creep` event (anti-fragmentation) |
 | A conceptual criterion covered only by a mechanical gate | `coverage` proxy-gap guard => NOT covered; demands a real (LLM-judge) verifier |
-| Two concurrent units edit the same file | Partitioner makes batches disjoint by blast-radius; they never share a worktree |
+| Two concurrent units edit the same file | Wave admission starts a unit only while its blast radius shares no file with a unit in flight; they never share a worktree |
 | Agent crashes / hits usage limit mid-spawn | `cli` driver: non-zero exit -> `remediate` (bounded retry, re-grounded) -> escalate |
 | A reviewer spawn is killed externally (no verdict) | Reviewer re-park (section 4.4): discard the dead spawn, re-park a fresh attempt, bounded - never a bogus remediation charge on the reviewed unit |
 | A leftover / stale worktree dir blocks a fresh one | Self-healing worktree (section 4.4): reconcile from the deterministic branch, never wedge the next window |
