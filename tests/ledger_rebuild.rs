@@ -2181,3 +2181,383 @@ fn the_report_reads_the_tree_from_the_top_level_of_a_store_in_a_repository_subdi
     let counted = "2";
     assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
 }
+
+// Spec 107, criterion 6 - the report's boundaries, from outside the crates that own them: the
+// count of exactly one, the file question at the edges of its public form, the root the report
+// asks git for, the stream the log side reads, and the type list every other reader still hands.
+
+/// A source file the tree's `.gitignore` excludes.
+const IGNORED_PATH: &str = "ignored/lib.rs";
+
+/// A symbolic link to the source file.
+const LINKED_PATH: &str = "src/link.rs";
+
+/// A workflow definition at a path that is not the workflow definition's.
+const MISPLACED_PATH: &str = "elsewhere.yml";
+
+/// Plant, under `root`, one file of each kind the file question tells apart: the source file, the
+/// design document and the workflow definition an ingest reads, and beside them a document whose
+/// bytes are not UTF-8, an empty source file, a source file under a hidden directory, one the
+/// tree's `.gitignore` excludes, a symbolic link to the source file, a workflow definition at
+/// another path and a file at the top level named like a path with no prefix.
+fn plant_read_rule_tree(root: &Path) {
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, common::fixtures::DOCUMENT_BODY);
+    write_text(root, WORKFLOW_PATH, common::fixtures::WORKFLOW_BODY);
+    std::fs::write(root.join(UNDECODED_PATH), [0xff, 0xfe, b'\n']).unwrap();
+    write_text(root, "src/empty.rs", "");
+    write_text(root, HIDDEN_PATH, common::fixtures::SOURCE_BODY);
+    write_text(root, IGNORED_PATH, common::fixtures::SOURCE_BODY);
+    write_text(root, MISPLACED_PATH, common::fixtures::WORKFLOW_BODY);
+    write_text(root, "lib.rs", common::fixtures::SOURCE_BODY);
+    write_text(root, ".gitignore", "ignored/\n");
+    std::os::unix::fs::symlink("lib.rs", root.join(LINKED_PATH)).unwrap();
+    assert_eq!(
+        [HIDDEN_PATH, IGNORED_PATH, LINKED_PATH, "lib.rs"]
+            .map(|path| std::fs::read_to_string(root.join(path)).unwrap()),
+        [common::fixtures::SOURCE_BODY; 4],
+        "each path the read rule refuses holds a readable source file all the same"
+    );
+}
+
+/// Given a tree holding one file of each kind, when `ingest::next_ingest_records` is asked of an
+/// identity, then it answers by the tree's one read rule and the half its prefix names: an
+/// in-scope regular file whose half extracts a batch from its bytes, and nothing else. Where no
+/// extraction is compiled no half is asked, so every file the read rule hands bytes for answers
+/// yes whatever its prefix.
+#[test]
+fn the_file_question_answers_by_the_trees_read_rule_and_the_half_its_prefix_names() {
+    let dir = temp_project();
+    let root = dir.path();
+    plant_read_rule_tree(root);
+    // What only an extraction decides: a prefix that names no half, and bytes a half maps to the
+    // empty batch.
+    let extraction_decides = cfg!(not(feature = "symbols"));
+
+    let answers: Vec<(&str, bool)> = [
+        "",
+        "gc",
+        "gc/",
+        "gc/.hidden/lib.rs",
+        "gc/ignored/lib.rs",
+        "gc/src",
+        "gc/src/absent.rs",
+        "gc/src/empty.rs",
+        "gc/src/lib.rs",
+        "gc/src/link.rs",
+        "gd/docs/architecture.md",
+        "gd/docs/undecoded.md",
+        "gw/.rigger/workflow.yml",
+        "gw/elsewhere.yml",
+        "gx/src/lib.rs",
+        "lib.rs",
+    ]
+    .into_iter()
+    .map(|identity| {
+        (
+            identity,
+            rigger::ingest::next_ingest_records(root, identity),
+        )
+    })
+    .collect();
+
+    assert_eq!(
+        answers,
+        vec![
+            ("", false),
+            ("gc", false),
+            ("gc/", false),
+            ("gc/.hidden/lib.rs", false),
+            ("gc/ignored/lib.rs", false),
+            ("gc/src", false),
+            ("gc/src/absent.rs", false),
+            ("gc/src/empty.rs", true),
+            ("gc/src/lib.rs", true),
+            ("gc/src/link.rs", false),
+            ("gd/docs/architecture.md", true),
+            ("gd/docs/undecoded.md", extraction_decides),
+            ("gw/.rigger/workflow.yml", true),
+            ("gw/elsewhere.yml", false),
+            ("gx/src/lib.rs", extraction_decides),
+            ("lib.rs", false),
+        ]
+    );
+}
+
+/// Given an in-scope regular file this process cannot read, when `ingest::next_ingest_records` is
+/// asked of its identity, then it answers no: a file that hands no bytes is named by no walk.
+#[test]
+fn the_file_question_answers_no_for_a_file_this_process_cannot_read() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
+    assert!(
+        rigger::ingest::next_ingest_records(root, "gc/src/lib.rs"),
+        "the readable file is named"
+    );
+    if !common::fixtures::arm_read_fault(&root.join(SOURCE_PATH)) {
+        return;
+    }
+    assert!(!rigger::ingest::next_ingest_records(root, "gc/src/lib.rs"));
+}
+
+/// Given a log whose identities behind their latest recording are the workflow definition the
+/// tree holds and four files the tree's read rule refuses - one the `.gitignore` excludes, one
+/// reached through a symbolic link, one under a hidden directory and a workflow definition at
+/// another path - when the operator runs `rigger setup`, then the rebuild reports exactly one,
+/// with the note in the default lane and none in the light lane.
+#[test]
+fn a_rebuild_with_one_identity_to_record_again_reports_a_one_with_the_note() {
+    let dir = temp_project();
+    let root = dir.path();
+    plant_read_rule_tree(root);
+    let project = settled(root);
+    write_text(root, WORKFLOW_PATH, common::fixtures::WORKFLOW_BODY);
+    let recorded = [
+        ("gw", WORKFLOW_PATH),
+        ("gc", IGNORED_PATH),
+        ("gc", LINKED_PATH),
+        ("gc", HIDDEN_PATH),
+        ("gw", MISPLACED_PATH),
+    ];
+    let recordings: Vec<Recording> = recorded
+        .iter()
+        .zip(10..)
+        .map(|((prefix, path), secs)| named_recording(prefix, path, UNREPRODUCED, false, secs))
+        .collect();
+    record(root, &recordings);
+    stand_graph(root, &project);
+
+    let (out, err, ok) = setup(root);
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    #[cfg(feature = "symbols")]
+    let counted = format!("1{REPORT_NOTE}");
+    #[cfg(not(feature = "symbols"))]
+    let counted = "1";
+    assert_eq!(report_lines(&out), vec![format!("{REPORT_LEAD}{counted}")]);
+    let identities: Vec<String> = recorded
+        .iter()
+        .map(|(prefix, path)| format!("{prefix}/{path}"))
+        .collect();
+    assert_eq!(
+        generations(
+            root,
+            &project,
+            &identities.iter().map(String::as_str).collect::<Vec<_>>()
+        ),
+        vec![None; 5],
+        "all five identities are behind their latest recording, and one is counted"
+    );
+}
+
+/// The keyed derived rows of the `gc` batch the source file extracts to, as a store that has not
+/// shed them holds them.
+#[cfg(feature = "symbols")]
+fn keyed_source_rows() -> Vec<Event> {
+    let generation = walked_generation("gc", SOURCE_PATH);
+    events_of(walked_batch("gc", SOURCE_PATH))
+        .into_iter()
+        .enumerate()
+        .map(|(n, event)| {
+            event.with_meta(
+                rigger::ingest::META_REPLAY_KEY,
+                format!("gc/{SOURCE_PATH}@{generation}#{n}"),
+            )
+        })
+        .collect()
+}
+
+/// A repository whose tree holds the source file and whose log holds `rows`, appended behind a
+/// standing `graph.db`: the directory and the project identity.
+#[cfg(feature = "symbols")]
+fn owing_rows(rows: Vec<Event>) -> (tempfile::TempDir, String) {
+    let dir = temp_project();
+    write_text(dir.path(), SOURCE_PATH, SOURCE_BODY);
+    let project = settled(dir.path());
+    stand_graph(dir.path(), &project);
+    for row in rows {
+        append_unfolded(dir.path(), row);
+    }
+    (dir, project)
+}
+
+/// A ledger entry of the source file's identity at a generation of its own whose payload does not
+/// parse: a recording the log side reads by its key, which a rebuild passes over without asking
+/// for its batch.
+#[cfg(feature = "symbols")]
+fn unparsable_source_entry() -> Event {
+    Event::new(TYPE_GENERATION_INGESTED, b"{}".to_vec()).with_meta(
+        rigger::ingest::META_REPLAY_KEY,
+        format!("gc/{SOURCE_PATH}@{UNREPRODUCED}#1"),
+    )
+}
+
+/// Given a rebuild that folds no ledger entry, when the operator runs `rigger setup`, then the
+/// report asks git where the tree is rooted only once an identity is behind its latest
+/// recording: over keyed derived rows the rebuilt graph holds the generation of it prints a zero
+/// and asks git nothing beyond the scaffold's own questions, and over a recording the rebuild
+/// passed over it asks for the root once, with no object database asked, and counts the file.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_report_asks_git_for_the_root_only_once_an_identity_is_behind_its_recording() {
+    let zero = format!("{REPORT_LEAD}0");
+    let one = format!("{REPORT_LEAD}1{REPORT_NOTE}");
+    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    let behind = || {
+        let mut rows = keyed_source_rows();
+        rows.push(unparsable_source_entry());
+        rows
+    };
+
+    // What each rebuild prints, and the generation its graph ends holding.
+    let printed: Vec<(Vec<String>, Vec<Option<String>>)> = [keyed_source_rows(), behind()]
+        .into_iter()
+        .map(|rows| {
+            let (dir, project) = owing_rows(rows);
+            let (out, err, ok) = setup(dir.path());
+            assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+            (
+                report_lines(&out).into_iter().map(str::to_string).collect(),
+                generations(dir.path(), &project, &["gc/src/lib.rs"]),
+            )
+        })
+        .collect();
+    assert_eq!(
+        printed,
+        vec![
+            (vec![zero], vec![held_generation("gc", SOURCE_PATH)]),
+            (vec![one], vec![held_generation("gc", SOURCE_PATH)]),
+        ],
+        "the graph holds the derived rows' generation either way; the passed-over recording \
+         leaves the identity behind"
+    );
+
+    // What each rebuild asks git.
+    let (held, _) = owing_rows(keyed_source_rows());
+    assert_eq!(
+        git_invocations_of_setup(held.path()),
+        SETUP_OWN_GIT,
+        "no identity is behind, so the report asks git nothing"
+    );
+    let (owing, _) = owing_rows(behind());
+    assert_eq!(
+        git_invocations_of_setup(owing.path()),
+        [
+            before_rebuild,
+            &["rev-parse --show-toplevel"],
+            after_rebuild
+        ]
+        .concat(),
+        "the report is the first to need the root, and asks for it once"
+    );
+}
+
+/// Given a run stream holding a ledger entry of an identity and then a keyed derived row of a
+/// later generation of it, and another stream of the same project holding an entry of a second
+/// identity, when the log side of the report is read for the run stream, then
+/// `ingest::perceived_generations` answers the derived row as the first identity's latest
+/// recording and nothing for the second: it reads the one stream it is handed.
+#[test]
+fn the_log_side_of_the_report_reads_the_one_stream_it_is_handed() {
+    use rigger::ingest::META_REPLAY_KEY;
+    use std::collections::HashMap;
+
+    let dir = temp_project();
+    let root = dir.path();
+    settled(root);
+    let elsewhere = "elsewhere";
+    append_unfolded(
+        root,
+        entry_of(&named_recording("gc", SOURCE_PATH, "h2", false, 10)),
+    );
+    append_unfolded(
+        root,
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec())
+            .with_meta(META_REPLAY_KEY, "gc/src/lib.rs@h3#0"),
+    );
+    let (run, other) = with_run_store(root, |store| {
+        store
+            .append(
+                elsewhere,
+                ExpectedRevision::Any,
+                &[entry_of(&named_recording(
+                    "gd",
+                    DOCUMENT_PATH,
+                    "h4",
+                    false,
+                    11,
+                ))],
+            )
+            .unwrap();
+        (
+            rigger::ingest::perceived_generations(store, rigger::conductor::STREAM).unwrap(),
+            rigger::ingest::perceived_generations(store, elsewhere).unwrap(),
+        )
+    });
+
+    let answer = |identity: &str, generation: &str, key: &str| {
+        HashMap::from([(
+            identity.to_string(),
+            (generation.to_string(), vec![key.to_string()]),
+        )])
+    };
+    assert_eq!(
+        (run, other),
+        (
+            answer("gc/src/lib.rs", "h3", "gc/src/lib.rs@h3#0"),
+            answer(
+                "gd/docs/architecture.md",
+                "h4",
+                "gd/docs/architecture.md@h4#1"
+            ),
+        )
+    );
+}
+
+/// Given a tree whose source file the log's keyed derived rows record at the generation it
+/// extracts to, and a later ledger entry of the same identity at another generation, when the
+/// index-lag readers are asked, then neither lists the file: they read the derived types alone,
+/// so a ledger entry is no recording to them, while the perception types read it as the latest.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_index_lag_readers_pass_a_ledger_entry_over() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
+    let tree = root.to_str().unwrap();
+    let file = vec![SOURCE_PATH.to_string()];
+    let lag = |prior: &[Event]| {
+        (
+            rigger::ingest::graph_index_lag(tree, prior, &file),
+            rigger::ingest::graph_index_lag_sample(tree, prior),
+        )
+    };
+    let fresh = (Vec::<String>::new(), Vec::<String>::new());
+
+    let mut prior = keyed_source_rows();
+    assert_eq!(
+        (lag(&prior), lag(&[])),
+        (fresh.clone(), (file.clone(), Vec::new())),
+        "the derived rows record the generation the file extracts to; without them it lags"
+    );
+
+    prior.push(entry_of(&named_recording(
+        "gc",
+        SOURCE_PATH,
+        UNREPRODUCED,
+        false,
+        10,
+    )));
+    assert_eq!(
+        rigger::ingest::project_scoped_latest_generations(
+            &prior,
+            &rigger::retention::PERCEPTION_TYPES
+        )
+        .get("gc/src/lib.rs")
+        .map(|(generation, _)| generation.as_str()),
+        Some(UNREPRODUCED),
+        "the entry is the identity's latest recording under the perception types"
+    );
+    assert_eq!(lag(&prior), fresh);
+}
