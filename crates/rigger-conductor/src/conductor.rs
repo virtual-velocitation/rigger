@@ -4443,6 +4443,7 @@ impl RunCtx<'_> {
             settings_json: String::new(),
             launch: 0,
             resumed_from: String::new(),
+            resume_task: String::new(),
         })
     }
 
@@ -5592,6 +5593,7 @@ impl RunCtx<'_> {
                             settings_json: String::new(),
                             launch: 0,
                             resumed_from: String::new(),
+                            resume_task: String::new(),
                         },
                         &emit,
                     )
@@ -6207,6 +6209,7 @@ impl RunCtx<'_> {
                         settings_json: String::new(),
                         launch: 0,
                         resumed_from: String::new(),
+                        resume_task: String::new(),
                     },
                     &emit,
                 )
@@ -7810,6 +7813,7 @@ impl RunCtx<'_> {
                     settings_json: String::new(),
                     launch: 0,
                     resumed_from: String::new(),
+                    resume_task: String::new(),
                 },
                 &emit,
             )
@@ -10533,6 +10537,7 @@ impl RunCtx<'_> {
                 settings_json: String::new(),
                 launch: 0,
                 resumed_from: String::new(),
+                resume_task: String::new(),
             },
             &emit,
         )?;
@@ -15801,6 +15806,7 @@ mod tests {
                     .get(&a.id)
                     .cloned()
                     .unwrap_or_default(),
+                ..Default::default()
             })
         }
     }
@@ -27161,11 +27167,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -29502,6 +29510,7 @@ mod tests {
             Ok(AgentResult {
                 output,
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -36941,6 +36950,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // A lens (or any other reviewer): its stdout is not a verdict, but must be
@@ -36948,6 +36958,7 @@ mod tests {
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -38593,11 +38604,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39047,11 +39060,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39201,11 +39216,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39265,11 +39282,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39669,11 +39688,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39893,11 +39914,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -40043,11 +40066,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -40737,6 +40762,7 @@ mod tests {
                 Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 })
             }
         }
@@ -42901,6 +42927,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: "proposed the DAG".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             if a.id == self.adjudicator {
@@ -42925,12 +42952,14 @@ mod tests {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // The adversary (or any other reviewer) emits nothing and returns benignly.
             Ok(AgentResult {
                 output: format!("{} reviewed the DAG", a.id),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -44676,6 +44705,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: "proposed the DAG".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // Every reviewer (and any leaked implementer) parks: the gate never renders a

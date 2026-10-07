@@ -52,6 +52,7 @@ impl AgentDriver for AttributionDriver {
             return Ok(AgentResult {
                 output: "{\"verdict\":\"approve\"}".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if a.id == "lens" {
@@ -86,6 +87,7 @@ impl AgentDriver for AttributionDriver {
         Ok(AgentResult {
             output: "reviewed".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

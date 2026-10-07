@@ -45,6 +45,18 @@ pub struct AgentResult {
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
     /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
     pub resolved_model: String,
+    /// The Claude Code session this spawn ran as - the id a later attempt or review round of
+    /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
+    /// The cli host mints it for a fresh launch and keeps the continued one on a resume; the
+    /// conductor records it in the run log beside the spawn. Empty from a driver that runs no
+    /// resumable session (the workflow and replay drivers, a test double), which then leaves
+    /// every later spawn of that role a fresh one.
+    pub session_id: String,
+    /// The session this spawn CONTINUED: [`SpawnOpts::resumed_from`] when the host resumed it,
+    /// empty for a fresh launch - including the fallback a host takes when the session it was
+    /// asked to resume no longer exists, so a requested resume that came back empty here is the
+    /// record that the host fell back to a fresh spawn.
+    pub resumed_from: String,
 }
 
 /// Per-spawn options.
@@ -139,10 +151,18 @@ pub struct SpawnOpts {
     /// cli/workflow drivers, which never relaunch a live session.
     pub launch: u32,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
-    /// for a fresh launch - every launch spec 104's own host performs itself, since
-    /// resuming a held session is spec 105's hold-release concern. The cli/workflow
-    /// drivers ignore this field.
+    /// for a fresh launch. The conductor sets it on a later attempt or review round of a
+    /// role whose earlier spawn on the same unit recorded its session
+    /// ([`AgentResult::session_id`]), so the persona picks up where it left off instead of
+    /// re-reading the criterion, the grounding slice and the diff from nothing. The session
+    /// hosts honour it; the workflow and replay drivers ignore it.
     pub resumed_from: String,
+    /// The task a RESUMED launch sends in place of the full `prompt`: what changed since the
+    /// session's last turn (the prior-failure block, or the review round's delta and REQUIRED
+    /// list), since the session already holds the criterion and the slice. Meaningful only
+    /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
+    /// falls back to a fresh launch with the full `prompt`.
+    pub resume_task: String,
 }
 
 /// The [`SpawnRequest`] a spawn parks, derived from the spawn's arguments alone - the ONE mapping

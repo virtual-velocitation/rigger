@@ -138,6 +138,7 @@ impl AgentDriver for Driver {
         let result = AgentResult {
             output: stdout,
             resolved_model: String::new(),
+            ..Default::default()
         };
         if !out.status.success() {
             return Err(Error(format!(

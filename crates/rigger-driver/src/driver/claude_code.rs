@@ -553,6 +553,7 @@ impl Driver<'_> {
                     result = Some(AgentResult {
                         output: res.output,
                         resolved_model: resolved_model.clone(),
+                        ..Default::default()
                     });
                     // "the host closes the input after the first `result`" - dropping the
                     // handle closes the pipe; a session that would otherwise wait on more
