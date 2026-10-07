@@ -1093,7 +1093,7 @@ fn identities_behind_their_recording<'t>(
 /// records an entry at its next ingest; a zero carries none, and neither does the lane that
 /// compiles no extraction, where no ingest records one.
 fn rebuild_report_line(behind: usize) -> String {
-    let note = if cfg!(feature = "symbols") && behind > 1 {
+    let note = if cfg!(feature = "symbols") && behind > 0 {
         " (each records an entry at its next ingest of the file)"
     } else {
         ""
