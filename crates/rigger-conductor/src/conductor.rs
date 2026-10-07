@@ -153,13 +153,13 @@ pub const META_SPAWN: &str = "spawn";
 pub use crate::metrics::META_WORKTREE_SHA;
 
 /// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
-/// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
-/// and the git tree-SHA of its inputs (the whole committed tree by default). Every inline
+/// address of the gate run, [`input_digest`]`(command, commit-sha)` over the gate command
+/// and the HEAD commit the gate ran on (its tree AND its history). Every inline
 /// [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) a unit's worktree gate records carries
-/// it, so a later gate whose command + tree digest matches a prior GREEN verdict is
+/// it, so a later gate whose command + commit digest matches a prior GREEN verdict is
 /// answered as a logged cache-hit instead of re-running the command. It is audit metadata
 /// on an event that already exists - no new event type (spec 12's Global constraints) - so
-/// folds and projections ignore it. Empty (and so omitted) when there is no tree to address
+/// folds and projections ignore it. Empty (and so omitted) when there is no commit to address
 /// (a repo-less / worktree-less gate run), which simply disables content-addressing there.
 pub const META_INPUT_DIGEST: &str = "input_digest";
 
@@ -467,24 +467,25 @@ fn gate_key_attempt(key: &str) -> Option<u32> {
 }
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
-/// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
-/// [`worktree::HEAD_TREE`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
-/// trees are always distinct addresses - the tree is what determines the gate outcome, so
-/// it must never collide - while the command is folded to a compact FNV-1a hash (the same
-/// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
-/// identical hash across processes, machines, and builds, unlike `DefaultHasher`). So the
-/// address is a pure function of `(command, tree bytes)`: replay-deterministic, and a gate
-/// re-run over an unchanged tree with the same command reproduces the SAME digest (a hit),
-/// while any change to either side changes it (a miss). Empty `tree_sha` (no worktree tree
-/// to address) yields an empty digest, which the caller reads as "addressing disabled here".
-fn input_digest(command: &str, tree_sha: &str) -> String {
-    if tree_sha.is_empty() {
+/// `command` and the `commit_sha` it ran on. A verdict may be replayed only when every input
+/// the gate reads is unchanged, and a gate reads more than the tree: red-before-green walks the
+/// unit's commit history and the content gates diff from the run-branch ref. The HEAD commit
+/// addresses the tree AND that history, so the same commit (the integrate door's re-check, a
+/// fast-forward landing's post-merge gates) replays, while an identical tree reached through
+/// different commits re-runs. The verbatim commit sha is kept so two different commits never
+/// collide, while the command is folded to a compact FNV-1a hash (the same fixed-seed stable
+/// hash the rest of the crate uses for content oracles: identical bytes -> identical hash
+/// across processes, machines, and builds, unlike `DefaultHasher`), so the address is
+/// replay-deterministic. Empty `commit_sha` (no worktree to address) yields an empty digest,
+/// which the caller reads as "addressing disabled here".
+fn input_digest(command: &str, commit_sha: &str) -> String {
+    if commit_sha.is_empty() {
         return String::new();
     }
-    // The collision-sensitive input (the tree) rides verbatim, so the 64-bit hash covers only
+    // The collision-sensitive input (the commit) rides verbatim, so the 64-bit hash covers only
     // the short, config-authored command string.
     let hash = fnv1a_64(command.as_bytes());
-    format!("{hash:016x}:{tree_sha}")
+    format!("{hash:016x}:{commit_sha}")
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
@@ -1928,7 +1929,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .collect();
     // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
     // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
-    // gate whose command + tree-sha digest matches is answered as a logged cache-hit citing
+    // gate whose command + commit-sha digest matches is answered as a logged cache-hit citing
     // that position. prior_events is ascending by position, and we insert only-if-absent, so
     // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
     // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
@@ -2975,7 +2976,7 @@ struct RunCtx<'a> {
     /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
     /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
     /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
-    /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
+    /// run_gates hit-site so a gate whose `(command, commit-sha)` digest matches a prior green
     /// is answered as a logged cache-hit citing that `position` instead of re-running the
     /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
     /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
@@ -8412,13 +8413,12 @@ impl RunCtx<'_> {
         // The machine-wide build budget (spec 65): resolved once per call, alongside
         // `build_env`, and threaded to every gate this attempt runs.
         let budget = self.build_budget();
-        // The content address of this attempt's gate inputs (spec 12, unit 1): the git
-        // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
-        // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
-        // committed tree, and each gate folds its own command over it in `input_digest`.
-        // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
-        // simply disables content-addressing for this attempt's gates.
-        let tree_sha = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
+        // The content address of this attempt's gate inputs (spec 12, unit 1): the HEAD commit
+        // of the worktree, which fixes both the tree and the history a gate may read. Computed
+        // ONCE - every gate this attempt reads the same commit, and each gate folds its own
+        // command over it in `input_digest`. Empty when there is no worktree (a repo-less /
+        // `isolation: none` run), which simply disables content-addressing for these gates.
+        let commit_sha = crate::worktree::head_sha_of(dir);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -8472,18 +8472,18 @@ impl RunCtx<'_> {
             }
             // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
             // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
-            // proven the SAME command over the SAME tree. If so, answer the gate as a
+            // proven the SAME command over the SAME commit. If so, answer the gate as a
             // logged cache-hit citing that green's position - the command is not run and the
-            // ratchet does not move, exactly like an exact-key replay - so an unchanged tree
+            // ratchet does not move, exactly like an exact-key replay - so an unchanged commit
             // re-verifies near-free. Failures never enter the cache, so a red is never
-            // cache-answered (it must always re-prove). An empty digest (no worktree tree)
+            // cache-answered (it must always re-prove). An empty digest (no worktree)
             // disables the hit and the gate runs fresh below.
             //
-            // The digest alone decides: it addresses the WHOLE committed tree, so a landing
-            // that changed what this gate reads has already changed the digest, and a tree
-            // that is byte-identical to one proven green (a re-attempt that reproduced it, or
-            // a fast-forward landing whose merged tree IS the gated tree) replays here.
-            let digest = input_digest(&gc.run, &tree_sha);
+            // The digest alone decides: it addresses the HEAD commit, so a landing or a new
+            // commit that changed anything this gate reads has already changed the digest, and
+            // the very commit already proven green (the integrate door's re-check, or a fast-forward
+            // landing whose landed commit IS the gated commit) replays here.
+            let digest = input_digest(&gc.run, &commit_sha);
             if !digest.is_empty() {
                 if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
                     let evidence = format!(
@@ -37051,7 +37051,7 @@ mod tests {
 
     #[test]
     fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
-        // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
+        // spec 12, unit 1 (HIT): a gate whose (command, commit-sha) input digest matches a
         // prior GREEN verdict is answered as a LOGGED cache-hit citing that green's position
         // - the command is NOT re-run. The unit gates GREEN on attempt 0, its review
         // REJECTS, and on attempt 1 the implementer reproduces the IDENTICAL tree. Attempt
@@ -37084,12 +37084,12 @@ mod tests {
 
     /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing
     /// touches a file in `beta`'s blast radius, and `beta` lands as a fast-forward, WHEN `beta`'s
-    /// post-merge gate runs over the tree its pre-merge gate already proved green, THEN the
+    /// post-merge gate runs on the commit its pre-merge gate already proved green, THEN the
     /// post-merge gate is a logged cache-hit, never a second run of the command. The digest is the
-    /// whole committed tree, so an upstream landing that changed what `beta` gates would already
-    /// have changed the digest.
+    /// HEAD commit, so an upstream landing that changed what `beta` gates would already have
+    /// changed the digest.
     #[test]
-    fn a_fast_forward_landing_whose_tree_was_gated_replays_its_post_merge_gates() {
+    fn a_fast_forward_landing_whose_commit_was_gated_replays_its_post_merge_gates() {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
@@ -37164,7 +37164,7 @@ mod tests {
             gate_verdict_event(&events, "beta", 0)
                 .meta
                 .get(META_INPUT_DIGEST),
-            "premise: beta landed as a fast-forward, so the landed tree is the gated tree"
+            "premise: beta landed as a fast-forward, so the landed commit is the gated commit"
         );
         for unit in ["alpha", "beta"] {
             assert!(
