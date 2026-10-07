@@ -3504,13 +3504,13 @@
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2276,
-        "end_line": 2276
+        "start_line": 2278,
+        "end_line": 2278
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2305,
-        "end_line": 2305
+        "start_line": 2308,
+        "end_line": 2308
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",

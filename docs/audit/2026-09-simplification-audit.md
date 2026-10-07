@@ -2879,8 +2879,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/ledger_rebuild.rs:477-477` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:650-650` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1222-1222` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2276-2276` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2305-2305` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2278-2278` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2308-2308` `"gw/.rigger/workflow.yml"`
 - `tests/migration_is_deliberate_periphery.rs:475-475` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:522-522` `".rigger"`
 - `tests/principle_gates_wiring.rs:51-51` `"the scaffolded .rigger/agents: {missing:#?}"`

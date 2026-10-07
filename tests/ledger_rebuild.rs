@@ -2250,7 +2250,8 @@ fn plant_read_rule_tree(root: &Path) {
 /// identity, then it answers by the tree's one read rule and the half its prefix names: an
 /// in-scope regular file whose half extracts a batch from its bytes, and nothing else. Where no
 /// extraction is compiled no half is asked, so every file the read rule hands bytes for answers
-/// yes whatever its prefix.
+/// yes whatever its prefix - but for an identity that names no prefix, which names no file in
+/// either lane though the tree holds a file at the path after its slash.
 #[test]
 fn the_file_question_answers_by_the_trees_read_rule_and_the_half_its_prefix_names() {
     let dir = temp_project();
@@ -2262,6 +2263,7 @@ fn the_file_question_answers_by_the_trees_read_rule_and_the_half_its_prefix_name
 
     let answers: Vec<(&str, bool)> = [
         "",
+        "/src/lib.rs",
         "gc",
         "gc/",
         "gc/.hidden/lib.rs",
@@ -2291,6 +2293,7 @@ fn the_file_question_answers_by_the_trees_read_rule_and_the_half_its_prefix_name
         answers,
         vec![
             ("", false),
+            ("/src/lib.rs", false),
             ("gc", false),
             ("gc/", false),
             ("gc/.hidden/lib.rs", false),
