@@ -1370,8 +1370,9 @@ fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Every `git` invocation of a `rigger setup` whose rebuild folds no entry, in order: the ones its
-/// scaffold and its identity make, and none for a root or an object database.
+/// Every `git` invocation of a `rigger setup` whose rebuild folds no entry and whose report finds
+/// no identity behind its latest recording, in order: the ones its scaffold and its identity
+/// make, and none for a root or an object database.
 #[cfg(feature = "symbols")]
 const SETUP_OWN_GIT: [&str; 5] = [
     "rev-parse --show-toplevel",

@@ -2278,45 +2278,45 @@ __END__
 - `src/cli/setup.rs:734-734` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
 - `src/cli/setup.rs:785-785` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/cli/setup.rs:1312-1312` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/cli/setup.rs:1340-1340` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/cli/setup.rs:2096-2096` `"nothing is written - no .rigger, no .claude, no .gitignore"`
-- `src/cli/setup.rs:2163-2163` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2168-2168` `"no gate template set matches this project (rust: Cargo.toml at the project \
+- `src/cli/setup.rs:1317-1317` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/cli/setup.rs:1345-1345` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/cli/setup.rs:2101-2101` `"nothing is written - no .rigger, no .claude, no .gitignore"`
+- `src/cli/setup.rs:2168-2168` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2173-2173` `"no gate template set matches this project (rust: Cargo.toml at the project \
                   root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2194-2194` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
-- `src/cli/setup.rs:2222-2222` `"scaffolded .rigger/workflow.yml"`
-- `src/cli/setup.rs:2223-2223` `"no gate template set matches this project (demo: a or b; other: c at the project \
+- `src/cli/setup.rs:2199-2199` `"scaffolded .rigger/workflow.yml (gate template set: demo)"`
+- `src/cli/setup.rs:2227-2227` `"scaffolded .rigger/workflow.yml"`
+- `src/cli/setup.rs:2228-2228` `"no gate template set matches this project (demo: a or b; other: c at the project \
                  root), so .rigger/workflow.yml declares no gates - declare your own under gates:"`
-- `src/cli/setup.rs:2240-2240` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:2560-2560` `".rigger/agents/"`
-- `src/cli/setup.rs:2614-2614` `".rigger/dash.url"`
-- `src/cli/setup.rs:2615-2615` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2616-2616` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2625-2625` `".rigger/store.conn"`
-- `src/cli/setup.rs:2642-2642` `".rigger/\n"`
-- `src/cli/setup.rs:2648-2648` `".rigger/dash.url"`
-- `src/cli/setup.rs:2651-2651` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2654-2654` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2655-2655` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+- `src/cli/setup.rs:2245-2245` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:2565-2565` `".rigger/agents/"`
+- `src/cli/setup.rs:2619-2619` `".rigger/dash.url"`
+- `src/cli/setup.rs:2620-2620` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2621-2621` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2630-2630` `".rigger/store.conn"`
+- `src/cli/setup.rs:2647-2647` `".rigger/\n"`
+- `src/cli/setup.rs:2653-2653` `".rigger/dash.url"`
+- `src/cli/setup.rs:2656-2656` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2659-2659` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2660-2660` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
              even when .rigger/ broadly covers them, so the committed .gitignore stays \
              self-contained, got: {:?}"`
-- `src/cli/setup.rs:2663-2663` `".rigger/dash.url"`
-- `src/cli/setup.rs:2664-2664` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2665-2665` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:2666-2666` `"all three explicit per-file dash ignore lines are present in the committed \
+- `src/cli/setup.rs:2668-2668` `".rigger/dash.url"`
+- `src/cli/setup.rs:2669-2669` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2670-2670` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:2671-2671` `"all three explicit per-file dash ignore lines are present in the committed \
              .gitignore even though .rigger/ already covers them, got:\n{content}"`
-- `src/cli/setup.rs:2676-2676` `".rigger/dash.url"`
-- `src/cli/setup.rs:2679-2679` `".rigger/dash.marker"`
-- `src/cli/setup.rs:2682-2682` `".rigger/dash.attempt"`
-- `src/cli/setup.rs:3035-3035` `".rigger/agents/researcher.md"`
-- `src/cli/setup.rs:3064-3064` `".rigger/agents/planner.md"`
-- `src/cli/setup.rs:3094-3094` `".rigger/agents/newcomer.md"`
-- `src/cli/setup.rs:3172-3172` `".rigger/workflow.yml"`
-- `src/cli/setup.rs:3402-3402` `".rigger"`
-- `src/cli/setup.rs:3421-3421` `".rigger/agents/{f}"`
-- `src/cli/setup.rs:3547-3547` `".rigger/agents/rust-engineer.md"`
-- `src/cli/setup.rs:3573-3573` `".rigger/agents/sdet-author.md"`
+- `src/cli/setup.rs:2681-2681` `".rigger/dash.url"`
+- `src/cli/setup.rs:2684-2684` `".rigger/dash.marker"`
+- `src/cli/setup.rs:2687-2687` `".rigger/dash.attempt"`
+- `src/cli/setup.rs:3040-3040` `".rigger/agents/researcher.md"`
+- `src/cli/setup.rs:3069-3069` `".rigger/agents/planner.md"`
+- `src/cli/setup.rs:3099-3099` `".rigger/agents/newcomer.md"`
+- `src/cli/setup.rs:3177-3177` `".rigger/workflow.yml"`
+- `src/cli/setup.rs:3407-3407` `".rigger"`
+- `src/cli/setup.rs:3426-3426` `".rigger/agents/{f}"`
+- `src/cli/setup.rs:3552-3552` `".rigger/agents/rust-engineer.md"`
+- `src/cli/setup.rs:3578-3578` `".rigger/agents/sdet-author.md"`
 - `src/cli/validate.rs:847-847` `"warning: tracked .rigger/ files have uncommitted modifications:"`
 - `src/cli/validate.rs:1289-1289` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
@@ -2879,8 +2879,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/ledger_rebuild.rs:477-477` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:650-650` `"gw/.rigger/workflow.yml"`
 - `tests/ledger_rebuild.rs:1222-1222` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2275-2275` `"gw/.rigger/workflow.yml"`
-- `tests/ledger_rebuild.rs:2304-2304` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2276-2276` `"gw/.rigger/workflow.yml"`
+- `tests/ledger_rebuild.rs:2305-2305` `"gw/.rigger/workflow.yml"`
 - `tests/migration_is_deliberate_periphery.rs:475-475` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:522-522` `".rigger"`
 - `tests/principle_gates_wiring.rs:51-51` `"the scaffolded .rigger/agents: {missing:#?}"`
@@ -3911,7 +3911,7 @@ Proposed home: `one shared `install_status_line` helper (e.g. relocated into `te
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-driver/src/hooks.rs:255-272` `install_status_line`
-- `src/cli/setup.rs:1195-1199` `install_status_line`
+- `src/cli/setup.rs:1200-1204` `install_status_line`
 
 #### `dup-a5bfac770233` (near, 2 sites)
 
@@ -3920,7 +3920,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-driver/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/cli/setup.rs:2385-2399` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/cli/setup.rs:2390-2404` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-9afde62071c0` (semantic, 67 sites)
 
@@ -4481,8 +4481,8 @@ Proposed home: `setup::support (consolidate these 2 sites into one function in t
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/setup.rs:1143-1151` `install_lookup_hook`
-- `src/cli/setup.rs:1195-1199` `install_status_line`
+- `src/cli/setup.rs:1148-1156` `install_lookup_hook`
+- `src/cli/setup.rs:1200-1204` `install_status_line`
 
 #### `dup-2cd309ca2b08` (near, 2 sites)
 

@@ -893,7 +893,10 @@ const REBUILD_BATCH: usize = 10_000;
 /// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
 /// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
 /// that first entry too, else from no bytes; an entry no source resolves folds nothing. A rebuild
-/// that folds no entry starts no git process.
+/// that folds no entry starts no batch process. The report that follows a rebuild
+/// ([`identities_behind_their_recording`]) reads the tree under the same root, and is the one to
+/// ask git for it when no entry did and an identity is behind its latest recording: the root is
+/// asked for once, by whichever needs it first, and git is asked nothing when neither does.
 ///
 /// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
 /// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
@@ -913,10 +916,12 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     migrate_local_identity()?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
-    // Where the tree is rooted and whether an object database can be asked are decided once,
-    // when the first entry resolves: a rebuild that folds no entry asks git for neither, and the
-    // report reads the tree under the root the entries resolved under. `batch` is none until
-    // that first entry, and then holds the batch process, or none where no database can be asked.
+    // Where the tree is rooted is decided once, by the first to need it: the first entry that
+    // resolves, or else the report's first identity behind its latest recording, which reads the
+    // tree under the root the entries resolved under. Whether an object database can be asked is
+    // decided at that first entry alone: `batch` is none until it, and then holds the batch
+    // process, or none where no database can be asked. A rebuild that folds no entry and leaves
+    // no identity behind asks git for neither.
     let rooted = std::cell::OnceCell::new();
     let tree = || -> &Path { rooted.get_or_init(|| tree_root(&cwd().join(RIGGER_DIR))) };
     let mut batch: Option<Option<rigger::worktree::BlobBatch>> = None;

@@ -1694,23 +1694,18 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 1312,
-        "end_line": 1312
+        "start_line": 1317,
+        "end_line": 1317
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 1340,
-        "end_line": 1340
+        "start_line": 1345,
+        "end_line": 1345
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2096,
-        "end_line": 2096
-      },
-      {
-        "file": "src/cli/setup.rs",
-        "start_line": 2163,
-        "end_line": 2163
+        "start_line": 2101,
+        "end_line": 2101
       },
       {
         "file": "src/cli/setup.rs",
@@ -1719,148 +1714,153 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2194,
-        "end_line": 2194
+        "start_line": 2173,
+        "end_line": 2173
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2222,
-        "end_line": 2222
+        "start_line": 2199,
+        "end_line": 2199
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2223,
-        "end_line": 2223
+        "start_line": 2227,
+        "end_line": 2227
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2240,
-        "end_line": 2240
+        "start_line": 2228,
+        "end_line": 2228
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2560,
-        "end_line": 2560
+        "start_line": 2245,
+        "end_line": 2245
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2614,
-        "end_line": 2614
+        "start_line": 2565,
+        "end_line": 2565
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2615,
-        "end_line": 2615
+        "start_line": 2619,
+        "end_line": 2619
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2616,
-        "end_line": 2616
+        "start_line": 2620,
+        "end_line": 2620
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2625,
-        "end_line": 2625
+        "start_line": 2621,
+        "end_line": 2621
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2642,
-        "end_line": 2642
+        "start_line": 2630,
+        "end_line": 2630
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2648,
-        "end_line": 2648
+        "start_line": 2647,
+        "end_line": 2647
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2651,
-        "end_line": 2651
+        "start_line": 2653,
+        "end_line": 2653
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2654,
-        "end_line": 2654
+        "start_line": 2656,
+        "end_line": 2656
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2655,
-        "end_line": 2655
+        "start_line": 2659,
+        "end_line": 2659
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2663,
-        "end_line": 2663
+        "start_line": 2660,
+        "end_line": 2660
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2664,
-        "end_line": 2664
+        "start_line": 2668,
+        "end_line": 2668
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2665,
-        "end_line": 2665
+        "start_line": 2669,
+        "end_line": 2669
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2666,
-        "end_line": 2666
+        "start_line": 2670,
+        "end_line": 2670
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2676,
-        "end_line": 2676
+        "start_line": 2671,
+        "end_line": 2671
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2679,
-        "end_line": 2679
+        "start_line": 2681,
+        "end_line": 2681
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2682,
-        "end_line": 2682
+        "start_line": 2684,
+        "end_line": 2684
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3035,
-        "end_line": 3035
+        "start_line": 2687,
+        "end_line": 2687
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3064,
-        "end_line": 3064
+        "start_line": 3040,
+        "end_line": 3040
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3094,
-        "end_line": 3094
+        "start_line": 3069,
+        "end_line": 3069
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3172,
-        "end_line": 3172
+        "start_line": 3099,
+        "end_line": 3099
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3402,
-        "end_line": 3402
+        "start_line": 3177,
+        "end_line": 3177
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3421,
-        "end_line": 3421
+        "start_line": 3407,
+        "end_line": 3407
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3547,
-        "end_line": 3547
+        "start_line": 3426,
+        "end_line": 3426
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 3573,
-        "end_line": 3573
+        "start_line": 3552,
+        "end_line": 3552
+      },
+      {
+        "file": "src/cli/setup.rs",
+        "start_line": 3578,
+        "end_line": 3578
       },
       {
         "file": "src/cli/validate.rs",
@@ -3504,13 +3504,13 @@
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2275,
-        "end_line": 2275
+        "start_line": 2276,
+        "end_line": 2276
       },
       {
         "file": "tests/ledger_rebuild.rs",
-        "start_line": 2304,
-        "end_line": 2304
+        "start_line": 2305,
+        "end_line": 2305
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -5629,8 +5629,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 1195,
-        "end_line": 1199
+        "start_line": 1200,
+        "end_line": 1204
       }
     ]
   },
@@ -5644,8 +5644,8 @@
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 2385,
-        "end_line": 2399
+        "start_line": 2390,
+        "end_line": 2404
       }
     ]
   },
@@ -6859,13 +6859,13 @@
     "sites": [
       {
         "file": "src/cli/setup.rs",
-        "start_line": 1143,
-        "end_line": 1151
+        "start_line": 1148,
+        "end_line": 1156
       },
       {
         "file": "src/cli/setup.rs",
-        "start_line": 1195,
-        "end_line": 1199
+        "start_line": 1200,
+        "end_line": 1204
       }
     ]
   },
