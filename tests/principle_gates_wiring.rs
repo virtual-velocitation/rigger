@@ -366,7 +366,27 @@ const PERSONA_CHECKLIST: &[(&str, &str)] = &[
         "sdet.md",
         "Confirm the unit's first source commit follows a test commit (red before green).",
     ),
+    ("architecture-reviewer.md", GATES_GRADE),
+    ("sdet.md", GATES_GRADE),
+    ("adversary.md", GATES_GRADE),
 ];
+
+/// The line every reviewer persona carries for the gates' proof: deterministic instruments grade
+/// the work, reviewers judge the residue, so no reviewer re-runs a gate already green on the tree.
+const GATES_GRADE: &str = "Never re-run a gate the GATE EVIDENCE block in your prompt shows green \
+                           on the tree under review";
+
+/// The build-seam test author keeps TDD whole on the tests it writes and leaves the battery to
+/// the gates that run on the committed tree right after it.
+#[test]
+fn the_sdet_author_runs_only_its_own_tests_and_leaves_the_battery_to_the_gates() {
+    let text = std::fs::read_to_string(repo_root().join(".rigger/agents/sdet-author.md")).unwrap();
+    assert!(
+        text.contains("with `cargo test -p <crate> <test>` for that test alone"),
+        "{text}"
+    );
+    assert!(!text.contains("Local-first"), "{text}");
+}
 
 /// Every checklist line missing from the persona files under `root/.rigger/agents`.
 fn missing_checklist_lines(root: &Path) -> Vec<String> {

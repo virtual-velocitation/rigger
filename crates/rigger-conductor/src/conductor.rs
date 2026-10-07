@@ -36826,6 +36826,33 @@ mod tests {
         }
     }
 
+    /// The gates grade the work and a review judges the residue: every review tier - lens,
+    /// adversary and adjudicator - is told never to re-run the battery or a gate already green
+    /// on its tree, to reproduce only a specific suspicion in its own scratch worktree, and
+    /// that its build cache is the unit's review cache.
+    #[test]
+    fn every_reviewer_prompt_leaves_the_gate_battery_to_the_gates() {
+        let (lens, adversary, adjudicator) = review_tier_prompts();
+        for (tier, prompt) in [
+            ("lens", lens),
+            ("adversary", adversary),
+            ("adjudicator", adjudicator),
+        ] {
+            assert!(
+                prompt.contains(
+                    "Never re-run the gate battery, or any gate the gate evidence shows green on \
+                     the tree under review: the gates are the instrument that grades the work, \
+                     and a review judges what they cannot see. To reproduce a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - create your own throwaway scratch worktree and run it \
+                     there, building into the CARGO_TARGET_DIR your spawn carries: the unit's \
+                     review cache, never the cache the unit's gates use."
+                ),
+                "the {tier} must leave the battery to the gates; prompt was:\n{prompt}"
+            );
+        }
+    }
+
     #[test]
     fn unparseable_adjudicator_output_blocks_integration() {
         // Item 2 (fail-closed): an adjudicator whose output has no parseable verdict

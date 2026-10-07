@@ -201,6 +201,17 @@ mod tests {
                 "the fan-out section must name {phrase:?}"
             );
         }
+        // Only a gate command takes a machine-wide build slot; an agent's build does not, so
+        // the verify helper runs one at a time because builds compete for the machine, never
+        // because they hold a slot.
+        assert!(
+            body.contains("the machine-wide build slots belong to gate commands alone"),
+            "the verify rule must name who holds the build slots"
+        );
+        assert!(
+            !body.contains("builds hold the\n  machine-wide build slots"),
+            "an agent's build holds no machine-wide build slot"
+        );
     }
 
     #[test]
