@@ -442,8 +442,10 @@ pub fn graph_index_lag(_root: &str, _prior: &[Event], _files: &[String]) -> Vec<
 
 /// Cost-bounded SAMPLE size for [`graph_index_lag_sample`] - mirrors
 /// `grounder::symbols::STALENESS_SAMPLE_SIZE`'s own bound: a fixed, small, deterministic sample
-/// keeps `rigger validate`'s graph index-lag advisory O(sample), never O(every file the graph has
-/// ever recorded a generation for).
+/// keeps `rigger validate`'s graph index-lag advisory reading and re-extracting O(sample) files,
+/// never every file the graph has ever recorded a generation for. The sample stops asking the
+/// tree at the file that fills it, so the only recorded files it asks about beyond the sample are
+/// the ones sorted before that file that the read rule hands no bytes for.
 #[cfg(feature = "symbols")]
 const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 
@@ -452,11 +454,13 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 /// itself rather than a caller-supplied file list - so validate needs nothing but the project's own
 /// event stream and its working tree, exactly like every other validate advisory.
 ///
-/// Candidates are every file identity `prior`'s derived stream has recorded a `gc/` generation for
-/// (via [`project_scoped_latest_generations`]) that the tree's one read rule
-/// ([`crate::grounder::tree_bytes`]) hands bytes for right now, sorted for determinism, then
-/// truncated to [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] - mirroring `grounder::symbols::staleness`'s own
-/// sorted-intersection-then-take sampling shape. Two kinds of file are deliberately left OUT of
+/// Candidates are the file identities `prior`'s derived stream has recorded a `gc/` generation for
+/// (via [`project_scoped_latest_generations`]), sorted for determinism, of which the first
+/// [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] that the tree's one read rule
+/// ([`crate::grounder::tree_bytes`]) hands bytes for right now are taken, and the tree is asked
+/// about no name past the one that fills the sample - mirroring
+/// `grounder::symbols::staleness`'s own sorted-intersection-then-take sampling shape. Two kinds
+/// of file are deliberately left OUT of
 /// the candidate set, not merely filtered from the result:
 ///
 /// - a file the graph has NEVER recorded (present on disk, absent from `prior`) - that is the
@@ -476,14 +480,17 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
     let root_path = std::path::Path::new(root);
     let latest = project_scoped_latest_generations(prior);
-    let mut candidates: Vec<String> = latest
+    let mut recorded: Vec<&str> = latest
         .keys()
         .filter_map(|identity| identity.strip_prefix("gc/"))
+        .collect();
+    recorded.sort_unstable();
+    let candidates: Vec<String> = recorded
+        .into_iter()
         .filter(|file| crate::grounder::tree_bytes(root_path, "gc", file).is_some())
+        .take(GRAPH_INDEX_LAG_SAMPLE_SIZE)
         .map(str::to_string)
         .collect();
-    candidates.sort();
-    candidates.truncate(GRAPH_INDEX_LAG_SAMPLE_SIZE);
     graph_index_lag(root, prior, &candidates)
 }
 
