@@ -23,7 +23,10 @@ use common::cli::{
     applied, graph_identity, init_event_log, no_progress, read_run_events, rigger_file,
     run_rigger_envs, run_stream_identity, temp_project, with_run_store,
 };
-use common::fixtures::{entry_event, events_of, folds, generation_ingested, write_text};
+use common::fixtures::{
+    entry_event, events_of, folds, generation_ingested, walked_generation, write_text,
+    DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+};
 use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -33,9 +36,8 @@ use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 use common::cli::{nanos, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    git_ok, git_ok_with_identity, git_out, live_edges, loose_object, walked_batch, DOCUMENT_BODY,
-    DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WORKFLOW_BODY,
-    WORKFLOW_PATH,
+    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object, walked_batch,
+    DOCUMENT_BODY, SOURCE_BODY, TEST_MODULE_BODY, WORKFLOW_BODY,
 };
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::{REL_CONTAINS, REL_DOC_REFERENCES, REL_SPECIFIES};
@@ -55,11 +57,13 @@ const SETUP_PAYS: &str =
 const ENTRY_REFUSED: &str = "graph: a GenerationIngested entry folds only with its batch, through \
                              `Projection::apply_generation`";
 
-/// The generation the extraction tree's fixture records for the source file's `gc` batch.
-const SOURCE_GENERATION: &str = "f81a57a5c4f55f52";
+/// The generation the extraction tree's fixture records for the batch under `prefix` for `path`,
+/// as a graph answers the generation it holds.
+fn held_generation(prefix: &str, path: &str) -> Option<String> {
+    Some(walked_generation(prefix, path).to_string())
+}
 
 /// An object id no repository of these tests holds.
-#[cfg(feature = "symbols")]
 const NOT_HELD: &str = "1111111111111111111111111111111111111111";
 
 /// The source file once `helper` and the call to it are gone: one product function and the
@@ -300,19 +304,6 @@ fn edges_touching(
         .collect()
 }
 
-/// The object id git computes for the file at `path` under `root`, writing no object.
-#[cfg(feature = "symbols")]
-fn blob_id(root: &Path, path: &str) -> String {
-    git_out(root, &["hash-object", path])
-}
-
-/// The object id of the file at `path` under `root`, written to the repository's object database
-/// as a loose object.
-#[cfg(feature = "symbols")]
-fn held_blob(root: &Path, path: &str) -> String {
-    git_out(root, &["hash-object", "-w", path])
-}
-
 /// Commit the `src` and `docs` directories of the repository at `root`, and nothing else.
 #[cfg(feature = "symbols")]
 fn commit_sources(root: &Path) {
@@ -337,22 +328,22 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
     write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
     write_text(root, GONE_PATH, GONE_BODY);
     commit_sources(root);
-    let first_source = blob_id(root, SOURCE_PATH);
-    let test_module = blob_id(root, TEST_MODULE_PATH);
-    let first_document = blob_id(root, DOCUMENT_PATH);
-    let gone = blob_id(root, GONE_PATH);
+    let first_source = git_hash_object(root, SOURCE_PATH, false);
+    let test_module = git_hash_object(root, TEST_MODULE_PATH, false);
+    let first_document = git_hash_object(root, DOCUMENT_PATH, false);
+    let gone = git_hash_object(root, GONE_PATH, false);
     let project = settled(root);
 
     // The tree moves on: the source file drops `helper` and is not written to the object
     // database, the document drops its citation, the third source file is deleted, and the
     // workflow definition is written, uncommitted.
     write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
-    let second_source = blob_id(root, SOURCE_PATH);
+    let second_source = git_hash_object(root, SOURCE_PATH, false);
     write_text(root, DOCUMENT_PATH, DOCUMENT_WITHOUT_CITATION);
-    let second_document = held_blob(root, DOCUMENT_PATH);
+    let second_document = git_hash_object(root, DOCUMENT_PATH, true);
     std::fs::remove_file(root.join(GONE_PATH)).unwrap();
     write_text(root, WORKFLOW_PATH, WORKFLOW_BODY);
-    let workflow = blob_id(root, WORKFLOW_PATH);
+    let workflow = git_hash_object(root, WORKFLOW_PATH, false);
 
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
     let recordings = [
@@ -429,11 +420,11 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
             .map(|r| r.named.generation.as_str())
             .collect::<Vec<_>>(),
         vec![
-            SOURCE_GENERATION,
-            "878ec204b714de6b",
-            "ea5177040caf5338",
-            "88eadaf4024b4a86",
-            "08eb9cb734e95dc1",
+            walked_generation("gc", SOURCE_PATH),
+            walked_generation("gc", TEST_MODULE_PATH),
+            walked_generation("gd", DOCUMENT_PATH),
+            walked_generation("gd", SOURCE_PATH),
+            walked_generation("gw", WORKFLOW_PATH),
         ]
     );
     let positions = record(root, &recordings);
@@ -472,10 +463,10 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
         ),
         vec![
             Some(recordings[6].named.generation.clone()),
-            Some("878ec204b714de6b".to_string()),
+            held_generation("gc", TEST_MODULE_PATH),
             Some(recordings[7].named.generation.clone()),
-            Some("88eadaf4024b4a86".to_string()),
-            Some("08eb9cb734e95dc1".to_string()),
+            held_generation("gd", SOURCE_PATH),
+            held_generation("gw", WORKFLOW_PATH),
             Some(recordings[8].named.generation.clone()),
         ],
         "every identity holds the generation of its latest entry"
@@ -644,10 +635,10 @@ fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
             ]
         ),
         vec![
-            Some(SOURCE_GENERATION.to_string()),
-            Some("878ec204b714de6b".to_string()),
-            Some("ea5177040caf5338".to_string()),
-            Some("08eb9cb734e95dc1".to_string()),
+            held_generation("gc", SOURCE_PATH),
+            held_generation("gc", TEST_MODULE_PATH),
+            held_generation("gd", DOCUMENT_PATH),
+            held_generation("gw", WORKFLOW_PATH),
             Some(recordings[4].named.generation.clone()),
         ]
     );
@@ -745,7 +736,7 @@ fn setup_in_a_repository_subdirectory_resolves_from_the_top_level_not_the_workin
             &["gc/src/lib.rs", "gc/sub/src/lib.rs", "gc/src/only.rs"]
         ),
         vec![
-            Some(SOURCE_GENERATION.to_string()),
+            held_generation("gc", SOURCE_PATH),
             Some(recordings[1].named.generation.clone()),
             None,
         ],
@@ -882,8 +873,8 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
             &["gd/docs/architecture.md", "gc/src/lib.rs", "gc/src/gone.rs"]
         ),
         vec![
-            Some("ea5177040caf5338".to_string()),
-            Some(SOURCE_GENERATION.to_string()),
+            held_generation("gd", DOCUMENT_PATH),
+            held_generation("gc", SOURCE_PATH),
             Some(recordings[2].named.generation.clone()),
         ],
         "the last identity holds the generation of its latest resolvable entry"
@@ -980,8 +971,8 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     let root = dir.path();
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
-    let first_source = held_blob(root, SOURCE_PATH);
-    let first_document = held_blob(root, DOCUMENT_PATH);
+    let first_source = git_hash_object(root, SOURCE_PATH, true);
+    let first_document = git_hash_object(root, DOCUMENT_PATH, true);
     let project = settled(root);
     // The tree moves on, so both first generations resolve from the object database alone.
     write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
@@ -1097,7 +1088,13 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
 /// The entry of `gc/src/lib.rs` at the fixture's generation, as its recording process appends it.
 fn source_entry() -> Event {
     entry_of(&Recording {
-        named: generation_ingested("gc", "src/lib.rs", SOURCE_GENERATION, "", false),
+        named: generation_ingested(
+            "gc",
+            SOURCE_PATH,
+            walked_generation("gc", SOURCE_PATH),
+            "",
+            false,
+        ),
         secs: 10,
         batch: None,
     })
@@ -1112,7 +1109,7 @@ fn source_entry() -> Event {
 fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() {
     let dir = temp_project();
     let root = dir.path();
-    write_text(root, "src/lib.rs", common::fixtures::SOURCE_BODY);
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
     let project = settled(root);
     stand_graph(root, &project);
     let graph_db = rigger_file(root, "graph.db");
@@ -1148,7 +1145,7 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
         "the rebuild folded the entry through the ledger fold and dropped the mark"
     );
     #[cfg(feature = "symbols")]
-    let held = Some(SOURCE_GENERATION.to_string());
+    let held = held_generation("gc", SOURCE_PATH);
     #[cfg(not(feature = "symbols"))]
     let held = None;
     assert_eq!(generations(root, &project, &["gc/src/lib.rs"]), vec![held]);
@@ -1172,13 +1169,13 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
     let _ = common::git::run_git(root, &["init", "-q"]);
     let project = settled(root);
     let recordings = [
-        ("gc", "src/lib.rs", SOURCE_GENERATION, false),
-        ("gc", "src/checks.rs", "878ec204b714de6b", true),
-        ("gd", "docs/architecture.md", "ea5177040caf5338", false),
-        ("gw", ".rigger/workflow.yml", "08eb9cb734e95dc1", false),
+        ("gc", SOURCE_PATH, false),
+        ("gc", TEST_MODULE_PATH, true),
+        ("gd", DOCUMENT_PATH, false),
+        ("gw", WORKFLOW_PATH, false),
     ]
-    .map(|(prefix, file, generation, excluded)| Recording {
-        named: generation_ingested(prefix, file, generation, "", excluded),
+    .map(|(prefix, file, excluded)| Recording {
+        named: generation_ingested(prefix, file, walked_generation(prefix, file), "", excluded),
         secs: 10,
         batch: None,
     });
@@ -1330,7 +1327,7 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
             applied(&db, 1),
             applied(&db, 2),
         ),
-        (Some(SOURCE_GENERATION.to_string()), true, true)
+        (held_generation("gc", SOURCE_PATH), true, true)
     );
 }
 
@@ -1388,8 +1385,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
     let root = dir.path();
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
-    let first_source = held_blob(root, SOURCE_PATH);
-    let first_document = held_blob(root, DOCUMENT_PATH);
+    let first_source = git_hash_object(root, SOURCE_PATH, true);
+    let first_document = git_hash_object(root, DOCUMENT_PATH, true);
     let project = settled(root);
     // The tree moves on, so both first generations resolve from the object database alone.
     write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
@@ -1436,9 +1433,9 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"]
         ),
         vec![
-            Some(SOURCE_GENERATION.to_string()),
-            Some("ea5177040caf5338".to_string()),
-            Some("88eadaf4024b4a86".to_string()),
+            held_generation("gc", SOURCE_PATH),
+            held_generation("gd", DOCUMENT_PATH),
+            held_generation("gd", SOURCE_PATH),
         ],
         "each entry resolved from the blob the one process answered"
     );
@@ -1500,8 +1497,8 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
             &["gc/src/lib.rs", "gd/src/lib.rs"]
         ),
         vec![
-            Some(SOURCE_GENERATION.to_string()),
-            Some("88eadaf4024b4a86".to_string()),
+            held_generation("gc", SOURCE_PATH),
+            held_generation("gd", SOURCE_PATH),
         ]
     );
 }
@@ -1514,15 +1511,15 @@ fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first
 fn without_an_extraction_a_rebuild_over_entries_starts_no_batch_process() {
     let dir = temp_project();
     let root = dir.path();
-    write_text(root, "src/lib.rs", common::fixtures::SOURCE_BODY);
+    write_text(root, SOURCE_PATH, common::fixtures::SOURCE_BODY);
     let project = settled(root);
     stand_graph(root, &project);
     let recordings = ["gc", "gd"].map(|prefix| Recording {
         named: generation_ingested(
             prefix,
-            "src/lib.rs",
-            SOURCE_GENERATION,
-            "1111111111111111111111111111111111111111",
+            SOURCE_PATH,
+            walked_generation("gc", SOURCE_PATH),
+            NOT_HELD,
             false,
         ),
         secs: 10,
@@ -1558,12 +1555,12 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
     write_text(root, GONE_PATH, GONE_BODY);
     commit_sources(root);
-    let source = blob_id(root, SOURCE_PATH);
-    let document = blob_id(root, DOCUMENT_PATH);
+    let source = git_hash_object(root, SOURCE_PATH, false);
+    let document = git_hash_object(root, DOCUMENT_PATH, false);
     let committed_gone = format!("HEAD:{GONE_PATH}");
     assert_eq!(
         git_out(root, &["rev-parse", &committed_gone]),
-        blob_id(root, GONE_PATH),
+        git_hash_object(root, GONE_PATH, false),
         "git resolves the third entry's name to the deleted file's committed blob"
     );
     let project = settled(root);
@@ -1651,8 +1648,8 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
         ),
         (
             vec![
-                Some(SOURCE_GENERATION.to_string()),
-                Some("ea5177040caf5338".to_string()),
+                held_generation("gc", SOURCE_PATH),
+                held_generation("gd", DOCUMENT_PATH),
                 None,
             ],
             vec![true, true, true],

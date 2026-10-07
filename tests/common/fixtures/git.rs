@@ -104,6 +104,13 @@ pub fn git_answer(dir: impl AsRef<Path>, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The object id git computes for the file at `path` under `dir` (`git hash-object`), the file
+/// also written to the repository's object database as a loose object when `write`.
+pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String {
+    let flag: &[&str] = if write { &["-w"] } else { &[] };
+    git_out(dir, &[&["hash-object"], flag, &[path]].concat())
+}
+
 /// Stage everything in the repository at `dir` and commit it as `msg`, asserting both succeed.
 pub fn git_commit_all(dir: impl AsRef<Path>, msg: &str) {
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {

@@ -891,8 +891,9 @@ const REBUILD_BATCH: usize = 10_000;
 /// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
 /// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
 /// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
-/// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), else from no
-/// bytes; an entry no source resolves folds nothing.
+/// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
+/// that first entry too, else from no bytes; an entry no source resolves folds nothing. A rebuild
+/// that folds no entry starts no git process.
 ///
 /// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
 /// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
@@ -912,16 +913,20 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     migrate_local_identity()?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
-    let root = tree_root(&cwd().join(RIGGER_DIR));
-    // Whether an object database can be asked is decided once, before the first entry resolves.
-    let mut blobs: Option<Option<rigger::worktree::BlobBatch>> = None;
+    // Where the tree is rooted and whether an object database can be asked are decided once,
+    // when the first entry resolves: a rebuild that folds no entry asks git for neither.
+    let mut sources: Option<(PathBuf, Option<rigger::worktree::BlobBatch>)> = None;
     let mut reextract = |entry: &Event| {
+        let (root, blobs) = sources.get_or_insert_with(|| {
+            let root = tree_root(&cwd().join(RIGGER_DIR));
+            let blobs = entry_blobs(&root);
+            (root, blobs)
+        });
         let mut held = blobs
-            .get_or_insert_with(|| entry_blobs(&root))
             .as_mut()
             .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
         rigger::ingest::resolve_entry(
-            &root,
+            root,
             entry,
             held.as_mut()
                 .map(|source| source as &mut rigger::ingest::BlobSource),

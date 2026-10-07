@@ -36,6 +36,15 @@ pub fn wire(events: &[Event]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// [`wire`] with each pair owned: the form a test compares by when the batch does not outlive
+/// the comparison.
+pub fn wire_owned(events: &[Event]) -> Vec<(String, String)> {
+    wire(events)
+        .into_iter()
+        .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
+        .collect()
+}
+
 /// `events` - `(type, payload text)` pairs, the form [`wire`] answers - as unkeyed batch events.
 pub fn events_of(events: &[(&str, &str)]) -> Vec<Event> {
     events

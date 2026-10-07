@@ -2767,17 +2767,10 @@ mod blob_batch_tests {
 
     use super::BlobBatch;
     use crate::test_support::{
-        git_init_quiet, git_ok_with_identity, git_out, loose_object, temp_git_project_with_commit,
-        write_file,
+        git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
+        temp_git_project_with_commit, write_file,
     };
     use std::path::Path;
-
-    /// Write `bytes` at `name` under `root` and to the repository's object database as a loose
-    /// object, and answer its object id.
-    fn held(root: &Path, name: &str, bytes: &[u8]) -> String {
-        write_file(&root.join(name), bytes);
-        git_out(root, &["hash-object", "-w", name])
-    }
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
     fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
@@ -2791,9 +2784,12 @@ mod blob_batch_tests {
     fn one_process_answers_each_blob_it_holds_and_none_for_one_it_does_not() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let text = held(root, "a.txt", b"first line\nsecond line");
-        let binary = held(root, "b.bin", &[0, 159, 146, 150, b'\n', b'\n', 255]);
-        let empty = held(root, "empty", b"");
+        write_file(&root.join("a.txt"), b"first line\nsecond line");
+        let text = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.bin"), &[0, 159, 146, 150, b'\n', b'\n', 255]);
+        let binary = git_hash_object(root, "b.bin", true);
+        write_file(&root.join("empty"), b"");
+        let empty = git_hash_object(root, "empty", true);
         let absent = "1111111111111111111111111111111111111111";
 
         let mut batch = BlobBatch::start(root).expect("a repository starts the batch process");
@@ -2813,15 +2809,17 @@ mod blob_batch_tests {
         );
     }
 
-    /// An id that is not all hexadecimal digits is never written to the process - an empty one, one
-    /// holding a space, one holding a line break that would read as two requests - and answers
-    /// not held, the next answer still its own object's. An object that is not a blob is read
+    /// An id that is not all hexadecimal digits is never written to the process - one holding a
+    /// space, a ref name, one holding a line break that would read as two requests - and answers
+    /// not held; the empty id passes that check, is written, and git answers it missing, so it
+    /// answers not held too. After each, the next answer is still its own object's. An object that is not a blob is read
     /// whole like any other, so the answer after it is aligned too.
     #[test]
     fn an_id_that_is_not_hexadecimal_is_not_held_and_never_shifts_the_answers_after_it() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let text = held(root, "a.txt", b"the body\n");
+        write_file(&root.join("a.txt"), b"the body\n");
+        let text = git_hash_object(root, "a.txt", true);
         git_ok_with_identity(root, &["add", "a.txt"]);
         git_ok_with_identity(root, &["commit", "-q", "-m", "one"]);
         let tree = git_out(root, &["rev-parse", "HEAD^{tree}"]);
@@ -2860,7 +2858,11 @@ mod blob_batch_tests {
         assert!(BlobBatch::start(root).is_none());
 
         git_init_quiet(root);
-        let id = held(root, "a.txt", b"held once the directory is a repository\n");
+        write_file(
+            &root.join("a.txt"),
+            b"held once the directory is a repository\n",
+        );
+        let id = git_hash_object(root, "a.txt", true);
         let mut batch = BlobBatch::start(root).expect("a repository starts a batch process");
         assert_eq!(
             asked(&mut batch, &id),
@@ -2875,8 +2877,10 @@ mod blob_batch_tests {
     fn a_truncated_loose_object_fails_the_read_naming_the_object_and_its_remedy() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let whole = held(root, "a.txt", b"an object git holds whole\n");
-        let cut = held(root, "b.txt", b"an object whose body is cut short\n");
+        write_file(&root.join("a.txt"), b"an object git holds whole\n");
+        let whole = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.txt"), b"an object whose body is cut short\n");
+        let cut = git_hash_object(root, "b.txt", true);
         let object = loose_object(root, &cut);
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
@@ -2904,8 +2908,10 @@ mod blob_batch_tests {
     fn a_loose_object_with_a_corrupt_header_is_not_held_and_the_process_goes_on() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let whole = held(root, "a.txt", b"an object git holds whole\n");
-        let corrupt = held(root, "b.txt", b"an object whose header is garbage\n");
+        write_file(&root.join("a.txt"), b"an object git holds whole\n");
+        let whole = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.txt"), b"an object whose header is garbage\n");
+        let corrupt = git_hash_object(root, "b.txt", true);
         std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
 
         let mut batch = BlobBatch::start(root).unwrap();
@@ -2935,7 +2941,8 @@ mod blob_batch_tests {
     fn dropping_the_batch_ends_its_process_and_reaps_it() {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
-        let text = held(root, "a.txt", b"the body\n");
+        write_file(&root.join("a.txt"), b"the body\n");
+        let text = git_hash_object(root, "a.txt", true);
 
         let mut batch = BlobBatch::start(root).unwrap();
         assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));

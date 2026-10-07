@@ -210,13 +210,22 @@ pub const WALKED: [WalkedBatch; 6] = [
     },
 ];
 
-/// The events of the batch [`WALKED`] holds under `prefix` for `path`.
-pub fn walked_batch(prefix: &str, path: &str) -> &'static [(&'static str, &'static str)] {
+/// The batch [`WALKED`] holds under `prefix` for `path`.
+fn walked(prefix: &str, path: &str) -> &'static WalkedBatch {
     WALKED
         .iter()
         .find(|batch| batch.prefix == prefix && batch.path == path)
         .expect("the walk lowers a batch under the prefix for the path")
-        .events
+}
+
+/// The events of the batch [`WALKED`] holds under `prefix` for `path`.
+pub fn walked_batch(prefix: &str, path: &str) -> &'static [(&'static str, &'static str)] {
+    walked(prefix, path).events
+}
+
+/// The generation of the batch [`WALKED`] holds under `prefix` for `path`.
+pub fn walked_generation(prefix: &str, path: &str) -> &'static str {
+    walked(prefix, path).generation
 }
 
 /// The tree planted in a fresh directory, kept alive by the returned guard: the four files

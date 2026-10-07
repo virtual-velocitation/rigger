@@ -1008,16 +1008,13 @@ mod resolve_entry_tests {
     use crate::contextgraph::Error;
     use crate::eventstore::Event;
     use crate::extraction_tree::{
-        planted_extraction_tree, walked_batch, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
-        TEST_MODULE_PATH, WORKFLOW_PATH,
+        planted_extraction_tree, walked_batch, walked_generation, DOCUMENT_PATH, SOURCE_BODY,
+        SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
     };
     use crate::host_fixtures::write_file;
-    use crate::test_support::{entry_event, events_of, generation_ingested, wire};
+    use crate::test_support::{entry_event, events_of, generation_ingested, wire_owned};
     use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     use std::path::Path;
-
-    /// The generation the extraction tree's fixture records for the source file's `gc` batch.
-    const SOURCE_GENERATION: &str = "f81a57a5c4f55f52";
 
     /// A source file the fixture does not hold, the `gc` batch it extracts to at `src/lib.rs`,
     /// and the `gc` batch of that path for no bytes.
@@ -1068,20 +1065,12 @@ mod resolve_entry_tests {
                 .map(|(_, bytes)| bytes.as_bytes().to_vec()))
         };
         let batch = resolve_entry(root, entry, Some(&mut source)).unwrap();
-        (batch.as_deref().map(owned), asked)
-    }
-
-    /// `events` as owned `(type, payload text)` pairs.
-    fn owned(events: &[Event]) -> Vec<(String, String)> {
-        wire(events)
-            .into_iter()
-            .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
-            .collect()
+        (batch.as_deref().map(wire_owned), asked)
     }
 
     /// `events`, borrowed `(type, payload text)` pairs, as owned ones.
     fn pairs(events: &[(&str, &str)]) -> Vec<(String, String)> {
-        owned(&events_of(events))
+        wire_owned(&events_of(events))
     }
 
     /// A tree holding [`OTHER_BODY`] at the source file's path.
@@ -1102,7 +1091,7 @@ mod resolve_entry_tests {
         let held = [("b1", SOURCE_BODY)];
         let cases = [
             (
-                SOURCE_GENERATION.to_string(),
+                walked_generation("gc", SOURCE_PATH).to_string(),
                 Some(pairs(walked_batch("gc", SOURCE_PATH))),
             ),
             (generation_of(&OTHER_BATCH), Some(pairs(&OTHER_BATCH))),
@@ -1159,9 +1148,9 @@ mod resolve_entry_tests {
             )
             .unwrap()
             .as_deref()
-            .map(owned)
+            .map(wire_owned)
         };
-        assert_eq!(resolve(SOURCE_GENERATION), None);
+        assert_eq!(resolve(walked_generation("gc", SOURCE_PATH)), None);
         assert_eq!(
             resolve(&generation_of(&OTHER_BATCH)),
             Some(pairs(&OTHER_BATCH))
@@ -1182,7 +1171,7 @@ mod resolve_entry_tests {
         );
         assert_eq!(
             answer
-                .map(|batch| batch.as_deref().map(owned))
+                .map(|batch| batch.as_deref().map(wire_owned))
                 .map_err(|e| e.0),
             Err("the batch died".to_string())
         );
@@ -1203,30 +1192,48 @@ mod resolve_entry_tests {
             )
             .0
         };
-        for (prefix, path, generation, excluded) in [
-            ("gc", SOURCE_PATH, SOURCE_GENERATION, false),
-            ("gd", SOURCE_PATH, "88eadaf4024b4a86", false),
-            ("gd", DOCUMENT_PATH, "ea5177040caf5338", false),
-            ("gw", WORKFLOW_PATH, "08eb9cb734e95dc1", false),
-            ("gc", TEST_MODULE_PATH, "878ec204b714de6b", true),
+        for (prefix, path, excluded) in [
+            ("gc", SOURCE_PATH, false),
+            ("gd", SOURCE_PATH, false),
+            ("gd", DOCUMENT_PATH, false),
+            ("gw", WORKFLOW_PATH, false),
+            ("gc", TEST_MODULE_PATH, true),
         ] {
             assert_eq!(
-                from_tree(prefix, path, generation, excluded),
+                from_tree(prefix, path, walked_generation(prefix, path), excluded),
                 Some(pairs(walked_batch(prefix, path))),
                 "{prefix}/{path}"
             );
         }
         assert_eq!(
-            from_tree("gc", TEST_MODULE_PATH, "878ec204b714de6b", false),
+            from_tree(
+                "gc",
+                TEST_MODULE_PATH,
+                walked_generation("gc", TEST_MODULE_PATH),
+                false
+            ),
             None,
             "the test module's boundary batch is not what its bytes extract to without the flag"
         );
         assert_eq!(
-            from_tree("gc", SOURCE_PATH, SOURCE_GENERATION, true),
+            from_tree(
+                "gc",
+                SOURCE_PATH,
+                walked_generation("gc", SOURCE_PATH),
+                true
+            ),
             None,
             "the source file's batch is not what its bytes extract to under the flag"
         );
-        assert_eq!(from_tree("gx", SOURCE_PATH, SOURCE_GENERATION, false), None);
+        assert_eq!(
+            from_tree(
+                "gx",
+                SOURCE_PATH,
+                walked_generation("gc", SOURCE_PATH),
+                false
+            ),
+            None
+        );
     }
 
     /// An empty batch resolves no entry: an entry naming the generation of no events, for a

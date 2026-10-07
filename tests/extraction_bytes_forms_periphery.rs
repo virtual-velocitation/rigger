@@ -23,7 +23,9 @@ use rigger::config_store::{load_workflow, parse_workflow};
 #[cfg(feature = "symbols")]
 use common::cli::read_run_events;
 #[cfg(feature = "symbols")]
-use common::fixtures::{minted_events, wire, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED};
+use common::fixtures::{
+    events_of, minted_events, wire_owned, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED,
+};
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
 
@@ -57,13 +59,7 @@ fn grouped(keyed: &[(String, Event)]) -> Vec<(String, String, Vec<Event>)> {
 fn batches(keyed: &[(String, Event)]) -> Vec<Batch> {
     grouped(keyed)
         .into_iter()
-        .map(|(identity, generation, events)| {
-            let events = wire(&events)
-                .into_iter()
-                .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
-                .collect();
-            (identity, generation, events)
-        })
+        .map(|(identity, generation, events)| (identity, generation, wire_owned(&events)))
         .collect()
 }
 
@@ -77,11 +73,7 @@ fn walked(admit: impl Fn(&WalkedBatch) -> bool) -> Vec<Batch> {
             (
                 format!("{}/{}", batch.prefix, batch.path),
                 batch.generation.to_string(),
-                batch
-                    .events
-                    .iter()
-                    .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
-                    .collect(),
+                wire_owned(&events_of(batch.events)),
             )
         })
         .collect()

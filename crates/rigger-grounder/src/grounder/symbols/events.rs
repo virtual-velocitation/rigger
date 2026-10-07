@@ -122,18 +122,15 @@ fn unparsed_batch(path: &str) -> Vec<Event> {
 
 /// The `gc` batch of the file at `path` holding `bytes` (spec 107), total over its input: the
 /// batch the walk lowers from that file. UTF-8 bytes that extract under the grammar the path
-/// resolves, as every production caller of the index resolves it, yield [`lower_file`] over the
-/// extracted symbols under `excluded`; every other input - no bytes, bytes that are not UTF-8, a
+/// resolves, as every production caller of the index resolves it - the symbols
+/// [`extracted`](crate::grounder::symbols::extracted) answers, the ones the index holds for that
+/// text - yield [`lower_file`] over them under `excluded`; every other input - no bytes, bytes that are not UTF-8, a
 /// path with no grammar, a failed extraction - yields [`unparsed_batch`], as [`file_batches`]
 /// gives a path the index lacks. `excluded` changes only a parsed batch. Never empty.
 pub fn bytes_batch(path: &str, bytes: Option<&[u8]>, excluded: bool) -> Vec<Event> {
-    use crate::grounder::symbols::{extract, registry};
-
     let symbols = crate::grounder::text_of(bytes)
-        .zip(registry::for_path(path, None))
-        .and_then(|(source, grammar)| {
-            extract::extract(source, grammar.lang, &grammar.language, grammar.tags_query).ok()
-        });
+        .and_then(|source| crate::grounder::symbols::extracted(path, source, None))
+        .and_then(Result::ok);
     match symbols {
         Some(symbols) => lower_file(path, &symbols, excluded),
         None => unparsed_batch(path),
@@ -1936,19 +1933,13 @@ mod tests {
     #[test]
     fn bytes_batch_answers_the_unknown_boundary_for_every_input_it_cannot_parse() {
         use crate::extraction_tree::{SOURCE_BODY, SOURCE_PATH};
-        use crate::test_support::wire;
+        use crate::test_support::wire_owned;
 
         let boundary = |path: &str| {
             vec![(
                 TYPE_EDGE_INFERRED.to_string(),
                 format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#),
             )]
-        };
-        let owned = |events: &[Event]| -> Vec<(String, String)> {
-            wire(events)
-                .into_iter()
-                .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
-                .collect()
         };
         let not_utf8: &[u8] = &[b'f', b'n', 0xff, 0xfe];
         for (path, bytes, excluded) in [
@@ -1960,7 +1951,7 @@ mod tests {
             ("notes.txt", Some(SOURCE_BODY.as_bytes()), true),
         ] {
             assert_eq!(
-                owned(&super::bytes_batch(path, bytes, excluded)),
+                wire_owned(&super::bytes_batch(path, bytes, excluded)),
                 boundary(path),
                 "{path} with bytes {bytes:?} under excluded {excluded}"
             );
@@ -1969,6 +1960,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let named =
             super::file_batches(dir.path().to_str().unwrap(), &["src/absent.rs".to_string()]);
-        assert_eq!(owned(&named[0].1), boundary("src/absent.rs"));
+        assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
     }
 }
