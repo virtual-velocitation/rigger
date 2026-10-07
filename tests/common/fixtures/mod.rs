@@ -17,6 +17,7 @@ mod git;
 mod graph;
 mod host;
 mod page;
+mod read_fault;
 mod spawn;
 pub use config::*;
 pub use events::*;
@@ -24,6 +25,7 @@ pub use git::*;
 pub use graph::*;
 pub use host::*;
 pub use page::*;
+pub use read_fault::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]

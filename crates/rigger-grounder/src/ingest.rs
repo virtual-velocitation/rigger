@@ -752,6 +752,32 @@ mod scoped_reindex_tests {
         prior
     }
 
+    /// One derived event of `file`'s current extraction, not yet keyed: the template
+    /// [`stale_recordings`] cuts each stale recording from.
+    fn derived_template(root: &str, file: &str) -> Event {
+        let mut template: Option<Event> = None;
+        ingest_files_batched(root, &[file.to_string()], |keyed| {
+            if template.is_none() {
+                template = keyed.first().map(|(_, ev)| (*ev).clone());
+            }
+        });
+        template.expect("the file keys at least one derived event")
+    }
+
+    /// A STALE recording of each of `files`: one derived event keyed `gc/<file>@stale#0`, a
+    /// generation no extraction yields, so [`graph_index_lag`] reports every one of them it is
+    /// handed. A recorded path missing from the sample's answer was therefore never a candidate.
+    fn stale_recordings(template: &Event, files: &[&str]) -> Vec<Event> {
+        files
+            .iter()
+            .map(|file| {
+                template
+                    .clone()
+                    .with_meta(META_REPLAY_KEY, format!("gc/{file}@stale#0").as_str())
+            })
+            .collect()
+    }
+
     /// [`ingest_files_batched`] is bounded to exactly the NAMED files - an untouched sibling never
     /// reaches the sink, even though it is present and indexable. Mirrors
     /// `grounder::symbols::events::tests::file_batches_is_scoped_to_the_named_files_only` one layer
@@ -969,6 +995,66 @@ mod scoped_reindex_tests {
             Vec::<String>::new(),
             "twenty unchanged recorded files, all agreeing, must read as zero lag regardless of \
              the sample bound"
+        );
+    }
+
+    /// The sample's candidate test is the tree's ONE read rule (`grounder::tree_bytes`): a `gc`
+    /// path the graph recorded that the walk's scope leaves out - under a hidden directory, or
+    /// named by a committed `.gitignore` - is no candidate, though the file is there. Every
+    /// recording is stale, so a sampled path is always reported: `ignored.rs` is reported until
+    /// the `.gitignore` names it and never after, and `.hidden/h.rs` never.
+    #[test]
+    fn graph_index_lag_sample_samples_no_recorded_path_outside_the_walk_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+        std::fs::write(dir.path().join("ignored.rs"), "fn ignored() {}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".hidden")).unwrap();
+        std::fs::write(dir.path().join(".hidden/h.rs"), "fn h() {}\n").unwrap();
+        let template = derived_template(root, "kept.rs");
+        let prior = stale_recordings(&template, &[".hidden/h.rs", "ignored.rs", "kept.rs"]);
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            vec!["ignored.rs".to_string(), "kept.rs".to_string()],
+            "the two recorded paths inside the walk's scope are sampled, and the one under a \
+             hidden directory is not"
+        );
+
+        std::fs::write(dir.path().join(".gitignore"), "ignored.rs\n").unwrap();
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            vec!["kept.rs".to_string()],
+            "a recorded path the committed .gitignore names is sampled no more"
+        );
+    }
+
+    /// A recorded `gc` path THE READ FAULT makes unreadable is no candidate either: the same
+    /// regular in-scope file is sampled while it can be read and not once it cannot.
+    #[test]
+    fn graph_index_lag_sample_samples_no_recorded_path_the_read_fault_makes_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+        std::fs::write(dir.path().join("locked.rs"), "fn locked() {}\n").unwrap();
+        let template = derived_template(root, "kept.rs");
+        let prior = stale_recordings(&template, &["kept.rs", "locked.rs"]);
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            vec!["kept.rs".to_string(), "locked.rs".to_string()],
+            "both recorded paths are sampled while both can be read"
+        );
+
+        if !crate::read_fault_fixtures::arm_read_fault(&dir.path().join("locked.rs")) {
+            return;
+        }
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            vec!["kept.rs".to_string()],
+            "the recorded path the read fault makes unreadable is sampled no more"
         );
     }
 }

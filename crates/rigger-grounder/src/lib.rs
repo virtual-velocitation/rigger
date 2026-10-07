@@ -55,3 +55,9 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod test_support;
+
+/// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
+/// here from the same file. It names no crate, so both lanes compile it.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/read_fault.rs"]
+mod read_fault_fixtures;
