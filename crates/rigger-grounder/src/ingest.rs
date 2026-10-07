@@ -501,6 +501,13 @@ pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
     Vec::new()
 }
 
+/// The `gc` identity of `path`: the identity the walk keys the file's code batch under, and the
+/// one [`walk_exclusions`] names an excluded file by.
+#[cfg(feature = "symbols")]
+pub(crate) fn code_identity(path: &str) -> String {
+    format!("gc/{path}")
+}
+
 /// The index the walk's code half lowers and the identities it excludes (spec 107): the index
 /// loaded as the walk loads it - the `symbols` grounder's persisted one when the tree holds one,
 /// else a fresh build of the tree, in memory only and never persisted - and the `gc/<path>`
@@ -518,7 +525,7 @@ pub fn walk_exclusions(
         .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
     let excluded = crate::grounder::symbols::events::out_of_line_test_module_files(&index)
         .iter()
-        .map(|path| format!("gc/{path}"))
+        .map(|path| code_identity(path))
         .collect();
     (index, excluded)
 }

@@ -117,7 +117,7 @@ pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>)> {
 /// Whether `excluded`, the identities [`walk_exclusions`](crate::ingest::walk_exclusions)
 /// answers, names the `gc` identity of `path`.
 fn names_code_identity(excluded: &BTreeSet<String>, path: &str) -> bool {
-    excluded.contains(&format!("gc/{path}"))
+    excluded.contains(&crate::ingest::code_identity(path))
 }
 
 /// The batch the walk lowers from one file's `symbols` (spec 107): its structural events
