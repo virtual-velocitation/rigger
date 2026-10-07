@@ -67,10 +67,7 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// The identity range ends BEFORE the `@` that separates it from the generation: the identity
 /// STARTS the key and every key naming this batch begins with it.
 pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
-    let (prefix, remainder) = key.split_once('/')?;
-    if prefix.is_empty() {
-        return None;
-    }
+    let (prefix, remainder) = crate::retention::GenerationIngested::identity_parts(key)?;
     let (head, index) = remainder.rsplit_once('#')?;
     if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
         return None;

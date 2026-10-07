@@ -43,6 +43,15 @@ impl GenerationIngested {
     pub fn identity(&self) -> String {
         format!("{}/{}", self.prefix, self.file)
     }
+
+    /// The `(prefix, file)` a `<prefix>/<file>` identity names ([`Self::identity`]), cut at its
+    /// first slash, or none when it holds no slash or names no prefix. A key that starts with an
+    /// identity is cut the same way, its file half running to the key's end.
+    pub fn identity_parts(identity: &str) -> Option<(&str, &str)> {
+        identity
+            .split_once('/')
+            .filter(|(prefix, _)| !prefix.is_empty())
+    }
 }
 
 /// PERCEPTION: the derived index and the ledger entry that stands for it, the one list every

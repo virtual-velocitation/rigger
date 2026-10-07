@@ -582,12 +582,15 @@ fn half_of(prefix: &str) -> Option<Half> {
 /// it (spec 107): whether the tree's one read rule ([`crate::grounder::tree_bytes`]) hands bytes
 /// for its path under `root` that its half extracts a batch from ([`extracts`]). An identity
 /// whose path holds no such file - gone, outside the walk's scope, unreadable - is named by no
-/// walk, and one that splits into no prefix and path names no file.
+/// walk, and one the domain cuts into no prefix and path
+/// ([`rigger_domain::retention::GenerationIngested::identity_parts`]) names no file.
 pub fn next_ingest_records(root: &std::path::Path, identity: &str) -> bool {
-    identity.split_once('/').is_some_and(|(prefix, path)| {
-        crate::grounder::tree_bytes(root, prefix, path)
-            .is_some_and(|bytes| extracts(prefix, path, &bytes))
-    })
+    rigger_domain::retention::GenerationIngested::identity_parts(identity).is_some_and(
+        |(prefix, path)| {
+            crate::grounder::tree_bytes(root, prefix, path)
+                .is_some_and(|bytes| extracts(prefix, path, &bytes))
+        },
+    )
 }
 
 /// Whether the half under `prefix` maps the `bytes` of the file at `path` to a batch that is not

@@ -389,8 +389,8 @@
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
-        "start_line": 650,
-        "end_line": 688
+        "start_line": 647,
+        "end_line": 685
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -1264,63 +1264,63 @@
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 787,
-        "end_line": 787
+        "start_line": 790,
+        "end_line": 790
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 789,
-        "end_line": 789
+        "start_line": 792,
+        "end_line": 792
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 798,
-        "end_line": 798
+        "start_line": 801,
+        "end_line": 801
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 816,
-        "end_line": 816
+        "start_line": 819,
+        "end_line": 819
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 845,
-        "end_line": 845
+        "start_line": 848,
+        "end_line": 848
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 847,
-        "end_line": 847
+        "start_line": 850,
+        "end_line": 850
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 881,
-        "end_line": 881
+        "start_line": 884,
+        "end_line": 884
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1479,
-        "end_line": 1479
+        "start_line": 1482,
+        "end_line": 1482
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1483,
-        "end_line": 1483
+        "start_line": 1486,
+        "end_line": 1486
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1492,
-        "end_line": 1492
+        "start_line": 1495,
+        "end_line": 1495
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1505,
-        "end_line": 1505
+        "start_line": 1508,
+        "end_line": 1508
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1506,
-        "end_line": 1506
+        "start_line": 1509,
+        "end_line": 1509
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
@@ -5194,8 +5194,8 @@
     "sites": [
       {
         "file": "crates/rigger-domain/src/ingest.rs",
-        "start_line": 92,
-        "end_line": 95
+        "start_line": 89,
+        "end_line": 92
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",

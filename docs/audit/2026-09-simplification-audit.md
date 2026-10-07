@@ -1738,7 +1738,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:5054-5072` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:28731-28790` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-domain/src/agent.rs:335-337` `no_result_error`
-- `crates/rigger-domain/src/ingest.rs:650-688` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
+- `crates/rigger-domain/src/ingest.rs:647-685` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4579-4632` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3578-3605` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
@@ -2045,19 +2045,19 @@ mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanica
 - `crates/rigger-grounder/src/grounder/mod.rs:924-924` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:527-527` `".rigger"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:615-615` `"this project's own .rigger/workflow.yml must extract at least one event"`
-- `crates/rigger-grounder/src/ingest.rs:787-787` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:789-789` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:798-798` `"gw/.rigger/workflow.yml@"`
-- `crates/rigger-grounder/src/ingest.rs:816-816` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+- `crates/rigger-grounder/src/ingest.rs:790-790` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:792-792` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:801-801` `"gw/.rigger/workflow.yml@"`
+- `crates/rigger-grounder/src/ingest.rs:819-819` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
              must both advance the shared batch count; got {}"`
-- `crates/rigger-grounder/src/ingest.rs:845-845` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:847-847` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:881-881` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1479-1479` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1483-1483` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1492-1492` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1505-1505` `"gd/.rigger/"`
-- `crates/rigger-grounder/src/ingest.rs:1506-1506` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
+- `crates/rigger-grounder/src/ingest.rs:848-848` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:850-850` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:884-884` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:1482-1482` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:1486-1486` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1495-1495` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1508-1508` `"gd/.rigger/"`
+- `crates/rigger-grounder/src/ingest.rs:1509-1509` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
 - `crates/rigger-process/src/reap.rs:749-749` `".rigger"`
 - `crates/rigger-process/src/reap.rs:1090-1090` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`
@@ -3680,7 +3680,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/ingest.rs:92-95` `derived_key_parts`
+- `crates/rigger-domain/src/ingest.rs:89-92` `derived_key_parts`
 - `tests/published_content_key_split_periphery.rs:40-43` `split`
 
 #### `dup-64eda8b7ffd5` (exact, 2 sites)
@@ -5137,7 +5137,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8658 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8659 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4901-4942` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14910-14932` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
