@@ -76,9 +76,10 @@ A failing periphery test reveals a boundary BUG. It drives remediation of the CO
 implementer), never a weakening of the test. Write the failing test first, prove it fails
 for the right reason, then confirm the boundary it guards.
 
-Local-first: keep both feature lanes green as you go - `cargo fmt --check`, `cargo clippy
---all-targets -- -D warnings`, and `cargo test` on default features AND
-`--no-default-features`. Hyphens, never em dashes. No references to any external tool or
+Run each test you write with `cargo test -p <crate> <test>` for that test alone: write it,
+prove it fails for the right reason, make it pass. The gates run fmt, clippy, the whole suite
+and both feature lanes on the committed tree right after you, so the battery is theirs, never
+yours. Hyphens, never em dashes. No references to any external tool or
 project in tests, comments, or commit messages.
 
 You author; you do not review your own work. The `sdet` lens reviews the implementer's code
