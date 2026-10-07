@@ -2525,9 +2525,11 @@ fn the_log_side_of_the_report_reads_the_one_stream_it_is_handed() {
 }
 
 /// Given a tree whose source file the log's keyed derived rows record at the generation it
-/// extracts to, and a later ledger entry of the same identity at another generation, when the
-/// index-lag readers are asked, then neither lists the file: they read the derived types alone,
-/// so a ledger entry is no recording to them, while the perception types read it as the latest.
+/// extracts to, a later ledger entry of the same identity at another generation, and a ledger
+/// entry alone of a second file the tree holds, when the index-lag readers are asked, then
+/// neither lists either file: they read the derived types alone, so a ledger entry is no
+/// recording to them - the first file stays at its derived rows' generation and the second is no
+/// candidate of the sample - while the perception types read the entry as the latest.
 #[cfg(feature = "symbols")]
 #[test]
 fn the_index_lag_readers_pass_a_ledger_entry_over() {
@@ -2558,6 +2560,13 @@ fn the_index_lag_readers_pass_a_ledger_entry_over() {
         UNREPRODUCED,
         false,
         10,
+    )));
+    prior.push(entry_of(&named_recording(
+        "gc",
+        TEST_MODULE_PATH,
+        UNREPRODUCED,
+        false,
+        11,
     )));
     assert_eq!(
         rigger::ingest::project_scoped_latest_generations(
