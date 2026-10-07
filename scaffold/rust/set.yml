@@ -5,14 +5,17 @@ gates: |
   build: { run: "cargo build --workspace", kind: core }
   test: { run: "cargo test --workspace", kind: core }
   lint: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: elevated }
+  # The no-default-features lane as a gate: the feature universe the default build never compiles,
+  # linted and tested by the instrument on every round, so no reviewer has to rerun it by hand.
+  lane-no-default: { run: "cargo clippy --workspace --all-targets --no-default-features -- -D warnings && cargo test --workspace --no-default-features", kind: core }
   # The red-before-green gate: TDD made mechanical. A unit's first source commit must be
   # preceded by, or carry, a test change (.rigger/gates/red-before-green.sh).
   red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
   # The check-in mutation sweep ships unwired as .rigger/gates/mutation.sh (its header explains
   # each clause). To run it, declare it and list it after test in the checkin stage's gates
-  # (checkin: [fmt, build, test, lint, mutation]):
+  # (checkin: [fmt, build, test, lane-no-default, lint, mutation]):
   #   mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }
   # Each requires entry is an executable on PATH: cargo subcommands that cargo install adds live in
   # $CARGO_HOME/bin, which must be on PATH for requires to see them.
-implement: [fmt, build, test, lint, red-before-green]
-checkin: [fmt, build, test, lint]
+implement: [fmt, build, test, lane-no-default, lint, red-before-green]
+checkin: [fmt, build, test, lane-no-default, lint]
