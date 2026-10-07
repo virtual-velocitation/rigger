@@ -2766,15 +2766,11 @@ mod blob_batch_tests {
     //! `git cat-file --batch` process a rebuild reads its entries' blobs from.
 
     use super::BlobBatch;
-    use crate::test_support::{git_init_quiet, git_ok_with_identity, git_out, write_file};
-    use std::path::{Path, PathBuf};
-
-    /// A fresh repository with no commit.
-    fn repository() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        git_init_quiet(dir.path());
-        dir
-    }
+    use crate::test_support::{
+        git_init_quiet, git_ok_with_identity, git_out, loose_object, temp_git_project_with_commit,
+        write_file,
+    };
+    use std::path::Path;
 
     /// Write `bytes` at `name` under `root` and to the repository's object database as a loose
     /// object, and answer its object id.
@@ -2783,29 +2779,9 @@ mod blob_batch_tests {
         git_out(root, &["hash-object", "-w", name])
     }
 
-    /// The object file of the loose object `id` in the repository at `root`, made writable.
-    fn loose_object(root: &Path, id: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let path = root
-            .join(".git")
-            .join("objects")
-            .join(&id[..2])
-            .join(&id[2..]);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        path
-    }
-
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
     fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
         batch.blob(id).map_err(|e| e.0)
-    }
-
-    /// What a batch process that stopped while answering `id` is reported as.
-    fn stopped(id: &str) -> String {
-        format!(
-            "git cat-file --batch stopped while answering object {id}: restore the object or \
-             remove it, after which git answers it missing and its entry resolves from the tree"
-        )
     }
 
     /// One process answers every object asked of it, in any order and more than once: a blob's
@@ -2813,7 +2789,7 @@ mod blob_batch_tests {
     /// repository does not hold, with the answers after a miss still each their own object's.
     #[test]
     fn one_process_answers_each_blob_it_holds_and_none_for_one_it_does_not() {
-        let dir = repository();
+        let dir = temp_git_project_with_commit();
         let root = dir.path();
         let text = held(root, "a.txt", b"first line\nsecond line");
         let binary = held(root, "b.bin", &[0, 159, 146, 150, b'\n', b'\n', 255]);
@@ -2843,7 +2819,7 @@ mod blob_batch_tests {
     /// whole like any other, so the answer after it is aligned too.
     #[test]
     fn an_id_that_is_not_hexadecimal_is_not_held_and_never_shifts_the_answers_after_it() {
-        let dir = repository();
+        let dir = temp_git_project_with_commit();
         let root = dir.path();
         let text = held(root, "a.txt", b"the body\n");
         git_ok_with_identity(root, &["add", "a.txt"]);
@@ -2876,10 +2852,20 @@ mod blob_batch_tests {
     }
 
     /// Outside a repository there is no object database to ask: no batch process is started.
+    /// Once the same directory is a repository one is, and it answers.
     #[test]
     fn outside_a_repository_no_batch_process_starts() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(BlobBatch::start(dir.path()).is_none());
+        let root = dir.path();
+        assert!(BlobBatch::start(root).is_none());
+
+        git_init_quiet(root);
+        let id = held(root, "a.txt", b"held once the directory is a repository\n");
+        let mut batch = BlobBatch::start(root).expect("a repository starts a batch process");
+        assert_eq!(
+            asked(&mut batch, &id),
+            Ok(Some(b"held once the directory is a repository\n".to_vec()))
+        );
     }
 
     /// A loose object whose body is truncated kills the process mid-answer: the read fails
@@ -2887,7 +2873,7 @@ mod blob_batch_tests {
     /// it was answered whole.
     #[test]
     fn a_truncated_loose_object_fails_the_read_naming_the_object_and_its_remedy() {
-        let dir = repository();
+        let dir = temp_git_project_with_commit();
         let root = dir.path();
         let whole = held(root, "a.txt", b"an object git holds whole\n");
         let cut = held(root, "b.txt", b"an object whose body is cut short\n");
@@ -2900,15 +2886,23 @@ mod blob_batch_tests {
             asked(&mut batch, &whole),
             Ok(Some(b"an object git holds whole\n".to_vec()))
         );
-        assert_eq!(asked(&mut batch, &cut), Err(stopped(&cut)));
-        assert_eq!(asked(&mut batch, &whole), Err(stopped(&whole)));
+        for id in [&cut, &whole] {
+            assert_eq!(
+                asked(&mut batch, id),
+                Err(format!(
+                    "git cat-file --batch stopped while answering object {id}: restore the object \
+                     or remove it, after which git answers it missing and its entry resolves from \
+                     the tree"
+                ))
+            );
+        }
     }
 
     /// A loose object whose header is corrupt is one git answers `missing` for: it is not held,
     /// and the process goes on answering.
     #[test]
     fn a_loose_object_with_a_corrupt_header_is_not_held_and_the_process_goes_on() {
-        let dir = repository();
+        let dir = temp_git_project_with_commit();
         let root = dir.path();
         let whole = held(root, "a.txt", b"an object git holds whole\n");
         let corrupt = held(root, "b.txt", b"an object whose header is garbage\n");
@@ -2939,7 +2933,7 @@ mod blob_batch_tests {
     /// closing its input and waits for it: nothing of it is left, not even an unreaped child.
     #[test]
     fn dropping_the_batch_ends_its_process_and_reaps_it() {
-        let dir = repository();
+        let dir = temp_git_project_with_commit();
         let root = dir.path();
         let text = held(root, "a.txt", b"the body\n");
 

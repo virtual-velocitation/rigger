@@ -51,7 +51,7 @@
 
 mod common;
 
-use common::fixtures::write_file;
+use common::fixtures::write_text;
 use common::git::{commit_files, git_answer, git_commit_all, git_ok, git_out, init_repo};
 use common::repo::repo_root;
 use std::path::{Path, PathBuf};
@@ -209,11 +209,6 @@ fn run_gate_with(
     }
 }
 
-/// Write `content` to `rel` under `repo`, creating parent directories.
-fn write(repo: &Path, rel: &str, content: &str) {
-    write_file(&repo.join(rel), content.as_bytes());
-}
-
 /// The `unit.diff` the gate wrote in `repo`: the diff its main sweep covered.
 fn unit_diff(repo: &Path) -> String {
     std::fs::read_to_string(repo.join("unit.diff")).expect("unit.diff must be written")
@@ -241,19 +236,19 @@ fn assert_refused_before_anything_ran(repo: &Path, run: &GateRun, case: &str) {
 /// with one commit, returning its base sha; a later change to `alpha` alone is the unit diff.
 fn workspace_repo(repo: &Path) -> String {
     init_repo(repo);
-    write(
+    write_text(
         repo,
         "Cargo.toml",
         "[package]\nname = \"fixture-root\"\nversion = \"0.1.0\"\n\n[workspace]\nmembers = [\".\", \"crates/alpha\", \"crates/beta\"]\n",
     );
-    write(repo, "src/lib.rs", "pub fn root() -> u8 {\n    1\n}\n");
+    write_text(repo, "src/lib.rs", "pub fn root() -> u8 {\n    1\n}\n");
     for name in ["alpha", "beta"] {
-        write(
+        write_text(
             repo,
             &format!("crates/{name}/Cargo.toml"),
             &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[dependencies]\n"),
         );
-        write(
+        write_text(
             repo,
             &format!("crates/{name}/src/lib.rs"),
             "pub fn f(a: u8, b: u8) -> u8 {\n    a + b\n}\n",
@@ -261,7 +256,7 @@ fn workspace_repo(repo: &Path) -> String {
     }
     git_commit_all(repo, "base");
     let base = git_out(repo, &["rev-parse", "HEAD"]);
-    write(
+    write_text(
         repo,
         "crates/alpha/src/lib.rs",
         "pub fn f(a: u8, b: u8) -> u8 {\n    a * b\n}\n",
@@ -463,15 +458,15 @@ fn run_gate_over_anchor_with(
     env: &[(&str, &str)],
 ) -> (GateRun, tempfile::TempDir) {
     let scratch = tempfile::tempdir().unwrap();
-    write(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
-    write(
+    write_text(scratch.path(), "mutation-anchor/tip", &format!("{tip}\n"));
+    write_text(
         scratch.path(),
         "mutation-anchor/missed.txt",
         &format!("{ANCHOR_MISS}\n"),
     );
-    write(scratch.path(), "mutation-anchor/caught.map", caught);
+    write_text(scratch.path(), "mutation-anchor/caught.map", caught);
     if let Some(recorded) = recorded_base {
-        write(
+        write_text(
             scratch.path(),
             "mutation-anchor/base",
             &format!("{recorded}\n"),
@@ -1122,7 +1117,7 @@ fn the_anchor_a_sweep_leaves_narrows_the_next_sweep_of_its_run_and_never_a_later
     // A later run recorded `middle` as its base before the earlier run's check-in tip `head`
     // reached the run branch by hand; its own unit lands on top, so HEAD holds that tip.
     // Committed alone: the earlier sweeps' outputs (unit.diff, mutants.out) stay untracked.
-    write(dir, "c.rs", "fn c() {}\n");
+    write_text(dir, "c.rs", "fn c() {}\n");
     git_ok(dir, &["add", "c.rs"]);
     git_ok(dir, &["commit", "-q", "-m", "the later run's unit lands"]);
     assert_ne!(
@@ -1259,13 +1254,13 @@ fn the_gate_refuses_every_narrowing_token_before_any_sweep() {
         let repo = tempfile::tempdir().unwrap();
         let base = workspace_repo(repo.path());
         if token == skip {
-            write(
+            write_text(
                 repo.path(),
                 "crates/alpha/src/lib.rs",
                 &format!("#[{token}]\npub fn f(a: u8, b: u8) -> u8 {{\n    a * b\n}}\n"),
             );
         } else {
-            write(
+            write_text(
                 repo.path(),
                 ".cargo/mutants.toml",
                 &format!("{token} = [\"f\"]\n"),

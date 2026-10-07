@@ -34,6 +34,7 @@ use common::cli::fold_state;
 use common::cli::graph_identity;
 use common::cli::keyed;
 use common::cli::nanos;
+use common::cli::no_progress;
 use common::cli::read_run_events;
 use common::cli::rigger_command;
 use common::cli::rigger_file;
@@ -2215,9 +2216,6 @@ fn a_pre_rule_graph_db(db: &Path, events: &[Event], ledgers: &str) {
     ))
     .unwrap();
 }
-
-/// What a rebuild that reports nothing hands its progress callback.
-fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
 
 /// A rebuild source over `log`: every call records the position it was asked to read after, and
 /// hands the events past it in batches of `batch`, each with the log's last position.

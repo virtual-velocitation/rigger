@@ -1012,8 +1012,8 @@ mod resolve_entry_tests {
         TEST_MODULE_PATH, WORKFLOW_PATH,
     };
     use crate::host_fixtures::write_file;
-    use crate::test_support::{entry_event, wire};
-    use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+    use crate::test_support::{entry_event, events_of, generation_ingested, wire};
+    use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     use std::path::Path;
 
     /// The generation the extraction tree's fixture records for the source file's `gc` batch.
@@ -1039,24 +1039,14 @@ mod resolve_entry_tests {
 
     /// The generation of the batch holding `events`, `(type, payload text)` pairs.
     fn generation_of(events: &[(&str, &str)]) -> String {
-        let batch: Vec<Event> = events
-            .iter()
-            .map(|(type_, payload)| Event::new(*type_, payload.as_bytes().to_vec()))
-            .collect();
-        batch_generation(&batch)
+        batch_generation(&events_of(events))
     }
 
     /// The ledger entry of `<prefix>/<file>` at `generation`, extracted from `blob` under the
     /// walk's flag `excluded`.
     fn entry(prefix: &str, file: &str, generation: &str, blob: &str, excluded: bool) -> Event {
         entry_event(
-            &GenerationIngested {
-                prefix: prefix.to_string(),
-                file: file.to_string(),
-                generation: generation.to_string(),
-                blob: blob.to_string(),
-                excluded,
-            },
+            &generation_ingested(prefix, file, generation, blob, excluded),
             1,
         )
     }
@@ -1091,10 +1081,7 @@ mod resolve_entry_tests {
 
     /// `events`, borrowed `(type, payload text)` pairs, as owned ones.
     fn pairs(events: &[(&str, &str)]) -> Vec<(String, String)> {
-        events
-            .iter()
-            .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
-            .collect()
+        owned(&events_of(events))
     }
 
     /// A tree holding [`OTHER_BODY`] at the source file's path.

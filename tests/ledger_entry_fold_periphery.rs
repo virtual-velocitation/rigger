@@ -30,7 +30,9 @@ use std::sync::mpsc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{nanos, read_run_events, rigger_file, run_rigger, temp_store_project};
-use common::fixtures::{decision_json, def_json, entry_event, event_of, live_node_ids};
+use common::fixtures::{
+    decision_json, def_json, entry_event, event_of, generation_ingested, live_edges, live_node_ids,
+};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     wired, EntryFold, Error, Fold, Projection, KIND_DECISION, OWED_LOST_FOLD, REBUILD_OWED,
@@ -73,13 +75,7 @@ fn at(e: Event, pos: u64, secs: u64) -> Event {
 /// What an entry of `gc/<file>` at `generation` records, its batch extracted from `blob` under
 /// the walk's flag `excluded`.
 fn named(file: &str, generation: &str, blob: &str, excluded: bool) -> GenerationIngested {
-    GenerationIngested {
-        prefix: "gc".to_string(),
-        file: file.to_string(),
-        generation: generation.to_string(),
-        blob: blob.to_string(),
-        excluded,
-    }
+    generation_ingested("gc", file, generation, blob, excluded)
 }
 
 /// The builder's entry of `gc/<file>` at `generation`, at position `pos`, valid from `secs`.
@@ -123,19 +119,6 @@ fn fold_through_port(
 /// The generation the port answers for `identity`.
 fn generation(p: &dyn Projection, identity: &str) -> Option<String> {
     p.current_generation(identity).unwrap()
-}
-
-/// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
-fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
-    let mut edges: Vec<_> = p
-        .whole()
-        .unwrap()
-        .edges
-        .into_iter()
-        .map(|e| (e.from, e.rel, e.to, e.valid_from, e.source))
-        .collect();
-    edges.sort();
-    edges
 }
 
 /// One live `CONTAINS` edge from [`F`] to its definition `name`, valid from `secs` and sourced at

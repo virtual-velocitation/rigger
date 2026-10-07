@@ -995,11 +995,6 @@
     "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
   },
   {
-    "id": "dup-932054f9660d",
-    "disposition": "not-a-duplicate",
-    "reason": "`shape` is the helper nested inside `check_fold_payload` that its match arms call; the scanner counts the nested body inside the outer function too, which is the only overlap."
-  },
-  {
     "id": "dup-f0e40001391f",
     "disposition": "not-a-duplicate",
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
@@ -1038,5 +1033,10 @@
     "id": "dup-3eae43945289",
     "disposition": "not-a-duplicate",
     "reason": "`DashMarker::serialize` renders the dash marker's on-disk `port\npid\n` record and `GenerationIngested::identity` joins a ledger entry's prefix and file into the `<prefix>/<file>` identity its generation is recorded under; the shared token shape is a one-line `format!` of two fields, and no logic is repeated."
+  },
+  {
+    "id": "dup-5cdeb5b1d1dd",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `Drop` impls releasing different resources (the store's lock file is unlocked; the blob batch's `git cat-file --batch` child is waited on through its own handle); they share only the discarded-result statement shape."
   }
 ]

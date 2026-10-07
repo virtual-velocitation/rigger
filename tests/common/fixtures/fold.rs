@@ -36,6 +36,45 @@ pub fn wire(events: &[Event]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// `events` - `(type, payload text)` pairs, the form [`wire`] answers - as unkeyed batch events.
+pub fn events_of(events: &[(&str, &str)]) -> Vec<Event> {
+    events
+        .iter()
+        .map(|(type_, payload)| Event::new(*type_, payload.as_bytes().to_vec()))
+        .collect()
+}
+
+/// What a ledger entry of `<prefix>/<file>` at `generation` records, its batch extracted from
+/// `blob` under the walk's flag `excluded`.
+pub fn generation_ingested(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    blob: &str,
+    excluded: bool,
+) -> GenerationIngested {
+    GenerationIngested {
+        prefix: prefix.to_string(),
+        file: file.to_string(),
+        generation: generation.to_string(),
+        blob: blob.to_string(),
+        excluded,
+    }
+}
+
+/// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
+pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
+    let mut edges: Vec<_> = p
+        .whole()
+        .unwrap()
+        .edges
+        .into_iter()
+        .map(|e| (e.from, e.rel, e.to, e.valid_from, e.source))
+        .collect();
+    edges.sort();
+    edges
+}
+
 /// The ledger entry recording `entry`, the generation of a batch of `n` events: its payload, its
 /// identity as the group and `<identity>@<generation>#<n>` as the replay key. Position and
 /// valid-time are the caller's to set.

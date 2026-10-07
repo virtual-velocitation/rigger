@@ -20,10 +20,10 @@ use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
-    applied, graph_identity, init_event_log, read_run_events, rigger_file, run_rigger_envs,
-    run_stream_identity, temp_project, with_run_store,
+    applied, graph_identity, init_event_log, no_progress, read_run_events, rigger_file,
+    run_rigger_envs, run_stream_identity, temp_project, with_run_store,
 };
-use common::fixtures::{entry_event, folds, write_file};
+use common::fixtures::{entry_event, events_of, folds, generation_ingested, write_text};
 use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -33,8 +33,9 @@ use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 use common::cli::{nanos, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    git_ok, git_ok_with_identity, git_out, walked_batch, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
-    SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WORKFLOW_BODY, WORKFLOW_PATH,
+    git_ok, git_ok_with_identity, git_out, live_edges, loose_object, walked_batch, DOCUMENT_BODY,
+    DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WORKFLOW_BODY,
+    WORKFLOW_PATH,
 };
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::{REL_CONTAINS, REL_DOC_REFERENCES, REL_SPECIFIES};
@@ -142,33 +143,9 @@ const GONE_NO_BYTES_BATCH: [(&str, &str); 1] = [(
     r#"{"file":"src/gone.rs","name":"","lang":"unknown","fresh":true}"#,
 )];
 
-/// `events` - `(type, payload text)` pairs - as unkeyed batch events.
-fn events_of(events: &[(&str, &str)]) -> Vec<Event> {
-    events
-        .iter()
-        .map(|(type_, payload)| Event::new(*type_, payload.as_bytes().to_vec()))
-        .collect()
-}
-
-/// What an entry of `<prefix>/<file>` at `generation` records.
-fn named(
-    prefix: &str,
-    file: &str,
-    generation: &str,
-    blob: &str,
-    excluded: bool,
-) -> GenerationIngested {
-    GenerationIngested {
-        prefix: prefix.to_string(),
-        file: file.to_string(),
-        generation: generation.to_string(),
-        blob: blob.to_string(),
-        excluded,
-    }
-}
-
 /// One recording of a generation: what its entry names, when it was recorded, and the batch the
 /// recording process extracted - `None` for a recording whose process resolved nothing.
+#[derive(Clone)]
 struct Recording {
     named: GenerationIngested,
     secs: u64,
@@ -187,7 +164,7 @@ fn recording(
     batch: Vec<Event>,
 ) -> Recording {
     Recording {
-        named: named(
+        named: generation_ingested(
             prefix,
             file,
             &rigger::ingest::batch_generation(&batch),
@@ -304,19 +281,10 @@ fn generations(cwd: &Path, project: &str, identities: &[&str]) -> Vec<Option<Str
         .collect()
 }
 
-/// Every live edge of the graph file `db` as `(from, rel, to, valid_from, source)`, sorted.
+/// The graph file `db`, opened under `project`.
 #[cfg(feature = "symbols")]
-fn live_edges(db: &Path, project: &str) -> Vec<(String, String, String, i64, u64)> {
-    let mut edges: Vec<_> = Projector::open(db.to_str().unwrap(), project)
-        .unwrap()
-        .whole()
-        .unwrap()
-        .edges
-        .into_iter()
-        .map(|e| (e.from, e.rel, e.to, e.valid_from, e.source))
-        .collect();
-    edges.sort();
-    edges
+fn open(db: &Path, project: &str) -> Projector {
+    Projector::open(db.to_str().unwrap(), project).unwrap()
 }
 
 /// The live edges of [`live_edges`] that touch `node`, in order.
@@ -330,12 +298,6 @@ fn edges_touching(
         .filter(|(from, _, to, _, _)| from == node || to == node)
         .cloned()
         .collect()
-}
-
-/// Write `body` at `path` under `root`.
-#[cfg(feature = "symbols")]
-fn plant(root: &Path, path: &str, body: &str) {
-    write_file(&root.join(path), body.as_bytes());
 }
 
 /// The object id git computes for the file at `path` under `root`, writing no object.
@@ -370,10 +332,10 @@ fn commit_sources(root: &Path) {
 fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_folds_built() {
     let dir = temp_project();
     let root = dir.path();
-    plant(root, SOURCE_PATH, SOURCE_BODY);
-    plant(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
-    plant(root, DOCUMENT_PATH, DOCUMENT_BODY);
-    plant(root, GONE_PATH, GONE_BODY);
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, GONE_PATH, GONE_BODY);
     commit_sources(root);
     let first_source = blob_id(root, SOURCE_PATH);
     let test_module = blob_id(root, TEST_MODULE_PATH);
@@ -384,12 +346,12 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
     // The tree moves on: the source file drops `helper` and is not written to the object
     // database, the document drops its citation, the third source file is deleted, and the
     // workflow definition is written, uncommitted.
-    plant(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
     let second_source = blob_id(root, SOURCE_PATH);
-    plant(root, DOCUMENT_PATH, DOCUMENT_WITHOUT_CITATION);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_WITHOUT_CITATION);
     let second_document = held_blob(root, DOCUMENT_PATH);
     std::fs::remove_file(root.join(GONE_PATH)).unwrap();
-    plant(root, WORKFLOW_PATH, WORKFLOW_BODY);
+    write_text(root, WORKFLOW_PATH, WORKFLOW_BODY);
     let workflow = blob_id(root, WORKFLOW_PATH);
 
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
@@ -518,7 +480,7 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
         ],
         "every identity holds the generation of its latest entry"
     );
-    let edges = live_edges(&graph_db, &project);
+    let edges = live_edges(&open(&graph_db, &project));
     assert_eq!(
         edges
             .iter()
@@ -603,11 +565,11 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
 fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    plant(root, SOURCE_PATH, SOURCE_BODY);
-    plant(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
-    plant(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
     let project = settled(root);
-    plant(root, WORKFLOW_PATH, WORKFLOW_BODY);
+    write_text(root, WORKFLOW_PATH, WORKFLOW_BODY);
 
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
     let recordings = [
@@ -703,9 +665,9 @@ fn setup_in_a_repository_subdirectory_resolves_from_the_top_level_not_the_workin
     let dir = temp_project();
     let top = dir.path();
     let sub = top.join("sub");
-    plant(top, SOURCE_PATH, SOURCE_BODY);
-    plant(&sub, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
-    plant(&sub, "src/only.rs", GONE_BODY);
+    write_text(top, SOURCE_PATH, SOURCE_BODY);
+    write_text(&sub, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    write_text(&sub, "src/only.rs", GONE_BODY);
     let project = settled(&sub);
 
     let from_top = "sub/src/lib.rs";
@@ -837,9 +799,9 @@ fn live_facts_without(
 fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_entry_that_does() {
     let dir = temp_project();
     let root = dir.path();
-    plant(root, SOURCE_PATH, SOURCE_BODY);
-    plant(root, DOCUMENT_PATH, DOCUMENT_BODY);
-    plant(root, GONE_PATH, GONE_BODY);
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, GONE_PATH, GONE_BODY);
     let project = settled(root);
 
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
@@ -927,7 +889,7 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
         "the last identity holds the generation of its latest resolvable entry"
     );
     let cited = |db: &Path| {
-        live_edges(db, &project)
+        live_edges(&open(db, &project))
             .into_iter()
             .filter(|(from, rel, ..)| from == DOCUMENT_PATH && rel == REL_DOC_REFERENCES)
             .collect::<Vec<_>>()
@@ -948,7 +910,7 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
          dropped, and the later entry of the held generation is a re-recording there"
     );
     assert_eq!(
-        edges_touching(&live_edges(&graph_db, &project), "src/gone.rs::gone"),
+        edges_touching(&live_edges(&open(&graph_db, &project)), "src/gone.rs::gone"),
         vec![(
             GONE_PATH.to_string(),
             REL_CONTAINS.to_string(),
@@ -960,7 +922,10 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
          facts"
     );
     assert_eq!(
-        edges_touching(&live_edges(&graph_db, &project), "src/gone.rs::other"),
+        edges_touching(
+            &live_edges(&open(&graph_db, &project)),
+            "src/gone.rs::other"
+        ),
         Vec::new()
     );
     assert!(
@@ -971,30 +936,10 @@ fn a_rebuild_over_an_entry_no_source_resolves_reaches_the_facts_of_every_latest_
     );
 }
 
-/// The object file of the loose object `id` in the repository at `root`.
-#[cfg(feature = "symbols")]
-fn loose_object(root: &Path, id: &str) -> std::path::PathBuf {
-    root.join(".git")
-        .join("objects")
-        .join(&id[..2])
-        .join(&id[2..])
-}
-
-/// Replace the bytes of the read-only object file at `path` with `bytes`.
-#[cfg(feature = "symbols")]
-fn rewrite_object(path: &Path, bytes: &[u8]) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    std::fs::write(path, bytes).unwrap();
-}
-
 /// A rebuild source over `log`, in batches of one event.
 fn one_by_one(log: &[Event]) -> impl FnMut(u64, &mut RebuildSink) -> Result<(), Error> + '_ {
     move |after, sink| rigger::contextgraph::sqlite::stream_past(log, after, 1, sink)
 }
-
-/// What a rebuild that reports nothing hands its progress callback.
-fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
 
 /// Rebuild the graph file `db` under `project` from `log`, one event to a committed batch,
 /// re-extracting each entry through `ingest::resolve_entry` over `root` and a batch process
@@ -1033,14 +978,14 @@ fn rebuild_resolving(
 fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equals_a_single_one() {
     let dir = temp_project();
     let root = dir.path();
-    plant(root, SOURCE_PATH, SOURCE_BODY);
-    plant(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
     let first_source = held_blob(root, SOURCE_PATH);
     let first_document = held_blob(root, DOCUMENT_PATH);
     let project = settled(root);
     // The tree moves on, so both first generations resolve from the object database alone.
-    plant(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
-    plant(root, DOCUMENT_PATH, DOCUMENT_WITHOUT_CITATION);
+    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_WITHOUT_CITATION);
 
     let walked = |prefix, path| events_of(walked_batch(prefix, path));
     let recordings = [
@@ -1088,7 +1033,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
 
     let object = loose_object(root, &first_document);
     let whole = std::fs::read(&object).unwrap();
-    rewrite_object(&object, &whole[..whole.len() - 6]);
+    std::fs::write(&object, &whole[..whole.len() - 6]).unwrap();
     let died = format!(
         "git cat-file --batch stopped while answering object {first_document}: restore the \
          object or remove it, after which git answers it missing and its entry resolves from \
@@ -1128,7 +1073,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
         "stdout: {out} stderr: {err}"
     );
 
-    rewrite_object(&object, &whole);
+    std::fs::write(&object, &whole).unwrap();
     assert_eq!(
         rebuild_resolving(&resumed, &project, &log, root),
         Ok(Some(untouched))
@@ -1152,7 +1097,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
 /// The entry of `gc/src/lib.rs` at the fixture's generation, as its recording process appends it.
 fn source_entry() -> Event {
     entry_of(&Recording {
-        named: named("gc", "src/lib.rs", SOURCE_GENERATION, "", false),
+        named: generation_ingested("gc", "src/lib.rs", SOURCE_GENERATION, "", false),
         secs: 10,
         batch: None,
     })
@@ -1167,10 +1112,7 @@ fn source_entry() -> Event {
 fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() {
     let dir = temp_project();
     let root = dir.path();
-    write_file(
-        &root.join("src/lib.rs"),
-        common::fixtures::SOURCE_BODY.as_bytes(),
-    );
+    write_text(root, "src/lib.rs", common::fixtures::SOURCE_BODY);
     let project = settled(root);
     stand_graph(root, &project);
     let graph_db = rigger_file(root, "graph.db");
@@ -1236,7 +1178,7 @@ fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded(
         ("gw", ".rigger/workflow.yml", "08eb9cb734e95dc1", false),
     ]
     .map(|(prefix, file, generation, excluded)| Recording {
-        named: named(prefix, file, generation, "", excluded),
+        named: generation_ingested(prefix, file, generation, "", excluded),
         secs: 10,
         batch: None,
     });

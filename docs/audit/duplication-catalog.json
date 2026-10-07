@@ -1151,7 +1151,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-53d8bb2ba652",
+    "id": "dup-1c76fe409136",
     "classification": "semantic",
     "sites": [
       {
@@ -3565,6 +3565,26 @@
         "content_hash": "6330ce3a5a38ef8d"
       },
       {
+        "file": "tests/ledger_rebuild.rs",
+        "name": "\"gw/.rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "name": "\"gw/.rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "name": "\".rigger/workflow.yml\"",
+        "content_hash": "6abe81099251c8bf"
+      },
+      {
+        "file": "tests/ledger_rebuild.rs",
+        "name": "\"gw/.rigger/workflow.yml\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
         "file": "tests/migration_is_deliberate_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "c2dfa05b7c5ac948"
@@ -4106,7 +4126,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 590 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4556,7 +4576,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0b65674d0c1c",
+    "id": "dup-99a8136efbc4",
     "classification": "semantic",
     "sites": [
       {
@@ -4628,6 +4648,21 @@
         "file": "crates/rigger-process/src/reap.rs",
         "name": "\"/proc/{}/cwd\"",
         "content_hash": "0e13eeda4dab6a69"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"/proc\"",
+        "content_hash": "76b81d47301fccfa"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"/proc/{pid}/cmdline\"",
+        "content_hash": "47b0b5bfd3f23752"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "\"/proc/{}\"",
+        "content_hash": "8aaa8e085cda54b2"
       },
       {
         "file": "src/cli/run.rs",
@@ -4821,7 +4856,7 @@
       }
     ],
     "proposed_home": "crates/rigger-process/src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 52 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: /proc-path string literals - 55 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5974,26 +6009,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-932054f9660d",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
-        "name": "check_fold_payload",
-        "content_hash": "cac97d0936299c13"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/mod.rs",
-        "name": "shape",
-        "content_hash": "021aabdcbfa005e5"
-      }
-    ],
-    "proposed_home": "mod::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-59006467437a",
+    "id": "dup-9afde62071c0",
     "classification": "semantic",
     "sites": [
       {
@@ -6114,6 +6130,16 @@
       {
         "file": "tests/common/cli.rs",
         "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "Connection::open",
+        "content_hash": "a26e651ef0fda2a7"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
@@ -6125,11 +6151,6 @@
         "file": "tests/common/fixtures/sqlite.rs",
         "name": "Connection::open",
         "content_hash": "a26e651ef0fda2a7"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -6165,11 +6186,6 @@
         "file": "tests/compaction_generations_periphery.rs",
         "name": "Connection::open",
         "content_hash": "84d2f61c8ad3452b"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "a26e651ef0fda2a7"
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -7036,6 +7052,25 @@
       }
     ],
     "proposed_home": "sqlite::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-5cdeb5b1d1dd",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "crates/rigger-store-sqlite/src/lockfile.rs",
+        "name": "drop",
+        "content_hash": "b5b59d8278fa1a11"
+      },
+      {
+        "file": "crates/rigger-worktree-git/src/worktree.rs",
+        "name": "drop",
+        "content_hash": "b5b59d8278fa1a11"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-store-sqlite/src/lockfile.rs, crates/rigger-worktree-git/src/worktree.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

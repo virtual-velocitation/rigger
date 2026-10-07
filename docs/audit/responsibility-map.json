@@ -8657,6 +8657,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "tree_root",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2fff94b526614572"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none",
     "is_test": true,
     "proposed_module": "main::tests",
@@ -10230,6 +10238,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "d4175e803a4f4b54"
+  },
+  {
+    "file": "src/cli/mod.rs",
+    "name": "tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8b779b33e4c8f83c"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

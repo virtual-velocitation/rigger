@@ -416,6 +416,9 @@ pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
         .unwrap()
 }
 
+/// What a rebuild that reports nothing hands its progress callback.
+pub fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
+
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
