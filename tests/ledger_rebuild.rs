@@ -1659,3 +1659,145 @@ fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_
     );
     assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
 }
+
+/// Given a repository whose tree holds, beside a source file the walk visits, four files the walk
+/// never reads - one under a hidden directory, one the tree's `.gitignore` excludes, one reached
+/// only through a symbolic link, and a workflow definition at a path that is not the workflow
+/// definition's - each holding bytes that extract to the generation an entry names for its path,
+/// when the operator runs `rigger setup`, then the rebuild reads the tree by the tree's one read
+/// rule: the visited file's entry resolves, the four others resolve nothing and are recorded all
+/// the same, and the rebuilt `graph.db` equals the one whose incremental folds resolved nothing
+/// for them. For its five entries the rebuild asks git once where the tree is rooted and once
+/// whether an object database stands there, and starts one batch process.
+#[cfg(feature = "symbols")]
+#[test]
+fn setup_reads_only_the_files_the_walk_visits_and_asks_git_for_its_root_once() {
+    let dir = temp_project();
+    let root = dir.path();
+    let hidden = ".hidden/lib.rs";
+    let ignored = "ignored/lib.rs";
+    let linked = "src/link.rs";
+    let misplaced = "elsewhere.yml";
+    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    write_text(root, hidden, SOURCE_WITHOUT_HELPER);
+    write_text(root, ignored, SOURCE_WITHOUT_HELPER);
+    write_text(root, misplaced, WORKFLOW_BODY);
+    write_text(root, ".gitignore", "ignored/\n");
+    std::os::unix::fs::symlink("lib.rs", root.join(linked)).unwrap();
+    let project = settled(root);
+    assert_eq!(
+        [hidden, ignored, linked].map(|path| std::fs::read_to_string(root.join(path)).unwrap()),
+        [SOURCE_WITHOUT_HELPER; 3],
+        "each unvisited path holds the bytes its entry was recorded from"
+    );
+
+    let recordings = [
+        recording(
+            "gc",
+            SOURCE_PATH,
+            NOT_HELD,
+            false,
+            10,
+            source_without_helper_batch(SOURCE_PATH),
+        ),
+        recording(
+            "gc",
+            hidden,
+            NOT_HELD,
+            false,
+            11,
+            source_without_helper_batch(hidden),
+        ),
+        recording(
+            "gc",
+            ignored,
+            NOT_HELD,
+            false,
+            12,
+            source_without_helper_batch(ignored),
+        ),
+        recording(
+            "gc",
+            linked,
+            NOT_HELD,
+            false,
+            13,
+            source_without_helper_batch(linked),
+        ),
+        recording(
+            "gw",
+            misplaced,
+            NOT_HELD,
+            false,
+            14,
+            events_of(walked_batch("gw", WORKFLOW_PATH)),
+        ),
+    ];
+    let positions = record(root, &recordings);
+    let mut as_folded = recordings.clone();
+    for unvisited in &mut as_folded[1..] {
+        unvisited.batch = None;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let incremental = scratch.path().join("incremental.db");
+    assert_eq!(
+        fold_incrementally(&incremental, &project, root, &as_folded),
+        vec![EntryFold::BatchAsked; 5]
+    );
+    stand_graph(root, &project);
+
+    // The rebuild runs before the scaffold's last question, the hooks directory.
+    let (before_rebuild, after_rebuild) = SETUP_OWN_GIT.split_at(4);
+    assert_eq!(
+        git_invocations_of_setup(root),
+        [
+            before_rebuild,
+            &[
+                "rev-parse --show-toplevel",
+                "rev-parse --git-dir",
+                "cat-file --batch",
+            ],
+            after_rebuild,
+        ]
+        .concat(),
+        "the root and the object database are each asked of git once, at the first entry"
+    );
+
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        (
+            generations(
+                root,
+                &project,
+                &[
+                    "gc/src/lib.rs",
+                    "gc/.hidden/lib.rs",
+                    "gc/ignored/lib.rs",
+                    "gc/src/link.rs",
+                    "gw/elsewhere.yml",
+                ]
+            ),
+            positions
+                .iter()
+                .map(|position| applied(&graph_db, *position))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            vec![
+                Some(recordings[0].named.generation.clone()),
+                None,
+                None,
+                None,
+                None,
+            ],
+            vec![true; 5],
+        ),
+        "only the file the walk visits is read; every entry's position is recorded"
+    );
+    assert_eq!(
+        graph_identity(&graph_db, &project),
+        graph_identity(&incremental, &project),
+        "the rebuilt graph.db is the incremental one, fold state included"
+    );
+    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
+}
