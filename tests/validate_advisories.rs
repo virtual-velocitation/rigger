@@ -22,7 +22,10 @@
 //! `rigger reset --derived` reclaims nothing for it (its own compaction partitions duplicates
 //! PER TYPE); plus the INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
 //! pre-spec-68 `index.json` (missing the `hashes` key entirely, not merely an in-memory struct
-//! built via the current API) must load and stay silent. NOT OWNED: the underlying measurement
+//! built via the current API) must load and stay silent; plus the GRAPH INDEX LAG sample's
+//! candidate set as the operator sees it (spec 107, THE TREE IS READ BY ONE RULE) - a recorded
+//! path outside the walk's scope, or one the read fault makes unreadable, is never named and
+//! takes no slot of the bounded sample. NOT OWNED: the underlying measurement
 //! primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
 //! `rigger::eventstore::sqlite::Store::measure_derived_duplication`), which carry their own unit
 //! tests beside their implementations.
@@ -453,6 +456,137 @@ rigger::test_cases! {
         assert_validate_is_silent_on_graph_index_lag(
             |root| std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap(),
             "a project the graph has never indexed must draw no index-lag warning",
+        );
+}
+
+/// Plant each of `files` under `root` as a small Rust source and record a STALE `gc` generation
+/// of every one (`gc/<file>@stale#0`, a generation no extraction yields), so the advisory names
+/// every one of them the sample takes as a candidate: a recorded path the advisory leaves out
+/// was never sampled.
+#[cfg(feature = "symbols")]
+fn plant_stale_recordings(root: &Path, files: &[&str]) {
+    for file in files {
+        common::fixtures::write_file(&root.join(file), b"fn planted() {}\n");
+    }
+    let keys: Vec<String> = files
+        .iter()
+        .map(|file| format!("gc/{file}@stale#0"))
+        .collect();
+    seed_derived_keys(root, &keys.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+/// `stderr` carries exactly ONE graph index-lag advisory line, the one naming `files` in that
+/// order (`why`).
+#[cfg(feature = "symbols")]
+fn assert_names_as_lagging(stderr: &str, files: &[&str], why: &str) {
+    let advisories: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("fallen behind"))
+        .collect();
+    let expected = format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        files.len(),
+        files.join(", "),
+    );
+    assert_eq!(
+        advisories,
+        vec![expected.as_str()],
+        "{why}; stderr:\n{stderr}"
+    );
+}
+
+/// Validate's stderr over a fresh `rigger init` project holding a stale recording of each of
+/// `files` names exactly `lagging` (`why`); the project is handed back for a second act.
+#[cfg(feature = "symbols")]
+fn project_validated_with_stale_recordings(
+    files: &[&str],
+    lagging: &[&str],
+    why: &str,
+) -> tempfile::TempDir {
+    let dir = temp_rigger_project();
+    let (_out, err) = validate_after_init(dir.path(), |root| plant_stale_recordings(root, files));
+    assert_names_as_lagging(&err, lagging, why);
+    dir
+}
+
+/// A later `rigger validate` in `root` still exits 0 and names exactly `lagging` (`why`).
+#[cfg(feature = "symbols")]
+fn assert_validate_now_names_as_lagging(root: &Path, lagging: &[&str], why: &str) {
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must exit 0 (an advisory never fails it); stderr:\n{err}"
+    );
+    assert_names_as_lagging(&err, lagging, why);
+}
+
+/// Given a graph that recorded a path under a hidden directory and one a committed `.gitignore`
+/// comes to name, when the operator validates, then the advisory names only the recorded paths
+/// inside the walk's scope (spec 107, THE TREE IS READ BY ONE RULE): the ignored path is named
+/// until the `.gitignore` names it and never after, and the hidden one never.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_samples_no_recorded_path_outside_the_walk_scope() {
+    let dir = project_validated_with_stale_recordings(
+        &[".hidden/h.rs", "ignored.rs", "kept.rs"],
+        &["ignored.rs", "kept.rs"],
+        "the two recorded paths inside the scope are sampled and the hidden one is not",
+    );
+    let root = dir.path();
+
+    let gitignore = root.join(".gitignore");
+    let mut rules = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    rules.push_str("ignored.rs\n");
+    std::fs::write(&gitignore, rules).unwrap();
+
+    assert_validate_now_names_as_lagging(
+        root,
+        &["kept.rs"],
+        "a recorded path the committed .gitignore names is sampled no more",
+    );
+}
+
+/// Given a graph that recorded a file THE READ FAULT then makes unreadable, when the operator
+/// validates, then validate still exits 0 and the advisory names only the readable recording:
+/// the unreadable one is named until the fault is armed and never after.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_samples_no_recorded_path_the_read_fault_makes_unreadable() {
+    let dir = project_validated_with_stale_recordings(
+        &["kept.rs", "locked.rs"],
+        &["kept.rs", "locked.rs"],
+        "both recorded paths are sampled while both can be read",
+    );
+    let root = dir.path();
+
+    if !common::fixtures::arm_read_fault(&root.join("locked.rs")) {
+        return;
+    }
+
+    assert_validate_now_names_as_lagging(
+        root,
+        &["kept.rs"],
+        "the recorded path the read fault makes unreadable is sampled no more",
+    );
+}
+
+rigger::test_cases! {
+    /// A recorded path outside the walk's scope is left OUT of the candidates, never merely filtered
+    /// from the answer, so it takes no slot of the bounded sample: with a hidden recording sorting
+    /// ahead of nine in-scope ones, the advisory names the first eight in-scope paths - the eighth
+    /// (`h.rs`) is the one a slot spent on the hidden path would cost, and the ninth (`i.rs`) is the
+    /// one past the bound.
+    #[cfg(feature = "symbols")]
+    validate_spends_no_sample_slot_on_a_recorded_path_outside_the_walk_scope:
+        project_validated_with_stale_recordings(
+            &[
+                ".hidden/first.rs", "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+                "i.rs",
+            ],
+            &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs"],
+            "the hidden recording takes no sample slot and the ninth in-scope path is past the \
+             bound",
         );
 }
 

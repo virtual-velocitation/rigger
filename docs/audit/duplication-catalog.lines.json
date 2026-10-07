@@ -3949,13 +3949,13 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 241,
-        "end_line": 241
+        "start_line": 244,
+        "end_line": 244
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 468,
-        "end_line": 468
+        "start_line": 603,
+        "end_line": 603
       },
       {
         "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
@@ -7874,8 +7874,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 519,
-        "end_line": 528
+        "start_line": 654,
+        "end_line": 663
       }
     ]
   },
