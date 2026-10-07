@@ -959,7 +959,14 @@ mod tests {
             .status()
             .unwrap();
         assert!(made.success(), "fixture precondition: mkfifo made the FIFO");
-        assert_eq!(tree_bytes(with_fifo.path(), "gw", &workflow), None);
+        let fifo_root = with_fifo.path().to_path_buf();
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || answer.send(tree_bytes(&fifo_root, "gw", &workflow)));
+        assert_eq!(
+            answered.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(None),
+            "a FIFO is answered with no bytes, never waited on for a writer"
+        );
     }
 
     /// A symlinked workflow definition is handed its target's bytes, as the `gw` ingest reads
