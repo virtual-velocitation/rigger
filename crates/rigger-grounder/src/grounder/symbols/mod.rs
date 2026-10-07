@@ -57,11 +57,12 @@ use crate::grounder::symbols::model::Lang;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
 /// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
-/// which files count), read each file, and for each whose extension the registry resolves, extract
-/// its symbols under its normalized relative path. A file whose extension is unregistered is read
-/// and skipped; a file that cannot be read or fails to extract contributes no entry; a parse that
-/// recovers to no symbols contributes an empty one. None of them crashes the walk. `override_lang` forces one language for every file
-/// (the `--language` override); `None` auto-detects per extension.
+/// which files count), and for each file whose extension the registry resolves, read it and
+/// extract its symbols under its normalized relative path. A file whose extension is unregistered
+/// is skipped without being read; a file that cannot be read or fails to extract contributes no
+/// entry; a parse that recovers to no symbols contributes an empty one. None of them crashes the
+/// walk. `override_lang` forces one language for every file (the `--language` override); `None`
+/// auto-detects per extension.
 #[cfg(feature = "symbols")]
 pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     let mut idx = SymbolIndex::default();
@@ -77,64 +78,65 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     idx
 }
 
-/// The symbols of `source`, the text of the file at `path`, under the grammar the registry
-/// resolves for that path and `override_lang`: none when no grammar resolves, else what the
-/// extraction answers, a failed one included. This is the ONE place a path's grammar is paired
-/// with the extraction it drives, so every reader of a file's symbols - the index
-/// ([`index_one_file`]) and the batch re-extracted from bytes
+/// The symbols of the file at `path` under the grammar the registry resolves for that path and
+/// `override_lang`, beside the text they were extracted from: none when no grammar resolves, an
+/// inner none when `source` answers no text or the extraction fails. `source` is asked for the
+/// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
+/// a path's grammar is paired with the extraction it drives, so every reader of a file's symbols -
+/// the index ([`index_one_file`]) and the batch re-extracted from bytes
 /// ([`bytes_batch`](events::bytes_batch)) - reads the same symbols from the same text.
 #[cfg(feature = "symbols")]
-pub(crate) fn extracted(
+pub(crate) fn extracted<S: AsRef<str>>(
     path: &str,
-    source: &str,
+    source: impl FnOnce() -> Option<S>,
     override_lang: Option<Lang>,
-) -> Option<Result<model::FileSymbols, String>> {
+) -> Option<Option<(S, model::FileSymbols)>> {
     let grammar = registry::for_path(path, override_lang)?;
-    Some(extract::extract(
-        source,
-        grammar.lang,
-        &grammar.language,
-        grammar.tags_query,
-    ))
+    Some(source().and_then(|text| {
+        extract::extract(
+            text.as_ref(),
+            grammar.lang,
+            &grammar.language,
+            grammar.tags_query,
+        )
+        .ok()
+        .map(|symbols| (text, symbols))
+    }))
 }
 
 /// Extract the single file at relative path `rel` (under `root`) into `idx`, keyed by `rel`, if
 /// the registry resolves a grammar for it. This is the ONE per-file indexing authority: the
 /// whole-tree `build_index` and the incremental `reindex_files` both freshen a file through here,
 /// so a file is indexed identically whether the whole tree is built or one file is re-parsed. The
-/// file is read first and its symbols are [`extracted`] from the text.
+/// file is read only once a grammar resolves, and its symbols are [`extracted`] from that text.
 ///
 /// The miss arms keep the incremental index equal to a fresh `build_index` over the current tree,
 /// and none of them crashes the walk:
-/// - a file that can no longer be READ (deleted, unreadable or not UTF-8) has its entry REMOVED
-///   via [`SymbolIndex::remove_file`], whatever its extension, so reindexing a deleted file purges
-///   its stale symbols rather than grounding a file a fresh build never visits;
-/// - a readable file with an UNRESOLVED extension leaves `idx` untouched - a fresh build never
-///   indexes such a file, so there is no entry to hold or drop;
-/// - a file that fails to EXTRACT (a tags-query failure) has its entry REMOVED as an unreadable
-///   one has;
+/// - an UNRESOLVED extension leaves `idx` untouched and the file unread, whether or not it could
+///   be read - a fresh build never indexes such a file;
+/// - under a grammar, a file that can no longer be READ (deleted, unreadable or not UTF-8) or that
+///   fails to EXTRACT (a tags-query failure) has its entry REMOVED via
+///   [`SymbolIndex::remove_file`], so reindexing a deleted file purges its stale symbols rather
+///   than grounding a file a fresh build never visits;
 /// - a parse that recovers to NO symbols still returns `Ok` and INSERTS an empty entry (replacing
 ///   any prior one), so a file edited down to its last symbol overwrites to empty rather than
 ///   keeping stale defs.
 ///
 /// A file that is successfully indexed also has its CONTENT HASH recorded (spec 68), via
 /// `store::content_hash` - the one hash primitive, the SAME one the live grounder's reindex
-/// freshening gate hashes with - so `rigger validate`'s staleness advisory can later rehash a
-/// small sample of the tree and diff it against these persisted values without a full-tree
-/// rehash. A removed entry drops its hash too ([`SymbolIndex::remove_file`]).
+/// freshening gate hashes with - over the same text the extraction read, so `rigger validate`'s
+/// staleness advisory can later rehash a small sample of the tree and diff it against these
+/// persisted values without a full-tree rehash. A removed entry drops its hash too
+/// ([`SymbolIndex::remove_file`]).
 #[cfg(feature = "symbols")]
 pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lang: Option<Lang>) {
-    let abs = Path::new(root).join(rel);
-    let Ok(src) = std::fs::read_to_string(&abs) else {
-        idx.remove_file(rel);
-        return;
-    };
-    match extracted(rel, &src, override_lang) {
+    let read = || std::fs::read_to_string(Path::new(root).join(rel)).ok();
+    match extracted(rel, read, override_lang) {
         None => {}
-        Some(Ok(fs)) => {
+        Some(Some((src, fs))) => {
             idx.insert_hashed_file(rel.to_string(), fs, store::content_hash(&src));
         }
-        Some(Err(_)) => idx.remove_file(rel),
+        Some(None) => idx.remove_file(rel),
     }
 }
 
@@ -143,11 +145,11 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
 /// integrates (re-parse the just-changed files, not the whole tree). Each file is freshened
 /// through the shared [`index_one_file`] authority, NOT a second extract loop, so a file is
 /// indexed IDENTICALLY whether the whole tree is built (`build_index`) or one file is
-/// re-parsed here (one mutation authority; the two paths cannot drift). A named file that can no
-/// longer be read (deleted or unreadable) or that fails to extract has its entry REMOVED, so
-/// reindexing a deletion leaves the index equal to a fresh `build_index` over the surviving tree;
-/// a readable file with an unregistered extension leaves `idx` untouched, exactly as
-/// `index_one_file` does on the whole-tree walk.
+/// re-parsed here (one mutation authority; the two paths cannot drift). A named file under a
+/// grammar that can no longer be read (deleted or unreadable) or that fails to extract has its
+/// entry REMOVED, so reindexing a deletion leaves the index equal to a fresh `build_index` over
+/// the surviving tree; a file with an unregistered extension leaves `idx` untouched and is not
+/// read, exactly as `index_one_file` does on the whole-tree walk.
 #[cfg(feature = "symbols")]
 pub fn reindex_files(
     root: &str,

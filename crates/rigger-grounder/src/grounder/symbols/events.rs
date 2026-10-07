@@ -124,13 +124,14 @@ fn unparsed_batch(path: &str) -> Vec<Event> {
 /// batch the walk lowers from that file. UTF-8 bytes that extract under the grammar the path
 /// resolves, as every production caller of the index resolves it - the symbols
 /// [`extracted`](crate::grounder::symbols::extracted) answers, the ones the index holds for that
-/// text - yield [`lower_file`] over them under `excluded`; every other input - no bytes, bytes that are not UTF-8, a
-/// path with no grammar, a failed extraction - yields [`unparsed_batch`], as [`file_batches`]
-/// gives a path the index lacks. `excluded` changes only a parsed batch. Never empty.
+/// text - yield [`lower_file`] over them under `excluded`; every other input - no bytes, bytes
+/// that are not UTF-8, a path with no grammar, a failed extraction - yields [`unparsed_batch`], as
+/// [`file_batches`] gives a path the index lacks. `excluded` changes only a parsed batch. Never empty.
 pub fn bytes_batch(path: &str, bytes: Option<&[u8]>, excluded: bool) -> Vec<Event> {
-    let symbols = crate::grounder::text_of(bytes)
-        .and_then(|source| crate::grounder::symbols::extracted(path, source, None))
-        .and_then(Result::ok);
+    let text = || crate::grounder::text_of(bytes);
+    let symbols = crate::grounder::symbols::extracted(path, text, None)
+        .flatten()
+        .map(|(_, symbols)| symbols);
     match symbols {
         Some(symbols) => lower_file(path, &symbols, excluded),
         None => unparsed_batch(path),
