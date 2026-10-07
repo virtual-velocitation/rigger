@@ -301,6 +301,23 @@ const STATUS_REVIEW_TIER: &str = "review-tier";
 /// ignore it - the mark exists purely as log-derived ground truth for this one read.
 const STATUS_REVIEW_ROUND_START: &str = "review-round-start";
 
+/// The `UnitStatus` token of a SPAWN SESSION mark: spawn [`META_SPAWN`] of the unit, at the
+/// mark's `attempt`, ran as the Claude Code session [`META_SESSION_ID`] names (continuing
+/// [`META_RESUMED_FROM`] when it was resumed). A later attempt or review round of the same
+/// role on the same unit reads it back ([`recorded_session`]) and continues that session
+/// instead of starting a cold one, so the record is log-carried: a driver relaunched by
+/// adoption continues the same sessions. Like [`STATUS_REVIEW_ROUND_START`] it is deliberately
+/// NOT a [`ledger::Status`] variant, so the ledger and metrics folds ignore it.
+const STATUS_SPAWN_SESSION: &str = "spawn-session";
+
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the spawn's session id under.
+const META_SESSION_ID: &str = "session_id";
+
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
+/// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
+/// it was asked to resume is gone.
+const META_RESUMED_FROM: &str = "resumed_from";
+
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
 /// `(unit, attempt)` coordinate [`RunCtx::review_unit`] entered under - `attempt` is
 /// already the candidate's `lane` on the speculation path, mirroring the `{unit}/
@@ -4438,13 +4455,67 @@ impl RunCtx<'_> {
             // invocations share both.
             env: Self::spawn_env(&build_env, dir),
             reviews: reviews.to_vec(),
-            // The existing blocking drivers (cli/workflow) ignore these; spec 104's host
+            // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
             // is not wired in here yet.
             settings_json: String::new(),
             launch: 0,
+            // A fresh session; `continue_prior_session` points a later round's spawn at the
+            // session to continue.
             resumed_from: String::new(),
             resume_task: String::new(),
         })
+    }
+
+    /// Point `opts` at the session `role`'s latest spawn on the same unit at an earlier attempt
+    /// ran as ([`recorded_session`], read from the log), so the spawn continues it with
+    /// `resume_task` - what changed since that session's last turn - instead of starting cold.
+    /// `opts` is returned unchanged (a fresh spawn on its full prompt) when there is nothing to
+    /// send (`resume_task` empty: no failure block, no round delta) or no earlier spawn of the
+    /// role recorded a session (a first attempt, or a driver that runs none).
+    fn continue_prior_session(
+        &self,
+        mut opts: SpawnOpts,
+        role: &str,
+        resume_task: Option<String>,
+    ) -> SpawnOpts {
+        let Some(task) = resume_task.filter(|t| !t.trim().is_empty()) else {
+            return opts;
+        };
+        let prior = self
+            .read_current_run()
+            .ok()
+            .and_then(|events| recorded_session(&events, &opts.unit, role, opts.attempt));
+        if let Some(prior) = prior {
+            opts.resumed_from = prior;
+            opts.resume_task = task;
+        }
+        opts
+    }
+
+    /// Record the session spawn `opts` ran as on a [`STATUS_SPAWN_SESSION`] mark keyed by its
+    /// spawn id, with the session it continued, so a later attempt reads it back from the log.
+    /// A result naming no session records nothing. A resume the host could not honour (the
+    /// session was gone, so it ran fresh) is also said on the run log.
+    fn record_session(&self, opts: &SpawnOpts, result: &AgentResult) -> Result<(), Error> {
+        if result.session_id.is_empty() {
+            return Ok(());
+        }
+        if !opts.resumed_from.is_empty() && result.resumed_from.is_empty() {
+            (self.deps.log)(&format!(
+                "spawn {}: session {} to resume is gone; it ran as a fresh session {}",
+                opts.id, opts.resumed_from, result.session_id
+            ));
+        }
+        self.emit_keyed_meta(
+            &format!("{}/session", opts.id),
+            ledger::TYPE_UNIT_STATUS,
+            json!({"id": opts.unit, "status": STATUS_SPAWN_SESSION, "attempt": opts.attempt}),
+            &[
+                (META_SPAWN, &opts.id),
+                (META_SESSION_ID, &result.session_id),
+                (META_RESUMED_FROM, &result.resumed_from),
+            ],
+        )
     }
 
     /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6, round 3,
@@ -5075,10 +5146,22 @@ impl RunCtx<'_> {
         // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
         let delta = self.round_delta(wt, &st.name, attempt);
-        if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
+        let doc_only = delta
+            .as_ref()
+            .is_some_and(|(_, paths)| is_documentation_only(paths));
+        if doc_only {
             sdet_prompt.push_str("\n\n");
             sdet_prompt.push_str(DOC_ONLY_ROUND);
         }
+        // A later attempt continues the sdet-author's own session, sent the delta it has to
+        // bring the periphery tests in line with (and the doc-only rule when it applies).
+        let resume_task = delta.map(|(base, paths)| {
+            let mut task = later_attempt_block(&base, &paths);
+            if doc_only {
+                task.push_str(DOC_ONLY_ROUND);
+            }
+            task
+        });
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -5093,14 +5176,17 @@ impl RunCtx<'_> {
                 // another agent's output, so it carries no roster (spec 67, criterion 4).
                 &[],
             )
+            .map(|opts| self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task))
             .and_then(|opts| {
                 self.deps
                     .driver
                     .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
+                    .map(|result| (opts, result))
             }) {
             // A normal result: its authored files are already in the worktree, so the caller
-            // falls through to the commit that sweeps them in.
-            Ok(_) => Ok(()),
+            // falls through to the commit that sweeps them in. The session it ran as is
+            // recorded for its next attempt to continue.
+            Ok((opts, result)) => self.record_session(&opts, &result),
             // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
             // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
             // and a later step replays the result.
@@ -5557,48 +5643,54 @@ impl RunCtx<'_> {
                 } else {
                     Ok(())
                 };
-                match isolation_check.and_then(|()| {
-                    self.deps.driver.spawn(
-                        agent_def,
-                        &prompt,
-                        &SpawnOpts {
-                            system_prompt: self.build_system_prompt(agent_def),
-                            dir: dir.to_string(),
-                            isolation: wt.is_some(),
-                            parallel: false,
-                            blast_radius: blast_radius.clone(),
-                            id: implementer_id.clone(),
-                            unit: st.name.clone(),
-                            stage: st.name.clone(),
-                            // The live work-line: the unit's criterion, so the thin driver
-                            // narrates the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                            title: st.coverage.trim().to_string(),
-                            // The cascade rung the driver resolves for this attempt (spec 10
-                            // unit 4) - the same `attempts` the alias stamp above uses.
-                            attempt: attempts,
-                            run_id: self.run_id.clone(),
-                            // The ONE build-environment authority (spec 65) PLUS this
-                            // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
-                            // BUILD LOCATION): the implementer's own `cargo build`/`cargo
-                            // test` invocations get the same wrapper/cache/incremental
-                            // vars a gate build gets, AND land in the same per-unit
-                            // cache a gate build for this `dir` gets, instead of
-                            // embedding a `target/` dir inside the worktree itself.
-                            env: Self::spawn_env(&build_env, dir),
-                            // An implementer is never a review tier: no roster to render
-                            // (spec 67, criterion 4).
-                            reviews: Vec::new(),
-                            // The existing blocking drivers (cli/workflow) ignore these;
-                            // spec 104's host is not wired in here yet.
-                            settings_json: String::new(),
-                            launch: 0,
-                            resumed_from: String::new(),
-                            resume_task: String::new(),
-                        },
-                        &emit,
-                    )
-                }) {
+                // A RE-ATTEMPT CONTINUES THE IMPLEMENTER'S SESSION: a later attempt resumes the
+                // session its earlier attempt ran as, sent the prior-failure block alone - the
+                // session already holds the criterion and the slice.
+                let opts = self.continue_prior_session(
+                    SpawnOpts {
+                        system_prompt: self.build_system_prompt(agent_def),
+                        dir: dir.to_string(),
+                        isolation: wt.is_some(),
+                        parallel: false,
+                        blast_radius: blast_radius.clone(),
+                        id: implementer_id.clone(),
+                        unit: st.name.clone(),
+                        stage: st.name.clone(),
+                        // The live work-line: the unit's criterion, so the thin driver
+                        // narrates the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                        title: st.coverage.trim().to_string(),
+                        // The cascade rung the driver resolves for this attempt (spec 10
+                        // unit 4) - the same `attempts` the alias stamp above uses.
+                        attempt: attempts,
+                        run_id: self.run_id.clone(),
+                        // The ONE build-environment authority (spec 65) PLUS this
+                        // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
+                        // BUILD LOCATION): the implementer's own `cargo build`/`cargo
+                        // test` invocations get the same wrapper/cache/incremental
+                        // vars a gate build gets, AND land in the same per-unit
+                        // cache a gate build for this `dir` gets, instead of
+                        // embedding a `target/` dir inside the worktree itself.
+                        env: Self::spawn_env(&build_env, dir),
+                        // An implementer is never a review tier: no roster to render
+                        // (spec 67, criterion 4).
+                        reviews: Vec::new(),
+                        // The existing blocking drivers (cli/workflow) ignore these two;
+                        // spec 104's host is not wired in here yet.
+                        settings_json: String::new(),
+                        launch: 0,
+                        // Set by `continue_prior_session` below when there is a session
+                        // to continue.
+                        resumed_from: String::new(),
+                        resume_task: String::new(),
+                    },
+                    ROLE_IMPLEMENTER,
+                    Some(prior.block(&st.name, attempts)),
+                );
+                match isolation_check
+                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
+                {
                     Ok(result) => {
+                        self.record_session(&opts, &result)?;
                         // The resolved model the worker reported via `--meta` (spec 05 line
                         // 52): captured here so the green status - and the verified status
                         // below, for the same spawn - both carry it. Empty on a live
@@ -7056,6 +7148,7 @@ impl RunCtx<'_> {
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
         let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
+        let resume = round.map(|r| self.review_resume_task(st, r));
         self.run_reviewer(
             st,
             "lens",
@@ -7069,6 +7162,7 @@ impl RunCtx<'_> {
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
             ReviewerOutput::Findings,
             &prompt,
+            resume.as_deref(),
             wt,
             // A lens judges the diff directly, not another tier's output - it carries no
             // review roster (spec 67, criterion 4; that's the adversary/adjudicator's job).
@@ -7128,6 +7222,10 @@ impl RunCtx<'_> {
         parallel: bool,
         output: ReviewerOutput,
         prompt: &str,
+        // What a later review round sends this role's resumed session in place of `prompt`
+        // ([`RunCtx::review_resume_task`]), or `None` when the caller has no round to
+        // continue a session over (a first round, or a review that is not a unit's).
+        resume_task: Option<&str>,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit
         // worktree this tier's spawn runs in, or `None` when the caller has none to
         // offer - a review-only throwaway worktree (the standalone-review-stage and
@@ -7148,6 +7246,7 @@ impl RunCtx<'_> {
         // a stage's first run); each later id is a `~retry{n}` respawn. At most
         // `1 + REVIEWER_RESPAWN_BOUND` spawns per round.
         let window = review_retry_window(ordinal);
+        let first_retry = *window.start();
         let last_retry = *window.end();
         // Whether a gating result of this round already came back with no verdict line: the
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
@@ -7156,6 +7255,14 @@ impl RunCtx<'_> {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            // A later round's first spawn of this role continues the session the role's last
+            // round ran as; a respawn within the round (a degenerate or verdict-less result)
+            // starts fresh rather than continuing the session that produced it.
+            let opts = if retry == first_retry {
+                self.continue_prior_session(opts, role, resume_task.map(str::to_string))
+            } else {
+                opts
+            };
             if !self.reserve_spawn(&id) {
                 return Err(spawn_halt(
                     SpawnHalt::BudgetRefused,
@@ -7200,7 +7307,10 @@ impl RunCtx<'_> {
                 self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
             let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
-                Ok(result) => result,
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    result
+                }
                 Err(e) => {
                     // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
                     // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
@@ -7474,6 +7584,7 @@ impl RunCtx<'_> {
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
         let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
+        let resume = round.map(|r| self.review_resume_task(st, r));
         self.run_reviewer(
             st,
             "adversary",
@@ -7487,6 +7598,7 @@ impl RunCtx<'_> {
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
             ReviewerOutput::Findings,
             &prompt,
+            resume.as_deref(),
             wt,
             &review_roster(lenses),
         )?;
@@ -7541,6 +7653,7 @@ impl RunCtx<'_> {
             self.build_prompt(st)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
+        let resume = round.map(|r| self.review_resume_task(st, r));
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7559,6 +7672,7 @@ impl RunCtx<'_> {
                 ReviewerOutput::Verdict
             },
             &prompt,
+            resume.as_deref(),
             wt,
             &adjudicator_roster(lenses, adversary_id),
         )?;
@@ -8006,6 +8120,7 @@ impl RunCtx<'_> {
                     ReviewerOutput::Findings,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
+                    None,
                     // The DAG-level critique names no lens tier of its own (spec 67, c4): an
                     // empty roster here is the honest one, never a fabricated lens.
                     &[],
@@ -8026,6 +8141,7 @@ impl RunCtx<'_> {
                     false,
                     ReviewerOutput::Verdict,
                     &prompt,
+                    None,
                     None,
                     // No lens tier at the DAG level, so the shared helper's roster reduces to
                     // just the adversary token when one ran (spec 67, c4) - never fabricated.
@@ -10846,14 +10962,32 @@ impl RunCtx<'_> {
         Ok(b)
     }
 
+    /// The unified graph two hops around `seed` - the ONE seeded traversal every grounding
+    /// render reads - or `None` with no graph, an empty seed, or a failed read.
+    fn seeded_subgraph(&self, seed: &[String]) -> Option<Graph> {
+        match self.deps.graph {
+            Some(g) if !seed.is_empty() => g.subgraph(seed, 2).ok(),
+            _ => None,
+        }
+    }
+
+    /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
+    /// the unit's files (this round's earlier tiers' among them, which the session has not
+    /// seen) and the round's block - its delta and REQUIRED list. The session already holds
+    /// the criterion, the grounding and its review protocol.
+    fn review_resume_task(&self, st: &Stage, round: &ReviewRound) -> String {
+        let seed = self.grounded_seed(st);
+        let mut b = String::new();
+        if let Some(g) = self.seeded_subgraph(&seed) {
+            write_capped_findings(&mut b, &g, &seed);
+        }
+        b.push_str(&round.block());
+        b
+    }
+
     fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
-        let graph = match self.deps.graph {
-            Some(g) if !seed.is_empty() => g,
-            _ => return String::new(),
-        };
-        let g = match graph.subgraph(seed, 2) {
-            Ok(g) => g,
-            Err(_) => return String::new(),
+        let Some(g) = self.seeded_subgraph(seed) else {
+            return String::new();
         };
         let mut b = String::new();
         // Spec 29c criterion 1: the CODE NEIGHBORHOOD the run's 29a extraction folded around the
@@ -13503,6 +13637,20 @@ fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -
         .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
 }
 
+/// The session `role`'s latest spawn on `unit` at an attempt before `attempt` ran as, read
+/// from its [`STATUS_SPAWN_SESSION`] mark; `None` when no such spawn recorded one.
+fn recorded_session(events: &[Event], unit: &str, role: &str, attempt: u32) -> Option<String> {
+    unit_status_marks(events, unit, &[STATUS_SPAWN_SESSION])
+        .filter(|(_, stamped, e)| {
+            *stamped < u64::from(attempt)
+                && e.meta
+                    .get(META_SPAWN)
+                    .is_some_and(|id| crate::spawn::spawn_role(id) == role)
+        })
+        .max_by_key(|(_, stamped, _)| *stamped)
+        .and_then(|(_, _, e)| e.meta.get(META_SESSION_ID).cloned())
+}
+
 /// The base of `unit`'s ROUND DELTA at `attempt` (see [`RunCtx::round_delta`]): the
 /// round-start sha of its latest review round at an EARLIER attempt - the round whose
 /// verdict sent the unit back to build again. `None` when no review round judged the unit
@@ -13522,6 +13670,22 @@ fn is_documentation_only(paths: &[String]) -> bool {
         && paths
             .iter()
             .all(|p| p.ends_with(".md") || p.starts_with("docs/"))
+}
+
+/// The task a RESUMED sdet-author is sent on a later attempt: the implementer revised the unit
+/// since the review round at `base` sent it back, changing `paths`; its session already holds
+/// the criterion and the tests it authored.
+fn later_attempt_block(base: &str, paths: &[String]) -> String {
+    let changed = if paths.is_empty() {
+        "nothing".to_string()
+    } else {
+        paths.join(", ")
+    };
+    format!(
+        "LATER ATTEMPT: review sent this unit back at {base} and the implementer has revised it \
+         since - `git diff {base}..HEAD`, which changed {changed}. Bring the periphery tests in \
+         line with that change.\n"
+    )
 }
 
 /// The rule the sdet-author's prompt carries on a round whose delta changed documentation
@@ -15557,6 +15721,14 @@ mod tests {
         /// Absent when the agent never ran, its file was never landed, or `opts.dir`
         /// was empty.
         read_results: Mutex<HashMap<String, String>>,
+        /// Whether every spawn runs as a resumable session, the way the cli host's do: its
+        /// result names the session it ran as - the one [`SpawnOpts::resumed_from`] asked it
+        /// to continue, or `sess-<spawn id>` for a fresh one - so the conductor records it and
+        /// a later attempt continues it. Off, a spawn reports no session (the workflow and
+        /// replay drivers' shape) and every spawn stays fresh.
+        sessions: bool,
+        /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
+        resumes: Mutex<Vec<(String, String, String)>>,
     }
     impl Stub {
         /// A stub whose every spawn answers `output`, otherwise [`Stub::new`].
@@ -15595,7 +15767,19 @@ mod tests {
                 commits_by_agent: HashMap::new(),
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
+                sessions: false,
+                resumes: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The `(resumed_from, resume_task)` the spawn `id` was launched with, if it ran.
+        fn resume_of(&self, id: &str) -> Option<(String, String)> {
+            self.resumes
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(spawn, _, _)| spawn == id)
+                .map(|(_, from, task)| (from.clone(), task.clone()))
         }
 
         /// Every prompt the named agent was spawned with, in spawn order.
@@ -15694,6 +15878,11 @@ mod tests {
                 .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
+            self.resumes.lock().unwrap().push((
+                opts.id.clone(),
+                opts.resumed_from.clone(),
+                opts.resume_task.clone(),
+            ));
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
             // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
             // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
@@ -15799,6 +15988,11 @@ mod tests {
                 .or_else(|| self.output_by_agent.get(&a.id))
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
+            let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
+                (false, _) => (String::new(), String::new()),
+                (true, true) => (format!("sess-{}", opts.id), String::new()),
+                (true, false) => (opts.resumed_from.clone(), opts.resumed_from.clone()),
+            };
             Ok(AgentResult {
                 output,
                 resolved_model: self
@@ -15806,7 +16000,8 @@ mod tests {
                     .get(&a.id)
                     .cloned()
                     .unwrap_or_default(),
-                ..Default::default()
+                session_id,
+                resumed_from,
             })
         }
     }
@@ -28788,6 +28983,234 @@ mod tests {
             implementer[1].contains(item),
             "the round-1 implementer is handed the REQUIRED list:\n{}",
             implementer[1]
+        );
+    }
+
+    /// The [`run_review_rounds`] driver with every spawn a resumable session
+    /// ([`Stub::sessions`]): each adjudicator spawn named in `verdicts` answers its verdict.
+    fn session_stub(verdicts: &[(String, &str)]) -> Stub {
+        Stub {
+            sessions: true,
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: verdicts
+                .iter()
+                .map(|(id, verdict)| (id.clone(), verdict.to_string()))
+                .collect(),
+            write_files_by_spawn_id: (0..4)
+                .map(|attempt| {
+                    let file = match attempt {
+                        0 => "feature.rs".to_string(),
+                        n => format!("fix{n}.rs"),
+                    };
+                    (spawn_id("implement", ROLE_IMPLEMENTER, attempt), vec![file])
+                })
+                .collect(),
+            ..Stub::new()
+        }
+    }
+
+    /// The `per_unit_panel_cfg` unit with the sdet-author configured and a criterion, so every
+    /// role of the panel has a session to continue and a criterion its session holds.
+    fn session_cfg() -> Config {
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.stages.get_mut("implement").unwrap().coverage =
+            "the unit's acceptance criterion".into();
+        cfg
+    }
+
+    /// [`run_review_rounds`] over [`session_stub`] and [`session_cfg`].
+    fn run_session_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        let repo = temp_git_project_with_commit();
+        let driver = session_stub(verdicts);
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (rs, events, driver)
+    }
+
+    /// A driver RELAUNCHED by adoption continues the same sessions: the round-1 implementer
+    /// parks (the step ends with it unanswered), and the next process - a new driver that saw
+    /// none of round 0's spawns return - resumes the session round 0's implementer ran as,
+    /// read from the log.
+    #[test]
+    fn a_relaunched_driver_continues_the_session_the_log_recorded() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let verdicts = [
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ];
+        let st = Store::open(":memory:").unwrap();
+        let first = Stub {
+            park_spawn_ids: [spawn_id("implement", ROLE_IMPLEMENTER, 1)]
+                .into_iter()
+                .collect(),
+            ..session_stub(&verdicts)
+        };
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &first, Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+                .map(|(from, _)| from),
+            Some(format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "premise: the parked spawn was asked to continue round 0's session"
+        );
+
+        let relaunched = session_stub(&verdicts);
+        let rs = run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path,
+                ..stub_deps(&st, &relaunched, Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            relaunched
+                .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+                .map(|(from, _)| from),
+            Some(format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "the relaunched driver continues the session the log recorded"
+        );
+    }
+
+    /// A RE-ATTEMPT CONTINUES EACH ROLE'S SESSION: every spawn of the first round starts fresh,
+    /// and after the reject every role's spawn on the next round resumes the session its
+    /// round-0 spawn ran as, sent only what changed - the implementer the prior-failure block
+    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's delta
+    /// and REQUIRED list - never the criterion it already holds.
+    #[test]
+    fn a_later_round_resumes_each_roles_session_with_what_changed_alone() {
+        let (rs, _, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let item = "- feature.rs: close the unscoped read";
+        for role in [
+            ROLE_IMPLEMENTER,
+            ROLE_SDET_AUTHOR,
+            "lens:lens",
+            ROLE_ADVERSARY,
+            ROLE_ADJUDICATOR,
+        ] {
+            let first = spawn_id("implement", role, 0);
+            let (from, _) = driver.resume_of(&first).expect("round 0 spawns every role");
+            assert_eq!(from, "", "{first} starts a fresh session");
+            let (from, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every role");
+            assert_eq!(
+                from,
+                format!("sess-{first}"),
+                "{role}'s round-1 spawn continues its round-0 session"
+            );
+            assert!(
+                task.contains("fix1.rs") || task.contains(item),
+                "{role} is sent what changed:\n{task}"
+            );
+            assert!(
+                !task.contains("UNIT: implement"),
+                "{role}'s resumed session already holds its criterion:\n{task}"
+            );
+        }
+        let (_, implementer) = driver
+            .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+            .unwrap();
+        assert!(
+            implementer.contains(item) && implementer.contains("do not start over"),
+            "the implementer is sent its prior-failure block:\n{implementer}"
+        );
+    }
+
+    /// The session a spawn ran as is LOG-CARRIED: each spawn's session is recorded on a
+    /// `spawn-session` mark keyed by its spawn id, which the ledger fold ignores, so a driver
+    /// relaunched by adoption reads the session to continue from the log, never from the
+    /// process that saw the spawn return.
+    #[test]
+    fn each_spawns_session_is_recorded_in_the_log_and_read_back_from_it() {
+        let (_, events, _) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        for role in [
+            ROLE_IMPLEMENTER,
+            ROLE_SDET_AUTHOR,
+            "lens:lens",
+            ROLE_ADVERSARY,
+            ROLE_ADJUDICATOR,
+        ] {
+            assert_eq!(
+                recorded_session(&events, "implement", role, 1),
+                Some(format!("sess-{}", spawn_id("implement", role, 0))),
+                "{role}'s round-0 session is read back from the log"
+            );
+            assert_eq!(
+                recorded_session(&events, "implement", role, 0),
+                None,
+                "no spawn of {role} precedes round 0"
+            );
+        }
+        let resumed: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.meta.get(META_SPAWN).map(String::as_str)
+                    == Some(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+            })
+            .filter_map(|e| e.meta.get(META_RESUMED_FROM).cloned())
+            .collect();
+        assert_eq!(
+            resumed,
+            [format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )],
+            "the round-1 implementer's mark records the session it continued"
+        );
+    }
+
+    /// A driver whose spawns report no session (the workflow and replay drivers) leaves every
+    /// spawn fresh with its full prompt: no mark is recorded and nothing is resumed.
+    #[test]
+    fn a_driver_reporting_no_session_keeps_every_spawn_fresh() {
+        let (_, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            driver
+                .resumes
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, from, task)| from.is_empty() && task.is_empty()),
+            "no spawn resumes"
+        );
+        assert!(
+            status_mark_keys(&events, STATUS_SPAWN_SESSION).is_empty(),
+            "no spawn reported a session to record"
         );
     }
 
