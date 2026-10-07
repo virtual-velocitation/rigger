@@ -402,7 +402,7 @@ pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl Batc
 /// tell - zero lag.
 #[cfg(feature = "symbols")]
 pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<String> {
-    let latest = project_scoped_latest_generations(prior);
+    let latest = project_scoped_latest_generations(prior, &DERIVED_INDEX_TYPES);
     files
         .iter()
         .filter(|file| {
@@ -479,7 +479,7 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 #[cfg(feature = "symbols")]
 pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
     let root_path = std::path::Path::new(root);
-    let latest = project_scoped_latest_generations(prior);
+    let latest = project_scoped_latest_generations(prior, &DERIVED_INDEX_TYPES);
     let mut recorded: Vec<&str> = latest
         .keys()
         .filter_map(|identity| identity.strip_prefix("gc/"))
@@ -560,6 +560,51 @@ pub fn batch_generation(batch: &[Event]) -> String {
     crate::grounder::symbols::store::content_hash(&concat)
 }
 
+/// A half's `(path, bytes, excluded)` function (spec 107): the batch the half extracts from the
+/// `bytes` of the file at `path` under the walk's flag.
+#[cfg(feature = "symbols")]
+type Half = fn(&str, Option<&[u8]>, bool) -> Vec<Event>;
+
+/// The `(path, bytes, excluded)` function of the half that extracts batches under `prefix` (spec
+/// 107): `gc` the code half's, `gd` the design half's, `gw` the workflow definition's, and none
+/// for a prefix that names no half.
+#[cfg(feature = "symbols")]
+fn half_of(prefix: &str) -> Option<Half> {
+    match prefix {
+        "gc" => Some(crate::grounder::symbols::events::bytes_batch),
+        "gd" => Some(crate::grounder::design::events::bytes_batch),
+        "gw" => Some(crate::grounder::workflowdef::bytes_batch),
+        _ => None,
+    }
+}
+
+/// Whether the next ingest of the file the identity `<prefix>/<path>` names records an entry for
+/// it (spec 107): whether the tree's one read rule ([`crate::grounder::tree_bytes`]) hands bytes
+/// for its path under `root` that its half extracts a batch from ([`extracts`]). An identity
+/// whose path holds no such file - gone, outside the walk's scope, unreadable - is named by no
+/// walk, and one that splits into no prefix and path names no file.
+pub fn next_ingest_records(root: &std::path::Path, identity: &str) -> bool {
+    identity.split_once('/').is_some_and(|(prefix, path)| {
+        crate::grounder::tree_bytes(root, prefix, path)
+            .is_some_and(|bytes| extracts(prefix, path, &bytes))
+    })
+}
+
+/// Whether the half under `prefix` maps the `bytes` of the file at `path` to a batch that is not
+/// empty: every `gc` input is, whatever the walk's flag, which no other half reads. A prefix that
+/// names no half extracts nothing.
+#[cfg(feature = "symbols")]
+fn extracts(prefix: &str, path: &str, bytes: &[u8]) -> bool {
+    half_of(prefix).is_some_and(|half| !half(path, Some(bytes), false).is_empty())
+}
+
+/// Light lane: no extraction pass is compiled, so no half is asked and the file the tree holds
+/// stands for its batch (mirrors [`resolve_entry`]'s own light-lane stub).
+#[cfg(not(feature = "symbols"))]
+fn extracts(_prefix: &str, _path: &str, _bytes: &[u8]) -> bool {
+    true
+}
+
 /// Where [`resolve_entry`] reads an entry's blob (spec 107): an object id to the bytes the
 /// repository's object database holds under it, none when it holds none, or the failure of the
 /// read, which fails the resolution.
@@ -585,11 +630,8 @@ pub fn resolve_entry(
     let Ok(named) = rigger_domain::retention::GenerationIngested::parse(&entry.data) else {
         return Ok(None);
     };
-    let half: fn(&str, Option<&[u8]>, bool) -> Vec<Event> = match named.prefix.as_str() {
-        "gc" => crate::grounder::symbols::events::bytes_batch,
-        "gd" => crate::grounder::design::events::bytes_batch,
-        "gw" => crate::grounder::workflowdef::bytes_batch,
-        _ => return Ok(None),
+    let Some(half) = half_of(&named.prefix) else {
+        return Ok(None);
     };
     let resolved = |bytes: Option<Vec<u8>>| {
         let batch = half(&named.file, bytes.as_deref(), named.excluded);

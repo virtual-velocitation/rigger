@@ -239,9 +239,11 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// log - and the reader `rigger validate`'s index-lag sample uses. The rule, in the order it is
 /// applied:
 ///
-/// 1. **Type first.** Only the four [`DERIVED_INDEX_TYPES`] are eligible. Every other event is
-///    passed over whatever its replay key looks like, so a unit or stage whose id happened to read
-///    like an ingest prefix could never have its lifecycle key mistaken for a project fact.
+/// 1. **Type first.** Only the `types` the caller hands in are eligible: the four
+///    [`DERIVED_INDEX_TYPES`], or [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) to read
+///    a ledger entry as a recording too. Every other event is passed over whatever its replay key
+///    looks like, so a unit or stage whose id happened to read like an ingest prefix could never
+///    have its lifecycle key mistaken for a project fact.
 /// 2. **Then the whole key.** A derived event's key is parsed for its batch identity and content
 ///    generation ([`derived_key_parts`]); a key that is not that shape names no generation and is
 ///    passed over (the fail-safe direction - it re-emits).
@@ -258,13 +260,14 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// subsequent run forever.
 pub fn project_scoped_latest_generations(
     prior: &[Event],
+    types: &[&str],
 ) -> std::collections::HashMap<String, (String, Vec<String>)> {
     // identity -> (that identity's latest recorded generation, the keys of that generation)
     let mut latest: std::collections::HashMap<String, (String, Vec<String>)> =
         std::collections::HashMap::new();
     for e in prior {
-        // TYPE first: a non-derived event never reaches the key comparison at all.
-        if !is_derived_index_type(&e.type_) {
+        // TYPE first: an event of no handed type never reaches the key comparison at all.
+        if !types.contains(&e.type_.as_str()) {
             continue;
         }
         let Some(key) = e.meta.get(META_REPLAY_KEY) else {
@@ -285,6 +288,22 @@ pub fn project_scoped_latest_generations(
         slot.1.push(key.clone());
     }
     latest
+}
+
+/// THE LOG SIDE OF PERCEPTION (spec 107): each identity's latest recording on `stream`, a ledger
+/// entry or a keyed derived row alike, as [`project_scoped_latest_generations`] answers it over
+/// ONE typed read of [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) from the stream's
+/// start. The generation is cut from each row's replay key, never looked up by group, so a keyed
+/// derived row recorded with no group is seen. On a store whose derived rows are not yet shed the
+/// read holds every one of them at once.
+pub fn perceived_generations(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<std::collections::HashMap<String, (String, Vec<String>)>, Error> {
+    let types = crate::retention::PERCEPTION_TYPES;
+    let recorded =
+        store.read_stream_typed(stream, 0, crate::eventstore::TypeSelection::Only(&types))?;
+    Ok(project_scoped_latest_generations(&recorded, &types))
 }
 
 /// The suppression predicate's OWN contract, at the unit level: which recorded keys it hands a

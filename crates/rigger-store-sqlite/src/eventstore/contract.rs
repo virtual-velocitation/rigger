@@ -222,6 +222,7 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
     }
     let reference = project_scoped_latest_generations(
         &store.read_stream(stream, 0, Direction::Forward).unwrap(),
+        &rigger_domain::ingest::DERIVED_INDEX_TYPES,
     );
     let answered: Vec<(String, Option<String>)> = ["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"]
         .iter()
