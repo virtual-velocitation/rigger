@@ -136,8 +136,8 @@ pub struct SpawnLaunched {
     /// The session id the host minted for this launch (`--session-id`/`--resume`).
     pub session_id: String,
     /// The session this launch CONTINUES (`claude -p --resume <session_id>`), or `None`
-    /// for a fresh launch - every launch this spec (104) itself performs, since resuming
-    /// a held session is spec 105's concern.
+    /// for a fresh launch: a later attempt or review round of a role continues the session
+    /// its earlier spawn on the same unit recorded (`SpawnOpts::resumed_from`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_from: Option<String>,
     /// Unix seconds the host started this launch. Caller-supplied: this type never reads

@@ -19,7 +19,7 @@ use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::driver::replay::{blocking_spawn_scratch_dir, reclaim_finished_spawn_scratch};
 use crate::driver::{
     allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
-    SystemPromptFile,
+    LaunchSession, SystemPromptFile, MISSING_SESSION,
 };
 
 /// Driver spawns agents via the `claude` CLI.
@@ -55,11 +55,15 @@ impl Driver {
     /// has drained stdin never deadlocks against this host. A child that exits without
     /// reading all of it breaks the pipe: the child's fault, reported through its exit
     /// status, never a host failure.
+    ///
+    /// The launch runs as `session` ([`LaunchSession`]): it continues the session it resumes,
+    /// sending only `framed` (the resume task), or starts a fresh one under the minted id.
     fn run_to_exit(
         &self,
         agent: &AgentDef,
         framed: String,
         opts: &SpawnOpts,
+        session: &LaunchSession,
     ) -> Result<Output, Error> {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
         let bin = bin_or_path_default(&self.bin, "claude");
@@ -68,6 +72,7 @@ impl Driver {
             agent,
             &persona,
             opts,
+            session,
             bin_or_path_default(&self.rigger_bin, "rigger"),
         )?);
         // The harness environment every headless worker gets ([`harness_env`]), applied
@@ -99,6 +104,50 @@ impl Driver {
         }
         waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))
     }
+
+    /// Launch `agent` as the session `opts` asks for and return the exited process with the
+    /// session it ran as. A RESUME sends only [`SpawnOpts::resume_task`]; when Claude Code
+    /// refuses it because the session's transcript is gone ([`MISSING_SESSION`] on stderr,
+    /// before any turn ran), the spawn falls back to a fresh session with the full `prompt` -
+    /// the path every spawn took before sessions were continued - and the returned session
+    /// says so ([`LaunchSession::resumed`] false).
+    fn launch(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+    ) -> Result<(Output, LaunchSession), Error> {
+        let session = LaunchSession::of(opts);
+        let out = self.run_to_exit(
+            agent,
+            framed(session.task(prompt, opts), opts),
+            opts,
+            &session,
+        )?;
+        if !(session.resumed && session_missing(&out)) {
+            return Ok((out, session));
+        }
+        let fresh = LaunchSession::fresh();
+        let out = self.run_to_exit(agent, framed(prompt, opts), opts, &fresh)?;
+        Ok((out, fresh))
+    }
+}
+
+/// Whether a launch exited because the session it was told to resume does not exist: a
+/// non-zero exit whose stderr carries [`MISSING_SESSION`].
+fn session_missing(out: &Output) -> bool {
+    !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(MISSING_SESSION)
+}
+
+/// `task` framed with the live-progress instruction (spec 14) the workflow drivers give too, so
+/// a worker on this path also reports what it is doing between milestones. (This synchronous,
+/// non-parking path has no parked frontier entry, so the current consolidator does not surface
+/// it - the emit is recorded and future-proof.)
+fn framed(task: &str, opts: &SpawnOpts) -> String {
+    format!(
+        "{task}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
+        opts.id
+    )
 }
 
 impl AgentDriver for Driver {
@@ -109,21 +158,13 @@ impl AgentDriver for Driver {
         opts: &SpawnOpts,
         emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        // Live progress (spec 14): frame the same per-step progress instruction the workflow
-        // drivers give, so a worker on this path also reports what it is doing between
-        // milestones. (This synchronous, non-parking path has no parked frontier entry, so the
-        // current consolidator does not surface it - the emit is recorded and future-proof.)
-        let framed = format!(
-            "{prompt}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a build, a commit, a decision) report ONE short line of what you just did by running (Bash): rigger progress '{}' '<one line: what you just did>'. Keep it flowing while you work.",
-            opts.id
-        );
-        let out = self.run_to_exit(agent, framed, opts);
+        let launched = self.launch(agent, prompt, opts);
         // The spawn's terminus: its process exited (or never started), whatever its outcome,
         // and this host hands the result straight back in-process, never through the `rigger
         // result` courier that reclaims a stepwise spawn's scratch - so reclaim the spawn's own
         // scratch here, before anything below can return early.
         reclaim_finished_spawn_scratch(opts);
-        let out = out?;
+        let (out, session) = launched?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         // Bridge emission: a subprocess agent has no live MCP channel, so its
         // decisions/findings are printed to stdout per the EMIT_PROTOCOL /
@@ -134,11 +175,13 @@ impl AgentDriver for Driver {
         bridge_emits(&stdout, emit)?;
         // A blocking subprocess driver does not learn the resolved model id (spec 05 line
         // 52 sources it from the worker's `rigger result --meta` on the stepwise path), so
-        // it leaves it empty and the metadata is then omitted.
+        // it leaves it empty and the metadata is then omitted. The session it ran as rides
+        // back for the conductor to record, so a later attempt can continue it.
         let result = AgentResult {
             output: stdout,
             resolved_model: String::new(),
-            ..Default::default()
+            resumed_from: session.resumed_from(),
+            session_id: session.id,
         };
         if !out.status.success() {
             return Err(Error(format!(
@@ -208,7 +251,9 @@ fn bridge_emits(
 }
 
 /// Build the `claude` headless invocation: `-p` with NO positional prompt, so the session
-/// reads the grounded task from its stdin, and the agent's PERSONA (its role) as the SYSTEM
+/// reads the grounded task from its stdin, the `session` it runs as (`--session-id` for a
+/// fresh one, `--resume` to continue a recorded one; see [`LaunchSession`]), and the agent's
+/// PERSONA (its role) as the SYSTEM
 /// prompt through the file `persona` holds (`--system-prompt-file`), with the model and
 /// allowed tools the agent declares. Neither prompt is ever an argv string: Linux caps one
 /// argument at `MAX_ARG_STRLEN` (131072 bytes), which a plan-critique task or a full persona
@@ -229,9 +274,11 @@ pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
     opts: &SpawnOpts,
+    session: &LaunchSession,
     rigger_bin: &str,
 ) -> Result<Vec<String>, Error> {
     let mut args = vec!["-p".to_string()];
+    args.extend(session.args());
     args.extend(persona.args());
     let model = agent.model_for_attempt(opts.attempt);
     if !model.is_empty() {
@@ -726,7 +773,7 @@ thinking out loud, not json\n\
     ) -> (Vec<String>, SystemPromptFile) {
         let opts = persona_opts(system_prompt, attempt);
         let persona = system_prompt_file(&opts.system_prompt, Some(scratch.to_path_buf())).unwrap();
-        let args = build_args(agent, &persona, &opts, "rigger").unwrap();
+        let args = build_args(agent, &persona, &opts, &fresh_session(), "rigger").unwrap();
         (args, persona)
     }
 
@@ -737,9 +784,18 @@ thinking out loud, not json\n\
             agent,
             &SystemPromptFile::default(),
             &persona_opts("", attempt),
+            &fresh_session(),
             "rigger",
         )
         .unwrap()
+    }
+
+    /// The fresh session the argv tests launch under, its id fixed so an exact argv compares.
+    fn fresh_session() -> LaunchSession {
+        LaunchSession {
+            id: "sess-fresh".to_string(),
+            resumed: false,
+        }
     }
 
     /// The prompt `-p` carries in `args`: none, since the task travels on stdin.
@@ -858,6 +914,8 @@ thinking out loud, not json\n\
         );
         let mut expected = vec![
             "-p".to_string(),
+            "--session-id".to_string(),
+            "sess-fresh".to_string(),
             "--allowed-tools".to_string(),
             crate::hooks::helper_mcp_tools().unwrap().join(","),
         ];
@@ -886,6 +944,7 @@ thinking out loud, not json\n\
             &a,
             &SystemPromptFile::default(),
             &persona_opts("", 0),
+            &fresh_session(),
             "/custom/bin/rigger",
         )
         .unwrap();
@@ -936,6 +995,7 @@ thinking out loud, not json\n\
         let (args, _persona) = args_with_persona(&a, scratch.path(), "persona", 0);
         let order: Vec<usize> = [
             "-p",
+            "--session-id",
             "--system-prompt-file",
             "--model",
             "--allowed-tools",
@@ -965,6 +1025,7 @@ thinking out loud, not json\n\
             &AgentDef::default(),
             &SystemPromptFile::default(),
             &opts,
+            &fresh_session(),
             "rigger",
         )
         .unwrap();
@@ -988,9 +1049,147 @@ thinking out loud, not json\n\
             &AgentDef::default(),
             &SystemPromptFile::default(),
             &opts,
+            &fresh_session(),
             "rigger",
         )
         .unwrap_err();
         assert!(err.0.contains("settings"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_fresh_launch_names_its_session_and_a_resume_continues_the_recorded_one() {
+        // A fresh launch starts the session under the id the host minted, so the host knows
+        // it without reading the session's output; a later attempt continues the recorded
+        // session instead - exactly one of the two flags, since Claude Code refuses
+        // `--session-id` beside `--resume` - and the rest of the argv is unchanged, because
+        // tools, permissions and MCP servers are per launch, never part of the session.
+        let a = AgentDef {
+            id: "impl".into(),
+            tools: vec!["Read".into()],
+            ..Default::default()
+        };
+        let fresh = args_for(&a, 0);
+        assert_eq!(fresh[arg_index(&fresh, "--session-id") + 1], "sess-fresh");
+        assert!(!fresh.iter().any(|x| x == "--resume"), "{fresh:?}");
+
+        let opts = SpawnOpts {
+            resumed_from: "sess-prior".into(),
+            ..persona_opts("", 0)
+        };
+        let resumed = build_args(
+            &a,
+            &SystemPromptFile::default(),
+            &opts,
+            &LaunchSession::of(&opts),
+            "rigger",
+        )
+        .unwrap();
+        assert_eq!(resumed[arg_index(&resumed, "--resume") + 1], "sess-prior");
+        assert!(!resumed.iter().any(|x| x == "--session-id"), "{resumed:?}");
+        let rest = |args: &[String]| args[3..].to_vec();
+        assert_eq!(
+            rest(&resumed),
+            rest(&fresh),
+            "a resume passes the same configuration a fresh launch does"
+        );
+    }
+
+    /// The checked-in fixture agent that stands in for a session host's `claude`: it refuses a
+    /// `--resume` of any session but `$SESSION_AGENT_KNOWN` exactly as Claude Code does, and
+    /// otherwise echoes its argv and its task.
+    #[cfg(unix)]
+    const SESSION_AGENT: &str = "../../tests/fixtures/session-agent.sh";
+
+    /// Spawn the session fixture agent with `opts` on the full task `prompt`, the session
+    /// `known` the only one it can resume.
+    #[cfg(unix)]
+    fn spawn_session_agent(prompt: &str, opts: SpawnOpts, known: &str) -> AgentResult {
+        let driver = Driver {
+            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(SESSION_AGENT)
+                .to_string_lossy()
+                .into_owned(),
+            ..Driver::default()
+        };
+        let opts = SpawnOpts {
+            env: vec![("SESSION_AGENT_KNOWN".to_string(), known.to_string())],
+            ..opts
+        };
+        driver
+            .spawn(&AgentDef::default(), prompt, &opts, &|_: &str, _: Value| {
+                Ok(())
+            })
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fresh_spawn_reports_the_session_it_started() {
+        let result = spawn_session_agent("the full task", SpawnOpts::default(), "");
+        assert!(
+            uuid::Uuid::parse_str(&result.session_id).is_ok(),
+            "a fresh spawn reports the session id it minted: {result:?}"
+        );
+        assert!(
+            result
+                .output
+                .contains(&format!("--session-id {}", result.session_id)),
+            "the reported id is the one the session was started under: {}",
+            result.output
+        );
+        assert_eq!(result.resumed_from, "", "a fresh spawn continued nothing");
+        assert!(
+            result.output.contains("task: the full task"),
+            "{}",
+            result.output
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_resumed_spawn_continues_its_session_with_the_resume_task_alone() {
+        let opts = SpawnOpts {
+            resumed_from: "sess-prior".into(),
+            resume_task: "fix exactly these".into(),
+            ..Default::default()
+        };
+        let result = spawn_session_agent("the full task", opts, "sess-prior");
+        assert!(
+            result.output.contains("--resume sess-prior"),
+            "{}",
+            result.output
+        );
+        assert!(
+            result.output.contains("task: fix exactly these")
+                && !result.output.contains("the full task"),
+            "the resumed session is sent only what changed: {}",
+            result.output
+        );
+        assert_eq!(result.session_id, "sess-prior");
+        assert_eq!(result.resumed_from, "sess-prior");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_resume_whose_session_is_gone_falls_back_to_a_fresh_spawn_and_says_so() {
+        // The transcript of the session to resume is gone (Claude Code refuses the resume
+        // before any turn): the host relaunches fresh with the FULL task, and the result's
+        // empty `resumed_from` beside a new session id records that it fell back.
+        let opts = SpawnOpts {
+            resumed_from: "sess-gone".into(),
+            resume_task: "fix exactly these".into(),
+            ..Default::default()
+        };
+        let result = spawn_session_agent("the full task", opts, "sess-other");
+        assert!(
+            result.output.contains("task: the full task"),
+            "the fallback sends the full task: {}",
+            result.output
+        );
+        assert_eq!(result.resumed_from, "", "the fallback continued nothing");
+        assert!(
+            uuid::Uuid::parse_str(&result.session_id).is_ok() && result.session_id != "sess-gone",
+            "the fallback reports the fresh session it started: {result:?}"
+        );
     }
 }

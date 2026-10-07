@@ -21,7 +21,7 @@ use common::fixtures::implementer_opts as opts;
 
 use rigger::config::parse_agent;
 use rigger::driver::claude_code::build_args;
-use rigger::driver::SystemPromptFile;
+use rigger::driver::{LaunchSession, SystemPromptFile};
 
 /// The real parser (`parse_agent`, YAML frontmatter into `AgentDef`'s `#[serde(default)]`
 /// field - `AgentDef` carries no `deny_unknown_fields`, so this proves the key is actually
@@ -43,7 +43,7 @@ fn fallback_model_parses_from_real_frontmatter_and_reaches_build_args() {
         &agent,
         &SystemPromptFile::default(),
         &opts("u1/implementer#0"),
-        "sess-1",
+        &LaunchSession::fresh(),
         "rigger",
     )
     .unwrap();
@@ -72,7 +72,7 @@ fn fallback_model_absent_from_frontmatter_parses_empty_and_build_args_omits_the_
         &agent,
         &SystemPromptFile::default(),
         &opts("u1/implementer#0"),
-        "sess-1",
+        &LaunchSession::fresh(),
         "rigger",
     )
     .unwrap();
