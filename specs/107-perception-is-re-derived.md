@@ -155,7 +155,7 @@ transaction exactly as `fold_new` ends: the entry's position recorded once in `a
 (`record_applied`, which cannot guard the batch's events, since they share that position), each
 batch event folded, then `relabel_owed_communities`, which labels every community `settle_node` and
 the fold's arms owed through `owe_relabel_of` and empties `relabel_owed`, all in the one transaction
-`fold_batch` opens and commits; a re-recording or an unresolved entry folds nothing, so it owes no
+`Projector::transact` opens and commits; a re-recording or an unresolved entry folds nothing, so it owes no
 relabel. An entry no source resolves folds NOTHING: the identity's facts and current generation stay
 as they stood, and the sinks' two-sided check heals it, since the log's latest generation is then
 not the graph's current one and the next ingest of the file records again.
