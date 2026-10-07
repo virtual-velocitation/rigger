@@ -309,6 +309,7 @@ fn search_file(path: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_fixtures::write_file;
 
     #[test]
     fn grep_finds_matching_lines() {
@@ -746,13 +747,6 @@ mod tests {
         );
     }
 
-    /// Plant `bytes` at `rel` under `root`, creating the directories on the way.
-    fn plant_file(root: &Path, rel: &str, bytes: &[u8]) {
-        let file = root.join(rel);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, bytes).unwrap();
-    }
-
     /// THE TREE IS READ BY ONE RULE: a regular, readable file inside the walk's scope hands its
     /// exact bytes - text, bytes that are not UTF-8 and no bytes at all alike - under any prefix
     /// the walk answers for.
@@ -760,10 +754,10 @@ mod tests {
     fn tree_bytes_hands_the_exact_bytes_of_a_regular_readable_file_in_scope() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, "src/a.rs", b"fn a() {}\n");
-        plant_file(root, "docs/design.md", b"# Design\n");
-        plant_file(root, "blob.bin", &[0xff, 0x00, 0xfe]);
-        plant_file(root, "empty.rs", b"");
+        write_file(&root.join("src/a.rs"), b"fn a() {}\n");
+        write_file(&root.join("docs/design.md"), b"# Design\n");
+        write_file(&root.join("blob.bin"), &[0xff, 0x00, 0xfe]);
+        write_file(&root.join("empty.rs"), b"");
 
         assert!(in_walk_scope(root, "gc", "src/a.rs"));
         assert_eq!(
@@ -788,9 +782,9 @@ mod tests {
     fn tree_bytes_hands_none_for_a_path_under_a_hidden_directory() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, ".hidden/h.rs", b"fn h() {}\n");
-        plant_file(root, "visible/h.rs", b"fn h() {}\n");
-        plant_file(root, ".dotfile.rs", b"fn d() {}\n");
+        write_file(&root.join(".hidden/h.rs"), b"fn h() {}\n");
+        write_file(&root.join("visible/h.rs"), b"fn h() {}\n");
+        write_file(&root.join(".dotfile.rs"), b"fn d() {}\n");
 
         assert!(!in_walk_scope(root, "gc", ".hidden/h.rs"));
         assert_eq!(tree_bytes(root, "gc", ".hidden/h.rs"), None);
@@ -812,13 +806,13 @@ mod tests {
     fn tree_bytes_hands_none_for_a_path_a_committed_gitignore_names() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, ".gitignore", b"ignored.rs\nbuild/\n");
-        plant_file(root, "ignored.rs", b"fn ignored() {}\n");
-        plant_file(root, "build/out.rs", b"fn out() {}\n");
-        plant_file(root, "kept.rs", b"fn kept() {}\n");
-        plant_file(root, "sub/.gitignore", b"secret.rs\n");
-        plant_file(root, "sub/secret.rs", b"fn secret() {}\n");
-        plant_file(root, "sub/open.rs", b"fn open() {}\n");
+        write_file(&root.join(".gitignore"), b"ignored.rs\nbuild/\n");
+        write_file(&root.join("ignored.rs"), b"fn ignored() {}\n");
+        write_file(&root.join("build/out.rs"), b"fn out() {}\n");
+        write_file(&root.join("kept.rs"), b"fn kept() {}\n");
+        write_file(&root.join("sub/.gitignore"), b"secret.rs\n");
+        write_file(&root.join("sub/secret.rs"), b"fn secret() {}\n");
+        write_file(&root.join("sub/open.rs"), b"fn open() {}\n");
 
         for named in ["ignored.rs", "build/out.rs", "sub/secret.rs"] {
             assert!(
@@ -850,8 +844,8 @@ mod tests {
     fn tree_bytes_hands_none_for_a_path_that_is_absent_or_not_a_regular_file() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, "src/a.rs", b"fn a() {}\n");
-        plant_file(root, "a", b"a regular file named a\n");
+        write_file(&root.join("src/a.rs"), b"fn a() {}\n");
+        write_file(&root.join("a"), b"a regular file named a\n");
         std::os::unix::fs::symlink(root.join("src/a.rs"), root.join("link.rs")).unwrap();
 
         for not_a_file in ["src/missing.rs", "src", "link.rs", "a/b", ""] {
@@ -879,7 +873,7 @@ mod tests {
         let outer = tempfile::tempdir().unwrap();
         let root = outer.path().join("project");
         std::fs::create_dir_all(&root).unwrap();
-        plant_file(outer.path(), "outside.rs", b"fn outside() {}\n");
+        write_file(&outer.path().join("outside.rs"), b"fn outside() {}\n");
         let absolute = outer.path().join("outside.rs");
         assert_eq!(
             std::fs::read(root.join("../outside.rs")).unwrap(),
@@ -905,7 +899,7 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, "Cargo.toml", b"the root's own copy\n");
+        write_file(&root.join("Cargo.toml"), b"the root's own copy\n");
 
         assert_eq!(
             tree_bytes(root, "gc", "Cargo.toml"),
@@ -924,8 +918,8 @@ mod tests {
         let workflow = workflow_doc();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, &workflow, b"stages: {}\n");
-        plant_file(root, "other.yml", b"stages: {}\n");
+        write_file(&root.join(&workflow), b"stages: {}\n");
+        write_file(&root.join("other.yml"), b"stages: {}\n");
 
         assert!(in_walk_scope(root, "gw", &workflow));
         assert_eq!(
@@ -975,7 +969,7 @@ mod tests {
         let workflow = workflow_doc();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, "elsewhere.yml", b"stages: {}\n");
+        write_file(&root.join("elsewhere.yml"), b"stages: {}\n");
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere.yml"), root.join(&workflow)).unwrap();
 
@@ -992,7 +986,7 @@ mod tests {
     fn tree_bytes_hands_none_for_a_file_of_the_read_fault() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        plant_file(root, "locked.rs", b"fn locked() {}\n");
+        write_file(&root.join("locked.rs"), b"fn locked() {}\n");
         assert_eq!(
             tree_bytes(root, "gc", "locked.rs"),
             Some(b"fn locked() {}\n".to_vec())

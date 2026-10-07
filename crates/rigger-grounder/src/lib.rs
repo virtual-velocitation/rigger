@@ -41,11 +41,7 @@ use rigger_domain::test_cases;
 /// The fold fixtures the inline fold tests share with the root crate's tests, compiled here from
 /// the same file. It names the crate as `rigger::...`, which `extern crate self as rigger` makes
 /// resolve to this crate.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 extern crate self as rigger;
 #[cfg(all(
     test,
@@ -61,3 +57,13 @@ mod test_support;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[path = "../../../tests/common/fixtures/read_fault.rs"]
 mod read_fault_fixtures;
+
+/// The host fixtures the tree's read-rule tests write their files through, compiled here from the
+/// same file as the root crate's tests. It names the reaper and the open-files reader as
+/// `rigger::reap` and `rigger::holders`, which the import below makes resolve in this crate.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/host.rs"]
+mod host_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_process::{holders, reap};
