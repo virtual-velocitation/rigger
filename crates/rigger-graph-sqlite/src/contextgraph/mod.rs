@@ -109,6 +109,10 @@ pub fn check_fold_payload(type_: &str, data: &[u8]) -> Result<(), String> {
         TYPE_COMMUNITY_ASSIGNED => shape::<CommunityAssigned>(type_, data),
         TYPE_CONCEPT_DERIVED => shape::<ConceptDerived>(type_, data),
         TYPE_CONCEPT_REALIZED => shape::<ConceptRealized>(type_, data),
+        // A ledger entry of perception is judged by the one parse its fold reads it with.
+        rigger_domain::retention::TYPE_GENERATION_INGESTED => {
+            rigger_domain::retention::GenerationIngested::parse(data).map(drop)
+        }
         _ => Ok(()),
     }
 }

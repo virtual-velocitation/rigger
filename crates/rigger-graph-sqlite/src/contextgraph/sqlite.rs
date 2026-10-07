@@ -162,6 +162,12 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 /// production.
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
 
+/// Re-extracts the batch of a ledger entry of perception (spec 107): handed the entry's event, it
+/// answers the batch the entry's generation names, that no source resolves it, or an error, which
+/// fails the rebuild. What a [`Projector::rebuild`] folds each entry with, behind the ledger
+/// fold; `rigger setup` binds the one that reads the repository's object database and the tree.
+pub type Reextract<'s> = dyn FnMut(&Event) -> Result<Option<Vec<Event>>, Error> + 's;
+
 /// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
 /// most `batch`, each with the log's last position: the [`RebuildSource`] body for a log already
 /// read into memory.
@@ -393,7 +399,8 @@ impl Projector {
     /// put in place. The mark is dropped once the rebuilt file is in place.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
-    /// projection rather than the log's age - into a fresh SHADOW file beside the graph file, in the
+    /// projection rather than the log's age - each ledger entry of perception with the batch
+    /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph file, in the
     /// batches `source` hands it, each committed with the last position it folded and the run
     /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
     /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
@@ -436,6 +443,7 @@ impl Projector {
         project: &str,
         owed: bool,
         source: &mut RebuildSource,
+        reextract: &mut Reextract,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
         let path = held.path();
@@ -448,7 +456,7 @@ impl Projector {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
             shadow.execute_batch(REBUILD_STATE).map_err(be)?;
-            passed_over += fold_source(&mut shadow, project, source, progress, true)?;
+            passed_over += fold_source(&mut shadow, project, source, reextract, progress, true)?;
             // The graph the live one would hold, never a larger one: the prune `rigger reset
             // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
             let copy = pruned_copy(path);
@@ -471,7 +479,7 @@ impl Projector {
         } else if !rebuild_tail_owed(&live)? {
             return Ok(None);
         }
-        passed_over += fold_source(&mut live, project, source, progress, false)?;
+        passed_over += fold_source(&mut live, project, source, reextract, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -1364,14 +1372,19 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
 /// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], one committed transaction per
 /// batch that also records the batch's last position as the cursor, reporting each to
 /// `progress`, and answer how many events it passed over. Each event folds exactly as
-/// [`Projection::apply`] folds it and one at a time, so an event whose payload the fold rejects
-/// ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is passed over and
-/// the rest still fold: where the live fold rolls its whole batch back and marks the file owed, the
-/// rebuild is what pays that debt, so its position is recorded in the `applied` ledger all the
-/// same, and the rebuilt file does not miss it and the next `rigger setup` does not rebuild for it
-/// again. Any other failure is the store's, not the payload's: it propagates with the batch rolled
-/// back, so nothing records the event folded and the next rebuild resumes from the cursor and
-/// folds it. One the file already folded is passed over by the fold's per-position guard.
+/// [`Projection::apply`] folds it and one at a time - but a ledger entry of perception, which
+/// that fold refuses: it folds as [`Projection::apply_generation`] folds it ([`fold_entry`]), with
+/// the batch `reextract` answers for it, under the same savepoint. So an event whose payload the
+/// fold rejects ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is
+/// passed over and the rest still fold: where the live fold rolls its whole batch back and marks
+/// the file owed, the rebuild is what pays that debt, so its position is recorded in the `applied`
+/// ledger all the same, and the rebuilt file does not miss it and the next `rigger setup` does not
+/// rebuild for it again. Any other failure is the store's, not the payload's: it propagates with
+/// the batch rolled back, so nothing records the event folded and the next rebuild resumes from
+/// the cursor and folds it. That is every failure of an entry whose own payload parses - a
+/// `reextract` that fails, and a re-extracted batch event the fold rejects, which is this binary's
+/// own extraction and never a payload to pass over. One the file already folded is passed over by
+/// the fold's per-position guard.
 ///
 /// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
 /// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_STATE`]), whatever became
@@ -1380,6 +1393,7 @@ fn fold_source(
     conn: &mut Connection,
     project: &str,
     source: &mut RebuildSource,
+    reextract: &mut Reextract,
     progress: &mut dyn FnMut(RebuildProgress),
     gather_run_closure: bool,
 ) -> Result<usize, Error> {
@@ -1390,7 +1404,12 @@ fn fold_source(
         let through = in_transaction(conn, |tx| {
             for e in events {
                 tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-                if let Err(failed) = fold_new(tx, std::slice::from_ref(e), project) {
+                let folded = if e.type_ == TYPE_GENERATION_INGESTED {
+                    fold_entry(tx, e, project, || reextract(e)).map(drop)
+                } else {
+                    fold_new(tx, std::slice::from_ref(e), project)
+                };
+                if let Err(failed) = folded {
                     if super::check_fold_payload(&e.type_, &e.data).is_ok() {
                         return Err(failed);
                     }
@@ -4407,6 +4426,7 @@ mod tests {
             "test",
             false,
             &mut |_, _| panic!("a paid rebuild reads nothing"),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -4450,6 +4470,7 @@ mod tests {
                 reads_from.push(after);
                 stream_past(log, after, batch, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
     }
@@ -4530,6 +4551,7 @@ mod tests {
                 let log: &[Event] = if reads == 1 { &before } else { &gained };
                 stream_past(log, after, 10, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -4631,6 +4653,7 @@ mod tests {
             "test",
             owed,
             &mut |after, sink| stream_past(log, after, 10, sink),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap()
@@ -4722,6 +4745,7 @@ mod tests {
                 let first = stream_past(&log, after, 2, sink);
                 first.and(Err(Error("interrupted after the first batch".to_string())))
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         );
         assert!(interrupted.is_err(), "the first rebuild is interrupted");
@@ -4845,6 +4869,7 @@ mod tests {
                         sink(events, head)
                     })
                 },
+                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -5007,6 +5032,7 @@ mod tests {
                         _ => Err(Error("interrupted in its tail".to_string())),
                     }
                 },
+                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .map_err(|e| e.to_string());
@@ -5029,6 +5055,7 @@ mod tests {
                     sink(events, head)
                 })
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -5103,6 +5130,7 @@ mod tests {
                     sink(events, head)
                 })
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         );
         let shadow = format!("{path}.rebuild");
@@ -5250,6 +5278,7 @@ mod tests {
                 }
                 stream_past(&log, after, 10, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .map_err(|e| e.to_string());
@@ -5258,6 +5287,7 @@ mod tests {
             "test",
             false,
             &mut |after, sink| stream_past(&log, after, 10, sink),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -5751,6 +5781,7 @@ mod tests {
                 while_it_rebuilds.push(second());
                 Ok(())
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .map_err(|e| e.to_string());

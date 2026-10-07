@@ -165,6 +165,13 @@ pub fn tree_bytes(root: &Path, prefix: &str, path: &str) -> Option<Vec<u8>> {
     std::fs::read(file).ok()
 }
 
+/// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
+/// that are not UTF-8, the two inputs every half maps to its batch for no text.
+#[cfg(feature = "symbols")]
+pub(crate) fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
+    bytes.and_then(|bytes| std::str::from_utf8(bytes).ok())
+}
+
 pub use rigger_domain::grounder::{BlastRadius, Grounder, RankedRef, Ref};
 
 /// Nop grounds nothing.

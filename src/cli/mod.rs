@@ -5086,6 +5086,19 @@ fn git_repo_at(root: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// THE ONE ROOT every path a ledger entry of perception records is relative to (spec 107), for
+/// the store at `store_dir` (its `.rigger/`): the git top-level of the directory holding that
+/// `.rigger/`, else - outside a repository - that directory. Every reader of the tree takes its
+/// root from here, so a store in a subdirectory of a repository reads the repository's tree,
+/// never the working directory's.
+fn tree_root(store_dir: &Path) -> PathBuf {
+    let holder = store_dir.parent().unwrap_or(store_dir);
+    match git_repo_at(holder) {
+        top_level if top_level.is_empty() => holder.to_path_buf(),
+        top_level => PathBuf::from(top_level),
+    }
+}
+
 /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
 /// text), naming the escape hatch in the one spelling that survives a sibling PreToolUse
 /// hook's rewrite: `--literal` inside a trailing shell comment, which the shell discards

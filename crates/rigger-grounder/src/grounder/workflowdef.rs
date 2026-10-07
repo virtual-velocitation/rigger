@@ -212,6 +212,19 @@ pub fn project_events(root: &str) -> Vec<Event> {
     }
 }
 
+/// The `gw` batch of the workflow definition holding `bytes` (spec 107), total over its input:
+/// the batch the walk lowers from that file - [`extract_events`] over the workflow
+/// [`config_store::parse_workflow`] reads from UTF-8 bytes, and the empty batch for no bytes, for
+/// bytes that are not UTF-8 and for text that parse refuses, as [`project_events`] answers a
+/// definition it cannot load. The definition has one path, and the walk's flag changes no `gw`
+/// batch, so neither is read.
+pub fn bytes_batch(_path: &str, bytes: Option<&[u8]>, _excluded: bool) -> Vec<Event> {
+    super::text_of(bytes)
+        .and_then(|text| config_store::parse_workflow(text).ok())
+        .map(|workflow| extract_events(&workflow))
+        .unwrap_or_default()
+}
+
 /// [`project_events`] as ONE keyed file batch (`.rigger/workflow.yml`, its events) - the shape
 /// [`crate::ingest`]'s walk folds alongside the code (`gc`) and design (`gd`) halves, under its
 /// own `gw` prefix. Empty when there is nothing to extract ([`project_events`] returned no

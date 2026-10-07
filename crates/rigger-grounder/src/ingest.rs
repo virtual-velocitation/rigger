@@ -560,6 +560,69 @@ pub fn batch_generation(batch: &[Event]) -> String {
     crate::grounder::symbols::store::content_hash(&concat)
 }
 
+/// Where [`resolve_entry`] reads an entry's blob (spec 107): an object id to the bytes the
+/// repository's object database holds under it, none when it holds none, or the failure of the
+/// read, which fails the resolution.
+pub type BlobSource<'b> =
+    dyn FnMut(&str) -> Result<Option<Vec<u8>>, crate::contextgraph::Error> + 'b;
+
+/// Re-extract the batch of the ledger entry `entry`, whose path is relative to `root` (spec 107,
+/// RESOLUTION IS BY GENERATION): the batch its half's `(path, bytes, excluded)` function answers,
+/// under the entry's recorded flag, for the first source whose batch has the entry's generation
+/// ([`batch_generation`]) - (1) the entry's blob, when the entry names one and `blobs` holds it,
+/// `blobs` being absent when no object database can be asked; (2) the tree's file at the path,
+/// as the tree's one read rule hands it ([`crate::grounder::tree_bytes`]); (3) no bytes. The blob
+/// is where to look first, never the test. It answers none when no source resolves the entry:
+/// when none extracts to its generation, when its prefix names no half, and when its payload
+/// does not parse. An empty batch has no generation, so it resolves no entry. A blob source
+/// that fails fails the resolution.
+#[cfg(feature = "symbols")]
+pub fn resolve_entry(
+    root: &std::path::Path,
+    entry: &Event,
+    blobs: Option<&mut BlobSource>,
+) -> Result<Option<Vec<Event>>, crate::contextgraph::Error> {
+    let Ok(named) = rigger_domain::retention::GenerationIngested::parse(&entry.data) else {
+        return Ok(None);
+    };
+    let half: fn(&str, Option<&[u8]>, bool) -> Vec<Event> = match named.prefix.as_str() {
+        "gc" => crate::grounder::symbols::events::bytes_batch,
+        "gd" => crate::grounder::design::events::bytes_batch,
+        "gw" => crate::grounder::workflowdef::bytes_batch,
+        _ => return Ok(None),
+    };
+    let resolved = |bytes: Option<Vec<u8>>| {
+        let batch = half(&named.file, bytes.as_deref(), named.excluded);
+        (!batch.is_empty() && batch_generation(&batch) == named.generation).then_some(batch)
+    };
+    let blob = match blobs {
+        Some(blobs) if !named.blob.is_empty() => blobs(&named.blob)?,
+        _ => None,
+    };
+    let from_held = |held: Option<Vec<u8>>| held.and_then(|bytes| resolved(Some(bytes)));
+    Ok(from_held(blob)
+        .or_else(|| {
+            from_held(crate::grounder::tree_bytes(
+                root,
+                &named.prefix,
+                &named.file,
+            ))
+        })
+        .or_else(|| resolved(None)))
+}
+
+/// Light lane: no extraction pass is compiled, so no source re-extracts a batch - every entry is
+/// unresolved, and the blob source is never asked (mirrors [`walk_exclusions`]'s own light-lane
+/// stub).
+#[cfg(not(feature = "symbols"))]
+pub fn resolve_entry(
+    _root: &std::path::Path,
+    _entry: &Event,
+    _blobs: Option<&mut BlobSource>,
+) -> Result<Option<Vec<Event>>, crate::contextgraph::Error> {
+    Ok(None)
+}
+
 /// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
 /// `on_batch` at once. `hash` is the batch's generation ([`batch_generation`]), so every event of
 /// a file shares one `<hash>`.

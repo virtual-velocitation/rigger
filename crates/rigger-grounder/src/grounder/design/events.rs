@@ -139,6 +139,16 @@ fn file_batch(root: &str, rel: &str) -> Vec<Event> {
     text_batch(rel, &contents)
 }
 
+/// The `gd` batch of the file at `path` holding `bytes` (spec 107), total over its input: the
+/// batch the walk lowers from that file - [`text_batch`] over UTF-8 bytes, and the empty batch
+/// for no bytes and for bytes that are not UTF-8, as [`file_batch`] answers a file it cannot
+/// read. The walk's flag changes no `gd` batch.
+pub fn bytes_batch(path: &str, bytes: Option<&[u8]>, _excluded: bool) -> Vec<Event> {
+    crate::grounder::text_of(bytes)
+        .map(|text| text_batch(path, text))
+        .unwrap_or_default()
+}
+
 /// The design-intent events of the file at `rel` holding `text` (spec 107), through the shared
 /// `extract_concepts` / `extract_links` scope-gated authority: a design doc yields concept then
 /// link events, a source file its `# WHY:` / `# NOTE:` rationale, and a usage doc or text with no

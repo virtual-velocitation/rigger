@@ -1116,7 +1116,7 @@ fn a_batch_process_that_dies_mid_pass_fails_the_rebuild_and_the_resumed_pass_equ
     let graph_db = rigger_file(root, "graph.db");
     let stood = graph_identity(&graph_db, &project);
     let (out, err, ok) = setup(root);
-    let refused = format!("rigger: graph: {died}");
+    let refused = format!("rigger: graph: event store: {died}");
     assert_eq!(
         (
             ok,

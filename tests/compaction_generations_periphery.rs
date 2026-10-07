@@ -2268,6 +2268,7 @@ fn rebuild(
         PROJECT,
         false,
         source,
+        &mut |_| Ok(None),
         &mut no_progress,
     )
 }
@@ -2306,6 +2307,7 @@ fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
         PROJECT,
         false,
         &mut source_over(&log, 2, &afters),
+        &mut |_| Ok(None),
         &mut |at| reported.push(at),
     )
     .unwrap();
@@ -2399,6 +2401,7 @@ fn a_log_with_no_live_selection_is_read_for_positions_alone_and_rebuilt_reading_
         PROJECT,
         !owed.is_empty(),
         &mut stream_source(&counting, rigger::conductor::STREAM, 2),
+        &mut |_| Ok(None),
         &mut no_progress,
     )
     .unwrap();
@@ -3336,6 +3339,7 @@ fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
                 &project,
                 false,
                 &mut source,
+                &mut |_| Ok(None),
                 &mut |_| {
                     batches += 1;
                     if batches == 1 {
@@ -3870,6 +3874,7 @@ fn an_emit_while_the_rebuild_folds_its_tail_is_folded_at_once_and_met_exactly_on
                     }
                     source(after, sink)
                 },
+                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap()
@@ -6258,6 +6263,7 @@ fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its
                 sink(events, head)
             })
         },
+        &mut |_| Ok(None),
         &mut |_| {},
     )
     .map_err(|e| e.to_string());

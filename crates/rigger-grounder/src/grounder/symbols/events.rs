@@ -105,13 +105,39 @@ pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>)> {
             let events = match idx.files().get(file) {
                 Some(fs) => lower_file(file, fs, names_code_identity(&excluded, file)),
                 // Absent from the index: deleted or unreadable since the index was last freshened
-                // (or never source at all). `lang` is immaterial here - the fold's supersede keys
-                // on `file` alone - so this never has to guess or re-derive it.
-                None => vec![empty_structural_boundary_event(file, "unknown", false)],
+                // (or never source at all).
+                None => unparsed_batch(file),
             };
             (file.clone(), events)
         })
         .collect()
+}
+
+/// The `gc` batch of a path that holds nothing a grammar parsed: exactly the one structural
+/// boundary event, of an unknown language. `lang` is immaterial there - the fold's supersede keys
+/// on the file alone - so it is never guessed or re-derived.
+fn unparsed_batch(path: &str) -> Vec<Event> {
+    vec![empty_structural_boundary_event(path, "unknown", false)]
+}
+
+/// The `gc` batch of the file at `path` holding `bytes` (spec 107), total over its input: the
+/// batch the walk lowers from that file. UTF-8 bytes that extract under the grammar the path
+/// resolves, as every production caller of the index resolves it, yield [`lower_file`] over the
+/// extracted symbols under `excluded`; every other input - no bytes, bytes that are not UTF-8, a
+/// path with no grammar, a failed extraction - yields [`unparsed_batch`], as [`file_batches`]
+/// gives a path the index lacks. `excluded` changes only a parsed batch. Never empty.
+pub fn bytes_batch(path: &str, bytes: Option<&[u8]>, excluded: bool) -> Vec<Event> {
+    use crate::grounder::symbols::{extract, registry};
+
+    let symbols = crate::grounder::text_of(bytes)
+        .zip(registry::for_path(path, None))
+        .and_then(|(source, grammar)| {
+            extract::extract(source, grammar.lang, &grammar.language, grammar.tags_query).ok()
+        });
+    match symbols {
+        Some(symbols) => lower_file(path, &symbols, excluded),
+        None => unparsed_batch(path),
+    }
 }
 
 /// Whether `excluded`, the identities [`walk_exclusions`](crate::ingest::walk_exclusions)

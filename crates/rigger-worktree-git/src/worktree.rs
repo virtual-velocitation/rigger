@@ -1548,6 +1548,96 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
+/// (spec 107): started once for a repository, asked for one object at a time, and ended by
+/// closing its standard input and waiting for it on every exit path - when this is dropped -
+/// never by a signal. It runs with `GIT_NO_LAZY_FETCH=1`, so a blob a partial clone has not
+/// fetched is one git does not hold, never a network read.
+pub struct BlobBatch {
+    /// The process, holding the standard input the requests are written to.
+    process: std::process::Child,
+    /// The process's standard output, the answers.
+    answers: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl BlobBatch {
+    /// Start the batch process over the repository holding `root`, or answer none when there is
+    /// no object database to ask: `root` is outside a git repository, or the process cannot
+    /// start at all.
+    pub fn start(root: &std::path::Path) -> Option<Self> {
+        use std::process::Stdio;
+
+        let in_repository = crate::subprocess::git_in(root)
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if !in_repository {
+            return None;
+        }
+        let mut process = crate::subprocess::git_in(root)
+            .args(["cat-file", "--batch"])
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let answers = std::io::BufReader::new(process.stdout.take()?);
+        Some(BlobBatch { process, answers })
+    }
+
+    /// The bytes of the object `id` names, or none when the repository does not hold it:
+    /// whatever made git answer `missing` for it (an absent object, a loose object whose header
+    /// is corrupt), and an `id` that is not all hexadecimal digits, which is never written to
+    /// the process, so no id can read as two requests. A process that stopped before its answer
+    /// was whole - it died, as git dies on a loose object whose body is truncated - fails the
+    /// read, naming the object and its remedy.
+    pub fn blob(&mut self, id: &str) -> Result<Option<Vec<u8>>, Error> {
+        if !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+        self.answer(id).ok_or_else(|| {
+            Error(format!(
+                "git cat-file --batch stopped while answering object {id}: restore the object \
+                 or remove it, after which git answers it missing and its entry resolves from \
+                 the tree"
+            ))
+        })
+    }
+
+    /// Ask the process for the object `id` and read its whole answer: the object's bytes, or
+    /// none for an answer that carries no size (`<id> missing`). `None` when the process
+    /// stopped before the answer was whole.
+    fn answer(&mut self, id: &str) -> Option<Option<Vec<u8>>> {
+        use std::io::{BufRead, Read, Write};
+
+        let requests = self.process.stdin.as_mut()?;
+        writeln!(requests, "{id}").ok()?;
+        requests.flush().ok()?;
+        // `<id> <type> <size>` for an object git holds, then its bytes and one line break.
+        let header = self.answers.by_ref().lines().next()?.ok()?;
+        let Some(size) = header
+            .rsplit(' ')
+            .next()
+            .and_then(|size| size.parse::<usize>().ok())
+        else {
+            return Some(None);
+        };
+        let mut bytes = vec![0; size + 1];
+        self.answers.read_exact(&mut bytes).ok()?;
+        bytes.truncate(size);
+        Some(Some(bytes))
+    }
+}
+
+impl Drop for BlobBatch {
+    /// End the process through its own handle: waiting closes its standard input first, at
+    /// which `git cat-file --batch` exits, and then reaps it.
+    fn drop(&mut self) {
+        let _ = self.process.wait();
+    }
+}
+
 /// Every unit branch (`rigger/u/*`) currently present in `repo`, sorted for determinism, via
 /// `git for-each-ref`. Empty when git is unavailable or `repo` is not a repository. Used by the
 /// conductor's land-refused lesson (spec 103 criterion 8) to search every unit's branch for one
