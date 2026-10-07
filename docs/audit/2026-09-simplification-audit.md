@@ -2042,19 +2042,19 @@ mandatory sweep: .rigger-path string literals - 590 site(s), collected mechanica
 - `crates/rigger-grounder/src/grounder/mod.rs:917-917` `".rigger/workflow.yml"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:514-514` `".rigger"`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:602-602` `"this project's own .rigger/workflow.yml must extract at least one event"`
-- `crates/rigger-grounder/src/ingest.rs:674-674` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:676-676` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:685-685` `"gw/.rigger/workflow.yml@"`
-- `crates/rigger-grounder/src/ingest.rs:703-703` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+- `crates/rigger-grounder/src/ingest.rs:675-675` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:677-677` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:686-686` `"gw/.rigger/workflow.yml@"`
+- `crates/rigger-grounder/src/ingest.rs:704-704` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
              must both advance the shared batch count; got {}"`
-- `crates/rigger-grounder/src/ingest.rs:732-732` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:734-734` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:768-768` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1021-1021` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1025-1025` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1034-1034` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1047-1047` `"gd/.rigger/"`
-- `crates/rigger-grounder/src/ingest.rs:1048-1048` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
+- `crates/rigger-grounder/src/ingest.rs:733-733` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:735-735` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:769-769` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:1015-1015` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:1019-1019` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1028-1028` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1041-1041` `"gd/.rigger/"`
+- `crates/rigger-grounder/src/ingest.rs:1042-1042` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
 - `crates/rigger-process/src/reap.rs:749-749` `".rigger"`
 - `crates/rigger-process/src/reap.rs:1090-1090` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`
@@ -5126,7 +5126,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8523 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8522 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4901-4942` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:14910-14932` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

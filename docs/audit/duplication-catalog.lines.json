@@ -1259,63 +1259,63 @@
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 674,
-        "end_line": 674
+        "start_line": 675,
+        "end_line": 675
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 676,
-        "end_line": 676
+        "start_line": 677,
+        "end_line": 677
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 685,
-        "end_line": 685
+        "start_line": 686,
+        "end_line": 686
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 703,
-        "end_line": 703
+        "start_line": 704,
+        "end_line": 704
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 732,
-        "end_line": 732
+        "start_line": 733,
+        "end_line": 733
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 734,
-        "end_line": 734
+        "start_line": 735,
+        "end_line": 735
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 768,
-        "end_line": 768
+        "start_line": 769,
+        "end_line": 769
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1021,
-        "end_line": 1021
+        "start_line": 1015,
+        "end_line": 1015
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1025,
-        "end_line": 1025
+        "start_line": 1019,
+        "end_line": 1019
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1034,
-        "end_line": 1034
+        "start_line": 1028,
+        "end_line": 1028
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1047,
-        "end_line": 1047
+        "start_line": 1041,
+        "end_line": 1041
       },
       {
         "file": "crates/rigger-grounder/src/ingest.rs",
-        "start_line": 1048,
-        "end_line": 1048
+        "start_line": 1042,
+        "end_line": 1042
       },
       {
         "file": "crates/rigger-process/src/reap.rs",
