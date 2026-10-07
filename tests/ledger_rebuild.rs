@@ -1165,7 +1165,7 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
 #[cfg(not(feature = "symbols"))]
 #[test]
 fn without_an_extraction_every_entry_folds_nothing_and_its_position_is_recorded() {
-    use common::fixtures::planted_extraction_tree;
+    use common::fixtures::{planted_extraction_tree, write_file};
 
     let dir = planted_extraction_tree(write_file);
     let root = dir.path();
@@ -1332,4 +1332,318 @@ fn a_rebuild_whose_re_extracted_batch_the_fold_rejects_fails_rather_than_passing
         ),
         (Some(SOURCE_GENERATION.to_string()), true, true)
     );
+}
+
+/// `rigger setup` in `cwd`, which must succeed, with a recording `git` first on PATH: every
+/// `git` invocation it made, as the argument line of each without its leading `-C <directory>`.
+fn git_invocations_of_setup(cwd: &Path) -> Vec<String> {
+    let work = tempfile::tempdir().unwrap();
+    let path = common::repo::stub_path(work.path(), "git", Some("git-recording.sh"));
+    let (out, err, ok) = run_rigger_envs(
+        cwd,
+        &["setup"],
+        &[("RIGGER_NPM", "true"), ("PATH", path.as_str())],
+    );
+    assert!(ok, "setup must succeed; stdout: {out} stderr: {err}");
+    std::fs::read_to_string(work.path().join("bin").join("git-invocations"))
+        .expect("the recording git was reached")
+        .lines()
+        .map(|line| match line.strip_prefix("-C ") {
+            Some(anchored) => anchored.split_once(' ').map_or("", |(_, args)| args),
+            None => line,
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// How often `rigger setup` in `cwd` asked git whether an object database stands there, and how
+/// many `git cat-file --batch` processes it started.
+fn blob_source_starts_of_setup(cwd: &Path) -> (usize, usize) {
+    let invocations = git_invocations_of_setup(cwd);
+    let asked = |args: &str| invocations.iter().filter(|line| *line == args).count();
+    (asked("rev-parse --git-dir"), asked("cat-file --batch"))
+}
+
+/// Given a repository whose log holds three entries, two of them resolving only from the blobs
+/// they name, when the operator runs `rigger setup`, then the rebuild decides once whether an
+/// object database can be asked and reads every blob from one `git cat-file --batch` process;
+/// and a setup that owes no rebuild, a rebuild over a log holding no entry, and a rebuild
+/// outside a repository each start none - the last after asking, once, and finding no
+/// repository.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_rebuild_reads_every_entrys_blob_from_one_batch_process_started_at_its_first_entry() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    let first_source = held_blob(root, SOURCE_PATH);
+    let first_document = held_blob(root, DOCUMENT_PATH);
+    let project = settled(root);
+    // The tree moves on, so both first generations resolve from the object database alone.
+    write_text(root, SOURCE_PATH, SOURCE_WITHOUT_HELPER);
+    std::fs::remove_file(root.join(DOCUMENT_PATH)).unwrap();
+    let walked = |prefix, path| events_of(walked_batch(prefix, path));
+    let recordings = [
+        recording(
+            "gc",
+            SOURCE_PATH,
+            &first_source,
+            false,
+            10,
+            walked("gc", SOURCE_PATH),
+        ),
+        recording(
+            "gd",
+            DOCUMENT_PATH,
+            &first_document,
+            false,
+            11,
+            walked("gd", DOCUMENT_PATH),
+        ),
+        recording(
+            "gd",
+            SOURCE_PATH,
+            &first_source,
+            false,
+            12,
+            walked("gd", SOURCE_PATH),
+        ),
+    ];
+    record(root, &recordings);
+    stand_graph(root, &project);
+
+    assert_eq!(
+        blob_source_starts_of_setup(root),
+        (1, 1),
+        "one question and one batch process for three entries"
+    );
+    assert_eq!(
+        generations(
+            root,
+            &project,
+            &["gc/src/lib.rs", "gd/docs/architecture.md", "gd/src/lib.rs"]
+        ),
+        vec![
+            Some(SOURCE_GENERATION.to_string()),
+            Some("ea5177040caf5338".to_string()),
+            Some("88eadaf4024b4a86".to_string()),
+        ],
+        "each entry resolved from the blob the one process answered"
+    );
+    assert_eq!(
+        blob_source_starts_of_setup(root),
+        (0, 0),
+        "a setup that owes no rebuild asks nothing of the object database"
+    );
+
+    // A rebuild that meets no entry never starts the process.
+    let bare = temp_project();
+    let project = settled(bare.path());
+    stand_graph(bare.path(), &project);
+    let position = append_unfolded(
+        bare.path(),
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, common::cli::code_entity()),
+    );
+    assert_eq!(blob_source_starts_of_setup(bare.path()), (0, 0));
+    assert!(
+        applied(&rigger_file(bare.path(), "graph.db"), position),
+        "the rebuild that started no process did fold the log"
+    );
+
+    // Outside a repository the one question is asked, and no process follows it.
+    let repoless = temp_repoless_project();
+    write_text(repoless.path(), SOURCE_PATH, SOURCE_BODY);
+    let project = settled(repoless.path());
+    stand_graph(repoless.path(), &project);
+    record(
+        repoless.path(),
+        &[
+            recording(
+                "gc",
+                SOURCE_PATH,
+                NOT_HELD,
+                false,
+                10,
+                walked("gc", SOURCE_PATH),
+            ),
+            recording(
+                "gd",
+                SOURCE_PATH,
+                NOT_HELD,
+                false,
+                11,
+                walked("gd", SOURCE_PATH),
+            ),
+        ],
+    );
+    assert_eq!(blob_source_starts_of_setup(repoless.path()), (1, 0));
+    assert_eq!(
+        generations(
+            repoless.path(),
+            &project,
+            &["gc/src/lib.rs", "gd/src/lib.rs"]
+        ),
+        vec![
+            Some(SOURCE_GENERATION.to_string()),
+            Some("88eadaf4024b4a86".to_string()),
+        ]
+    );
+}
+
+/// Given a repository whose log holds entries naming blobs, in the lane that compiles no
+/// extraction, when the operator runs `rigger setup`, then the rebuild folds the log without
+/// asking git for an object database and without starting a `git cat-file --batch` process.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn without_an_extraction_a_rebuild_over_entries_starts_no_batch_process() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", common::fixtures::SOURCE_BODY);
+    let project = settled(root);
+    stand_graph(root, &project);
+    let recordings = ["gc", "gd"].map(|prefix| Recording {
+        named: generation_ingested(
+            prefix,
+            "src/lib.rs",
+            SOURCE_GENERATION,
+            "1111111111111111111111111111111111111111",
+            false,
+        ),
+        secs: 10,
+        batch: None,
+    });
+    let positions = record(root, &recordings);
+
+    assert_eq!(blob_source_starts_of_setup(root), (0, 0));
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        positions
+            .iter()
+            .map(|position| applied(&graph_db, *position))
+            .collect::<Vec<_>>(),
+        vec![true, true],
+        "the rebuild that started no process did fold both entries"
+    );
+}
+
+/// Given a repository whose tree still holds what three entries were recorded from, the first
+/// naming a loose object whose body is truncated, the second a loose object whose header is
+/// corrupt and the third, for a file since deleted, a name that is not an object id though git
+/// would resolve it to the file's committed bytes, when the operator removes the truncated object
+/// and runs `rigger setup`, then git answers both objects missing, the third name is never asked,
+/// the rebuild completes, and the rebuilt `graph.db` equals the incremental one: the first two
+/// entries resolved from the tree's files and the third resolved nothing.
+#[cfg(feature = "symbols")]
+#[test]
+fn an_object_git_does_not_answer_falls_to_the_tree_and_a_name_that_is_no_object_id_is_not_asked() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, GONE_PATH, GONE_BODY);
+    commit_sources(root);
+    let source = blob_id(root, SOURCE_PATH);
+    let document = blob_id(root, DOCUMENT_PATH);
+    let committed_gone = format!("HEAD:{GONE_PATH}");
+    assert_eq!(
+        git_out(root, &["rev-parse", &committed_gone]),
+        blob_id(root, GONE_PATH),
+        "git resolves the third entry's name to the deleted file's committed blob"
+    );
+    let project = settled(root);
+    std::fs::remove_file(root.join(GONE_PATH)).unwrap();
+
+    let walked = |prefix, path| events_of(walked_batch(prefix, path));
+    let recordings = [
+        recording(
+            "gc",
+            SOURCE_PATH,
+            &source,
+            false,
+            10,
+            walked("gc", SOURCE_PATH),
+        ),
+        recording(
+            "gd",
+            DOCUMENT_PATH,
+            &document,
+            false,
+            11,
+            walked("gd", DOCUMENT_PATH),
+        ),
+        Recording {
+            batch: None,
+            ..recording(
+                "gc",
+                GONE_PATH,
+                &committed_gone,
+                false,
+                12,
+                events_of(&GONE_BATCH),
+            )
+        },
+    ];
+    let positions = record(root, &recordings);
+    let scratch = tempfile::tempdir().unwrap();
+    let incremental = scratch.path().join("incremental.db");
+    assert_eq!(
+        fold_incrementally(&incremental, &project, root, &recordings),
+        vec![EntryFold::BatchAsked; 3]
+    );
+    stand_graph(root, &project);
+
+    let truncated = loose_object(root, &source);
+    let whole = std::fs::read(&truncated).unwrap();
+    std::fs::write(&truncated, &whole[..whole.len() - 6]).unwrap();
+    std::fs::write(loose_object(root, &document), b"garbage").unwrap();
+    let (out, err, ok) = setup(root);
+    let refused = format!(
+        "rigger: graph: event store: git cat-file --batch stopped while answering object \
+         {source}: restore the object or remove it, after which git answers it missing and its \
+         entry resolves from the tree"
+    );
+    assert_eq!(
+        (ok, err.lines().last()),
+        (false, Some(refused.as_str())),
+        "stdout: {out} stderr: {err}"
+    );
+
+    // The remedy the failure names second: the object is removed.
+    std::fs::remove_file(&truncated).unwrap();
+    assert_eq!(
+        setup_rebuild_lines(root),
+        vec![LOST_FOLD_REBUILD_LINE, REBUILT_LINE],
+        "the rebuild completes and passes no entry over"
+    );
+    let graph_db = rigger_file(root, "graph.db");
+    assert_eq!(
+        graph_identity(&graph_db, &project),
+        graph_identity(&incremental, &project),
+        "the rebuilt graph.db is the incremental one, fold state included"
+    );
+    assert_eq!(
+        (
+            generations(
+                root,
+                &project,
+                &["gc/src/lib.rs", "gd/docs/architecture.md", "gc/src/gone.rs"]
+            ),
+            positions
+                .iter()
+                .map(|position| applied(&graph_db, *position))
+                .collect::<Vec<_>>(),
+        ),
+        (
+            vec![
+                Some(SOURCE_GENERATION.to_string()),
+                Some("ea5177040caf5338".to_string()),
+                None,
+            ],
+            vec![true, true, true],
+        ),
+        "the two entries git answered missing for resolved from the tree, and the entry whose \
+         name is no object id resolved nothing and is recorded all the same"
+    );
+    assert_eq!(setup_rebuild_lines(root), Vec::<String>::new());
 }
