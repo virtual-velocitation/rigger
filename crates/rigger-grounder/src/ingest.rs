@@ -806,6 +806,17 @@ mod tests {
         );
     }
 
+    /// `code_identity` answers a path's `gc` identity: the path whole, nested directories and
+    /// all, under the `gc` prefix - the string `walk_exclusions` names an excluded file by.
+    #[test]
+    fn code_identity_answers_the_path_under_the_gc_prefix() {
+        assert_eq!(
+            super::code_identity("src/deep/checks.rs"),
+            "gc/src/deep/checks.rs"
+        );
+        assert_eq!(super::code_identity("lib.rs"), "gc/lib.rs");
+    }
+
     /// `walk_exclusions` loads the index as the walk does: a persisted index answers ahead of
     /// the tree, so a source file deleted since the index was saved is still indexed and still
     /// declares the test module, which a fresh build of the tree would no longer exclude.
