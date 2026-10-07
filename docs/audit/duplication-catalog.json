@@ -338,30 +338,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-649d686bdf2a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "is_stale",
-        "content_hash": "35f07935722fa2b3"
-      },
-      {
-        "file": "crates/rigger-conductor/src/replay_keys.rs",
-        "name": "insert",
-        "content_hash": "f668e0df1bdefdf5"
-      },
-      {
-        "file": "crates/rigger-conductor/src/replay_keys.rs",
-        "name": "contains",
-        "content_hash": "e34d58c0828b6a2e"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-conductor/src/replay_keys.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4e1d0e78e3c6",
     "classification": "semantic",
     "sites": [
@@ -4152,14 +4128,9 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ae7ef878296c",
+    "id": "dup-62c48a13d591",
     "classification": "near",
     "sites": [
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "spawn",
-        "content_hash": "c689ca09559759ad"
-      },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
@@ -4225,6 +4196,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/metrics.rs, tests/plan_critique_spec_defect_stop_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-5c13daf57f07",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "insert",
+        "content_hash": "f668e0df1bdefdf5"
+      },
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "contains",
+        "content_hash": "e34d58c0828b6a2e"
+      }
+    ],
+    "proposed_home": "replay_keys::replay_keys",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
