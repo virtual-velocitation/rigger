@@ -4,8 +4,13 @@
 //!
 //! It is a memo of the log, never the ledger: the ledger is the log itself, and nothing here
 //! outlives the process. Only the log side is remembered - the graph's side is read on every
-//! batch, which is what lets a long-lived run restore an identity a rebuild left behind. An entry
-//! another process records stales the memo, at the cost of at most one re-recording.
+//! batch, which is what lets a long-lived run restore an identity a rebuild left behind.
+//!
+//! An entry another process records stales the memo. Over a graph that does not owe its rebuild
+//! that costs at most one re-recording, because the graph's side, read fresh, disagrees with the
+//! stale answer. Over a graph that owes its rebuild the sink answers from the memo alone, so a
+//! batch at the generation the stale memo holds records nothing: an entry another process
+//! recorded can leave a later generation unrecorded by this process.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

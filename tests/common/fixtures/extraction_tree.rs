@@ -28,6 +28,22 @@ mod inline {
 }
 ";
 
+/// One rewording of [`SOURCE_BODY`]: the text it replaces and the text it puts there.
+pub type Rewording = (&'static str, &'static str);
+
+/// The helper renamed: a second body of the source file that keeps its rationale line and its
+/// test-module declaration, so only the file's code batch moves.
+pub const MOVED: Rewording = ("helper", "assistant");
+
+/// The rationale line reworded: a body of the source file that keeps its code, so the file's
+/// design batch moves and its code batch keeps its generation.
+pub const REWORDED: Rewording = ("stays small", "stays short");
+
+/// [`SOURCE_BODY`] under `rewording`.
+pub fn source_with((from, to): Rewording) -> String {
+    SOURCE_BODY.replace(from, to)
+}
+
 /// The out-of-line test module [`SOURCE_BODY`] declares. Its rationale line gives the same path a
 /// `gd` batch too, so the path has an identity under two prefixes.
 pub const TEST_MODULE_PATH: &str = "src/checks.rs";
@@ -225,6 +241,15 @@ pub fn walked_handoffs() -> Vec<(String, bool)> {
     WALKED
         .iter()
         .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
+        .collect()
+}
+
+/// The generation of each batch of [`WALKED`], in walk order, as a side that holds it answers
+/// it.
+pub fn walked_generations() -> Vec<Option<String>> {
+    WALKED
+        .iter()
+        .map(|batch| Some(batch.generation.to_string()))
         .collect()
 }
 

@@ -3573,7 +3573,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "3a06f0a6143be24f"
+    "content_hash": "2e8ccdfda102661e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3761,11 +3761,35 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "handed_twice_over_an_empty_store",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "065d6d37f049c932"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_same_answer_twice_from_one_lookup",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "d10a5696ea8dc337"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "an_identity_the_log_holds_no_recording_of_is_still_looked_up_once_when_its_batch_records_nothing",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "6024ca08a8970ac3"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_pre_ledger_identity_takes_its_entrys_generation_so_its_second_walk_asks_no_lookup",
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "76ec7596d16a966f"
+    "content_hash": "3e575af68ccef8c9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3773,7 +3797,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "af8c82ba17b4dc82"
+    "content_hash": "5ea4ca7327f28b94"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

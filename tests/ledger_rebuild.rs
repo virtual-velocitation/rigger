@@ -24,8 +24,8 @@ use common::cli::{
     run_rigger_envs, run_stream_identity, temp_project, with_run_store,
 };
 use common::fixtures::{
-    events_of, folds, generation_ingested, walked_generation, write_text, DOCUMENT_PATH,
-    SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+    events_of, folds, generation_ingested, held_generations, walked_generation, write_text,
+    DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
@@ -278,10 +278,7 @@ fn stand_graph(cwd: &Path, project: &str) {
 /// The generation `cwd`'s `graph.db` holds for each of `identities`, in order.
 fn generations(cwd: &Path, project: &str, identities: &[&str]) -> Vec<Option<String>> {
     let graph = Projector::open(rigger_file(cwd, "graph.db").to_str().unwrap(), project).unwrap();
-    identities
-        .iter()
-        .map(|identity| graph.current_generation(identity).unwrap())
-        .collect()
+    held_generations(&graph, identities)
 }
 
 /// The generation `cwd`'s `graph.db` holds for the identity of each of `recordings`, in order.

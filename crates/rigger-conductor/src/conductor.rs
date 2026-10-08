@@ -3346,8 +3346,10 @@ impl RunCtx<'_> {
     /// generation once its append succeeds; a failed append leaves it on the looked-up answer.
     /// The graph's side is read on every batch and never remembered, so a long-lived run records
     /// again an identity a rebuild of `graph.db` left behind the next time a walk hands its
-    /// batch. An entry another process records stales the memo, which costs at most one
-    /// re-recording.
+    /// batch. An entry another process records stales the memo: over a graph that does not owe
+    /// its rebuild that costs at most one re-recording, and over a graph that owes its rebuild
+    /// the sink answers from the memo alone, so such an entry can leave a later generation
+    /// unrecorded by this process.
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
@@ -20810,11 +20812,12 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, generation_ingested, git_answer, git_hash_object, one_lookup_each,
-            planted_extraction_tree, seed_pre_ledger_rows_without_a_group, walked_handoffs,
+            arm_read_fault, generation_ingested, git_answer, git_hash_object, held_generations,
+            logged_generations, one_lookup_each, planted_extraction_tree, rebuild_from_the_tree,
+            seed_pre_ledger_rows_without_a_group, source_with, walked_generations, walked_handoffs,
             write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
-            SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY,
-            WORKFLOW_PATH,
+            MOVED, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
+            WORKFLOW_BODY, WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -21091,16 +21094,8 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             );
-            assert_eq!(
-                identities
-                    .iter()
-                    .map(|(identity, _)| graph.current_generation(identity).unwrap())
-                    .collect::<Vec<_>>(),
-                WALKED
-                    .iter()
-                    .map(|batch| Some(batch.generation.to_string()))
-                    .collect::<Vec<_>>()
-            );
+            let named: Vec<&str> = identities.iter().map(|(of, _)| of.as_str()).collect();
+            assert_eq!(held_generations(&graph, &named), walked_generations());
             assert_eq!(live_names(&graph), ["helper", "product"]);
 
             ctx.ingest_project_batches().unwrap();
@@ -22197,17 +22192,11 @@ mod tests {
             let handoffs = walked_handoffs();
             let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
             assert_eq!(
-                identities
-                    .iter()
-                    .map(|identity| (
-                        crate::ingest::latest_generation(&inner, STREAM, identity).unwrap(),
-                        graph.current_generation(identity).unwrap()
-                    ))
-                    .collect::<Vec<_>>(),
-                WALKED
-                    .iter()
-                    .map(|batch| (None, Some(batch.generation.to_string())))
-                    .collect::<Vec<_>>(),
+                (
+                    logged_generations(&inner, STREAM, &identities),
+                    held_generations(&graph, &identities)
+                ),
+                (vec![None; identities.len()], walked_generations()),
                 "premise: the log answers no generation and the graph holds each one"
             );
             let pre_ledger = recorded(&inner);
@@ -22250,15 +22239,14 @@ mod tests {
         /// identity, which the rebuild resolved, records nothing.
         #[test]
         fn a_long_lived_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex() {
-            use crate::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
+            use crate::contextgraph::sqlite::Projector;
 
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
             let file = tree.path().join(SOURCE_PATH);
             let graph_dir = tempfile::tempdir().unwrap();
             let graph_db = graph_dir.path().join("graph.db");
-            let graph_db = graph_db.to_str().unwrap();
-            let graph = Projector::open(graph_db, "test").unwrap();
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
             let inner = Store::open(":memory:").unwrap();
             let counted = ReadCountingStore::new(&inner);
             let driver = Stub::new();
@@ -22277,26 +22265,11 @@ mod tests {
             );
 
             // The rebuild: every entry re-extracted from the tree, no object database to ask.
-            write_file(&file, SOURCE_BODY.replace("helper", "assistant").as_bytes());
+            write_file(&file, source_with(MOVED).as_bytes());
             let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            let rebuilt = Projector::rebuild(
-                &Projector::lock_rebuild(graph_db).unwrap(),
-                "test",
-                true,
-                &mut |after, sink: &mut RebuildSink| stream_past(&log, after, 1, sink),
-                &mut |entry| crate::ingest::resolve_entry(tree.path(), entry, None),
-                &mut |_| {},
-            )
-            .unwrap();
-            assert!(rebuilt.is_some(), "premise: the rebuild ran");
-            let held = |graph: &Projector| -> Vec<Option<String>> {
-                identities
-                    .iter()
-                    .map(|identity| graph.current_generation(identity).unwrap())
-                    .collect()
-            };
+            rebuild_from_the_tree(&graph_db, &log, tree.path());
             assert_eq!(
-                held(&graph),
+                held_generations(&graph, &identities),
                 WALKED
                     .iter()
                     .map(|batch| {
@@ -22331,13 +22304,7 @@ mod tests {
                 ]
                 .concat()
             );
-            assert_eq!(
-                held(&graph),
-                WALKED
-                    .iter()
-                    .map(|batch| Some(batch.generation.to_string()))
-                    .collect::<Vec<_>>()
-            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
             assert_eq!(live_names(&graph), ["helper", "product"]);
         }
     }

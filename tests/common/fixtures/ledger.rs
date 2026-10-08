@@ -131,3 +131,47 @@ pub fn seed_pre_ledger_rows_without_a_group(
         assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
     });
 }
+
+/// The generation `graph` holds for each of `identities`, in order.
+pub fn held_generations(
+    graph: &dyn rigger::contextgraph::Projection,
+    identities: &[&str],
+) -> Vec<Option<String>> {
+    identities
+        .iter()
+        .map(|identity| graph.current_generation(identity).unwrap())
+        .collect()
+}
+
+/// The generation the group lookup of `store` answers on `stream` for each of `identities`, in
+/// order.
+pub fn logged_generations(
+    store: &dyn rigger::eventstore::EventStore,
+    stream: &str,
+    identities: &[&str],
+) -> Vec<Option<String>> {
+    identities
+        .iter()
+        .map(|identity| rigger::ingest::latest_generation(store, stream, identity).unwrap())
+        .collect()
+}
+
+/// A REBUILD FROM THE TREE ALONE: rebuild the graph file `graph_db` under the project `test`
+/// from `log`, one event to a committed batch, re-extracting each ledger entry from the tree at
+/// `root` with no object database to ask. It insists the rebuild ran. An entry whose file the
+/// tree holds at another generation resolves from no source, so its identity is left behind.
+#[cfg(feature = "symbols")]
+pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &std::path::Path) {
+    use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
+
+    let rebuilt = Projector::rebuild(
+        &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+        "test",
+        true,
+        &mut |after, sink: &mut RebuildSink| stream_past(log, after, 1, sink),
+        &mut |entry| rigger::ingest::resolve_entry(root, entry, None),
+        &mut |_| {},
+    )
+    .unwrap();
+    assert!(rebuilt.is_some(), "premise: the rebuild ran");
+}

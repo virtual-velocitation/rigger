@@ -40,21 +40,22 @@ use std::sync::Mutex;
 use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, entry_records, gate_def, generation_ingested, git_commit_all,
-    git_hash_object, live_edges, one_lookup_each, seed_pre_ledger_rows_without_a_group,
+    git_hash_object, held_generations, live_edges, logged_generations, one_lookup_each,
+    rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group, source_with,
     temp_git_project_with_commit, walked_entry_events, wire_owned, write_text, CountedRead, Handed,
-    NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
-    TEST_MODULE_BODY, TEST_MODULE_PATH,
+    NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, REWORDED, SOURCE_BODY,
+    SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Stage};
-use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
+use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{wired, EntryFold, Fold, Projection, REBUILD_OWED};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ingest::{
     batch_is_current, entry_of_batch, folding_into, ingest_files_batched, is_derived_index_type,
-    latest_generation, resolve_entry, EntryFailure, GraphSide,
+    latest_generation, EntryFailure, GraphSide,
 };
 use rigger::ledger::{RunState, Status};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
@@ -185,24 +186,6 @@ impl Files {
             .unwrap()
     }
 
-    /// The generation the log's group lookup answers for each of `identities`, in order.
-    fn logged(&self, identities: &[&str]) -> Vec<Option<String>> {
-        let store = self.store();
-        identities
-            .iter()
-            .map(|identity| latest_generation(&store, STREAM, identity).unwrap())
-            .collect()
-    }
-
-    /// The generation a fresh open of `graph.db` holds for each of `identities`, in order.
-    fn held(&self, identities: &[&str]) -> Vec<Option<String>> {
-        let graph = self.graph();
-        identities
-            .iter()
-            .map(|identity| graph.current_generation(identity).unwrap())
-            .collect()
-    }
-
     /// The position of each ledger entry the log carries, in log order.
     fn entry_positions(&self) -> Vec<u64> {
         self.log()
@@ -267,8 +250,14 @@ fn a_run_records_one_ledger_entry_per_batch_and_one_applied_row_per_entry_in_the
     let positions = files.entry_positions();
     assert_eq!(positions.len(), walked.len());
     assert_eq!(files.applied_among(&positions), positions);
-    assert_eq!(files.held(&identities(&walked)), generations(&walked));
-    assert_eq!(files.logged(&identities(&walked)), generations(&walked));
+    assert_eq!(
+        held_generations(&files.graph(), &identities(&walked)),
+        generations(&walked)
+    );
+    assert_eq!(
+        logged_generations(&files.store(), STREAM, &identities(&walked)),
+        generations(&walked)
+    );
     assert_eq!(*files.said.lock().unwrap(), Vec::<String>::new());
 
     files.run_over(root, "second criterion");
@@ -308,12 +297,12 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
     let last_pre_ledger = pre_ledger.last().unwrap().position;
     assert_eq!(derived_count(&pre_ledger), pre_ledger.len());
     assert_eq!(
-        files.logged(&identities(&walked)),
+        logged_generations(&files.store(), STREAM, &identities(&walked)),
         vec![None; walked.len()],
         "rows that carry no group answer no generation at the group lookup"
     );
     assert_eq!(
-        files.held(&identities(&walked)),
+        held_generations(&files.graph(), &identities(&walked)),
         generations(&walked),
         "the graph holds the generation the pre-ledger rows folded"
     );
@@ -342,8 +331,14 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
         "a re-recording writes no fact: the live edges are the ones the rows asserted, each \
          still naming its row"
     );
-    assert_eq!(files.held(&identities(&walked)), generations(&walked));
-    assert_eq!(files.logged(&identities(&walked)), generations(&walked));
+    assert_eq!(
+        held_generations(&files.graph(), &identities(&walked)),
+        generations(&walked)
+    );
+    assert_eq!(
+        logged_generations(&files.store(), STREAM, &identities(&walked)),
+        generations(&walked)
+    );
     assert_eq!(*files.said.lock().unwrap(), Vec::<String>::new());
 
     files.run_over(root, "second criterion");
@@ -353,22 +348,6 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
 
 /// The identity of the source file's code batch, the one identity [`MOVED`] moves.
 const SOURCE: &str = "gc/src/lib.rs";
-
-/// One rewording of [`SOURCE_BODY`]: the text it replaces and the text it puts there.
-type Rewording = (&'static str, &'static str);
-
-/// The helper renamed: a second body of the source file that keeps its rationale line and its
-/// test-module declaration, so only the file's code batch moves.
-const MOVED: Rewording = ("helper", "assistant");
-
-/// The rationale line reworded: a body of the source file that keeps its code, so the file's
-/// design batch moves and its code batch keeps its generation.
-const REWORDED: Rewording = ("stays small", "stays short");
-
-/// [`SOURCE_BODY`] under `rewording`.
-fn source_with((from, to): Rewording) -> String {
-    SOURCE_BODY.replace(from, to)
-}
 
 /// The one entry of `recorded` under `identity`.
 fn entry_under(recorded: &[Recorded], identity: &str) -> Recorded {
@@ -428,7 +407,10 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     assert_ne!(a.0.blob, b.0.blob);
     files.run_over(root, "second criterion");
     let facts_b = facts(&files.graph());
-    assert_eq!(files.held(&[SOURCE]), vec![Some(b.0.generation.clone())]);
+    assert_eq!(
+        held_generations(&files.graph(), &[SOURCE]),
+        vec![Some(b.0.generation.clone())]
+    );
 
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     assert_eq!(walked(root), first_walk, "sanity: the tree is back at A");
@@ -442,8 +424,14 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     let positions = files.entry_positions();
     assert_eq!(positions.len(), first_walk.len() + 2);
     assert_eq!(files.applied_among(&positions), positions);
-    assert_eq!(files.held(&[SOURCE]), vec![Some(a.0.generation.clone())]);
-    assert_eq!(files.logged(&[SOURCE]), vec![Some(a.0.generation.clone())]);
+    assert_eq!(
+        held_generations(&files.graph(), &[SOURCE]),
+        vec![Some(a.0.generation.clone())]
+    );
+    assert_eq!(
+        logged_generations(&files.store(), STREAM, &[SOURCE]),
+        vec![Some(a.0.generation.clone())]
+    );
     assert_ne!(facts_b, facts_a, "sanity: body B left facts of its own");
     assert_eq!(facts(&files.graph()), facts_a);
     assert_eq!(derived_count(&files.log()), 0);
@@ -524,8 +512,8 @@ fn the_public_sink_answer_records_through_the_constructor_and_the_ledger_form_un
     let hash = |bytes: &[u8]| rigger::worktree::hash_blob(root, bytes);
     let sides = || {
         (
-            files.logged(&[SOURCE]).remove(0),
-            files.held(&[SOURCE]).remove(0),
+            logged_generations(&files.store(), STREAM, &[SOURCE]).remove(0),
+            held_generations(&files.graph(), &[SOURCE]).remove(0),
         )
     };
     let current = |(logged, held): (Option<String>, Option<String>)| {
@@ -744,7 +732,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let positions = files.entry_positions();
     assert_eq!(applied_positions(&files.graph_db()), owed_applied);
     assert_eq!(
-        files.held(&identities(&first_walk)),
+        held_generations(&files.graph(), &identities(&first_walk)),
         vec![None; first_walk.len()]
     );
     assert!(files.graph().rebuild_owed().unwrap());
@@ -896,8 +884,14 @@ fn one_run_walks_then_lands_the_moved_body_and_its_revert(
     let recorded = [before, walk_records, vec![b, a]].concat();
     assert_eq!(entry_records(&files.log()), recorded);
     let walked_generations = generations(&first_walk);
-    assert_eq!(files.held(&identities(&first_walk)), walked_generations);
-    assert_eq!(files.logged(&identities(&first_walk)), walked_generations);
+    assert_eq!(
+        held_generations(&files.graph(), &identities(&first_walk)),
+        walked_generations
+    );
+    assert_eq!(
+        logged_generations(&files.store(), STREAM, &identities(&first_walk)),
+        walked_generations
+    );
     assert_eq!(*files.said.lock().unwrap(), Vec::<String>::new());
 
     let store = files.store();
@@ -943,7 +937,7 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     let files = Files::new();
     seed_pre_ledger_rows_without_a_group(tree.path(), &files.store(), &files.graph());
     assert_eq!(
-        files.logged(&identities(&walked(tree.path()))),
+        logged_generations(&files.store(), STREAM, &identities(&walked(tree.path()))),
         vec![None; 5],
         "premise: the group lookup answers no generation"
     );
@@ -974,23 +968,12 @@ impl AgentDriver for RebuildsThenRewords<'_> {
         opts: &SpawnOpts,
         _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        let log = self.files.log();
-        let graph_db = self.files.graph_db();
-        let rebuilt = Projector::rebuild(
-            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
-            "test",
-            true,
-            &mut |after, sink: &mut RebuildSink| stream_past(&log, after, 1, sink),
-            &mut |entry| resolve_entry(self.unresolving, entry, None),
-            &mut |_| {},
-        )
-        .unwrap();
-        assert!(rebuilt.is_some(), "premise: the rebuild ran");
+        rebuild_from_the_tree(&self.files.graph_db(), &self.files.log(), self.unresolving);
         let identities: Vec<&str> = self.identities.iter().map(String::as_str).collect();
         self.held_after_rebuild
             .lock()
             .unwrap()
-            .push(self.files.held(&identities));
+            .push(held_generations(&self.files.graph(), &identities));
         write_text(Path::new(&opts.dir), SOURCE_PATH, &source_with(REWORDED));
         Ok(AgentResult::default())
     }
@@ -1067,9 +1050,12 @@ fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_
         [first_walk.clone(), reindexed.clone()].concat()
     );
     assert_eq!(
-        files.held(&all),
+        held_generations(&files.graph(), &all),
         generations(&walked(reworded.path())),
         "the graph holds the left-behind identity's generation again, and the moved design one"
     );
-    assert_eq!(files.held(&[SOURCE]), vec![Some(a.0.generation)]);
+    assert_eq!(
+        held_generations(&files.graph(), &[SOURCE]),
+        vec![Some(a.0.generation)]
+    );
 }
