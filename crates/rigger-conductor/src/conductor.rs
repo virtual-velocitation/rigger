@@ -29329,6 +29329,37 @@ mod tests {
         );
     }
 
+    /// A RESUMED review tier judges a new commit too: its later-round task carries the gate
+    /// evidence of the commit that round judges - never the earlier round's, which is all its
+    /// continued session has seen - so a resumed reviewer never re-runs a gate the log shows
+    /// green on the new commit.
+    #[test]
+    fn a_resumed_review_tier_is_sent_the_gate_evidence_of_the_commit_it_now_judges() {
+        let (rs, events, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let (earlier, now) = (ok_gate_digest(&events, 0), ok_gate_digest(&events, 1));
+        for role in ["lens:lens", ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            let (from, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every review tier");
+            assert!(!from.is_empty(), "premise: {role}'s round-1 spawn resumes");
+            let commit = digest_address(&now).unwrap();
+            assert!(
+                task.contains(&format!(
+                    "GATE EVIDENCE for the commit under review (commit {commit},"
+                )) && task.contains(&format!("- ok: PASS (input digest {now})")),
+                "{role} is sent the gate evidence of the commit it now judges:\n{task}"
+            );
+            assert!(
+                !task.contains(earlier.as_str()),
+                "{role} is never sent the earlier round's evidence:\n{task}"
+            );
+        }
+    }
+
     /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
     /// gate before any review round, and its second attempt's sdet-author continues the session
     /// its first ran as, sent the failed attempt's gate evidence as what changed.
