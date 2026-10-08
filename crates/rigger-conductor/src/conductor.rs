@@ -20810,11 +20810,10 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, generation_ingested, git_answer, git_hash_object,
+            arm_read_fault, generation_ingested, git_answer, git_hash_object, one_lookup_each,
             planted_extraction_tree, seed_pre_ledger_rows_without_a_group, walked_handoffs,
-            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
-            SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY,
-            WORKFLOW_PATH,
+            write_file, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
+            SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -21930,21 +21929,8 @@ mod tests {
             assert_eq!(recorded(&inner), Recorded::new());
         }
 
-        // THE RUN'S SINK MEMOIZES THE LOG SIDE (spec 107 criterion 11): how many group lookups
-        // the sink makes, counted at the store it was handed.
-
-        /// One group lookup of each of `identities` on the run stream, in order: the whole of
-        /// what a counted store saw, past the reads that built the run, when the sink asked it
-        /// nothing else.
-        fn lookups(identities: &[&str]) -> Vec<CountedRead> {
-            identities
-                .iter()
-                .map(|identity| CountedRead::LatestInGroup {
-                    stream: STREAM.to_string(),
-                    group: identity.to_string(),
-                })
-                .collect()
-        }
+        // THE RUN'S SINK MEMOIZES THE LOG SIDE (spec 107 criterion 11): the group lookups the
+        // sink makes, counted at the store it was handed past the reads that built the run.
 
         /// GIVEN a file whose generation the log and the graph both hold, recorded by an earlier
         /// process, WHEN one process's sink is handed its current batch twice, THEN it asks the
@@ -21971,10 +21957,10 @@ mod tests {
             let built = counted.reads().len();
 
             assert_eq!(handed.emit(&ctx), Ok(()));
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
             assert_eq!(handed.emit(&ctx), Ok(()));
 
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
             assert_eq!(recorded(&inner), once);
         }
 
@@ -22025,12 +22011,12 @@ mod tests {
                 recorded(&inner),
                 entries(&[a_entry.clone(), b_entry, a_entry])
             );
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
 
             assert_eq!(walked(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
             assert_eq!(
                 counted.reads()[built..],
-                lookups(&[SOURCE, "gd/src/lib.rs"])
+                one_lookup_each(STREAM, &[SOURCE, "gd/src/lib.rs"])
             );
         }
 
@@ -22060,11 +22046,14 @@ mod tests {
                      store: {LOOKUP_REFUSED}"
                 ))
             );
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
             assert_eq!(recorded(&inner), Recorded::new());
 
             assert_eq!(handed.emit(&ctx), Ok(()));
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE, SOURCE]));
+            assert_eq!(
+                counted.reads()[built..],
+                one_lookup_each(STREAM, &[SOURCE, SOURCE])
+            );
             let once = entries(&[generation_ingested(
                 "gc",
                 SOURCE_PATH,
@@ -22075,7 +22064,10 @@ mod tests {
             assert_eq!(recorded(&inner), once);
 
             assert_eq!(handed.emit(&ctx), Ok(()));
-            assert_eq!(counted.reads()[built..], lookups(&[SOURCE, SOURCE]));
+            assert_eq!(
+                counted.reads()[built..],
+                one_lookup_each(STREAM, &[SOURCE, SOURCE])
+            );
             assert_eq!(recorded(&inner), once);
         }
 
@@ -22123,11 +22115,17 @@ mod tests {
 
             let first_walk = [pre_ledger, entries(&walked_entries())].concat();
             assert_eq!(recorded(&inner), first_walk);
-            assert_eq!(counted.reads()[built..], lookups(&identities));
+            assert_eq!(
+                counted.reads()[built..],
+                one_lookup_each(STREAM, &identities)
+            );
 
             ctx.ingest_project_batches().unwrap();
 
-            assert_eq!(counted.reads()[built..], lookups(&identities));
+            assert_eq!(
+                counted.reads()[built..],
+                one_lookup_each(STREAM, &identities)
+            );
             assert_eq!(recorded(&inner), first_walk);
         }
 
@@ -22166,7 +22164,10 @@ mod tests {
             let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
             let walked_once = entries(&walked_entries());
             assert_eq!(recorded(&inner), walked_once);
-            assert_eq!(counted.reads()[built..], lookups(&identities));
+            assert_eq!(
+                counted.reads()[built..],
+                one_lookup_each(STREAM, &identities)
+            );
 
             // The rebuild: every entry re-extracted from the tree, no object database to ask.
             write_file(&file, SOURCE_BODY.replace("helper", "assistant").as_bytes());
@@ -22206,7 +22207,7 @@ mod tests {
 
             assert_eq!(
                 counted.reads()[built..],
-                lookups(&identities),
+                one_lookup_each(STREAM, &identities),
                 "the reindex asks the store nothing: the memo answers the log side"
             );
             assert_eq!(

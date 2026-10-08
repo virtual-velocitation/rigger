@@ -40,7 +40,7 @@ use std::sync::Mutex;
 use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, entry_records, gate_def, generation_ingested, git_commit_all,
-    git_hash_object, live_edges, seed_pre_ledger_rows_without_a_group,
+    git_hash_object, live_edges, one_lookup_each, seed_pre_ledger_rows_without_a_group,
     temp_git_project_with_commit, walked_entry_events, wire_owned, write_text, CountedRead, Handed,
     NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
     TEST_MODULE_BODY, TEST_MODULE_PATH,
@@ -351,13 +351,23 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
     assert_eq!(files.entry_positions(), positions);
 }
 
-/// The identity of the source file's code batch, the one identity [`SOURCE_MOVED`] moves.
+/// The identity of the source file's code batch, the one identity [`MOVED`] moves.
 const SOURCE: &str = "gc/src/lib.rs";
 
-/// [`SOURCE_BODY`] with its helper renamed: a second body of the source file that keeps its
-/// rationale line and its test-module declaration, so only the file's code batch moves.
-fn source_moved() -> String {
-    SOURCE_BODY.replace("helper", "assistant")
+/// One rewording of [`SOURCE_BODY`]: the text it replaces and the text it puts there.
+type Rewording = (&'static str, &'static str);
+
+/// The helper renamed: a second body of the source file that keeps its rationale line and its
+/// test-module declaration, so only the file's code batch moves.
+const MOVED: Rewording = ("helper", "assistant");
+
+/// The rationale line reworded: a body of the source file that keeps its code, so the file's
+/// design batch moves and its code batch keeps its generation.
+const REWORDED: Rewording = ("stays small", "stays short");
+
+/// [`SOURCE_BODY`] under `rewording`.
+fn source_with((from, to): Rewording) -> String {
+    SOURCE_BODY.replace(from, to)
 }
 
 /// The one entry of `recorded` under `identity`.
@@ -401,7 +411,7 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     files.run_over(root, "first criterion");
     let facts_a = facts(&files.graph());
 
-    write_text(root, SOURCE_PATH, &source_moved());
+    write_text(root, SOURCE_PATH, &source_with(MOVED));
     let b = entry_under(&walked(root), SOURCE);
     let keys = |recorded: &[Recorded]| -> Vec<String> {
         recorded.iter().map(|(.., key)| key.clone()).collect()
@@ -747,7 +757,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     assert_eq!(files.entry_positions(), positions);
     let said_without_an_entry = said() - said_first;
 
-    write_text(root, SOURCE_PATH, &source_moved());
+    write_text(root, SOURCE_PATH, &source_with(MOVED));
     let moved = entry_under(&walked(root), SOURCE);
     assert_ne!(moved, entry_under(&first_walk, SOURCE));
     files.run_over(root, "third criterion");
@@ -779,7 +789,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
 // process when its whole-tree walk is followed by the reindex of an integration naming the file.
 
 /// A driver whose every agent writes the source file's body it is listed with into its worktree.
-struct SourceWriters(&'static [(&'static str, fn() -> String)]);
+struct SourceWriters(Vec<(&'static str, String)>);
 
 impl AgentDriver for SourceWriters {
     fn spawn(
@@ -794,7 +804,7 @@ impl AgentDriver for SourceWriters {
             .iter()
             .find(|(id, _)| *id == agent.id)
             .expect("every spawned agent is a listed writer");
-        write_text(Path::new(&opts.dir), SOURCE_PATH, &body());
+        write_text(Path::new(&opts.dir), SOURCE_PATH, body);
         Ok(AgentResult::default())
     }
 }
@@ -833,17 +843,6 @@ fn group_lookups(reads: &[CountedRead]) -> Vec<CountedRead> {
         .collect()
 }
 
-/// One group lookup of each of `identities` on the run stream, in order.
-fn one_lookup_each(identities: &[&str]) -> Vec<CountedRead> {
-    identities
-        .iter()
-        .map(|identity| CountedRead::LatestInGroup {
-            stream: STREAM.to_string(),
-            group: identity.to_string(),
-        })
-        .collect()
-}
-
 /// ONE process walks the tree, lands the source file at its moved body and lands it back.
 ///
 /// WHEN a single run over `files` and the committed tree at `root` walks the whole tree, then
@@ -867,15 +866,15 @@ fn one_run_walks_then_lands_the_moved_body_and_its_revert(
     let a = entry_under(&first_walk, SOURCE);
     let b = {
         let moved = committed_tree();
-        write_text(moved.path(), SOURCE_PATH, &source_moved());
+        write_text(moved.path(), SOURCE_PATH, &source_with(MOVED));
         entry_under(&walked(moved.path()), SOURCE)
     };
     assert_ne!(a.0.generation, b.0.generation);
     let before = entry_records(&files.log());
     let cfg = landing(root, &[("moves", None), ("reverts", Some("moves"))]);
-    let driver = SourceWriters(&[
-        ("moves", source_moved),
-        ("reverts", || SOURCE_BODY.to_string()),
+    let driver = SourceWriters(vec![
+        ("moves", source_with(MOVED)),
+        ("reverts", SOURCE_BODY.to_string()),
     ]);
     let store = files.store();
     let counted = ReadCountingStore::new(&store);
@@ -892,7 +891,7 @@ fn one_run_walks_then_lands_the_moved_body_and_its_revert(
         SOURCE_BODY,
         "sanity: the tree is back at its first body"
     );
-    let asked = one_lookup_each(&identities(&first_walk));
+    let asked = one_lookup_each(STREAM, &identities(&first_walk));
     assert_eq!(group_lookups(&counted.reads()), asked);
     let recorded = [before, walk_records, vec![b, a]].concat();
     assert_eq!(entry_records(&files.log()), recorded);
@@ -956,13 +955,7 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     );
 }
 
-/// [`SOURCE_BODY`] with its rationale line reworded: a body of the source file that keeps its
-/// code, so the file's design batch moves and its code batch keeps its generation.
-fn source_reworded() -> String {
-    SOURCE_BODY.replace("stays small", "stays short")
-}
-
-/// A driver whose one agent, before it writes [`source_reworded`] into its worktree, rebuilds the
+/// A driver whose one agent, before it writes [`REWORDED`] into its worktree, rebuilds the
 /// run's `graph.db` from the log as it stands, re-extracting each entry from the tree at
 /// `unresolving` with no object database to ask, and keeps the generation the rebuilt graph
 /// holds for each of `identities`.
@@ -998,7 +991,7 @@ impl AgentDriver for RebuildsThenRewords<'_> {
             .lock()
             .unwrap()
             .push(self.files.held(&identities));
-        write_text(Path::new(&opts.dir), SOURCE_PATH, &source_reworded());
+        write_text(Path::new(&opts.dir), SOURCE_PATH, &source_with(REWORDED));
         Ok(AgentResult::default())
     }
 }
@@ -1024,9 +1017,9 @@ fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_
     let all = identities(&first_walk);
     let a = entry_under(&first_walk, SOURCE);
     let moved = committed_tree();
-    write_text(moved.path(), SOURCE_PATH, &source_moved());
+    write_text(moved.path(), SOURCE_PATH, &source_with(MOVED));
     let reworded = committed_tree();
-    write_text(reworded.path(), SOURCE_PATH, &source_reworded());
+    write_text(reworded.path(), SOURCE_PATH, &source_with(REWORDED));
     let reindexed: Vec<Recorded> = walked(reworded.path())
         .into_iter()
         .filter(|(entry, ..)| entry.file == SOURCE_PATH)
@@ -1065,7 +1058,10 @@ fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_
         vec![left_behind],
         "premise: the one rebuild left the source file's code identity behind, and no other"
     );
-    assert_eq!(group_lookups(&counted.reads()), one_lookup_each(&all));
+    assert_eq!(
+        group_lookups(&counted.reads()),
+        one_lookup_each(STREAM, &all)
+    );
     assert_eq!(
         entry_records(&files.log()),
         [first_walk.clone(), reindexed.clone()].concat()
