@@ -738,6 +738,123 @@ mod ingest_sinks {
         );
     }
 
+    /// The generation `root`'s own `graph.db` holds for each of `batches`' identities, in order,
+    /// read through the project identity the binary opens that file under.
+    fn held(root: &Path, batches: &[Batch]) -> Vec<Option<String>> {
+        let graph = project_graph(root);
+        let identities: Vec<&str> = batches.iter().map(|(i, _, _)| i.as_str()).collect();
+        common::fixtures::held_generations(&graph, &identities)
+    }
+
+    /// `root`'s own `graph.db`, opened under the project identity the binary opens it under.
+    fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
+        rigger::contextgraph::sqlite::Projector::open(
+            common::cli::rigger_file(root, "graph.db").to_str().unwrap(),
+            &common::cli::run_stream_identity(root),
+        )
+        .unwrap()
+    }
+
+    /// The `graph build` line's N counts the entry the graph folds and not the re-recordings
+    /// beside it, through the shipped command (spec 107, SINK OUTCOMES rows 12 and 13).
+    ///
+    /// GIVEN a project whose log was recorded before the ledger and before the group stamp and
+    /// whose rows were FOLDED into `graph.db` - so the group lookup answers no generation for any
+    /// identity while the graph holds each one's - and one source file changed since,
+    /// WHEN the operator runs `rigger graph build`,
+    /// THEN the build records one grouped ledger entry per batch, in walk order, after the
+    /// pre-ledger rows and no derived row; its line counts the changed file's batch events
+    /// alone, every other entry being a re-recording of a generation the graph already holds;
+    /// and the graph holds the changed file's new generation beside the others' unmoved ones;
+    /// AND WHEN the operator builds the unchanged tree again, THEN the build records nothing and
+    /// its line counts nothing.
+    #[test]
+    fn a_graph_build_over_folded_pre_ledger_rows_counts_the_changed_batch_and_not_the_re_recordings(
+    ) {
+        let dir = ingestable_project();
+        let root = dir.path();
+        tree(
+            root,
+            &[
+                (UNCHANGED, "pub fn kept() {}\n"),
+                (CHANGED, "pub fn before() {}\n"),
+            ],
+        );
+        let seeded = walk(root);
+        let rows: Vec<String> = seeded.iter().flat_map(|(_, _, k)| k.clone()).collect();
+        with_run_store(root, |store| {
+            common::fixtures::seed_pre_ledger_rows_without_a_group(
+                root,
+                store,
+                &project_graph(root),
+            );
+        });
+        assert_eq!(
+            (answered(root, &seeded), held(root, &seeded)),
+            (
+                vec![None; seeded.len()],
+                seeded.iter().map(|(_, g, _)| Some(g.clone())).collect()
+            ),
+            "premise: the log answers no generation and graph.db holds every one"
+        );
+        tree(
+            root,
+            &[(CHANGED, "pub fn after() {}\npub fn caller() { after(); }\n")],
+        );
+        let now = walk(root);
+        let changed = format!("gc/{CHANGED}");
+        let moved = batches_where(&now, |identity| identity == changed);
+        let stayed = batches_where(&now, |identity| identity != changed);
+        assert_eq!(
+            (
+                events_of(&moved),
+                batches_where(&seeded, |identity| identity != changed),
+                stayed.len() + 1,
+                events_of(&stayed) > 0,
+            ),
+            (4, stayed.clone(), now.len(), true),
+            "premise: one batch of four events moved, and every other batch, holding events of \
+             its own, stands at the generation the pre-ledger rows folded"
+        );
+
+        let before = read_run_events(root).len();
+        let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+
+        assert_eq!(
+            (ok, out),
+            (true, graph_build_line(4, "")),
+            "the line counts the folded batch alone, never a re-recording; stderr: {err}"
+        );
+        let recorded = appended(root, before);
+        assert_eq!(
+            common::fixtures::entry_records(&recorded),
+            entries_of(root, &now),
+            "one entry per batch, the re-recordings among them, from the bytes the tree holds"
+        );
+        assert_eq!(meta_of(&recorded, META_REPLAY_KEY), entry_keys(&now));
+        assert_eq!(
+            meta_of(&derived(&read_run_events(root)), META_REPLAY_KEY),
+            rows,
+            "the pre-ledger rows stand as they were and no derived row joins them"
+        );
+        assert_eq!(
+            held(root, &now),
+            now.iter()
+                .map(|(_, g, _)| Some(g.clone()))
+                .collect::<Vec<_>>(),
+            "graph.db holds the moved file's new generation beside the others' unmoved ones"
+        );
+
+        let settled = read_run_events(root).len();
+        let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+
+        assert_eq!(
+            (ok, out, read_run_events(root).len()),
+            (true, graph_build_line(0, ""), settled),
+            "a re-build over the unchanged tree records nothing; stderr: {err}"
+        );
+    }
+
     const SPARED: &str = "src/spared.rs";
     const STALE: &str = "src/stale.rs";
     const FOLLOWED: &str = "src/followed.rs";
