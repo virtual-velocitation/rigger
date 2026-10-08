@@ -468,13 +468,14 @@ fn locate_definition_extent(
 /// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
 /// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
 /// the live run uses; only this standalone entry is new, so a build and a run can never fork the
-/// key an event is deduped under.
+/// generation a batch is recorded under.
 ///
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally through the ONE first-sight helper
-/// ([`rigger::ingest::batch_is_latest_recorded`]) the live run's keyed sink also calls: each batch
+/// store it refreshes incrementally through the first-sight helper
+/// ([`rigger::ingest::batch_is_latest_recorded`]), which this sink alone still asks (the live run's
+/// sink asks [`rigger::ingest::entry_of_batch`], spec 107): each batch
 /// is weighed against its identity's LATEST recorded generation, answered by the store's group
 /// lookup, never by reading the log - one walk hands this command each batch identity (`gc`/`gd`
 /// per file) exactly once and this command walks once. So an unchanged file's batch
@@ -532,16 +533,17 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
 /// this each batch identity (`gc`/`gd` per file) exactly once, so each batch asks the store, through
 /// the group lookup, whether it is already its identity's latest recorded generation
-/// ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the run's keyed sink
-/// also calls). An unchanged file's batch is, and appends nothing; a changed, reverted or
+/// ([`rigger::ingest::batch_is_latest_recorded`], the first-sight helper this sink alone still
+/// asks). An unchanged file's batch is, and appends nothing; a changed, reverted or
 /// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
 /// keys match are no longer the file's latest generation.
 ///
 /// Each appended event is built by the one keyed derived-event builder
 /// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
 /// batch is appended and folded in ONE store append and ONE graph transaction through the shared
-/// batched append-and-fold authority (spec 49), exactly as the run's keyed sink does. There is no
-/// run to stamp, so the events carry no run id.
+/// batched append-and-fold authority (spec 49). The run's sink records a batch as one ledger entry
+/// through that authority's ledger form instead. There is no run to stamp, so the events carry
+/// no run id.
 ///
 /// The walk runs under the one walk policy both ingest sinks share
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose

@@ -2295,7 +2295,7 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
 
 /// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project_batched` is
 /// the ONE walk-and-content-key entry BOTH the live run (`conductor`) and the cold `graph build`
-/// (`main`) call, so the content key an event is deduped under can never fork between them.
+/// (`main`) call, so the generation a batch is recorded under can never fork between them.
 /// Proven at the API edge rather than only end-to-end through one caller: the function is a
 /// DETERMINISTIC function of the tree - two calls over one unchanged tree emit the identical SET
 /// of keys - and every key carries the documented `<prefix>/<file>@<hash>#<idx>` shape (`gc` for

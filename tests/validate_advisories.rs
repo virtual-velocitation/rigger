@@ -405,9 +405,8 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 // ---------------------------------------------------------------------------------------
 
 /// Record `file`'s CURRENT extraction as `graph.db`'s "latest generation" for it, by appending
-/// real `gc/<file>@<hash>#<i>`-keyed events into the project's own event stream - exactly the
-/// shape `RunCtx::ingest_files_into_graph`/`ingest_project_batches` append at integration and run
-/// start. Drives it through the SAME `rigger::ingest::ingest_files_batched` authority
+/// real `gc/<file>@<hash>#<i>`-keyed events into the project's own event stream - the keyed
+/// derived shape a cold `rigger graph build` appends. Drives it through the SAME `rigger::ingest::ingest_files_batched` authority
 /// `rigger::ingest::graph_index_lag_sample` re-extracts through at validate time, so a caller who
 /// seeds a file's CURRENT content and never edits it afterward is recording a graph that agrees
 /// with the tree; editing the file afterward (without re-seeding) is what provokes disagreement.

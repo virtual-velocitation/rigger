@@ -759,8 +759,8 @@ this document.
 
 Populating the graph from a project's source is one walk-and-content-key authority
 (`crates/rigger-grounder/src/ingest.rs`, `ingest::ingest_project_batched`) that both the live run and the standalone
-`rigger graph build` (a cold checkout, no run required) share, so the content key an event
-is deduped under can never drift between them. Four properties define it:
+`rigger graph build` (a cold checkout, no run required) share, so the generation a batch
+is recorded under can never drift between them. Four properties define it:
 
 - **A project-scoped walk.** It walks the project tree at the repo root and lowers each
   file's structure (code) and rationale (design), scoped to the project - never the harness's
@@ -770,25 +770,33 @@ is deduped under can never drift between them. Four properties define it:
   event sequence a sink observes is byte-identical to a serial walk's regardless of
   scheduling. Parallelism is a throughput win that is *observationally invisible* - the
   rebuild-byte-identical discipline holds.
-- **Batched fold.** Each file's whole batch is appended in ONE store append and folded in
-  ONE graph transaction (`append_and_fold_batch`), because the measured cold-build throughput
-  was transaction-cadence bound, not parse-bound - one transaction per file, not per event.
+- **Batched fold.** Each file's whole batch is recorded in ONE store append and folded in
+  ONE graph transaction, because the measured cold-build throughput was transaction-cadence
+  bound, not parse-bound - one transaction per file, not per event. A cold `graph build` appends
+  the batch's keyed derived events and folds them (`FoldingStore::append_and_fold`); the run's
+  sink appends the batch's one `GenerationIngested` ledger entry and folds the batch with it
+  through the ledger form (`FoldingStore::append_entry_and_fold`).
 - **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). Every derived event is built by one helper (`ingest::keyed_derived_event`) that stamps
-  it with that key AND with its GROUP (`eventstore::META_GROUP`): the batch identity
-  `<prefix>/<file>` cut from the key by the one key parser. The store answers, per group, the newest
+  design). Every derived event a cold `graph build` records is built by one helper
+  (`ingest::keyed_derived_event`) that stamps it with that key AND with its GROUP
+  (`eventstore::META_GROUP`): the batch identity `<prefix>/<file>` cut from the key by the one key
+  parser. The run's sink records no derived event: it records the batch as ONE
+  `GenerationIngested` ledger entry, built by its one constructor under the same group and a
+  replay key naming the identity, the generation and the batch's event count. The store answers, per group, the newest
   event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
   its own group index - a partial expression index on the embedded store, one link stream per
   identity on the server-backed one - so the question "what is this file's latest recorded
-  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks - the run's keyed
-  emit and a cold `graph build` - seed through one first-sight helper
-  (`ingest::batch_is_latest_recorded`): the first time a process meets an identity it asks the
-  lookup, and when the answer is the batch's own generation the batch is its identity's latest
-  recorded generation - recorded by its own keyed rows or by the `GenerationIngested` ledger entry
-  that stands for it - so the sink installs the batch's keys either way and appends nothing;
-  otherwise it appends the batch. From then on the process's own record of each identity's
-  generation governs. The decision applies three rules in order:
+  generation?" (`ingest::latest_generation`) never reads the stream. The two sinks ask it
+  differently. The run's sink asks `ingest::entry_of_batch` of each batch: it reads the log's
+  latest generation of the identity and, unless the graph owes its rebuild, the graph's current
+  one; when both hold the batch's generation it records nothing; otherwise it reads the file's
+  bytes, extracts and hashes them and records one entry of that extraction's generation. A cold
+  `graph build` alone still asks `ingest::batch_is_latest_recorded` of each batch: when the lookup
+  answers the batch's own generation the batch is its identity's latest recorded generation -
+  recorded by its own keyed rows or by the `GenerationIngested` ledger entry that stands for it -
+  so the build appends nothing; otherwise it appends the batch's keyed derived events. The
+  decision applies three rules in order:
   - **Type first.** Only the perception types - the four derived index types
     (`CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`) and the
     `GenerationIngested` ledger entry - answer a generation. A newest group member of any other
@@ -805,9 +813,10 @@ is deduped under can never drift between them. Four properties define it:
   - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
     equals the hash of the LATEST batch recorded for that same file. A changed file - **including
     one reverted to content it held at an earlier recorded generation** - differs from its latest
-    batch, so it re-emits in full. An ever-recorded key set would match the reverted content's old
-    records, re-emit nothing, and strand the graph on a superseded version of that file. What the
-    re-emitted batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
+    batch, so it is recorded again: a cold build re-emits its batch in full, the run's sink
+    records a new entry. A rule that asked whether the generation was EVER recorded would match
+    the reverted content's old records, record nothing, and strand the graph on a superseded
+    version of that file. What the re-recorded batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
     only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
     only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
     spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch

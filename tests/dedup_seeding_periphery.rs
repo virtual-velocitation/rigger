@@ -18,8 +18,8 @@
 //!    "suppresses nothing" and the log resumes growing without bound. These tests round-trip REAL
 //!    minted keys - including for paths that carry the key format's own `@` separator, a shape
 //!    only a real walk over a real tree can prove the writer ever mints.
-//! 3. `cmd_graph_build` - the SECOND dedup sink, which this criterion owns alongside the run's -
-//!    now seeds from that same predicate. Its type-first behaviour is only observable end to end,
+//! 3. `cmd_graph_build` - the cold build's sink - decides type-first, as that predicate does. Its
+//!    type-first behaviour is only observable end to end,
 //!    through the built binary and a store the test seeds.
 //! 4. The replay-key METADATA NAME is now owned by `rigger::ingest` and RE-EXPORTED as
 //!    `rigger::conductor::META_REPLAY_KEY`, which every existing caller names. A stamping half and
@@ -44,9 +44,10 @@ use rigger::eventstore::Event;
 use rigger::ingest::{is_derived_index_type, DERIVED_INDEX_TYPES};
 use std::collections::BTreeSet;
 
-/// An event of `type_` carrying `key` in the replay-key metadata slot - the exact shape both ingest
-/// sinks stamp on what they append, built here through the crate's public `Event` API so the test
-/// pins the recorded form rather than an in-crate helper. The slot is addressed through
+/// An event of `type_` carrying `key` in the replay-key metadata slot - the slot `rigger graph
+/// build` stamps on each keyed derived event it appends, and the run's sink on its one ledger
+/// entry - built here through the crate's public `Event` API so the test pins the recorded form
+/// rather than an in-crate helper. The slot is addressed through
 /// `rigger::conductor::META_REPLAY_KEY`, the spelling every existing caller of the crate uses;
 /// that it is the SAME name the owning `rigger::ingest` module publishes, and therefore the same
 /// slot the predicate reads, is itself pinned below rather than assumed here.
@@ -189,8 +190,8 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
 /// CONTRACT: a RUN BOUNDARY in the stream is not a boundary to this predicate - it is what
 /// PROJECT-scoped means, stated at the public API every consumer reaches it through.
 ///
-/// Both sinks hand this function a WHOLE multi-run stream and take its answer as "what is already
-/// recorded". The word that makes that safe is project-scoped: a file's content hash does not
+/// This reference is handed a WHOLE multi-run stream, and its answer - "what is already
+/// recorded" - is what the group lookup each sink asks is held to. The word that makes that safe is project-scoped: a file's content hash does not
 /// change because a new run started, so a `RunStarted` and the lifecycle facts that follow it must
 /// leave the answer exactly as it was. The regression this guards is not hypothetical - it is the
 /// PRIOR behaviour this criterion removes, in which the derived keys were scoped to the current
@@ -394,7 +395,7 @@ fn minted_keys(root: &std::path::Path) -> BTreeSet<String> {
 }
 
 /// The recorded events, replayed as a sink would see them: each minted key stamped onto an event of
-/// the type it was minted for - byte-for-byte the shape both sinks append (`with_meta(replay_key)`).
+/// the type it was minted for - the shape `rigger graph build` appends (`with_meta(replay_key)`).
 #[cfg(feature = "symbols")]
 fn as_recorded(minted: &[(String, String)]) -> Vec<Event> {
     minted.iter().map(|(k, t)| keyed(t, k)).collect()

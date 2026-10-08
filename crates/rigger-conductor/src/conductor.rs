@@ -3165,17 +3165,20 @@ impl RunCtx<'_> {
         self.emit_with_actor("", type_, payload)
     }
 
-    /// The conductor's SINGLE event-mutation authority: append one already-built event
-    /// to the run stream and fold it into the live graph (so later agents read it). Both
-    /// emit paths - the actor-tagged [`emit_with_actor`](RunCtx::emit_with_actor) and the
-    /// replay-keyed [`emit_keyed`](RunCtx::emit_keyed) - route through here, so the
+    /// The conductor's event-mutation authority for every event but a ledger entry: append one
+    /// already-built event to the run stream and fold it into the live graph (so later agents
+    /// read it). Both emit paths - the actor-tagged [`emit_with_actor`](RunCtx::emit_with_actor)
+    /// and the replay-keyed [`emit_keyed`](RunCtx::emit_keyed) - route through here, so the
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
-    /// arch-emit-keyed-dup-authority).
+    /// arch-emit-keyed-dup-authority). The one other path is the ingest sink's
+    /// ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)): a ledger entry folds only with its batch,
+    /// so the sink appends and folds it through the folding store's ledger form, stamped by the
+    /// same [`stamped`](RunCtx::stamped) and its lost fold said by the same folding store.
     fn append_and_fold(&self, ev: Event) -> Result<u64, Error> {
         // A single event is the one-event case of the batched authority, so run-id stamping, the
         // append, and the graph fold live in exactly ONE place (finding arch-emit-keyed-dup-authority
-        // stays closed - there is no second append+fold path to drift). The returned position is the
+        // stays closed - no event but a ledger entry has a second append+fold path to drift). The returned position is the
         // appended log position a caller may CITE later (the content-address cache's green-verdict
         // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
         //
@@ -3192,10 +3195,11 @@ impl RunCtx<'_> {
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
     /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
     /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
-    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping stays the one
-    /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
+    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping is
+    /// [`stamped`](RunCtx::stamped) (spec 06, unit 1), which this and the ingest sink's ledger
+    /// entry both go through, and the batched append-and-fold + position assignment is
     /// the shared [`crate::ingest::FoldingStore`]'s, whose fold is the one a cold `rigger graph
-    /// build` also uses, so the run and a cold build can never fold a file's batch differently.
+    /// build` also uses, so a run's event and a cold build's batch can never fold differently.
     /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the store's own
     /// report - one slot per event handed in, `None` where nothing was written (an empty batch, or
     /// a store that recognised every event as already recorded) - never a fabricated `0`.
@@ -3203,9 +3207,9 @@ impl RunCtx<'_> {
         if events.is_empty() {
             return Ok(Appended::default());
         }
-        // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
-        // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
-        // their run. Skipped only when the run id is empty (the pure-helper test context, which
+        // Stamp the run id on every event (spec 06, unit 1) through the one stamp every event this
+        // run appends takes - here and at the ingest sink's ledger entry - so
+        // unit/status/gate-verdict/spec-defect events are all attributable to their run. Skipped only when the run id is empty (the pure-helper test context, which
         // appends nothing meaningful).
         let stamped: Vec<Event> = events.iter().map(|e| self.stamped(e)).collect();
         // The events are on the log whatever became of the fold; a fold into a wired graph that

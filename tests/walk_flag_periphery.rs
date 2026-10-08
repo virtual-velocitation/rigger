@@ -10,8 +10,9 @@
 //! the fallible-sink driver handing on what the real walk handed it.
 //!
 //! What this file OWNS: the flag each public walk hands and each public code-half function
-//! answers, from outside. NOT OWNED: what a sink does with the flag - both sinks and the lag
-//! advisory take it and ignore it here, and what they record is held by the tests that drive the
+//! answers, from outside. NOT OWNED: what a sink does with the flag - the run's sink records it in
+//! its ledger entry, which the step test below reads back, while `rigger graph build` and the lag
+//! advisory take it and ignore it, and what they record is held by the tests that drive the
 //! binary over the same tree.
 
 mod common;

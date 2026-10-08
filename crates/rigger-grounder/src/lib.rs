@@ -9,7 +9,7 @@
 pub mod grounder;
 /// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
 /// authority both the live run and the standalone `rigger graph build` entry share, so the
-/// content key an event is deduped under can never drift between the two ingest entries.
+/// generation a batch is recorded under can never drift between the two ingest entries.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
 

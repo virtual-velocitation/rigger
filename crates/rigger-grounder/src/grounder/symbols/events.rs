@@ -419,15 +419,13 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// 86's Design/Done-when text, which is written in terms of a `tests/` directory and
 /// `#[cfg(test)]`/`#[test]` regions.
 ///
-/// Disclosed, non-blocking, SHARED limitation (not this criterion's alone to close): like
-/// criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload is a
-/// CONSTANT per `(file, lang)` with no generation-distinguishing field, so within one long-lived
-/// process the ingest replay-key dedup (`crate::ingest::key_batch`, content-hashing a file's WHOLE
-/// batch) can treat a LATER occurrence of an all-empty batch as a replay of an EARLIER one and
-/// silently drop it. This is the same collision class already tracked against criterion 3's own
-/// sentinel (a peer finding on that unit); fixing it belongs to `key_batch`/`emit_keyed_batch`
-/// (shared ingest infrastructure both sentinels ride), not to a bespoke, duplicated workaround in
-/// either criterion's own emit function.
+/// Like criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload
+/// is a CONSTANT per `(file, lang)` with no generation-distinguishing field, so a LATER occurrence
+/// of an all-empty batch extracts to the SAME generation (`crate::ingest::key_batch`,
+/// content-hashing a file's WHOLE batch) as an EARLIER one. Neither ingest sink drops it for that:
+/// each weighs a batch against its identity's LATEST recorded generation, the run's sink against
+/// the graph's current one too, never against every generation ever recorded, so a later
+/// occurrence is recorded again whenever another generation came between.
 pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let whole_file_test = is_under_tests_dir(file);
     let lang = lang_str(fs.lang);

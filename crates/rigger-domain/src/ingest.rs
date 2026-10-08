@@ -1,5 +1,5 @@
 //! The ingest fold rules: the replay-key vocabulary of the derived index, the group stamp every
-//! keyed derived event carries, and the latest-generation lookup both ingest sinks seed from. The
+//! keyed derived event carries, and the latest-generation lookup both ingest sinks ask. The
 //! walk that builds the keys lives in the root crate's `ingest` module.
 
 use crate::eventstore::{Error, Event, EventStore, META_GROUP};
@@ -10,15 +10,16 @@ use crate::eventstore::{Error, Event, EventStore, META_GROUP};
 ///
 /// The key itself is a pure function of what it identifies - for a derived index event, the batch's
 /// own bytes; for a run's lifecycle events, the run structure (unit id, phase or gate token,
-/// remediation attempt) - never wall clock or randomness. An event stamped with one is appended AT
-/// MOST ONCE against whatever key set its sink seeds from, so two processes computing the identical
-/// key for the identical event let the second recognize the first's as a replay. Folds and
+/// remediation attempt) - never wall clock or randomness. A lifecycle event stamped with one is
+/// appended AT MOST ONCE against the key set its run seeds, so two processes computing the identical
+/// key for the identical event let the second recognize the first's as a replay; a key of
+/// perception names a generation and is unique to nothing (spec 107). Folds and
 /// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
 ///
 /// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
 /// [`project_scoped_latest_generations`] which parses it back, rather than in the orchestrator that also
-/// stamps it. That predicate is the shared suppression authority BOTH a live run and a cold
-/// `rigger graph build` call, so reading the name out of `crate::conductor` would point this module
+/// stamps it. That predicate is the reference the group lookup BOTH a live run's sink and a cold
+/// `rigger graph build` ask is held to, so reading the name out of `crate::conductor` would point this module
 /// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
 /// fact the orchestrator does not own. `conductor::META_REPLAY_KEY` re-exports this constant, so
 /// there is exactly one name and no second spelling to drift.
@@ -112,7 +113,8 @@ pub fn derived_generation(e: &Event) -> Option<(&str, &str)> {
 
 /// A KEYED DERIVED EVENT (spec 101): `event` stamped with its replay `key` and, when the key is the
 /// content-key shape, with the batch identity [`derived_key_parts`] cuts from it as its
-/// [`META_GROUP`]. The one builder both ingest sinks record a derived event through, so every
+/// [`META_GROUP`]. The one builder a derived event is recorded through - by `rigger graph build`'s
+/// sink; the run's sink records a ledger entry instead (spec 107) - so every such
 /// recording carries the group [`latest_generation`] is answered from. A key that is not the
 /// content-key shape names no identity, so its event carries no group and is never answered.
 pub fn keyed_derived_event(event: Event, key: &str) -> Event {
@@ -150,10 +152,11 @@ pub fn latest_generation(
 
 /// FIRST-SIGHT SEEDING (spec 101): whether the keyed batch `keyed` - one file's whole batch, every
 /// key sharing one identity and one generation - is already its identity's latest recorded
-/// generation on `stream`. Both ingest sinks ask this the first time they meet an identity in a
-/// process: `true` means the batch IS its identity's latest recorded generation, recorded by its
-/// own keyed rows or by the ledger entry that stands for it, so the sink installs its keys either
-/// way and the batch appends nothing; `false` - a changed
+/// generation on `stream`. `rigger graph build`'s sink asks this of each batch the walk hands it;
+/// the run's sink asks [`batch_is_current`] of the log's side and the graph's instead (spec 107).
+/// `true` means the batch IS its identity's latest recorded generation, recorded by its
+/// own keyed rows or by the ledger entry that stands for it, so the batch appends nothing;
+/// `false` - a changed
 /// file, a reverted one, a never-recorded one, or a batch whose key does not parse - means it
 /// appends.
 pub fn batch_is_latest_recorded(
@@ -204,7 +207,7 @@ impl<F: FnMut(&[(String, &Event)], bool) + ?Sized> BatchSink for F {}
 /// with the flag the walk handed it, and answer the FIRST error the sink returned. A failed batch
 /// never stops the walk - every batch after it still reaches the sink - and its error is never
 /// swallowed. The one policy both ingest
-/// sinks walk under, the run's keyed emit and a cold `rigger graph build`, so a batch whose lookup
+/// sinks walk under, the run's sink and a cold `rigger graph build`, so a batch whose lookup
 /// or append failed is answered the same way by both: the walk fails.
 pub fn sink_walked_batches<E>(
     walk: impl FnOnce(&mut dyn BatchSink),
@@ -261,8 +264,9 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// `identity -> (that identity's latest recorded generation hash, the keys of that generation)`,
 /// derived from the events handed in.
 ///
-/// Neither ingest sink reads a slice to seed itself (spec 101): both ask
-/// [`batch_is_latest_recorded`], answered by the store's group lookup. This is the reference that
+/// Neither ingest sink reads a slice to decide what it records (spec 101): `rigger graph build`
+/// asks [`batch_is_latest_recorded`] and the run's sink [`latest_generation`], each answered by
+/// the store's group lookup. This is the reference that
 /// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
 /// log - and the reader `rigger validate`'s index-lag sample uses. The rule, in the order it is
 /// applied:

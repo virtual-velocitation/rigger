@@ -105,7 +105,7 @@ where
     O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
     G: std::ops::Deref<Target = dyn Projection + 'g>,
 {
-    /// THE ONE APPEND-THEN-FOLD BODY: append `events` to `stream` under the caller's `expected`
+    /// THE APPEND-THEN-FOLD BODY of every event but a ledger entry: append `events` to `stream` under the caller's `expected`
     /// revision in ONE store append, then fold exactly what the store placed, at the positions it
     /// issued, in ONE graph transaction - the batched-fold cadence spec 49 needs (one store
     /// transaction per file's batch, not per event). The append goes to the log first and the
@@ -127,10 +127,12 @@ where
     /// swallows the genuine event recorded there. A suppressed event needs no fold: it folded when
     /// its content was first recorded.
     ///
-    /// Every batched append-then-fold is this body - the run's keyed emit and every other run
-    /// event through [`EventStore::append`] below, a cold `rigger graph build`, the offline graph
-    /// passes and `rigger reset --runs` through this method - so the batching and the fold can
-    /// never diverge between them. Two single-event folds are not: `rigger emit`
+    /// Every batched append-then-fold but one is this body - every run event through
+    /// [`EventStore::append`] below, a cold `rigger graph build`, the offline graph passes and
+    /// `rigger reset --runs` through this method - so the batching and the fold can never diverge
+    /// between them. The one other is the ledger form ([`Self::append_entry_and_fold`]), reached
+    /// only by a ledger entry: the run's ingest sink appends its one entry and folds the entry's
+    /// batch through it. Two single-event folds are not this body either: `rigger emit`
     /// (`mcpserver::emit_event`) and `rigger result` (`fold_recorded_result`) each append their one
     /// event through the store and fold it through [`Fold::of`]. It is deliberately NOT
     /// `symbols`-gated: it only moves events through the store and graph ports, which both feature
@@ -2488,7 +2490,7 @@ mod scoped_reindex_tests {
     /// [`ingest_files_batched`] is bounded to exactly the NAMED files - an untouched sibling never
     /// reaches the sink, even though it is present and indexable. Mirrors
     /// `grounder::symbols::events::tests::file_batches_is_scoped_to_the_named_files_only` one layer
-    /// up, through the KEYED sink the conductor actually calls.
+    /// up, at the walk that hands the conductor's sink its batches.
     #[test]
     fn ingest_files_batched_is_bounded_to_the_named_files() {
         let dir = tempfile::tempdir().unwrap();
@@ -2578,7 +2580,7 @@ mod scoped_reindex_tests {
         let files = vec!["stable.rs".to_string(), "churn.rs".to_string()];
 
         // Simulate what the graph has already recorded: both files' CURRENT (pre-edit) generation,
-        // stamped with real replay keys exactly as `RunCtx::emit_keyed_batch` would.
+        // stamped with real replay keys as a cold `rigger graph build` records them.
         let mut prior: Vec<Event> = Vec::new();
         let mut pos = 1u64;
         ingest_files_batched(root, &files, |keyed, _| {

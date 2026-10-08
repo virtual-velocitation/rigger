@@ -613,7 +613,8 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
 /// A log sink that hears nothing: `append_and_fold` answers its fold to the caller instead.
 const SILENT: fn(&str) = |_| {};
 
-/// The one append-then-fold body answers a caller of `append_and_fold` and a caller of the store
+/// The append-then-fold body of every event but a ledger entry answers a caller of
+/// `append_and_fold` and a caller of the store
 /// port's `append` alike: an empty batch under `Any` appends and folds nothing through either and
 /// is reported as an absence; an unmet expectation - on an empty batch or not - is the store's
 /// conflict through either, and nothing is appended or folded.
