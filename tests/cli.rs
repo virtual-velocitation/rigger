@@ -2198,7 +2198,7 @@ fn symbol_index_is_byte_identical_across_processes() {
 /// How many batch events `entries` stand for: the sum of the event counts their replay keys
 /// carry.
 #[cfg(feature = "symbols")]
-fn batch_events(entries: &[(rigger::retention::GenerationIngested, String, String)]) -> usize {
+fn batch_events(entries: &[common::fixtures::EntryRecord]) -> usize {
     entries
         .iter()
         .map(|(_, _, key)| common::fixtures::entry_key_parts(key).2)
@@ -2318,7 +2318,7 @@ fn graph_build_records_a_changed_file_as_one_entry_from_the_bytes_it_holds_now()
         ),
         "the build records the changed file's entry and nothing else; stderr: {err}"
     );
-    let entry_of = |entries: &[(rigger::retention::GenerationIngested, String, String)]| {
+    let entry_of = |entries: &[common::fixtures::EntryRecord]| {
         entries
             .iter()
             .find(|(_, group, _)| group == "gc/combat.rs")
@@ -27050,16 +27050,14 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
 /// What the log of the project at `root` records as ledger entries, beside what a run records
 /// for the tree as it stands under the blob `git hash-object` gives each file.
 #[cfg(feature = "symbols")]
-type RecordedAndWalked = [Vec<(rigger::retention::GenerationIngested, String, String)>; 2];
+type RecordedAndWalked = [Vec<common::fixtures::EntryRecord>; 2];
 
 #[cfg(feature = "symbols")]
 fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
-    use common::fixtures::{entry_records, git_hash_object, walked_entry_events};
+    use common::fixtures::{entry_records, walked_git_entry_records};
     [
         entry_records(&read_run_events(root)),
-        entry_records(&walked_entry_events(root, |file| {
-            git_hash_object(root, file, false)
-        })),
+        walked_git_entry_records(root),
     ]
 }
 

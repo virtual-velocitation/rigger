@@ -513,12 +513,12 @@ pub enum CountedRead {
 
 /// One group lookup of each of `identities` on `stream`, in order: what a counting store saw of
 /// a caller that asked each identity's group once and nothing else.
-pub fn one_lookup_each(stream: &str, identities: &[&str]) -> Vec<CountedRead> {
+pub fn one_lookup_each(stream: &str, identities: &[impl AsRef<str>]) -> Vec<CountedRead> {
     identities
         .iter()
         .map(|identity| CountedRead::LatestInGroup {
             stream: stream.to_string(),
-            group: identity.to_string(),
+            group: identity.as_ref().to_string(),
         })
         .collect()
 }

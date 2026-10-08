@@ -8,6 +8,8 @@ use std::path::Path;
 /// The `gc` source file: two product functions, a rationale line, an in-file test module that
 /// references a product function, and the declaration of the out-of-line test module.
 pub const SOURCE_PATH: &str = "src/lib.rs";
+/// The identity of the source file's `gc` batch: its code half under [`SOURCE_PATH`].
+pub const SOURCE: &str = "gc/src/lib.rs";
 pub const SOURCE_BODY: &str = "\
 // WHY: the entry stays small so the walk has one product file
 fn product() {
@@ -235,12 +237,20 @@ pub const WALKED: [WalkedBatch; 6] = [
     },
 ];
 
+/// The identity of each batch of [`WALKED`], in walk order.
+pub fn walked_identities() -> Vec<String> {
+    WALKED
+        .iter()
+        .map(|batch| format!("{}/{}", batch.prefix, batch.path))
+        .collect()
+}
+
 /// The `(identity, flag)` of each batch of [`WALKED`], in walk order: what a walk of the tree
 /// hands a sink that records each batch's identity beside the flag it was handed with.
 pub fn walked_handoffs() -> Vec<(String, bool)> {
-    WALKED
-        .iter()
-        .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
+    walked_identities()
+        .into_iter()
+        .zip(WALKED.iter().map(|batch| batch.excluded))
         .collect()
 }
 

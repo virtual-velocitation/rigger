@@ -162,6 +162,16 @@ mod spawn_fixtures;
 // The config fixtures the conductor fixtures name through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use config_fixtures::{agent, gate_def, gate_def_inputs};
+// The fixtures the ledger fixtures name through `super::`.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use {
+    extraction_tree_fixtures::WALKED, fold_fixtures::generation_ingested,
+    git_fixtures::git_hash_object,
+};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::canary_fixtures::*;

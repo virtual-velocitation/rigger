@@ -115,16 +115,11 @@ mod ingest_sinks {
     /// What a sink records for each of `batches` from the bytes `root` holds, as
     /// [`entry_records`](common::fixtures::entry_records) answers it: the entries of the shipped
     /// walk's own fixture that name those batches' identities, in walk order.
-    fn entries_of(
-        root: &Path,
-        batches: &[Batch],
-    ) -> Vec<(rigger::retention::GenerationIngested, String, String)> {
-        common::fixtures::entry_records(&common::fixtures::walked_entry_events(root, |file| {
-            common::fixtures::git_hash_object(root, file, false)
-        }))
-        .into_iter()
-        .filter(|(_, group, _)| batches.iter().any(|(identity, _, _)| identity == group))
-        .collect()
+    fn entries_of(root: &Path, batches: &[Batch]) -> Vec<common::fixtures::EntryRecord> {
+        common::fixtures::walked_git_entry_records(root)
+            .into_iter()
+            .filter(|(_, group, _)| batches.iter().any(|(identity, _, _)| identity == group))
+            .collect()
     }
 
     /// Each event's `name` metadata entry, in order (empty when it carries none): its replay key

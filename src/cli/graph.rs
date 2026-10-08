@@ -1022,26 +1022,20 @@ mod tests {
     mod walk {
         use super::super::*;
         use crate::test_support::{
-            entry_records, generation_ingested, git_hash_object, held_generations, one_lookup_each,
-            owe_a_rebuild, planted_extraction_tree, rebuild_from_the_tree,
-            seed_pre_ledger_rows_without_a_group, source_with, walked_generations, walked_handoffs,
-            write_file, FailAppendMetaContaining, GroupLookupOnly, Handed, MinimalProjection,
-            ReadCountingStore, MOVED, SOURCE_BODY, SOURCE_PATH, WALKED,
+            entry_records, fixture_entry_events, generation_ingested, git_hash_object,
+            handed_by_the_walk, held_generations, one_lookup_each, owe_a_rebuild,
+            planted_extraction_tree, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
+            source_with, walked_generations, walked_identities, write_file, EntryRecord,
+            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, ReadCountingStore, MOVED,
+            SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
         };
         use rigger::contextgraph::Fold;
         use rigger::eventstore::Error;
-        use rigger::retention::GenerationIngested;
-
-        /// One ledger entry as a test compares it: its payload, its group and its replay key.
-        type Entry = (GenerationIngested, String, String);
-
-        /// The identity of the extraction tree's source file's code batch.
-        const SOURCE: &str = "gc/src/lib.rs";
 
         /// What the run stream of `store` holds: its ledger entries, in log order, and how many
         /// events it holds in all. The two agree only when the stream holds no other event, and
         /// so no derived event.
-        fn recorded(store: &dyn EventStore) -> (Vec<Entry>, usize) {
+        fn recorded(store: &dyn EventStore) -> (Vec<EntryRecord>, usize) {
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .unwrap();
@@ -1049,7 +1043,7 @@ mod tests {
         }
 
         /// A stream holding `entries` and nothing else, as [`recorded`] answers it.
-        fn only(entries: Vec<Entry>) -> (Vec<Entry>, usize) {
+        fn only(entries: Vec<EntryRecord>) -> (Vec<EntryRecord>, usize) {
             let held = entries.len();
             (entries, held)
         }
@@ -1063,44 +1057,24 @@ mod tests {
             generation: &str,
             excluded: bool,
             events: usize,
-        ) -> Entry {
+        ) -> EntryRecord {
             let blob = git_hash_object(root, path, false);
             let entry = generation_ingested(prefix, path, generation, &blob, excluded);
             entry_records(&[entry.event(events)]).remove(0)
         }
 
         /// The entry a build records for each batch a walk of the extraction tree at `root`
-        /// hands it, in walk order.
-        fn walked_entries(root: &Path) -> Vec<Entry> {
-            WALKED
-                .iter()
-                .map(|batch| {
-                    entry_from_the_tree(
-                        root,
-                        batch.prefix,
-                        batch.path,
-                        batch.generation,
-                        batch.excluded,
-                        batch.events.len(),
-                    )
-                })
-                .collect()
-        }
-
-        /// The batch the shipped whole-tree walk of `root` hands for `identity`.
-        fn walked(root: &str, identity: &str) -> Handed {
-            Handed::by(
-                |sink| {
-                    rigger::ingest::ingest_project_batched(root, sink);
-                },
-                identity,
-            )
+        /// hands it, in walk order, its blob the id `git hash-object` gives the file's bytes.
+        fn walked_entries(root: &Path) -> Vec<EntryRecord> {
+            entry_records(&fixture_entry_events(|path| {
+                git_hash_object(root, path, false)
+            }))
         }
 
         /// The entry a build records for the source file's code batch from the bytes the tree at
         /// `root` holds now, its generation the one the shipped walk keys those bytes under.
-        fn source_entry_now(root: &Path) -> Entry {
-            let handed = walked(root.to_str().unwrap(), SOURCE);
+        fn source_entry_now(root: &Path) -> EntryRecord {
+            let handed = handed_by_the_walk(root.to_str().unwrap(), SOURCE);
             entry_from_the_tree(
                 root,
                 "gc",
@@ -1109,19 +1083,6 @@ mod tests {
                 handed.excluded,
                 handed.keyed.len(),
             )
-        }
-
-        /// The identity of each batch a walk of the extraction tree hands, in walk order.
-        fn walked_identities() -> Vec<String> {
-            walked_handoffs()
-                .into_iter()
-                .map(|(identity, _)| identity)
-                .collect()
-        }
-
-        /// `owned` as the borrowed names a fixture takes.
-        fn names(owned: &[String]) -> Vec<&str> {
-            owned.iter().map(String::as_str).collect()
         }
 
         /// Spec 107, criterion 12: perception is a ledger entry at `rigger graph build`'s sink.
@@ -1142,17 +1103,14 @@ mod tests {
             let counted = ReadCountingStore::new(&inner);
             let graph = Projector::open(":memory:", "test").unwrap();
             let identities = walked_identities();
-            let lookups = one_lookup_each(conductor::STREAM, &names(&identities));
+            let lookups = one_lookup_each(conductor::STREAM, &identities);
 
             let built = ingest_tree(&counted, &graph, root).unwrap();
 
             assert_eq!(built, (18, Fold::Folded));
             assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
             assert_eq!(counted.reads(), lookups);
-            assert_eq!(
-                held_generations(&graph, &names(&identities)),
-                walked_generations()
-            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
 
             let again = ingest_tree(&counted, &graph, root).unwrap();
 
@@ -1220,10 +1178,7 @@ mod tests {
             seed_pre_ledger_rows_without_a_group(tree.path(), &store, &graph);
             let identities = walked_identities();
             assert_eq!(
-                (
-                    recorded(&store),
-                    held_generations(&graph, &names(&identities))
-                ),
+                (recorded(&store), held_generations(&graph, &identities)),
                 ((Vec::new(), 18), walked_generations()),
                 "premise: eighteen derived rows, no entry, and the graph holds each generation"
             );
@@ -1232,10 +1187,7 @@ mod tests {
 
             assert_eq!(built, (0, Fold::Folded));
             assert_eq!(recorded(&store), (walked_entries(tree.path()), 18 + 6));
-            assert_eq!(
-                held_generations(&graph, &names(&identities)),
-                walked_generations()
-            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
         }
 
         /// The graph build line's N counts each SINK OUTCOMES row that counts, and no other.
@@ -1301,7 +1253,7 @@ mod tests {
             );
             assert_eq!(recorded(&store), only(walked_entries(tree.path())));
             assert_eq!(
-                held_generations(&graph, &names(&identities)),
+                held_generations(&graph, &identities),
                 vec![None; identities.len()]
             );
 
@@ -1343,7 +1295,7 @@ mod tests {
                 .unwrap();
             rebuild_from_the_tree(&graph_db, &log, tree.path());
             assert_eq!(
-                held_generations(&graph, &names(&identities)),
+                held_generations(&graph, &identities),
                 WALKED
                     .iter()
                     .map(|batch| {
@@ -1362,10 +1314,7 @@ mod tests {
                 recorded(&store),
                 only([walked_once.clone(), vec![walked_once[1].clone()]].concat())
             );
-            assert_eq!(
-                held_generations(&graph, &names(&identities)),
-                walked_generations()
-            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
         }
 
         /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS,
@@ -1406,7 +1355,7 @@ mod tests {
             std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
             std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
             let root = tree.path().to_str().unwrap();
-            let other = walked(root, "gc/src/b.rs");
+            let other = handed_by_the_walk(root, "gc/src/b.rs");
 
             let inner = Store::open(":memory:").unwrap();
             let store = FailAppendMetaContaining {

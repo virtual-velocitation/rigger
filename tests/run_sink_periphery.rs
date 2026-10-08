@@ -39,12 +39,12 @@ use std::sync::Mutex;
 
 use common::cli::applied_positions;
 use common::fixtures::{
-    agent, arm_read_fault, entry_records, gate_def, generation_ingested, git_commit_all,
-    git_hash_object, held_generations, live_edges, logged_generations, one_lookup_each,
-    owe_a_rebuild, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group, source_with,
-    temp_git_project_with_commit, walked_entry_events, wire_owned, write_text, CountedRead, Handed,
-    NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, REWORDED, SOURCE_BODY,
-    SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+    agent, arm_read_fault, derived_count, entry_records, gate_def, generation_ingested,
+    git_commit_all, git_hash_object, held_generations, live_edges, logged_generations,
+    one_lookup_each, owe_a_rebuild, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
+    source_with, temp_git_project_with_commit, walked_git_entry_records, wire_owned, write_text,
+    CountedRead, EntryRecord, Handed, NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
+    MOVED, REWORDED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Stage};
@@ -54,8 +54,8 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ingest::{
-    batch_is_current, entry_of_batch, folding_into, ingest_files_batched, is_derived_index_type,
-    latest_generation, EntryFailure, GraphSide,
+    batch_is_current, entry_of_batch, folding_into, ingest_files_batched, latest_generation,
+    EntryFailure, GraphSide,
 };
 use rigger::ledger::{RunState, Status};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
@@ -75,19 +75,8 @@ fn committed_tree() -> tempfile::TempDir {
     dir
 }
 
-/// One entry a run records, as [`entry_records`] answers it.
-type Recorded = (GenerationIngested, String, String);
-
-/// What a run records for the tree at `root` as it stands and nothing recorded, each entry's
-/// blob the id `git hash-object` gives the bytes the tree holds.
-fn walked(root: &Path) -> Vec<Recorded> {
-    entry_records(&walked_entry_events(root, |file| {
-        git_hash_object(root, file, false)
-    }))
-}
-
 /// The identity each of `recorded` is grouped under.
-fn identities(recorded: &[Recorded]) -> Vec<&str> {
+fn identities(recorded: &[EntryRecord]) -> Vec<&str> {
     recorded
         .iter()
         .map(|(_, group, _)| group.as_str())
@@ -95,7 +84,7 @@ fn identities(recorded: &[Recorded]) -> Vec<&str> {
 }
 
 /// The generation each of `recorded` names, as a lookup answers it.
-fn generations(recorded: &[Recorded]) -> Vec<Option<String>> {
+fn generations(recorded: &[EntryRecord]) -> Vec<Option<String>> {
     recorded
         .iter()
         .map(|(entry, ..)| Some(entry.generation.clone()))
@@ -204,14 +193,6 @@ impl Files {
     }
 }
 
-/// How many derived index events `events` carry.
-fn derived_count(events: &[Event]) -> usize {
-    events
-        .iter()
-        .filter(|e| is_derived_index_type(&e.type_))
-        .count()
-}
-
 /// GIVEN a committed tree holding a source file, the out-of-line test module it declares and a
 /// design document, and an empty `events.db` and `graph.db`,
 /// WHEN a run walks the tree,
@@ -225,7 +206,7 @@ fn derived_count(events: &[Event]) -> usize {
 fn a_run_records_one_ledger_entry_per_batch_and_one_applied_row_per_entry_in_the_files() {
     let tree = committed_tree();
     let root = tree.path();
-    let walked = walked(root);
+    let walked = walked_git_entry_records(root);
     assert_eq!(
         walked
             .iter()
@@ -290,7 +271,7 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
 {
     let tree = committed_tree();
     let root = tree.path();
-    let walked = walked(root);
+    let walked = walked_git_entry_records(root);
     let files = Files::new();
     seed_pre_ledger_rows_without_a_group(root, &files.store(), &files.graph());
     let pre_ledger = files.log();
@@ -346,12 +327,9 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
     assert_eq!(files.entry_positions(), positions);
 }
 
-/// The identity of the source file's code batch, the one identity [`MOVED`] moves.
-const SOURCE: &str = "gc/src/lib.rs";
-
 /// The one entry of `recorded` under `identity`.
-fn entry_under(recorded: &[Recorded], identity: &str) -> Recorded {
-    let under: Vec<&Recorded> = recorded
+fn entry_under(recorded: &[EntryRecord], identity: &str) -> EntryRecord {
+    let under: Vec<&EntryRecord> = recorded
         .iter()
         .filter(|(_, group, _)| group == identity)
         .collect();
@@ -384,19 +362,19 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    let first_walk = walked(root);
+    let first_walk = walked_git_entry_records(root);
     let a = entry_under(&first_walk, SOURCE);
 
     files.run_over(root, "first criterion");
     let facts_a = facts(&files.graph());
 
     write_text(root, SOURCE_PATH, &source_with(MOVED));
-    let b = entry_under(&walked(root), SOURCE);
-    let keys = |recorded: &[Recorded]| -> Vec<String> {
+    let b = entry_under(&walked_git_entry_records(root), SOURCE);
+    let keys = |recorded: &[EntryRecord]| -> Vec<String> {
         recorded.iter().map(|(.., key)| key.clone()).collect()
     };
     assert_eq!(
-        keys(&walked(root))
+        keys(&walked_git_entry_records(root))
             .into_iter()
             .filter(|key| !keys(&first_walk).contains(key))
             .collect::<Vec<_>>(),
@@ -413,7 +391,11 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     );
 
     write_text(root, SOURCE_PATH, SOURCE_BODY);
-    assert_eq!(walked(root), first_walk, "sanity: the tree is back at A");
+    assert_eq!(
+        walked_git_entry_records(root),
+        first_walk,
+        "sanity: the tree is back at A"
+    );
     files.run_over(root, "third criterion");
 
     let recorded = entry_records(&files.log());
@@ -711,7 +693,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let files = Files::new();
     owe_a_rebuild(&files.graph());
     let owed_applied = applied_positions(&files.graph_db());
-    let first_walk = walked(root);
+    let first_walk = walked_git_entry_records(root);
     let lost = format!(
         "rigger: recorded 1 run event(s); not folded into the context graph: graph: {REBUILD_OWED}"
     );
@@ -736,7 +718,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let said_without_an_entry = said() - said_first;
 
     write_text(root, SOURCE_PATH, &source_with(MOVED));
-    let moved = entry_under(&walked(root), SOURCE);
+    let moved = entry_under(&walked_git_entry_records(root), SOURCE);
     assert_ne!(moved, entry_under(&first_walk, SOURCE));
     files.run_over(root, "third criterion");
 
@@ -838,14 +820,14 @@ fn group_lookups(reads: &[CountedRead]) -> Vec<CountedRead> {
 fn one_run_walks_then_lands_the_moved_body_and_its_revert(
     files: &Files,
     root: &Path,
-    walk_records: Vec<Recorded>,
+    walk_records: Vec<EntryRecord>,
 ) {
-    let first_walk = walked(root);
+    let first_walk = walked_git_entry_records(root);
     let a = entry_under(&first_walk, SOURCE);
     let b = {
         let moved = committed_tree();
         write_text(moved.path(), SOURCE_PATH, &source_with(MOVED));
-        entry_under(&walked(moved.path()), SOURCE)
+        entry_under(&walked_git_entry_records(moved.path()), SOURCE)
     };
     assert_ne!(a.0.generation, b.0.generation);
     let before = entry_records(&files.log());
@@ -899,7 +881,11 @@ fn one_run_walks_then_lands_the_moved_body_and_its_revert(
 fn one_run_asks_the_group_lookup_once_per_identity_across_its_walk_and_two_reindexes() {
     let tree = committed_tree();
     let root = tree.path();
-    one_run_walks_then_lands_the_moved_body_and_its_revert(&Files::new(), root, walked(root));
+    one_run_walks_then_lands_the_moved_body_and_its_revert(
+        &Files::new(),
+        root,
+        walked_git_entry_records(root),
+    );
 }
 
 /// GIVEN a committed tree an earlier run, another process, already recorded, so every group
@@ -911,7 +897,7 @@ fn one_run_over_a_recorded_tree_answers_both_reindexes_from_what_its_walk_looked
     let root = tree.path();
     let files = Files::new();
     files.run_over(root, "first criterion");
-    assert_eq!(entry_records(&files.log()), walked(root));
+    assert_eq!(entry_records(&files.log()), walked_git_entry_records(root));
 
     one_run_walks_then_lands_the_moved_body_and_its_revert(&files, root, Vec::new());
 }
@@ -927,7 +913,11 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     let files = Files::new();
     seed_pre_ledger_rows_without_a_group(tree.path(), &files.store(), &files.graph());
     assert_eq!(
-        logged_generations(&files.store(), STREAM, &identities(&walked(tree.path()))),
+        logged_generations(
+            &files.store(),
+            STREAM,
+            &identities(&walked_git_entry_records(tree.path()))
+        ),
         vec![None; 5],
         "premise: the group lookup answers no generation"
     );
@@ -935,7 +925,7 @@ fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_i
     one_run_walks_then_lands_the_moved_body_and_its_revert(
         &files,
         tree.path(),
-        walked(tree.path()),
+        walked_git_entry_records(tree.path()),
     );
 }
 
@@ -986,14 +976,14 @@ impl AgentDriver for RebuildsThenRewords<'_> {
 fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_group_lookup() {
     let tree = committed_tree();
     let root = tree.path();
-    let first_walk = walked(root);
+    let first_walk = walked_git_entry_records(root);
     let all = identities(&first_walk);
     let a = entry_under(&first_walk, SOURCE);
     let moved = committed_tree();
     write_text(moved.path(), SOURCE_PATH, &source_with(MOVED));
     let reworded = committed_tree();
     write_text(reworded.path(), SOURCE_PATH, &source_with(REWORDED));
-    let reindexed: Vec<Recorded> = walked(reworded.path())
+    let reindexed: Vec<EntryRecord> = walked_git_entry_records(reworded.path())
         .into_iter()
         .filter(|(entry, ..)| entry.file == SOURCE_PATH)
         .collect();
@@ -1041,7 +1031,7 @@ fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_
     );
     assert_eq!(
         held_generations(&files.graph(), &all),
-        generations(&walked(reworded.path())),
+        generations(&walked_git_entry_records(reworded.path())),
         "the graph holds the left-behind identity's generation again, and the moved design one"
     );
     assert_eq!(

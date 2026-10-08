@@ -20474,7 +20474,7 @@ mod tests {
             "sanity: the tree extracts under both halves"
         );
         assert_eq!(crate::test_support::entry_records(&emitted), walked);
-        assert_eq!(derived_count(&emitted), 0);
+        assert_eq!(crate::test_support::derived_count(&emitted), 0);
 
         // (2) A seeded traversal returns REAL code-entity nodes the run ingested: every reached
         // entity name is an ACTUAL definition of the real file, and the stable `current_run` is
@@ -20588,7 +20588,7 @@ mod tests {
             crate::test_support::entry_records(&log()),
             [first, churned].concat()
         );
-        assert_eq!(derived_count(&log()), 0);
+        assert_eq!(crate::test_support::derived_count(&log()), 0);
 
         // The new generation superseded the old in the graph: the traversal reaches the new
         // symbol and no longer the one it replaced, and the unchanged file's is as it stood.
@@ -20813,12 +20813,13 @@ mod tests {
         use super::*;
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
-            arm_read_fault, generation_ingested, git_answer, git_hash_object, held_generations,
-            logged_generations, one_lookup_each, planted_extraction_tree, rebuild_from_the_tree,
-            seed_pre_ledger_rows_without_a_group, source_with, walked_generations, walked_handoffs,
-            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
-            MOVED, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
-            WORKFLOW_BODY, WORKFLOW_PATH,
+            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
+            git_hash_object, handed_by_the_walk, held_generations, logged_generations,
+            one_lookup_each, owe_a_rebuild, planted_extraction_tree, rebuild_from_the_tree,
+            seed_pre_ledger_rows_without_a_group, source_with, walked_generations,
+            walked_identities, write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY,
+            DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY,
+            TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -20827,9 +20828,6 @@ mod tests {
         /// What the run stream records, in log order: each ledger entry parsed, and the type of
         /// any other event.
         type Recorded = Vec<Result<GenerationIngested, String>>;
-
-        /// The identity of the source file's code batch.
-        const SOURCE: &str = "gc/src/lib.rs";
 
         /// A second body for the source file, and a third.
         const BODY_B: &str = "fn second_body() {}\n";
@@ -20905,18 +20903,12 @@ mod tests {
         /// The entry the sink records for each batch a walk of the extraction tree hands it, in
         /// walk order, its blob [`sized`] of the file's planted bytes.
         fn walked_entries() -> Vec<GenerationIngested> {
-            WALKED
-                .iter()
-                .map(|batch| {
-                    generation_ingested(
-                        batch.prefix,
-                        batch.path,
-                        batch.generation,
-                        &sized(planted_body(batch.path).as_bytes()),
-                        batch.excluded,
-                    )
-                })
-                .collect()
+            entry_records(&fixture_entry_events(|path| {
+                sized(planted_body(path).as_bytes())
+            }))
+            .into_iter()
+            .map(|(entry, ..)| entry)
+            .collect()
         }
 
         impl Handed {
@@ -20925,16 +20917,6 @@ mod tests {
                 ctx.emit_keyed_batch(&self.as_keyed(), self.excluded)
                     .map_err(|e| e.0)
             }
-        }
-
-        /// The batch the whole-tree walk of `root` hands for `identity`.
-        fn walked(root: &str, identity: &str) -> Handed {
-            Handed::by(
-                |sink| {
-                    crate::ingest::ingest_project_batched(root, sink);
-                },
-                identity,
-            )
         }
 
         /// The batch an integration reindex of `root` naming `file` hands for `identity`.
@@ -21076,13 +21058,13 @@ mod tests {
                     )
                 })
                 .collect();
-            let identities = walked_handoffs();
+            let identities = walked_identities();
             assert_eq!(
                 stamps,
                 identities
                     .iter()
                     .zip(&WALKED)
-                    .map(|((identity, _), batch)| {
+                    .map(|(identity, batch)| {
                         (
                             Some(identity.clone()),
                             Some(format!(
@@ -21095,8 +21077,7 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             );
-            let named: Vec<&str> = identities.iter().map(|(of, _)| of.as_str()).collect();
-            assert_eq!(held_generations(&graph, &named), walked_generations());
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
             assert_eq!(live_names(&graph), ["helper", "product"]);
 
             ctx.ingest_project_batches().unwrap();
@@ -21121,7 +21102,7 @@ mod tests {
             let mut ctx = RunCtx::for_test(&cfg, &deps);
             ctx.run_id = "run-7".to_string();
 
-            walked(root, SOURCE).emit(&ctx).unwrap();
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
 
             let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
             assert_eq!(
@@ -21269,12 +21250,12 @@ mod tests {
 
             // Both sides hold the generation of a first body.
             write_file(&file, BODY_B.as_bytes());
-            let first = walked(root, SOURCE);
+            let first = handed_by_the_walk(root, SOURCE);
             first.emit(&ctx).unwrap();
             // The walk lowers a second body, and the tree moves on to a third before the sink
             // reads it.
             write_file(&file, BODY_C.as_bytes());
-            let lagging = walked(root, SOURCE);
+            let lagging = handed_by_the_walk(root, SOURCE);
             write_file(&file, SOURCE_BODY.as_bytes());
             let generations = [first.generation(), lagging.generation()];
             assert_ne!(generations[0], generations[1]);
@@ -21325,7 +21306,7 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
 
-            walked(root, SOURCE).emit(&ctx).unwrap();
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
 
             let blob = git_hash_object(tree.path(), SOURCE_PATH, false);
             assert_eq!(blob.len(), 40);
@@ -21382,7 +21363,7 @@ mod tests {
             let ctx = RunCtx::for_test(&cfg, &deps);
 
             assert_eq!(
-                walked(root, SOURCE).emit(&ctx),
+                handed_by_the_walk(root, SOURCE).emit(&ctx),
                 Err(
                     "the bytes of gc/src/lib.rs could not be hashed: worktree: git could not \
                      start"
@@ -21400,7 +21381,7 @@ mod tests {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
             let file = tree.path().join(SOURCE_PATH);
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
             if !arm_read_fault(&file) {
                 return;
             }
@@ -21426,7 +21407,7 @@ mod tests {
         {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
             let driver = Stub::new();
             let cfg = Config::default();
 
@@ -21485,7 +21466,7 @@ mod tests {
             let ctx = RunCtx::for_test(&cfg, &deps);
 
             assert_eq!(
-                walked(root, SOURCE).emit(&ctx),
+                handed_by_the_walk(root, SOURCE).emit(&ctx),
                 Err("graph: no context graph is wired".to_string())
             );
             assert_eq!(recorded(&st), Recorded::new());
@@ -21504,7 +21485,7 @@ mod tests {
             let deps = sink_deps(&st, &driver, &graph, root, &failing_hash);
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
-            let handed = walked(root, "gd/src/lib.rs");
+            let handed = handed_by_the_walk(root, "gd/src/lib.rs");
             assert_eq!(handed.generation(), "88eadaf4024b4a86");
             write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
 
@@ -21524,17 +21505,7 @@ mod tests {
             let graph_path = graph_dir.path().join("graph.db");
             let graph = contextgraph::sqlite::Projector::open(graph_path.to_str().unwrap(), "test")
                 .unwrap();
-            // The public fold refuses a ledger entry and marks the graph owing.
-            let mut stray = generation_ingested("gc", "src/stray.rs", "h0", "", false).event(1);
-            stray.position = 1;
-            assert_ne!(
-                contextgraph::Fold::of(
-                    contextgraph::wired(Some(&graph as &dyn Projection)),
-                    &stray
-                ),
-                contextgraph::Fold::Folded
-            );
-            assert!(graph.rebuild_owed().unwrap());
+            owe_a_rebuild(&graph);
             let st = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let said: Mutex<Vec<String>> = Mutex::default();
@@ -21546,10 +21517,10 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
 
-            let first = walked(root, SOURCE);
+            let first = handed_by_the_walk(root, SOURCE);
             assert_eq!([first.emit(&ctx), first.emit(&ctx)], [Ok(()), Ok(())]);
             write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
-            let second = walked(root, SOURCE);
+            let second = handed_by_the_walk(root, SOURCE);
             assert_eq!([second.emit(&ctx), second.emit(&ctx)], [Ok(()), Ok(())]);
 
             assert_eq!(
@@ -21601,7 +21572,7 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
 
-            assert_eq!(walked(root, SOURCE).emit(&ctx), Ok(()));
+            assert_eq!(handed_by_the_walk(root, SOURCE).emit(&ctx), Ok(()));
 
             assert_eq!(
                 recorded(&st),
@@ -21638,14 +21609,14 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
 
-            walked(root, SOURCE).emit(&ctx).unwrap();
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
             assert_eq!(live_names(&graph), ["helper", "product"]);
             write_file(&file, BODY_B.as_bytes());
-            let b = walked(root, SOURCE);
+            let b = handed_by_the_walk(root, SOURCE);
             b.emit(&ctx).unwrap();
             assert_eq!(live_names(&graph), ["second_body"]);
             write_file(&file, SOURCE_BODY.as_bytes());
-            walked(root, SOURCE).emit(&ctx).unwrap();
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
 
             let a = generation_ingested(
                 "gc",
@@ -21699,7 +21670,7 @@ mod tests {
             let deps = sink_deps(&held, &driver, &graph, root, &sized_hash);
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
 
             held.refuse_next_append();
             assert_eq!(
@@ -21738,7 +21709,7 @@ mod tests {
             let deps = sink_deps(&held, &driver, &graph, root, &sized_hash);
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
-            let a = walked(root, SOURCE);
+            let a = handed_by_the_walk(root, SOURCE);
             a.emit(&ctx).unwrap();
             let a_entry = generation_ingested(
                 "gc",
@@ -21750,7 +21721,7 @@ mod tests {
             assert_eq!(recorded(&inner), entries(std::slice::from_ref(&a_entry)));
 
             write_file(&file, BODY_B.as_bytes());
-            let b = walked(root, SOURCE);
+            let b = handed_by_the_walk(root, SOURCE);
             held.refuse_next_append();
             assert_eq!(b.emit(&ctx), Err(format!("event store: {APPEND_REFUSED}")));
 
@@ -21798,13 +21769,13 @@ mod tests {
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let driver = Stub::new();
             let cfg = Config::default();
-            let a = walked(root, SOURCE);
+            let a = handed_by_the_walk(root, SOURCE);
             {
                 let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
                 a.emit(&RunCtx::for_test(&cfg, &deps)).unwrap();
             }
             write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
-            let b = walked(root, SOURCE);
+            let b = handed_by_the_walk(root, SOURCE);
 
             let (entered_tx, entered_rx) = std::sync::mpsc::channel();
             let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -21869,7 +21840,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_file(&dir.path().join(SOURCE_PATH), BODY_B.as_bytes());
             let root = dir.path().to_str().unwrap();
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
             let inner = Store::open(":memory:").unwrap();
             let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -21941,7 +21912,7 @@ mod tests {
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let driver = Stub::new();
             let cfg = Config::default();
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
             {
                 let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
                 handed.emit(&RunCtx::for_test(&cfg, &deps)).unwrap();
@@ -21980,7 +21951,7 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
             let built = counted.reads().len();
-            let a = walked(root, SOURCE);
+            let a = handed_by_the_walk(root, SOURCE);
             let a_entry = generation_ingested(
                 "gc",
                 SOURCE_PATH,
@@ -21992,7 +21963,7 @@ mod tests {
             assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
             assert_eq!(recorded(&inner), entries(std::slice::from_ref(&a_entry)));
             write_file(&file, BODY_B.as_bytes());
-            let b = walked(root, SOURCE);
+            let b = handed_by_the_walk(root, SOURCE);
             assert_eq!([b.emit(&ctx), b.emit(&ctx)], [Ok(()), Ok(())]);
             write_file(&file, SOURCE_BODY.as_bytes());
             assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
@@ -22010,7 +21981,7 @@ mod tests {
             );
             assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
 
-            assert_eq!(walked(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
+            assert_eq!(handed_by_the_walk(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
             assert_eq!(
                 counted.reads()[built..],
                 one_lookup_each(STREAM, &[SOURCE, "gd/src/lib.rs"])
@@ -22034,7 +22005,7 @@ mod tests {
             let cfg = Config::default();
             let ctx = RunCtx::for_test(&cfg, &deps);
             let built = counted.reads().len();
-            let handed = walked(root, SOURCE);
+            let handed = handed_by_the_walk(root, SOURCE);
 
             assert_eq!(
                 handed.emit(&ctx),
@@ -22115,8 +22086,8 @@ mod tests {
             let root = tree.path().to_str().unwrap();
             let file = tree.path().join(SOURCE_PATH);
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-            let source = walked(root, SOURCE);
-            let design = walked(root, "gd/src/lib.rs");
+            let source = handed_by_the_walk(root, SOURCE);
+            let design = handed_by_the_walk(root, "gd/src/lib.rs");
 
             // Row 8: the hash of an extraction the sink would record fails.
             assert_eq!(
@@ -22190,8 +22161,7 @@ mod tests {
             let inner = Store::open(":memory:").unwrap();
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             seed_pre_ledger_rows_without_a_group(tree.path(), &inner, &graph);
-            let handoffs = walked_handoffs();
-            let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
+            let identities = walked_identities();
             assert_eq!(
                 (
                     logged_generations(&inner, STREAM, &identities),
@@ -22256,8 +22226,7 @@ mod tests {
             let ctx = RunCtx::for_test(&cfg, &deps);
             let built = counted.reads().len();
             ctx.ingest_project_batches().unwrap();
-            let handoffs = walked_handoffs();
-            let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
+            let identities = walked_identities();
             let walked_once = entries(&walked_entries());
             assert_eq!(recorded(&inner), walked_once);
             assert_eq!(
@@ -22729,7 +22698,7 @@ mod tests {
         // And the log did not grow by any perception: its entries are exactly run one's, and
         // neither run recorded a derived event.
         assert_eq!(crate::test_support::entry_records(&after_two), first);
-        assert_eq!(derived_count(&after_two), 0);
+        assert_eq!(crate::test_support::derived_count(&after_two), 0);
     }
 
     // ---- Spec 60 criterion 3 (THE CHANGE PATH, AND THE REVERT THAT IS ONE) ----
@@ -22738,27 +22707,11 @@ mod tests {
     // real run. A revert the sink swallowed would strand the graph on a superseded generation of
     // that file.
 
-    /// One ledger entry as a test compares it: its payload, its group and its replay key.
-    #[cfg(feature = "symbols")]
-    type RecordedEntry = (crate::retention::GenerationIngested, String, String);
-
     /// The entry a run records for each batch a whole-tree walk of `root` extracts from the tree
     /// AS IT STANDS, in walk order, under the empty blob id the fixtures' hash function answers.
     #[cfg(feature = "symbols")]
-    fn walk_entries(root: &str) -> Vec<RecordedEntry> {
-        crate::test_support::entry_records(&crate::test_support::walked_entry_events(
-            std::path::Path::new(root),
-            |_| String::new(),
-        ))
-    }
-
-    /// How many derived index events `events` carry.
-    #[cfg(feature = "symbols")]
-    fn derived_count(events: &[Event]) -> usize {
-        events
-            .iter()
-            .filter(|e| crate::ingest::DERIVED_INDEX_TYPES.contains(&e.type_.as_str()))
-            .count()
+    fn walk_entries(root: &str) -> Vec<crate::test_support::EntryRecord> {
+        crate::test_support::walked_entry_records(std::path::Path::new(root), |_| String::new())
     }
 
     /// A COLD REBUILD of the graph from the tree AS IT STANDS: a fresh log and a fresh projection,
@@ -22885,7 +22838,7 @@ mod tests {
         let driver = Stub::new();
 
         // The entries a slice of the log, or a walk, carries for one file, in order.
-        let of_file = |entries: Vec<RecordedEntry>, file: &str| {
+        let of_file = |entries: Vec<crate::test_support::EntryRecord>, file: &str| {
             entries
                 .into_iter()
                 .filter(|(e, ..)| e.file == file)
@@ -22977,7 +22930,7 @@ mod tests {
             crate::test_support::entry_records(crate::run::current_run(&after_two)),
             churn_b
         );
-        assert_eq!(derived_count(&after_two), 0);
+        assert_eq!(crate::test_support::derived_count(&after_two), 0);
         let (_cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
 
         // The re-emitted batch SUPERSEDED the file's prior structural edges: a traversal from the
@@ -23037,7 +22990,7 @@ mod tests {
         let driver = Stub::new();
 
         // The entries a slice of the log carries for the reverted file, in log order.
-        let churn_entries = |events: &[Event]| -> Vec<RecordedEntry> {
+        let churn_entries = |events: &[Event]| -> Vec<crate::test_support::EntryRecord> {
             crate::test_support::entry_records(events)
                 .into_iter()
                 .filter(|(e, ..)| e.file == "src/churn.rs")
@@ -23121,7 +23074,7 @@ mod tests {
             churn_entries(&after_three),
             [gen_a.clone(), gen_b, gen_a].concat()
         );
-        assert_eq!(derived_count(&after_three), 0);
+        assert_eq!(crate::test_support::derived_count(&after_three), 0);
 
         // The graph came BACK: generation A's definition is reachable again and generation B's is
         // superseded - not left live beside it.

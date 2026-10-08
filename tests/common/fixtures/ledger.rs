@@ -5,6 +5,17 @@
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
 
+/// One ledger entry as a test compares it: its payload, its group and its replay key.
+pub type EntryRecord = (GenerationIngested, String, String);
+
+/// How many derived index events `events` carry.
+pub fn derived_count(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
+        .count()
+}
+
 /// What the run's sink records for the tree at `root` as it stands and nothing recorded: one
 /// ledger entry per batch the SHIPPED walk extracts, in walk order, each the event the entry's
 /// own constructor builds - its generation the batch's, its blob what `blob_of` answers for its
@@ -44,10 +55,7 @@ pub fn walked_entry_keys(root: &std::path::Path) -> Vec<String> {
 /// derived index event: what a log holds of perception once both sinks record entries alone.
 pub fn recorded_entry_keys(events: &[Event]) -> Vec<String> {
     assert_eq!(
-        events
-            .iter()
-            .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
-            .count(),
+        derived_count(events),
         0,
         "the log holds no derived index event"
     );
@@ -70,6 +78,43 @@ pub fn entry_key_parts(key: &str) -> (String, String, usize) {
         generation.to_string(),
         events.parse().expect("an event count"),
     )
+}
+
+/// What a sink records for the tree at `root` as it stands and nothing recorded, as
+/// [`entry_records`] answers it: one entry per batch the SHIPPED walk extracts, in walk order,
+/// its blob what `blob_of` answers for its file.
+#[cfg(feature = "symbols")]
+pub fn walked_entry_records(
+    root: &std::path::Path,
+    blob_of: impl Fn(&str) -> String,
+) -> Vec<EntryRecord> {
+    entry_records(&walked_entry_events(root, blob_of))
+}
+
+/// [`walked_entry_records`] with each entry's blob the id `git hash-object` gives the bytes the
+/// tree holds at its file.
+#[cfg(feature = "symbols")]
+pub fn walked_git_entry_records(root: &std::path::Path) -> Vec<EntryRecord> {
+    walked_entry_records(root, |file| super::git_hash_object(root, file, false))
+}
+
+/// The entry a sink records for each batch of the extraction tree's fixture (`WALKED`), in walk
+/// order, as the event the entry's own constructor builds: its generation and flag the
+/// fixture's, its event count the batch's, its blob what `blob_of` answers for its path.
+pub fn fixture_entry_events(blob_of: impl Fn(&str) -> String) -> Vec<Event> {
+    super::WALKED
+        .iter()
+        .map(|batch| {
+            super::generation_ingested(
+                batch.prefix,
+                batch.path,
+                batch.generation,
+                &blob_of(batch.path),
+                batch.excluded,
+            )
+            .event(batch.events.len())
+        })
+        .collect()
 }
 
 /// One batch a walk handed its sink, owned, with its flag.
@@ -117,9 +162,20 @@ impl Handed {
     }
 }
 
+/// The batch the shipped whole-tree walk of `root` hands for `identity`.
+#[cfg(feature = "symbols")]
+pub fn handed_by_the_walk(root: &str, identity: &str) -> Handed {
+    Handed::by(
+        |sink| {
+            rigger::ingest::ingest_project_batched(root, sink);
+        },
+        identity,
+    )
+}
+
 /// Each ledger entry among `events`, in order, as a test compares it: its payload, its group and
 /// its replay key. An entry carrying no group or no key reads as the empty string there.
-pub fn entry_records(events: &[Event]) -> Vec<(GenerationIngested, String, String)> {
+pub fn entry_records(events: &[Event]) -> Vec<EntryRecord> {
     let meta = |event: &Event, name: &str| event.meta.get(name).cloned().unwrap_or_default();
     events
         .iter()
@@ -169,11 +225,11 @@ pub fn seed_pre_ledger_rows_without_a_group(
 /// The generation `graph` holds for each of `identities`, in order.
 pub fn held_generations(
     graph: &dyn rigger::contextgraph::Projection,
-    identities: &[&str],
+    identities: &[impl AsRef<str>],
 ) -> Vec<Option<String>> {
     identities
         .iter()
-        .map(|identity| graph.current_generation(identity).unwrap())
+        .map(|identity| graph.current_generation(identity.as_ref()).unwrap())
         .collect()
 }
 
@@ -182,11 +238,13 @@ pub fn held_generations(
 pub fn logged_generations(
     store: &dyn rigger::eventstore::EventStore,
     stream: &str,
-    identities: &[&str],
+    identities: &[impl AsRef<str>],
 ) -> Vec<Option<String>> {
     identities
         .iter()
-        .map(|identity| rigger::ingest::latest_generation(store, stream, identity).unwrap())
+        .map(|identity| {
+            rigger::ingest::latest_generation(store, stream, identity.as_ref()).unwrap()
+        })
         .collect()
 }
 
@@ -215,14 +273,7 @@ pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &s
 pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection) {
     use rigger::contextgraph::{wired, Fold};
 
-    let mut stray = GenerationIngested {
-        prefix: "gc".to_string(),
-        file: "src/stray.rs".to_string(),
-        generation: "h0".to_string(),
-        blob: String::new(),
-        excluded: false,
-    }
-    .event(1);
+    let mut stray = super::generation_ingested("gc", "src/stray.rs", "h0", "", false).event(1);
     stray.position = 1;
     assert_ne!(Fold::of(wired(Some(graph)), &stray), Fold::Folded);
     assert!(graph.rebuild_owed().unwrap());

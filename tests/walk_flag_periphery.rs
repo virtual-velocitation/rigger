@@ -443,7 +443,8 @@ fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
         identified_git_project, init_event_log, read_run_events, step_line, write_workflow,
     };
     use common::fixtures::{
-        entry_records, generation_ingested, git_hash_object, walked_entry_events, TEST_MODULE_BODY,
+        entry_records, generation_ingested, git_hash_object, walked_git_entry_records,
+        TEST_MODULE_BODY,
     };
 
     let dir = identified_git_project();
@@ -458,20 +459,13 @@ fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
     write_file(&root.join(TEST_MODULE_PATH), TEST_MODULE_BODY.as_bytes());
     let _ = common::git::run_git(root, &["add", "-A"]);
     let _ = common::git::run_git(root, &["commit", "-q", "-m", "tree"]);
-    let walked = entry_records(&walked_entry_events(root, |file| {
-        git_hash_object(root, file, false)
-    }));
+    let walked = walked_git_entry_records(root);
 
     step_line(root, "the step that ingests the tree");
 
     let log = read_run_events(root);
     assert_eq!(entry_records(&log), walked);
-    assert_eq!(
-        log.iter()
-            .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
-            .count(),
-        0
-    );
+    assert_eq!(common::fixtures::derived_count(&log), 0);
 
     let flagged = &WALKED[0];
     assert_eq!(
