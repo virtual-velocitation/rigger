@@ -749,6 +749,172 @@ pub fn resolve_entry(
     Ok(None)
 }
 
+/// What [`entry_of_batch`] answers for a batch a sink records (spec 107): the ledger entry and
+/// the extraction it records, the batch its fold folds. The entry's event is
+/// `entry.event(batch.len())`.
+#[cfg(feature = "symbols")]
+#[derive(Debug)]
+pub struct EntryOfBatch {
+    pub entry: rigger_domain::retention::GenerationIngested,
+    pub batch: Vec<Event>,
+}
+
+/// Why [`entry_of_batch`] could not answer a batch (spec 107, SINK OUTCOMES rows 1, 2, 5 and 8):
+/// the named failure that fails the sink's emit and records nothing.
+#[cfg(feature = "symbols")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryFailure(pub String);
+
+#[cfg(feature = "symbols")]
+impl std::fmt::Display for EntryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[cfg(feature = "symbols")]
+impl std::error::Error for EntryFailure {}
+
+/// THE ONE HASH FUNCTION as a sink is handed it (spec 107): a file's bytes to the object id git
+/// gives them, or the failure of the hash.
+#[cfg(feature = "symbols")]
+pub type HashBlob<'h> = dyn Fn(&[u8]) -> Result<String, rigger_domain::worktree::Error> + 'h;
+
+/// The bytes a sink reads for the file at `path` (relative to `root`) under `prefix` (spec 107):
+/// none for a path outside the walk's scope ([`crate::grounder::in_walk_scope`]) and for one that
+/// holds no file, and the failure of a read that fails for any other reason. Unlike the tree's
+/// one read rule ([`crate::grounder::tree_bytes`]), which hands none for an unreadable file, a
+/// sink fails on one: it would otherwise record the file as gone.
+#[cfg(feature = "symbols")]
+fn sink_bytes(
+    root: &std::path::Path,
+    prefix: &str,
+    path: &str,
+) -> Result<Option<Vec<u8>>, EntryFailure> {
+    if !crate::grounder::in_walk_scope(root, prefix, path) {
+        return Ok(None);
+    }
+    let file = root.join(path);
+    match std::fs::read(&file) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(EntryFailure(format!(
+            "{} could not be read: {e}",
+            file.display()
+        ))),
+    }
+}
+
+/// The generation `key_batch` keys `batch` under for `<prefix>/<path>`, or none for the empty
+/// batch, which keys no event and so has no generation.
+#[cfg(feature = "symbols")]
+fn keyed_generation(prefix: &str, path: &str, batch: &[Event], excluded: bool) -> Option<String> {
+    let mut generation = None;
+    key_batch(
+        prefix,
+        path,
+        batch,
+        excluded,
+        &mut |keyed: &[(String, &Event)], _excluded: bool| {
+            generation = keyed
+                .first()
+                .and_then(|(key, _)| derived_key_parts(key))
+                .map(|(_, generation)| generation.to_string());
+        },
+    );
+    generation
+}
+
+/// WHAT A SINK RECORDS FOR ONE BATCH (spec 107, SINK OUTCOMES rows 1 to 11): the ledger entry
+/// and extraction to record for `keyed`, the batch a walk handed with its flag `excluded`,
+/// nothing when there is nothing to record, or the named failure that fails the emit. Both
+/// ingest sinks call it and keep no identity cut of their own.
+///
+/// It cuts the batch's identity and generation from its first key, a key that names no identity
+/// a half extracts failing the emit; asks `logged`, the sink's log-side lookup, for the log's
+/// latest generation of the identity; and reads from `graph` whether it owes its rebuild and the
+/// identity's current generation, each failed read failing the emit. A batch that is CURRENT
+/// ([`batch_is_current`]) records nothing, a graph that owes its rebuild being answered from the
+/// log side alone.
+///
+/// For a batch that is not current it reads the file's bytes ONCE under `root` - none for a path
+/// outside the walk's scope or holding no file - extracts them through the identity's half under
+/// the walk's flag, and keys that extraction as the walk keys a batch. What it records is that
+/// extraction, never the walk's batch: an index lowering that lags the file's bytes records the
+/// bytes' generation. An extraction that is empty has no generation, and one that is itself
+/// current is already held, so neither is recorded. Only for an extraction it records does it
+/// hash the bytes, through `hash`; an entry recorded from no bytes names no blob and asks no
+/// hash.
+#[cfg(feature = "symbols")]
+pub fn entry_of_batch(
+    root: &std::path::Path,
+    keyed: &[(String, &Event)],
+    excluded: bool,
+    logged: impl FnOnce(&str) -> Result<Option<String>, Error>,
+    graph: &dyn Projection,
+    hash: &HashBlob,
+) -> Result<Option<EntryOfBatch>, EntryFailure> {
+    use rigger_domain::retention::GenerationIngested;
+
+    let key = keyed.first().map_or("", |(key, _)| key.as_str());
+    let named = derived_key_parts(key).and_then(|(identity, walked)| {
+        let (prefix, path) = GenerationIngested::identity_parts(identity)?;
+        Some((identity, walked, prefix, path, half_of(prefix)?))
+    });
+    let Some((identity, walked, prefix, path, half)) = named else {
+        return Err(EntryFailure(format!(
+            "the batch key {key:?} names no identity"
+        )));
+    };
+    let logged = logged(identity).map_err(|e| {
+        EntryFailure(format!(
+            "the log's latest generation of {identity} could not be read: {e}"
+        ))
+    })?;
+    let owed = graph.rebuild_owed().map_err(|e| {
+        EntryFailure(format!(
+            "whether graph.db owes its rebuild could not be read: {e}"
+        ))
+    })?;
+    let held = graph.current_generation(identity).map_err(|e| {
+        EntryFailure(format!(
+            "graph.db's current generation of {identity} could not be read: {e}"
+        ))
+    })?;
+    let side = if owed {
+        GraphSide::Owed
+    } else {
+        GraphSide::Holds(held.as_deref())
+    };
+    let current = |generation: &str| batch_is_current(logged.as_deref(), side, generation);
+    if current(walked) {
+        return Ok(None);
+    }
+    let bytes = sink_bytes(root, prefix, path)?;
+    let batch = half(path, bytes.as_deref(), excluded);
+    let Some(generation) =
+        keyed_generation(prefix, path, &batch, excluded).filter(|own| !current(own))
+    else {
+        return Ok(None);
+    };
+    let blob = match &bytes {
+        Some(bytes) => hash(bytes).map_err(|e| {
+            EntryFailure(format!("the bytes of {identity} could not be hashed: {e}"))
+        })?,
+        None => String::new(),
+    };
+    Ok(Some(EntryOfBatch {
+        entry: GenerationIngested {
+            prefix: prefix.to_string(),
+            file: path.to_string(),
+            generation,
+            blob,
+            excluded,
+        },
+        batch,
+    }))
+}
+
 /// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
 /// `on_batch` at once, with `excluded`, the batch's flag, as the walk answered it. `hash` is the
 /// batch's generation ([`batch_generation`]), so every event of a file shares one `<hash>`, and
