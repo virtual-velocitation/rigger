@@ -27150,6 +27150,7 @@ fn a_workflow_driver_run_records_each_walked_batch_under_the_blob_git_hash_objec
 }
 
 /// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
+#[cfg(feature = "symbols")]
 fn index_lag_advisory(files: &[&str]) -> Option<String> {
     Some(format!(
         "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \

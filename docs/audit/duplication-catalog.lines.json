@@ -1060,7 +1060,7 @@
     ]
   },
   {
-    "id": "dup-26c89b46b494",
+    "id": "dup-f0233adf64e1",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3021,6 +3021,16 @@
         "file": "tests/cli.rs",
         "start_line": 27146,
         "end_line": 27146
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27603,
+        "end_line": 27603
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27621,
+        "end_line": 27621
       },
       {
         "file": "tests/common/cli.rs",
