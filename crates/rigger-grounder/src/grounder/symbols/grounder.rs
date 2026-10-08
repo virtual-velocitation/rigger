@@ -1090,21 +1090,32 @@ mod tests {
         );
     }
 
+    /// Over a tree holding `files` (path, body), every one of `queries` grounds nothing - the empty
+    /// radius a criterion naming no code gets.
+    fn assert_grounds_nothing(files: &[(&str, &str)], queries: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, body) in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        for query in queries {
+            let br = g.blast_radius(query, 8);
+            assert_eq!(
+                br,
+                BlastRadius::default(),
+                "{query} grounds nothing; got {br:?}"
+            );
+        }
+    }
+
     /// A span naming only language keywords (`&mut self`, `pub fn`) names no code at all.
     #[test]
     fn blast_radius_never_grounds_on_language_keywords() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("check.rs"),
-            "pub fn validate(&mut self) {}\n",
-        )
-        .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let keywords = g.blast_radius("the method takes `&mut self` and is `pub fn`", 8);
-        assert_eq!(
-            keywords,
-            BlastRadius::default(),
-            "language keywords are never terms; got {keywords:?}"
+        assert_grounds_nothing(
+            &[("check.rs", "pub fn validate(&mut self) {}\n")],
+            &["the method takes `&mut self` and is `pub fn`"],
         );
     }
 
@@ -1132,38 +1143,51 @@ mod tests {
     /// it grounds nothing - not on the files holding the phrase, nor on its words.
     #[test]
     fn blast_radius_a_multi_word_span_grounds_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("verb.rs"), "// run rigger validate first\n").unwrap();
-        std::fs::write(dir.path().join("check.rs"), "fn validate() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let br = g.blast_radius("`rigger validate` refuses a drifted spec", 8);
-        assert_eq!(
-            br,
-            BlastRadius::default(),
-            "a multi-word span names no code; got {br:?}"
+        assert_grounds_nothing(
+            &[
+                ("verb.rs", "// run rigger validate first\n"),
+                ("check.rs", "fn validate() {}\n"),
+            ],
+            &["`rigger validate` refuses a drifted spec"],
         );
     }
 
-    /// A path the tree does not hold (`graph.db`, a runtime artifact) and a directory fragment
-    /// (`src/`) name no file of the tree, so they ground nothing - never the files mentioning them.
+    /// A path the tree does not hold (`graph.db`, a runtime artifact), a directory fragment
+    /// (`src/`) and an absolute path (which would escape the tree) name no file of the tree, so
+    /// they ground nothing - never the files mentioning them, never a file outside the tree.
     #[test]
     fn blast_radius_a_path_the_tree_does_not_hold_grounds_nothing() {
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let absolute = format!("`{}` is read", outside.path().display());
+        assert_grounds_nothing(
+            &[("src/open.rs", "// opens graph.db under src/ here\n")],
+            &[
+                "`graph.db` holds the graph",
+                "code lives in `src/`",
+                &absolute,
+            ],
+        );
+    }
+
+    /// A span ending in `_` names a FAMILY by its prefix (`TYPE_` for the `TYPE_*` constants): the
+    /// text search matches it with the left identifier boundary only, so it finds every member
+    /// and never a name that merely contains the prefix.
+    #[test]
+    fn blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(
-            dir.path().join("src/open.rs"),
-            "// opens graph.db under src/ here\n",
+            dir.path().join("consts.rs"),
+            "const KIND: &str = TYPE_RUN_STARTED;\n",
         )
         .unwrap();
+        std::fs::write(dir.path().join("other.rs"), "const K: &str = MY_TYPE_X;\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        for query in ["`graph.db` holds the graph", "code lives in `src/`"] {
-            let br = g.blast_radius(query, 8);
-            assert_eq!(
-                br,
-                BlastRadius::default(),
-                "{query} names no file the tree holds; got {br:?}"
-            );
-        }
+        let br = g.blast_radius("the `TYPE_` constants", 8);
+        assert_eq!(
+            br.safe,
+            vec!["consts.rs".to_string()],
+            "a trailing-underscore span matches its family by prefix; got {br:?}"
+        );
     }
 
     /// The text search matches a span only on identifier boundaries: `gc` matches where it stands

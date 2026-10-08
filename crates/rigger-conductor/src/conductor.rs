@@ -38771,15 +38771,14 @@ mod tests {
     }
 
     /// spec 29c criterion 2 (`u29c-2`): the CONFIDENCE-TIER blast radius is TWO filters over the ONE
-    /// tiered edge set, replacing the grounder's `BlastRadius{precise,safe}`. `precise` is the EXTRACTED
-    /// sub-graph; `safe` is `EXTRACTED u INFERRED u AMBIGUOUS`; `safe` stays a superset of the grep
-    /// union (the AMBIGUOUS = grep-visible-only tail rides in `safe`). Proven over the addendum 6.2
-    /// fixture: from seed `combat.rs`, only `combat.rs` is EXTRACTED-reachable, while the INFERRED
-    /// (`physics.rs`) and AMBIGUOUS (`legacy.rs`) references widen `safe` - even though both those
-    /// files carry their OWN EXTRACTED `CONTAINS` edge, so this pins the REACHABILITY semantics, not
-    /// a flat edge scan.
+    /// tiered edge set. `precise` is the EXTRACTED sub-graph; `safe` is the STRUCTURAL reach,
+    /// `EXTRACTED u INFERRED` - an AMBIGUOUS edge is a text-only mention, which the radius never
+    /// grounds on (addendum 2.4). Proven over the addendum 6.2 fixture: from seed `combat.rs`, only
+    /// `combat.rs` is EXTRACTED-reachable, the INFERRED `physics.rs` widens `safe`, and the
+    /// AMBIGUOUS `legacy.rs` stays out - even though both those files carry their OWN EXTRACTED
+    /// `CONTAINS` edge, so this pins the REACHABILITY semantics, not a flat edge scan.
     #[test]
-    fn confidence_tier_radius_splits_the_one_edge_set_into_extracted_precise_and_all_tier_safe() {
+    fn confidence_tier_radius_splits_the_one_edge_set_into_extracted_precise_and_structural_safe() {
         let g = confidence_tier_fixture();
         let seed = vec!["combat.rs".to_string()];
         let r = confidence_tier_radius(&g, &seed);
@@ -38794,16 +38793,12 @@ mod tests {
             r.precise
         );
 
-        // safe = EXTRACTED u INFERRED u AMBIGUOUS: combat.rs plus the cross-file INFERRED target
-        // (physics.rs) plus the grep-visible-only AMBIGUOUS target (legacy.rs), sorted.
+        // safe = EXTRACTED u INFERRED: combat.rs plus the cross-file INFERRED target (physics.rs);
+        // the text-only AMBIGUOUS target (legacy.rs) is never in the radius.
         assert_eq!(
             r.safe,
-            vec![
-                "combat.rs".to_string(),
-                "legacy.rs".to_string(),
-                "physics.rs".to_string(),
-            ],
-            "safe is the all-tier reachable file set; got {:?}",
+            vec!["combat.rs".to_string(), "physics.rs".to_string()],
+            "safe is the structurally reachable file set; got {:?}",
             r.safe
         );
 
@@ -38813,12 +38808,10 @@ mod tests {
                 && !r.precise.contains(&"physics.rs".to_string()),
             "an INFERRED-only file rides safe, never precise"
         );
-        // The AMBIGUOUS tier IS the grep-visible-only occurrences, so keeping it in safe is exactly
-        // what makes safe a SUPERSET OF THE GREP UNION (addendum 2.4 correctness invariant).
+        // The AMBIGUOUS tier is the text-only mentions, which the radius excludes (addendum 2.4).
         assert!(
-            r.safe.contains(&"legacy.rs".to_string())
-                && !r.precise.contains(&"legacy.rs".to_string()),
-            "the AMBIGUOUS (grep-visible-only) tail rides safe - safe stays a grep-superset"
+            !r.safe.contains(&"legacy.rs".to_string()),
+            "an AMBIGUOUS (text-only) file never rides safe"
         );
         // precise is always a subset of safe (EXTRACTED reachability is a subset of all-tier).
         assert!(
@@ -38828,14 +38821,13 @@ mod tests {
     }
 
     /// spec 29c criterion 2 wiring: `grounded_blast_radius` COMPUTES the two-view radius by
-    /// tier-filtering the ONE seeded subgraph when a graph is present (the tier filter is live, not
-    /// dead code), and it PRESERVES the safety floor - `safe` is unioned with the grounder's grep
-    /// superset so it can only widen, never narrow below the grep union (addendum 2.4). The
-    /// `graph: None` arm
-    /// falls back to the grounder radius byte-for-byte, so the two arms observably differ: the graph
-    /// arm surfaces the INFERRED/AMBIGUOUS files the grep radius alone never would.
+    /// tier-filtering the subgraph seeded from the grounder's own radius when a graph is present
+    /// (the tier filter is live, not dead code), and `safe` is unioned with the grounder's safe view
+    /// so it can only widen (addendum 2.4). The `graph: None` arm falls back to the grounder radius
+    /// byte-for-byte, so the two arms observably differ: the graph arm surfaces the INFERRED files
+    /// the grounder alone never would, and never the AMBIGUOUS (text-only) ones.
     #[test]
-    fn grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset() {
+    fn grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grounder_radius() {
         // A `Projection` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
         // wiring is exercised over a discriminating multi-tier edge set (a real 29a fold scopes a
         // reference to its own file, so it cannot produce a cross-file INFERRED target to split on).
@@ -38893,15 +38885,15 @@ mod tests {
 
         assert!(
             base.safe.iter().all(|f| r.safe.contains(f)),
-            "safe must stay a superset of the grep union (addendum 2.4); grep {:?} vs safe {:?}",
+            "safe must hold the grounder radius (addendum 2.4); grounder {:?} vs safe {:?}",
             base.safe,
             r.safe
         );
         assert!(
             r.safe.contains(&"physics.rs".to_string())
-                && r.safe.contains(&"legacy.rs".to_string()),
-            "the graph tier filter is live: safe carries the INFERRED and AMBIGUOUS files the grep \
-             radius never had; got {:?}",
+                && !r.safe.contains(&"legacy.rs".to_string()),
+            "the graph tier filter is live: safe carries the INFERRED file the grounder never had, \
+             never the AMBIGUOUS one; got {:?}",
             r.safe
         );
         assert_eq!(
@@ -38909,6 +38901,52 @@ mod tests {
             vec!["combat.rs".to_string()],
             "precise is the EXTRACTED sub-graph; got {:?}",
             r.precise
+        );
+    }
+
+    /// With a graph present - every production run - the radius still grounds only on the code a
+    /// criterion names: the graph arm is seeded from the grounder's code-term radius, never from
+    /// the prompt seed's whole-text match, so a prose word (`tests`, `parse`) that names a symbol
+    /// never widens it, and a criterion naming no code keeps the empty radius.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn grounded_blast_radius_with_a_graph_grounds_only_on_the_code_a_criterion_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("reclaim.rs"), "fn reclaim_space() {}\n").unwrap();
+        std::fs::write(dir.path().join("tests.rs"), "fn tests() {}\n").unwrap();
+        std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
+        let grounder =
+            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
+        let graph = SpyGraph::default();
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stage = |coverage: &str| Stage {
+            name: "u".into(),
+            coverage: coverage.into(),
+            ..Default::default()
+        };
+
+        let named = ctx.grounded_blast_radius(&stage(
+            "`reclaim_space` frees what the tests and parse leave behind",
+        ));
+        assert_eq!(
+            named.safe,
+            vec!["reclaim.rs".to_string()],
+            "prose words never widen the radius through the graph; got {named:?}"
+        );
+
+        let prose = ctx.grounded_blast_radius(&stage("the run parses its tests"));
+        assert_eq!(
+            prose,
+            BlastRadius::default(),
+            "a criterion naming no code keeps the empty radius with a graph present; got {prose:?}"
         );
     }
 
