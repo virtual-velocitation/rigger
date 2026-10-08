@@ -36,7 +36,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
-    the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store);
+    the_group_lookup_answers_a_identity_entry_recorded_under_its_group(store);
 }
 
 /// An event of type `t` stamped with `group` (when given) and a `tag` entry naming it.
@@ -61,17 +61,28 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
     }
 }
 
+/// The ledger entry of `<prefix>/<file>` at `generation`, its batch holding `n` events, as the
+/// entry's one constructor builds it: under its group and its replay key.
+fn identity_entry(prefix: &str, file: &str, generation: &str, n: usize) -> Event {
+    rigger_domain::retention::GenerationIngested {
+        prefix: prefix.to_string(),
+        file: file.to_string(),
+        generation: generation.to_string(),
+        blob: "b10b".to_string(),
+        excluded: false,
+    }
+    .event(n)
+}
+
 /// Each of `identities` with its latest generation on `stream`, twice over: as the domain reader
-/// answers it through the group lookup, and as the whole-stream reference answers it over `types`.
+/// answers it through the group lookup, and as the whole-stream reference answers it.
 fn answered_and_referenced(
     store: &dyn EventStore,
     stream: &str,
     identities: &[&str],
-    types: &[&str],
 ) -> [Vec<(String, Option<String>)>; 2] {
     let reference = rigger_domain::ingest::project_scoped_latest_generations(
         &store.read_stream(stream, 0, Direction::Forward).unwrap(),
-        types,
     );
     let answered = identities
         .iter()
@@ -83,12 +94,7 @@ fn answered_and_referenced(
         .collect();
     let referenced = identities
         .iter()
-        .map(|identity| {
-            (
-                identity.to_string(),
-                reference.get(*identity).map(|(hash, _)| hash.clone()),
-            )
-        })
+        .map(|identity| (identity.to_string(), reference.get(*identity).cloned()))
         .collect();
     [answered, referenced]
 }
@@ -221,49 +227,31 @@ fn a_grouped_append_under_an_unmet_expectation_records_nothing(store: &dyn Event
     assert_eq!(tag.as_deref(), Some("met"), "a met expectation records");
 }
 
-/// THE REFERENCE (spec 101): over one log of keyed derived events - three identities, a change, a
-/// revert to an earlier generation and a re-recording of the same generation, among unkeyed derived
-/// noise - the domain reader over the group lookup answers, for every identity, exactly the
-/// generation the whole-stream reference `project_scoped_latest_generations` answers, and a
-/// never-recorded identity answers none.
+/// THE REFERENCE (spec 101, spec 107): over one log of ledger entries - three identities, a
+/// change, a revert to an earlier generation and a re-recording of the same generation, among
+/// events that record no perception - the domain reader over the group lookup answers, for every
+/// identity, exactly the generation the whole-stream reference
+/// `project_scoped_latest_generations` answers, and a never-recorded identity answers none.
 fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &dyn EventStore) {
-    use crate::test_support::keyed_derived_event;
-    use rigger_domain::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
     let stream = "c-generations";
-    let batch = |file: &str, generation: &str| -> Vec<Event> {
-        [TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED]
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                keyed_derived_event(
-                    Event::new(*t, b"{}".to_vec()),
-                    &format!("{file}@{generation}#{i}"),
-                )
-            })
-            .collect()
-    };
-    let noise = || vec![Event::new(TYPE_EDGE_INFERRED, b"{}".to_vec())];
-    for events in [
-        batch("gc/a.rs", "h1"),
-        batch("gc/b.rs", "h1"),
+    let noise = || Event::new("RunNote", b"{}".to_vec());
+    for event in [
+        identity_entry("gc", "a.rs", "h1", 2),
+        identity_entry("gc", "b.rs", "h1", 2),
         noise(),
-        batch("gd/a.rs", "h1"),
-        batch("gc/a.rs", "h2"),
-        batch("gc/b.rs", "h2"),
+        identity_entry("gd", "a.rs", "h1", 2),
+        identity_entry("gc", "a.rs", "h2", 2),
+        identity_entry("gc", "b.rs", "h2", 2),
         noise(),
-        batch("gc/b.rs", "h1"),
-        batch("gd/a.rs", "h1"),
+        identity_entry("gc", "b.rs", "h1", 2),
+        identity_entry("gd", "a.rs", "h1", 2),
     ] {
         store
-            .append(stream, ExpectedRevision::Any, &events)
+            .append(stream, ExpectedRevision::Any, &[event])
             .expect("the generations log appends");
     }
-    let [answered, expected] = answered_and_referenced(
-        store,
-        stream,
-        &["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"],
-        &rigger_domain::ingest::DERIVED_INDEX_TYPES,
-    );
+    let [answered, expected] =
+        answered_and_referenced(store, stream, &["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"]);
     assert_eq!(
         answered, expected,
         "the lookup answers what the reference answers"
@@ -288,33 +276,16 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 /// whose only recording is an entry, and one whose derived row follows an entry, which is answered
 /// by that derived row as before. Every answer is the one the whole-stream reference gives over the
 /// perception types.
-fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
+fn the_group_lookup_answers_a_identity_entry_recorded_under_its_group(store: &dyn EventStore) {
     use crate::test_support::keyed_derived_event;
     use rigger_domain::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
     use rigger_domain::ingest::META_REPLAY_KEY;
-    use rigger_domain::retention::{
-        GenerationIngested, PERCEPTION_TYPES, TYPE_GENERATION_INGESTED,
-    };
+    use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     let stream = "c-ledger";
     let derived = |key: &str| {
         keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()), key)
     };
-    let entry = |prefix: &str, file: &str, generation: &str, n: usize| {
-        let entry = GenerationIngested {
-            prefix: prefix.to_string(),
-            file: file.to_string(),
-            generation: generation.to_string(),
-            blob: "b10b".to_string(),
-            excluded: false,
-        };
-        keyed_derived_event(
-            Event::new(
-                TYPE_GENERATION_INGESTED,
-                serde_json::to_vec(&entry).expect("an entry serializes"),
-            ),
-            &format!("{}@{generation}#{n}", entry.identity()),
-        )
-    };
+    let entry = identity_entry;
     let appended = store
         .append(
             stream,
@@ -371,7 +342,6 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
         store,
         stream,
         &["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"],
-        &PERCEPTION_TYPES,
     );
     assert_eq!(
         answered,
@@ -386,7 +356,7 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
     );
     assert_eq!(
         answered, referenced,
-        "the lookup answers what the reference answers over the perception types"
+        "the lookup answers what the reference answers"
     );
 }
 

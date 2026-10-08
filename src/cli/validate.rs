@@ -14,22 +14,29 @@ fn has_tracked_project_id(root: &Path) -> bool {
     read_project_id(base).is_some()
 }
 
-/// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
-/// INTEGRATION): reads the project's own event stream - the SAME `events.db` stream every other
-/// validate advisory above reads (mirrors [`read_model_drift`]'s own store-open shape, reused, not
-/// a second courier) - and hands it to [`rigger::ingest::graph_index_lag_sample`], the one authority
-/// that both derives the bounded candidate list and compares each against a fresh re-extraction.
-/// An absent sqlite store degrades to an empty sample (nothing recorded, so nothing can lag) rather
-/// than an error, exactly like [`read_model_drift`].
+/// The `rigger validate` GRAPH INDEX LAG sample (spec 107, THE LEDGER ANSWERS THE INDEX-LAG
+/// ADVISORY): reads the log's side from `store` in ONE typed read of the perception types
+/// ([`rigger::ingest::perceived_generations`]), never the whole stream, and hands it to
+/// [`rigger::ingest::graph_index_lag_sample`], the one authority that draws the bounded candidate
+/// list from it and compares each candidate's current bytes, read under `root`, against its
+/// latest recording and against `graph`'s current generation. With no `graph` the log's side
+/// alone is compared.
 fn read_graph_index_lag(
-    path: &str,
-    project: &str,
-    root: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let sel = store_selection(None, None)?;
-    Ok(read_project_stream(path, project, conductor::STREAM, &sel)?
-        .map(|events| rigger::ingest::graph_index_lag_sample(root, &events))
-        .unwrap_or_default())
+    store: &dyn EventStore,
+    graph: Option<&dyn contextgraph::Projection>,
+    root: &Path,
+) -> Result<Vec<String>, rigger::eventstore::Error> {
+    let latest = rigger::ingest::perceived_generations(store, conductor::STREAM)?;
+    Ok(rigger::ingest::graph_index_lag_sample(root, &latest, graph))
+}
+
+/// The graph the index-lag advisory compares against: the project's `graph.db` when it stands
+/// ([`standing_graph`]) and owes no rebuild. An owed graph is not asked, nor one whose debt
+/// cannot be read: the advisory then compares the log's side alone.
+fn graph_to_compare(graph_db: &str, project: &str) -> Option<Projector> {
+    let graph = standing_graph(graph_db, project)?;
+    let owed = graph.rebuild_owed().ok()?;
+    (!owed).then_some(graph)
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -263,18 +270,29 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
-    // GRAPH INDEX LAG advisory (spec 92 criterion 1, FRESH ON EVERY INTEGRATION): warn when a
-    // bounded sample of files `graph.db` has previously recorded disagrees with their live
-    // re-extraction - staleness the integration-time reindex above is supposed to prevent,
-    // surfaced before it is felt rather than discovered by a stale `graph --show` line (Design:
-    // "validate reports index lag ... as an advisory, so staleness is visible before it is
-    // felt"). A store-read failure just skips the advisory (never fails validate), exactly like
-    // the model-drift advisory above.
-    if let Ok(lagging) = read_graph_index_lag(
-        &db_path("events.db"),
-        &project_identity(),
-        root.to_str().unwrap_or("."),
-    ) {
+    // GRAPH INDEX LAG advisory (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY): warn when
+    // a bounded sample of files the log has recorded extracts, from the bytes the tree holds
+    // now, to a generation the log's latest recording and `graph.db` do not both hold -
+    // staleness the integration-time reindex is supposed to prevent, surfaced before it is felt
+    // rather than discovered by a stale `graph --show` line. The tree is read under the ONE
+    // ROOT, the top level of the repository holding the store's `.rigger/`, which the entries'
+    // paths are relative to. An absent store has recorded nothing, and a store-read failure
+    // just skips the advisory (never fails validate), exactly like the model-drift advisory
+    // above.
+    let project = project_identity();
+    let graph = graph_to_compare(&db_path("graph.db"), &project);
+    let lagging = store_selection(None, None).and_then(|sel| {
+        with_project_store(&db_path("events.db"), &project, &sel, |store| {
+            read_graph_index_lag(
+                store,
+                graph
+                    .as_ref()
+                    .map(|graph| graph as &dyn contextgraph::Projection),
+                &tree_root(&cwd().join(RIGGER_DIR)),
+            )
+        })
+    });
+    if let Ok(Some(lagging)) = lagging {
         if let Some(advisory) = graph_index_lag_advisory(&lagging) {
             eprintln!("{advisory}");
         }
@@ -573,15 +591,11 @@ fn retired_entities_advisory(n: usize) -> Option<String> {
 /// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
 /// the shape of, `Projector` is the only [`Projection`] this binary ever opens), so this needs no
 /// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
-/// report: no `graph.db` file YET - checked BEFORE opening anything, because `Projector::open`
-/// (like every store open here) creates a missing file, and a read-only advisory must never have
-/// that side effect - or any read error after that point, exactly like the log-bloat and
-/// index-staleness advisories above swallow one.
+/// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
+/// error after that point, exactly like the log-bloat and index-staleness advisories above
+/// swallow one.
 fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
-    if !Path::new(graph_db).exists() {
-        return None;
-    }
-    let graph = Projector::open(graph_db, project).ok()?;
+    let graph = standing_graph(graph_db, project)?;
     retired_entities_advisory(graph.retired_code_entity_count().ok()?)
 }
 

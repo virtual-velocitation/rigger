@@ -174,17 +174,16 @@ rigger::test_cases! {
             "the staleness warning must name `rigger reindex` as the fix",
         )],
     );
-    /// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
-    /// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
-    /// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
-    /// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
-    /// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
-    /// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
-    /// the light lane, so "no warning" is trivially true there too).
+    /// The `symbols` feature is what compiles the extraction pass the advisory needs to find
+    /// `fn original() {}`/`fn renamed() {}` as real definitions in the first place: the light
+    /// lane's `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX
+    /// STALENESS counterpart is NOT (that one is content-hash-only, ungated) - so this positive
+    /// case is `symbols`-only; the two SILENT cases below hold in both lanes (the light lane
+    /// samples nothing, whatever the log records).
     ///
-    /// The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without an
-    /// integration ever reindexing it into the graph - the exact drift the audit
-    /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
+    /// The log's latest entry records churn.rs's ORIGINAL content, then the file was edited on disk
+    /// without an integration ever reindexing it - the exact drift the audit
+    /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a recorded generation the
     /// tree has since moved past.
     #[cfg(feature = "symbols")]
     validate_warns_of_graph_index_lag_and_names_reindex: assert_validate_advises(
@@ -404,32 +403,36 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 // (c) GRAPH INDEX LAG (spec 92 criterion 1, FRESH ON EVERY INTEGRATION)
 // ---------------------------------------------------------------------------------------
 
-/// Record `file`'s CURRENT extraction as `graph.db`'s "latest generation" for it, by appending
-/// real `gc/<file>@<hash>#<i>`-keyed events into the project's own event stream - the keyed
-/// derived shape a cold `rigger graph build` appends. Drives it through the SAME `rigger::ingest::ingest_files_batched` authority
-/// `rigger::ingest::graph_index_lag_sample` re-extracts through at validate time, so a caller who
-/// seeds a file's CURRENT content and never edits it afterward is recording a graph that agrees
-/// with the tree; editing the file afterward (without re-seeding) is what provokes disagreement.
+/// Record the ledger entry of `file`'s `gc` batch at the generation its CURRENT bytes extract
+/// to in the project's own run stream, by a plain append that folds nothing and builds no
+/// `graph.db`, so the advisory compares the log's side alone (spec 107). A caller who seeds a
+/// file's current content and never edits it afterward records a log that agrees with the tree;
+/// editing the file afterward (without re-seeding) is what provokes disagreement. Where no
+/// extraction is compiled the entry names a generation nothing extracts to, and the advisory
+/// samples nothing.
 fn seed_graph_generation(root: &Path, file: &str) {
+    #[cfg(feature = "symbols")]
+    let generation =
+        common::fixtures::handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{file}"))
+            .generation();
+    #[cfg(not(feature = "symbols"))]
+    let generation = "unextracted".to_string();
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
-    let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
-    rigger::ingest::ingest_files_batched(
-        root.to_str().unwrap(),
-        &[file.to_string()],
-        |keyed, _| {
-            for (key, ev) in keyed {
-                events.push(
-                    (*ev)
-                        .clone()
-                        .with_meta(rigger::ingest::META_REPLAY_KEY, key.as_str()),
-                );
-            }
-        },
-    );
     store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &[
+                Event::new("RunStarted", b"{}".to_vec()),
+                common::fixtures::generation_ingested("gc", file, &generation, "", false).event(1),
+            ],
+        )
         .unwrap();
+    assert!(
+        !rigger_file(root, "graph.db").exists(),
+        "premise: no graph.db stands, so the log's side alone is compared"
+    );
 }
 
 /// A project `prepare` left in a state with nothing to compare, or nothing that disagrees, draws
@@ -443,8 +446,8 @@ fn assert_validate_is_silent_on_graph_index_lag(prepare: impl FnOnce(&Path), why
 }
 
 rigger::test_cases! {
-    /// The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
-    /// graph, exactly what an integration that just reindexed it leaves behind.
+    /// The log's latest entry records churn.rs's CURRENT content, and it is never edited
+    /// afterward - exactly what an integration that just reindexed it leaves behind.
     validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree:
         assert_validate_is_silent_on_graph_index_lag(
             |root| {
@@ -453,8 +456,8 @@ rigger::test_cases! {
             },
             "a graph that agrees with the tree must draw no index-lag warning",
         );
-    /// No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
-    /// compare, so this must never manufacture a warning from the mere absence of a graph.
+    /// No recording of a `gc` identity was ever made (no integration has run yet) - there is
+    /// nothing to compare, so this must never manufacture a warning from the mere absence of one.
     validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing:
         assert_validate_is_silent_on_graph_index_lag(
             |root| std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap(),

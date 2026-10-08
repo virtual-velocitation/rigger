@@ -468,54 +468,47 @@ pub fn ingest_files_batched(
 #[cfg(not(feature = "symbols"))]
 pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl BatchSink) {}
 
-/// Sampled files whose CURRENT code extraction disagrees with what `graph.db` has recorded as their
-/// latest `gc/` generation (spec 92, FRESH ON EVERY INTEGRATION) - `rigger validate`'s graph INDEX
-/// LAG advisory. The graph-specific analogue of `grounder::symbols::staleness` (spec 68): the same
-/// cost-bounded SAMPLE shape (the caller bounds `files` - never a full-tree scan lives here), but
-/// measured against the GRAPH's own recorded generations (via [`project_scoped_latest_generations`]
-/// over `prior`, the project's own event stream) rather than the symbols index's separately-
-/// persisted hash column. The two stores can drift independently of one another - a `graph.db` built
-/// before this spec's integration-time reindex existed, or a project whose symbols index was rebuilt
-/// out-of-band - so the symbols index agreeing with the tree is never taken as proof the graph does
-/// too; this reads the graph's own recording directly.
+/// The files of `files` whose current bytes extract to a generation the log and the graph do not
+/// both hold (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY) - `rigger validate`'s graph
+/// INDEX LAG advisory, in the order handed. The caller bounds `files`: never a full-tree scan
+/// lives here.
 ///
-/// A file is FRESH when re-extracting it (through the SAME [`ingest_files_batched`] authority the
-/// live conductor reindexes through, reading its code batch alone) yields EXACTLY the key set
-/// `graph.db`'s latest `gc/<file>` generation already recorded - same content, same event count, same order (the walk is
-/// deterministic by construction, so an honest match is exact, never approximate). A file the graph
-/// has NEVER recorded a generation for at all counts as lagging only when its current extraction is
-/// non-empty (a genuinely new file the graph has not yet ingested - the coverage question criterion
-/// 2 owns, not double-counted as this criterion's lag). Returns the subset of `files` that disagree;
-/// `[]` means every sampled file agrees with the graph's own recording, as far as the sample can
-/// tell - zero lag.
+/// A file's generation is that of the batch the code half extracts
+/// ([`bytes_batch`](crate::grounder::symbols::events::bytes_batch)) from the bytes the tree's
+/// one read rule hands for it under `root` ([`crate::grounder::tree_bytes`]), under the flag the
+/// tree gives its identity - whether [`walk_exclusions`] names it, never a flag an entry
+/// recorded. It is compared as a sink compares a batch ([`batch_is_current`]): against `latest`,
+/// each identity's latest recorded generation on the log ([`perceived_generations`]), and
+/// against `graph`'s current generation of the identity. A generation hashes the whole batch,
+/// so equal generations are equal batches. With no `graph` to ask - `graph.db` absent, or owing
+/// its rebuild - and when its read fails, the log's side alone decides. A file `latest` holds no
+/// generation for lags: a `gc` batch is never empty.
+///
+/// The exclusions are loaded once, and only when there is a file to compare, since a tree with
+/// no persisted index pays a whole-tree parse for them.
 #[cfg(feature = "symbols")]
-pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<String> {
-    let latest = project_scoped_latest_generations(prior, &DERIVED_INDEX_TYPES);
+pub fn graph_index_lag(
+    root: &std::path::Path,
+    latest: &std::collections::HashMap<String, String>,
+    graph: Option<&dyn Projection>,
+    files: &[String],
+) -> Vec<String> {
+    let excluded = std::cell::LazyCell::new(|| walk_exclusions(&root.to_string_lossy()).1);
     files
         .iter()
         .filter(|file| {
-            let identity = format!("gc/{file}");
-            let generation = format!("{identity}@");
-            let mut current_keys: Vec<String> = Vec::new();
-            let scoped = std::slice::from_ref(*file);
-            let _ = ingest_files_batched(root, scoped, |keyed, _excluded| {
-                current_keys.extend(
-                    keyed
-                        .iter()
-                        .map(|(k, _)| k.clone())
-                        .filter(|k| k.starts_with(&generation)),
-                );
-            });
-            match latest.get(&identity) {
-                None => !current_keys.is_empty(),
-                Some((_hash, recorded_keys)) => {
-                    let recorded: std::collections::BTreeSet<&String> =
-                        recorded_keys.iter().collect();
-                    let current: std::collections::BTreeSet<&String> =
-                        current_keys.iter().collect();
-                    recorded != current
-                }
-            }
+            let identity = code_identity(file);
+            let bytes = crate::grounder::tree_bytes(root, "gc", file);
+            let generation = batch_generation(&crate::grounder::symbols::events::bytes_batch(
+                file,
+                bytes.as_deref(),
+                excluded.contains(&identity),
+            ));
+            let held = graph.and_then(|graph| graph.current_generation(&identity).ok());
+            let side = held
+                .as_ref()
+                .map_or(GraphSide::Owed, |held| GraphSide::Holds(held.as_deref()));
+            !batch_is_current(latest.get(&identity).map(String::as_str), side, &generation)
         })
         .cloned()
         .collect()
@@ -524,50 +517,54 @@ pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<Str
 /// Light lane: no extraction pass is compiled, so no file can ever be extracted - nothing to compare
 /// against, and nothing is ever reported as lagging (mirrors [`ingest_files_batched`]'s own no-op).
 #[cfg(not(feature = "symbols"))]
-pub fn graph_index_lag(_root: &str, _prior: &[Event], _files: &[String]) -> Vec<String> {
+pub fn graph_index_lag(
+    _root: &std::path::Path,
+    _latest: &std::collections::HashMap<String, String>,
+    _graph: Option<&dyn Projection>,
+    _files: &[String],
+) -> Vec<String> {
     Vec::new()
 }
 
 /// Cost-bounded SAMPLE size for [`graph_index_lag_sample`] - mirrors
 /// `grounder::symbols::STALENESS_SAMPLE_SIZE`'s own bound: a fixed, small, deterministic sample
 /// keeps `rigger validate`'s graph index-lag advisory reading and re-extracting O(sample) files,
-/// never every file the graph has ever recorded a generation for. The sample stops asking the
+/// never every file the log has ever recorded a generation for. The sample stops asking the
 /// tree at the file that fills it, so the only recorded files it asks about beyond the sample are
 /// the ones sorted before that file that the read rule hands no bytes for.
 #[cfg(feature = "symbols")]
 const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 
-/// `rigger validate`'s GRAPH INDEX LAG sample (spec 92, FRESH ON EVERY INTEGRATION): the bounded,
-/// deterministic candidate list [`graph_index_lag`] is checked against, derived FROM `prior`
-/// itself rather than a caller-supplied file list - so validate needs nothing but the project's own
-/// event stream and its working tree, exactly like every other validate advisory.
+/// `rigger validate`'s GRAPH INDEX LAG sample: the bounded, deterministic candidate list
+/// [`graph_index_lag`] is checked against, drawn from `latest` itself - each identity's latest
+/// recorded generation on the log ([`perceived_generations`]) - rather than a caller-supplied
+/// file list, and compared against `graph` as [`graph_index_lag`] compares it.
 ///
-/// Candidates are the file identities `prior`'s derived stream has recorded a `gc/` generation for
-/// (via [`project_scoped_latest_generations`]), sorted for determinism, of which the first
-/// [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] that the tree's one read rule
+/// Candidates are the file identities `latest` holds a `gc/` generation for, sorted for
+/// determinism, of which the first [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] that the tree's one read rule
 /// ([`crate::grounder::tree_bytes`]) hands bytes for right now are taken, and the tree is asked
 /// about no name past the one that fills the sample - mirroring
 /// `grounder::symbols::staleness`'s own sorted-intersection-then-take sampling shape. Two kinds
 /// of file are deliberately left OUT of
 /// the candidate set, not merely filtered from the result:
 ///
-/// - a file the graph has NEVER recorded (present on disk, absent from `prior`) - that is the
-///   COVERAGE question (criterion 2's), never double-counted as this advisory's lag;
-/// - a file the graph recorded that the read rule hands no bytes for, so this bounded sample has
+/// - a file the log has NEVER recorded (present on disk, absent from `latest`) - that is the
+///   COVERAGE question, never double-counted as this advisory's lag;
+/// - a file the log recorded that the read rule hands no bytes for, so this bounded sample has
 ///   nothing to re-check for it: one that no longer exists on disk, which an integration's own
-///   reindex retires directly through the boundary-sentinel supersession (Design/Constraints
-///   Walk: "a file deleted by the integration - its entities are retired through the existing
-///   supersession, not left dangling"); one outside the walk's scope (under a hidden directory,
-///   or named by a committed `.gitignore`), which no walk reads; and one this process cannot
-///   read.
+///   reindex retires directly through the boundary-sentinel supersession; one outside the
+///   walk's scope (under a hidden directory, or named by a committed `.gitignore`), which no
+///   walk reads; and one this process cannot read.
 ///
-/// Returns `[]` when there is nothing to sample (an empty `prior`, or every candidate already
-/// pruned by the two rules above) or when every sampled file agrees with the graph's own recording -
-/// zero lag, as far as the sample can tell.
+/// Returns `[]` when there is nothing to sample (an empty `latest`, or every candidate already
+/// pruned by the two rules above) or when both sides hold every sampled file's generation - zero
+/// lag, as far as the sample can tell.
 #[cfg(feature = "symbols")]
-pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
-    let root_path = std::path::Path::new(root);
-    let latest = project_scoped_latest_generations(prior, &DERIVED_INDEX_TYPES);
+pub fn graph_index_lag_sample(
+    root: &std::path::Path,
+    latest: &std::collections::HashMap<String, String>,
+    graph: Option<&dyn Projection>,
+) -> Vec<String> {
     let mut recorded: Vec<&str> = latest
         .keys()
         .filter_map(|identity| identity.strip_prefix("gc/"))
@@ -575,17 +572,21 @@ pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
     recorded.sort_unstable();
     let candidates: Vec<String> = recorded
         .into_iter()
-        .filter(|file| crate::grounder::tree_bytes(root_path, "gc", file).is_some())
+        .filter(|file| crate::grounder::tree_bytes(root, "gc", file).is_some())
         .take(GRAPH_INDEX_LAG_SAMPLE_SIZE)
         .map(str::to_string)
         .collect();
-    graph_index_lag(root, prior, &candidates)
+    graph_index_lag(root, latest, graph, &candidates)
 }
 
 /// Light lane: no extraction pass is compiled, so nothing can ever disagree (mirrors
 /// [`graph_index_lag`]'s own light-lane stub).
 #[cfg(not(feature = "symbols"))]
-pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
+pub fn graph_index_lag_sample(
+    _root: &std::path::Path,
+    _latest: &std::collections::HashMap<String, String>,
+    _graph: Option<&dyn Projection>,
+) -> Vec<String> {
     Vec::new()
 }
 
@@ -2438,7 +2439,6 @@ mod scoped_reindex_tests {
     //! sampled staleness check `rigger validate`'s graph index-lag advisory calls.
 
     use super::entry_of_batch_tests::Side;
-    use super::resolve_entry_tests::{generation_of, NO_BYTES_BATCH, OTHER_BATCH, OTHER_BODY};
     use super::{
         batch_generation, graph_index_lag, graph_index_lag_sample, ingest_files_batched,
         ingest_project_batched_paced,
@@ -2548,13 +2548,12 @@ mod scoped_reindex_tests {
         )
     }
 
-    /// The names of `files`, owned.
-    fn names(files: &[&str]) -> Vec<String> {
-        files.iter().map(|file| file.to_string()).collect()
-    }
+    /// What the graph's side answers for every identity: the generation it holds, none when it
+    /// holds none, or the failure of the read.
+    type Held = Result<Option<&'static str>, &'static str>;
 
-    /// The graph's side holding `current` for every identity, or failing the read.
-    fn side(current: Result<Option<&'static str>, &'static str>) -> Side {
+    /// The graph's side answering `current` for every identity.
+    fn side(current: Held) -> Side {
         Side {
             answers: (
                 Err("the advisory never asks whether the graph owes"),
@@ -2573,12 +2572,8 @@ mod scoped_reindex_tests {
     fn graph_index_lag_names_a_file_unless_the_log_and_the_graph_both_hold_its_generation() {
         let tree = planted_extraction_tree(write_file);
         let current = walked_generation("gc", SOURCE_PATH);
-        let file = names(&[SOURCE_PATH]);
-        let cases: [(
-            Option<&str>,
-            Option<Result<Option<&'static str>, &'static str>>,
-            bool,
-        ); 10] = [
+        let file = [SOURCE_PATH.to_string()];
+        let cases: [(Option<&str>, Option<Held>, bool); 10] = [
             (Some(current), Some(Ok(Some(current))), false),
             (Some("0ld"), Some(Ok(Some(current))), true),
             (Some(current), Some(Ok(Some("0ld"))), true),
@@ -2610,7 +2605,7 @@ mod scoped_reindex_tests {
                     graph.map(|graph| graph.asked.into_inner().unwrap())
                 ),
                 (
-                    if named { file.clone() } else { Vec::new() },
+                    if named { file.to_vec() } else { Vec::new() },
                     held.map(|_| vec!["current gc/src/lib.rs".to_string()])
                 ),
                 "the log holding {recorded:?} and the graph {held:?}"
@@ -2630,7 +2625,7 @@ mod scoped_reindex_tests {
         let churn = "fn original() {}\n";
         std::fs::write(root.join("stable.rs"), stable).unwrap();
         std::fs::write(root.join("churn.rs"), churn).unwrap();
-        let files = names(&["stable.rs", "churn.rs"]);
+        let files = ["stable.rs", "churn.rs"].map(String::from);
         let extracted = |file: &str, body: &str| {
             batch_generation(&bytes_batch(file, Some(body.as_bytes()), false))
         };
@@ -2648,16 +2643,16 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag(root, &latest, None, &files),
-            names(&["churn.rs"])
+            vec!["churn.rs"]
         );
         assert_eq!(
             graph_index_lag(
                 root,
                 &latest,
                 None,
-                &names(&["churn.rs", "stable.rs", "churn.rs"])
+                &["churn.rs", "stable.rs", "churn.rs"].map(String::from)
             ),
-            names(&["churn.rs", "churn.rs"]),
+            vec!["churn.rs", "churn.rs"],
             "the answer keeps the order and the repeats of the files handed"
         );
     }
@@ -2670,7 +2665,7 @@ mod scoped_reindex_tests {
     #[test]
     fn graph_index_lag_extracts_a_file_under_the_flag_the_tree_gives_its_identity() {
         let tree = planted_extraction_tree(write_file);
-        let files = names(&[SOURCE_PATH, TEST_MODULE_PATH]);
+        let files = [SOURCE_PATH, TEST_MODULE_PATH].map(String::from);
         let under = |path: &str, body: &str, excluded: bool| {
             batch_generation(&bytes_batch(path, Some(body.as_bytes()), excluded))
         };
@@ -2702,11 +2697,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             [lag(true, false), lag(false, false), lag(true, true)],
-            [
-                Vec::new(),
-                names(&[TEST_MODULE_PATH]),
-                names(&[SOURCE_PATH])
-            ]
+            [Vec::new(), vec![TEST_MODULE_PATH], vec![SOURCE_PATH]]
         );
     }
 
@@ -2718,19 +2709,21 @@ mod scoped_reindex_tests {
     fn graph_index_lag_extracts_no_bytes_for_a_path_outside_the_walk_scope() {
         let dir = tempfile::tempdir().unwrap();
         let hidden = ".hidden/lib.rs";
-        write_file(&dir.path().join(hidden), OTHER_BODY.as_bytes());
-        let lag = |recorded: &[(&str, &str)]| {
+        let body = "fn hidden() {}\n";
+        write_file(&dir.path().join(hidden), body.as_bytes());
+        let lag = |bytes: Option<&[u8]>| {
+            let recorded = batch_generation(&bytes_batch(hidden, bytes, false));
             graph_index_lag(
                 dir.path(),
-                &logged(&[(hidden, &generation_of(recorded))]),
+                &logged(&[(hidden, &recorded)]),
                 None,
-                &names(&[hidden]),
+                &[hidden.to_string()],
             )
         };
 
         assert_eq!(
-            [lag(&NO_BYTES_BATCH), lag(&OTHER_BATCH)],
-            [Vec::new(), names(&[hidden])]
+            [lag(None), lag(Some(body.as_bytes()))],
+            [Vec::new(), vec![hidden]]
         );
     }
 
@@ -2751,7 +2744,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag_sample(root, &latest, None),
-            names(&["a.rs", "b.rs"])
+            vec!["a.rs", "b.rs"]
         );
         assert_eq!(
             graph_index_lag_sample(root, &HashMap::new(), None),
@@ -2774,7 +2767,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             [sampled(Some(current)), sampled(Some("0ld"))],
-            [Vec::new(), names(&[SOURCE_PATH])]
+            [Vec::new(), vec![SOURCE_PATH]]
         );
     }
 
@@ -2816,7 +2809,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag_sample(root, &latest, None),
-            names(&["ignored.rs", "kept.rs"]),
+            vec!["ignored.rs", "kept.rs"],
             "the two recorded paths inside the walk's scope are sampled, and the one under a \
              hidden directory is not"
         );
@@ -2825,7 +2818,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag_sample(root, &latest, None),
-            names(&["kept.rs"]),
+            vec!["kept.rs"],
             "a recorded path the committed .gitignore names is sampled no more"
         );
     }
@@ -2842,7 +2835,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag_sample(root, &latest, None),
-            names(&["kept.rs", "locked.rs"]),
+            vec!["kept.rs", "locked.rs"],
             "both recorded paths are sampled while both can be read"
         );
 
@@ -2852,7 +2845,7 @@ mod scoped_reindex_tests {
 
         assert_eq!(
             graph_index_lag_sample(root, &latest, None),
-            names(&["kept.rs"]),
+            vec!["kept.rs"],
             "the recorded path the read fault makes unreadable is sampled no more"
         );
     }

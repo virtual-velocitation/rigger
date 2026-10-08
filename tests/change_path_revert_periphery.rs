@@ -99,10 +99,7 @@ fn temp_churn_project() -> tempfile::TempDir {
 /// keys of each identity's latest recorded generation only, read over the perception types, which
 /// is exactly what the next build will find recorded.
 fn live_recordings(root: &std::path::Path) -> BTreeSet<String> {
-    common::fixtures::latest_recorded_keys(
-        &read_run_events(root),
-        &rigger::retention::PERCEPTION_TYPES,
-    )
+    common::fixtures::latest_recorded_keys(&read_run_events(root))
 }
 
 /// The replay keys of the ledger entries the recorded stream carries FOR ONE FILE, in append

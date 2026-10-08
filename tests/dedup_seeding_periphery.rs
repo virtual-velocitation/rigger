@@ -623,10 +623,7 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
     let log = read_run_events(root);
     let recorded = recorded_entry_keys(&log);
     assert_eq!(
-        (
-            recorded.clone(),
-            latest_recorded_keys(&log, &rigger::retention::PERCEPTION_TYPES)
-        ),
+        (recorded.clone(), latest_recorded_keys(&log)),
         (
             walked_entry_keys(root),
             walked_entry_keys(root).into_iter().collect()
@@ -830,7 +827,7 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     // equality is the net contract itself: the edited file's superseded generation is retired, the
     // skipped files' generations are still there, and nothing else is live.
     assert_eq!(
-        latest_recorded_keys(&log, &rigger::retention::PERCEPTION_TYPES),
+        latest_recorded_keys(&log),
         tree_now.into_iter().collect(),
         "after a mix of skipping and re-ingest the live recordings must be exactly the tree's \
          latest generation - no retired generation left live, no skipped file's entry dropped"

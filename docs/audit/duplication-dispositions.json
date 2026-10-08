@@ -375,11 +375,6 @@
     "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
   },
   {
-    "id": "dup-6bdc4cb72e31",
-    "disposition": "not-a-duplicate",
-    "reason": "Two light-lane no-op stubs of two different functions (the full per-file lag check and its bounded sample), each returning an empty list because no extraction pass is compiled."
-  },
-  {
     "id": "dup-90067fabd6a8",
     "disposition": "not-a-duplicate",
     "reason": "`commit` and `commit_checkpoint` are the two named entry points to the one `commit_with`, differing in whether the repository's hooks run (agent commits) or are bypassed (machine bookkeeping)."

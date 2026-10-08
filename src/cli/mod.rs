@@ -453,18 +453,23 @@ fn open_graph(
     Ok(graph)
 }
 
+/// The project's `graph.db` as a read-only surface opens it: none when no file stands - checked
+/// BEFORE opening anything, because `Projector::open` creates a missing file, and a read-only
+/// surface must never have that side effect - and none when the file does not open. The open
+/// writes nothing to a file that owes its rebuild.
+fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
+    if !Path::new(graph_db).exists() {
+        return None;
+    }
+    Projector::open(graph_db, project).ok()
+}
+
 /// What a read-only surface (graph inspection, `rigger validate`, the dashboard) says when this
 /// project's `graph.db` owes its rebuild (spec 101): it answers from the projection as it stands,
 /// and names the command that pays the rebuild. `None` when there is no file (never creating
 /// one), when it owes nothing, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    if !Path::new(graph_db).exists() {
-        return None;
-    }
-    let owed = Projector::open(graph_db, project)
-        .ok()?
-        .rebuild_owed()
-        .ok()?;
+    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
     owed.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",

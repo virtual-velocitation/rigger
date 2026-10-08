@@ -8121,11 +8121,19 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "standing_graph",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "a963102fbc4cb18c"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "graph_rebuild_owed_note",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "c30a268f1f101afd"
+    "content_hash": "fef6d855ecaf66ae"
   },
   {
     "file": "src/cli/mod.rs",

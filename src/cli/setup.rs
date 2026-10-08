@@ -1082,8 +1082,7 @@ fn identities_behind_their_recording<'t>(
     tree: &dyn Fn() -> &'t Path,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut behind = 0;
-    for (identity, (recorded, _)) in rigger::ingest::perceived_generations(log, conductor::STREAM)?
-    {
+    for (identity, recorded) in rigger::ingest::perceived_generations(log, conductor::STREAM)? {
         if graph.current_generation(&identity)? != Some(recorded)
             && rigger::ingest::next_ingest_records(tree(), &identity)
         {

@@ -6907,25 +6907,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6bdc4cb72e31",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-grounder/src/ingest.rs",
-        "name": "graph_index_lag",
-        "content_hash": "ac498e28b0b290f7"
-      },
-      {
-        "file": "crates/rigger-grounder/src/ingest.rs",
-        "name": "graph_index_lag_sample",
-        "content_hash": "c9fc228c1f412abe"
-      }
-    ],
-    "proposed_home": "ingest::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-96daf6c3e468",
     "classification": "semantic",
     "sites": [

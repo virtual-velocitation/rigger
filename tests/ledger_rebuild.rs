@@ -1841,17 +1841,9 @@ fn report_line(counted: usize) -> String {
     format!("{REPORT_LEAD}{counted}{note}")
 }
 
-/// The latest recording the log side of the report answers for `identity`: its `generation` and
-/// the one `key` that names it.
-fn latest_recording(
-    identity: &str,
-    generation: &str,
-    key: &str,
-) -> (String, (String, Vec<String>)) {
-    (
-        identity.to_string(),
-        (generation.to_string(), vec![key.to_string()]),
-    )
+/// The latest recording the log side of the report answers for `identity`: its `generation`.
+fn latest_recording(identity: &str, generation: &str) -> (String, String) {
+    (identity.to_string(), generation.to_string())
 }
 
 /// A generation no source extracts to.
@@ -2144,13 +2136,9 @@ fn the_log_side_of_the_report_is_one_typed_read_of_the_perception_types() {
     assert_eq!(
         answered,
         HashMap::from([
-            latest_recording("gc/src/old.rs", "h1", "gc/src/old.rs@h1#0"),
-            latest_recording("gc/src/lib.rs", "h2", "gc/src/lib.rs@h2#1"),
-            latest_recording(
-                "gd/docs/architecture.md",
-                "h4",
-                "gd/docs/architecture.md@h4#1"
-            ),
+            latest_recording("gc/src/old.rs", "h1"),
+            latest_recording("gc/src/lib.rs", "h2"),
+            latest_recording("gd/docs/architecture.md", "h4"),
         ])
     );
     assert_eq!(
@@ -2508,49 +2496,46 @@ fn the_log_side_of_the_report_reads_the_one_stream_it_is_handed() {
         )
     });
 
-    let answer = |identity: &str, generation: &str, key: &str| {
-        HashMap::from([latest_recording(identity, generation, key)])
-    };
+    let answer =
+        |identity: &str, generation: &str| HashMap::from([latest_recording(identity, generation)]);
     assert_eq!(
         (run, other),
         (
-            answer("gc/src/lib.rs", "h3", "gc/src/lib.rs@h3#0"),
-            answer(
-                "gd/docs/architecture.md",
-                "h4",
-                "gd/docs/architecture.md@h4#1"
-            ),
+            answer("gc/src/lib.rs", "h3"),
+            answer("gd/docs/architecture.md", "h4"),
         )
     );
 }
 
 /// Given a tree whose source file the log's keyed derived rows record at the generation it
-/// extracts to, a later ledger entry of the same identity at another generation, and a ledger
-/// entry alone of a second file the tree holds, when the index-lag readers are asked, then
-/// neither lists either file: they read the derived types alone, so a ledger entry is no
-/// recording to them - the first file stays at its derived rows' generation and the second is no
-/// candidate of the sample - while the perception types read the entry as the latest.
+/// extracts to, when the index-lag readers are asked over the log's side alone, then neither
+/// lists it; and when a later ledger entry of the same identity at another generation and a
+/// ledger entry alone of the out-of-line test module follow, then both readers read each entry
+/// as its identity's latest recording: the first lists the source file it is handed and the
+/// sample both files, in sorted order.
 #[cfg(feature = "symbols")]
 #[test]
-fn the_index_lag_readers_pass_a_ledger_entry_over() {
+fn the_index_lag_readers_read_a_ledger_entry_as_the_latest_recording() {
     let dir = temp_project();
     let root = dir.path();
     write_text(root, SOURCE_PATH, SOURCE_BODY);
     write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
-    let tree = root.to_str().unwrap();
     let file = vec![SOURCE_PATH.to_string()];
     let lag = |prior: &[Event]| {
+        let latest = rigger::ingest::project_scoped_latest_generations(prior);
         (
-            rigger::ingest::graph_index_lag(tree, prior, &file),
-            rigger::ingest::graph_index_lag_sample(tree, prior),
+            rigger::ingest::graph_index_lag(root, &latest, None, &file),
+            rigger::ingest::graph_index_lag_sample(root, &latest, None),
         )
     };
-    let fresh = (Vec::<String>::new(), Vec::<String>::new());
 
     let mut prior = keyed_source_rows();
     assert_eq!(
         (lag(&prior), lag(&[])),
-        (fresh.clone(), (file.clone(), Vec::new())),
+        (
+            (Vec::<String>::new(), Vec::<String>::new()),
+            (file.clone(), Vec::new())
+        ),
         "the derived rows record the generation the file extracts to; without them it lags"
     );
 
@@ -2569,16 +2554,12 @@ fn the_index_lag_readers_pass_a_ledger_entry_over() {
         11,
     )));
     assert_eq!(
-        rigger::ingest::project_scoped_latest_generations(
-            &prior,
-            &rigger::retention::PERCEPTION_TYPES
+        lag(&prior),
+        (
+            file.clone(),
+            vec![TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()]
         )
-        .get("gc/src/lib.rs")
-        .map(|(generation, _)| generation.as_str()),
-        Some(UNREPRODUCED),
-        "the entry is the identity's latest recording under the perception types"
     );
-    assert_eq!(lag(&prior), fresh);
 }
 
 /// Given a tree holding two source files, a log whose keyed derived row records the first at a
