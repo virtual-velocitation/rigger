@@ -408,6 +408,16 @@ pub fn applied(db: &Path, position: u64) -> bool {
     )
 }
 
+/// Every position `db`'s applied ledger records, ascending.
+pub fn applied_positions(db: &Path) -> Vec<u64> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut rows = conn
+        .prepare("SELECT position FROM applied ORDER BY position")
+        .unwrap();
+    let positions = rows.query_map([], |r| r.get(0)).unwrap();
+    positions.map(Result::unwrap).collect()
+}
+
 /// What the `SELECT EXISTS` query `sql` answers over `db` with `param` bound to `?1`.
 pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
     rusqlite::Connection::open(db)
