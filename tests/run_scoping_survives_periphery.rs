@@ -98,6 +98,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         graph: None,
         criteria: vec![criterion.to_string()],
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }

@@ -140,6 +140,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let rs = run(&cfg, &deps).unwrap();
     for u in ["unit-a", "unit-b"] {

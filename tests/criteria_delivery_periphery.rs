@@ -130,6 +130,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         // no synthetic reshaping between extraction and delivery.
         criteria: vec![criterion.clone()],
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let rs = run(&cfg, &deps).unwrap();
 

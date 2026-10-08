@@ -125,6 +125,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
 
     let rs = run(&cfg, &deps).expect(

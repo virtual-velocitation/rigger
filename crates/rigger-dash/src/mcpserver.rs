@@ -2190,7 +2190,7 @@ mod tests {
     /// still appends (its fold refused, the rebuild re-deriving it from the log).
     #[test]
     fn tools_that_depend_on_the_fold_refuse_a_graph_owing_its_rebuild_while_emit_appends() {
-        use crate::contextgraph::{Error as GraphError, Graph, REBUILD_OWED};
+        use crate::contextgraph::{Error as GraphError, REBUILD_OWED};
         use crate::grounder::Nop;
 
         struct Owing;
@@ -2202,12 +2202,7 @@ mod tests {
             ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
-            fn subgraph(&self, _: &[String], _: i64) -> Result<Graph, GraphError> {
-                panic!("a graph owing its rebuild is never read")
-            }
-            fn resolve(&self, _: &str) -> Result<Option<String>, GraphError> {
-                panic!("a graph owing its rebuild is never read")
-            }
+            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }

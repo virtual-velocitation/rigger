@@ -90,10 +90,37 @@ mod config_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+/// THE EXTRACTION TREE the run sink's tests walk, compiled here from the same file as the root
+/// crate's tests; only the default lane's tests plant it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
+mod extraction_tree_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
+/// The host fixtures the run sink's tests write their files through. They name the reaper and
+/// the open-files reader as `rigger::reap` and `rigger::holders`, which the import below makes
+/// resolve in this crate.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/host.rs"]
+mod host_fixtures;
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use rigger_process::{holders, reap};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/git.rs"]
@@ -106,6 +133,16 @@ mod ingest_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
 mod plan_critique_fixtures;
+/// THE READ FAULT fixture the run sink's test arms, compiled here from the same file as the
+/// grounder's and the root crate's tests.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/read_fault.rs"]
+mod read_fault_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
@@ -119,9 +156,15 @@ mod test_support {
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::event_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::extraction_tree_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::read_fault_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

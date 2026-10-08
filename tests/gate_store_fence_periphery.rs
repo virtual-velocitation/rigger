@@ -862,6 +862,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let _ = run(&cfg, &deps);
 

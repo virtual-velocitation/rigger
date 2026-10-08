@@ -141,6 +141,24 @@ macro_rules! projection_folds_no_entry {
     };
 }
 
+/// The read half of a `Projection` double no test reads: asking it for a subgraph or a mention
+/// fails the test. Expanded inside that double's `impl Projection` block.
+#[macro_export]
+macro_rules! projection_is_never_read {
+    () => {
+        fn subgraph(
+            &self,
+            _seed: &[String],
+            _depth: i64,
+        ) -> Result<rigger::contextgraph::Graph, rigger::contextgraph::Error> {
+            panic!("this double is never read")
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
+            panic!("this double is never read")
+        }
+    };
+}
+
 /// What a `Projection` double answers with nothing - an empty subgraph, an unresolved mention and
 /// no rebuild owed - with the ledger half of a double that folds no entry
 /// (`projection_folds_no_entry`), expanded inside that double's `impl Projection` block.

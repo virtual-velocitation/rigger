@@ -52,6 +52,17 @@ extern crate self as rigger;
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod test_support;
 
+/// The graph fixtures the sink-check tests take the read half of their projection double from,
+/// compiled here from the same file as the root crate's tests.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/graph.rs"]
+mod graph_fixtures;
+
 /// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
 /// here from the same file. It names no crate, so both lanes compile it.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]

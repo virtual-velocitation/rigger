@@ -431,24 +431,18 @@ fn without_the_extraction_pass_neither_walk_hands_a_flagged_sink_any_batch() {
 
 /// Given a project holding the extraction tree's source file and the out-of-line test module it
 /// declares, when the operator runs `rigger step` over a log that records nothing, then the run's
-/// sink - handed each batch beside its flag - records every derived event the walk mints under
-/// the key the walk minted, in the walk's order, the flagged batch's one boundary event among
-/// them under the generation the tree's fixture records: the flag it is handed changes nothing
-/// it records.
+/// sink - handed each batch beside its flag - records one ledger entry per batch the walk mints,
+/// in the walk's order and no derived event, each entry carrying the flag its batch was handed
+/// with: the test module's code batch alone is recorded flagged, under the generation the tree's
+/// fixture records and the blob of the module's bytes.
 #[cfg(feature = "symbols")]
 #[test]
-fn a_step_records_the_flagged_batch_as_the_walk_minted_it() {
+fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
     use common::cli::{
         identified_git_project, init_event_log, read_run_events, step_line, write_workflow,
     };
-    use common::fixtures::{minted_events, TEST_MODULE_BODY};
-
-    /// One keyed event as the log and the walk compare: its key, its type and its payload read
-    /// as JSON, so the order a store writes a payload's fields in is no part of the comparison.
-    type Keyed = (String, String, serde_json::Value);
-    let keyed = |key: String, event: &Event| -> Keyed {
-        let payload = serde_json::from_slice(&event.data).expect("a payload is JSON");
-        (key, event.type_.clone(), payload)
+    use common::fixtures::{
+        entry_records, generation_ingested, git_hash_object, walked_entry_events, TEST_MODULE_BODY,
     };
 
     let dir = identified_git_project();
@@ -463,22 +457,18 @@ fn a_step_records_the_flagged_batch_as_the_walk_minted_it() {
     write_file(&root.join(TEST_MODULE_PATH), TEST_MODULE_BODY.as_bytes());
     let _ = common::git::run_git(root, &["add", "-A"]);
     let _ = common::git::run_git(root, &["commit", "-q", "-m", "tree"]);
-    let minted: Vec<Keyed> = minted_events(root)
-        .into_iter()
-        .map(|(key, event)| keyed(key, &event))
-        .collect();
+    let walked = entry_records(&walked_entry_events(root));
 
     step_line(root, "the step that ingests the tree");
 
-    let recorded: Vec<Keyed> = read_run_events(root)
-        .iter()
-        .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
-        .map(|event| {
-            let key = event.meta.get(rigger::ingest::META_REPLAY_KEY);
-            keyed(key.expect("a derived event is keyed").clone(), event)
-        })
-        .collect();
-    assert_eq!(recorded, minted);
+    let log = read_run_events(root);
+    assert_eq!(entry_records(&log), walked);
+    assert_eq!(
+        log.iter()
+            .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
+            .count(),
+        0
+    );
 
     let flagged = &WALKED[0];
     assert_eq!(
@@ -486,15 +476,22 @@ fn a_step_records_the_flagged_batch_as_the_walk_minted_it() {
         ("gc", TEST_MODULE_PATH, true)
     );
     let identity = &walked_handoffs()[0].0;
-    let of_the_flagged_batch: Vec<Keyed> = recorded
+    let recorded_flagged: Vec<_> = entry_records(&log)
         .into_iter()
-        .filter(|(key, _, _)| key.starts_with(&format!("{identity}@")))
+        .filter(|(entry, ..)| entry.excluded)
         .collect();
-    let as_the_fixture_records_it: Vec<Keyed> = events_of(flagged.events)
-        .iter()
-        .enumerate()
-        .map(|(i, event)| keyed(format!("{identity}@{}#{i}", flagged.generation), event))
-        .collect();
-    assert_eq!(as_the_fixture_records_it.len(), 1);
-    assert_eq!(of_the_flagged_batch, as_the_fixture_records_it);
+    assert_eq!(
+        recorded_flagged,
+        vec![(
+            generation_ingested(
+                flagged.prefix,
+                flagged.path,
+                flagged.generation,
+                &git_hash_object(root, TEST_MODULE_PATH, false),
+                true,
+            ),
+            identity.clone(),
+            format!("{identity}@{}#{}", flagged.generation, flagged.events.len()),
+        )]
+    );
 }

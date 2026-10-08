@@ -1735,9 +1735,7 @@ mod entry_of_batch_tests {
         generation_of, pairs, NO_BYTES_BATCH, OTHER_BATCH, OTHER_BODY,
     };
     use super::{batch_generation, entry_of_batch, key_batch};
-    use crate::contextgraph::{
-        EntryBatch, EntryFold, Error as GraphError, FoldAccess, Graph, Projection,
-    };
+    use crate::contextgraph::{EntryBatch, EntryFold, Error as GraphError, FoldAccess, Projection};
     use crate::eventstore::{Error as StoreError, Event};
     use crate::extraction_tree::{
         planted_extraction_tree, walked_batch, walked_generation, DOCUMENT_PATH, SOURCE_BODY,
@@ -1794,12 +1792,7 @@ mod entry_of_batch_tests {
             self.asked.lock().unwrap().push("owed".to_string());
             self.answers.0.map_err(|why| GraphError(why.to_string()))
         }
-        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, GraphError> {
-            panic!("a sink's check reads no subgraph")
-        }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, GraphError> {
-            panic!("a sink's check resolves no mention")
-        }
+        crate::projection_is_never_read!();
     }
 
     /// Everything one call asked of its three sources: the identities it looked up on the log

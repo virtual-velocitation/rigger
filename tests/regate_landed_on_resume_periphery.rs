@@ -195,6 +195,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resu
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let err = match run(&cfg, &deps) {
             Ok(_) => panic!(
@@ -240,6 +241,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resu
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let rs = run(&cfg, &deps2).expect("call 2 must resume and re-gate the already-landed tree");
     assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
@@ -389,6 +391,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let rs = run(&cfg, &deps).expect(
         "a legacy landed row missing pre_merge must never crash or error out a resumed run",

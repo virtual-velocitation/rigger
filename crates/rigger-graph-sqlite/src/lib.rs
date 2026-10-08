@@ -9,12 +9,12 @@ pub mod contextgraph;
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(test, feature = "store", not(feature = "core")))]
 use rigger_domain::eventstore;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::spawn;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::{ingest, retention};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_root::{conductor, metrics};
 #[cfg(any(feature = "store", not(feature = "core")))]
