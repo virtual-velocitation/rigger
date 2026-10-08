@@ -176,13 +176,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-27610bbbcb28",
-    "classification": "exact",
+    "id": "dup-a9c4f3d90dac",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "unit_of_gate_key",
         "content_hash": "94519a9bf8532f03"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "digest_address",
+        "content_hash": "36cc5769f99b8cc5"
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -343,30 +348,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-649d686bdf2a",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "is_stale",
-        "content_hash": "35f07935722fa2b3"
-      },
-      {
-        "file": "crates/rigger-conductor/src/replay_keys.rs",
-        "name": "insert",
-        "content_hash": "f668e0df1bdefdf5"
-      },
-      {
-        "file": "crates/rigger-conductor/src/replay_keys.rs",
-        "name": "contains",
-        "content_hash": "e34d58c0828b6a2e"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-conductor/src/replay_keys.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-4e1d0e78e3c6",
     "classification": "semantic",
     "sites": [
@@ -410,7 +391,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-057996e51fcc",
+    "id": "dup-c49e5ffeb01d",
     "classification": "semantic",
     "sites": [
       {
@@ -466,7 +447,7 @@
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
         "name": "run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors",
-        "content_hash": "5cdbef81b464bcbf"
+        "content_hash": "a99c4bb84b057505"
       },
       {
         "file": "tests/cli.rs",
@@ -1151,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a58751fa4009",
+    "id": "dup-1e5fb7537d8b",
     "classification": "semantic",
     "sites": [
       {
@@ -3616,6 +3597,11 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/agents/sdet-author.md\"",
+        "content_hash": "ea68bfe8ed1f915f"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/agents\"",
         "content_hash": "4ffd8f3df8f8b275"
       },
@@ -4121,7 +4107,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 593 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4182,33 +4168,28 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ae7ef878296c",
+    "id": "dup-15a59608df13",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "c689ca09559759ad"
+        "content_hash": "62ba6b68dc55f4b2"
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "f52ad61fe5d70f20"
+        "content_hash": "7f439618ee10a4bc"
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "de3dd55067b6cbe2"
-      },
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "name": "spawn",
-        "content_hash": "c4297e15ac6531d7"
+        "content_hash": "c556c5d435d68f61"
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
         "name": "spawn",
-        "content_hash": "2ef656073e58083a"
+        "content_hash": "3259b120a49f8cd4"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, tests/revert_on_base_hook_bypass_periphery.rs)",
@@ -4255,6 +4236,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: crates/rigger-conductor/src/conductor.rs, crates/rigger-domain/src/metrics.rs, tests/plan_critique_spec_defect_stop_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-5c13daf57f07",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "insert",
+        "content_hash": "f668e0df1bdefdf5"
+      },
+      {
+        "file": "crates/rigger-conductor/src/replay_keys.rs",
+        "name": "contains",
+        "content_hash": "e34d58c0828b6a2e"
+      }
+    ],
+    "proposed_home": "replay_keys::replay_keys",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -5047,13 +5047,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ed7dd2365bce",
+    "id": "dup-468c9f4fc26f",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "spawn_request",
-        "content_hash": "ba1ab9247a5311ac"
+        "content_hash": "5cbc06d4b398a5c1"
       },
       {
         "file": "tests/common/mod.rs",
@@ -5858,6 +5858,44 @@
     ],
     "proposed_home": "claude_code::failing_read_store",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-d082d63b45dc",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "build_args_mcp_config_names_the_spawn_bound_server",
+        "content_hash": "4857044a0c9a679a"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "build_args_mcp_config_uses_the_configured_rigger_bin",
+        "content_hash": "41ee7147d8c1cab8"
+      }
+    ],
+    "proposed_home": "claude_code::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-bada7e276fc1",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "of",
+        "content_hash": "f1e9321ba1f00b94"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "fresh",
+        "content_hash": "525018472881488b"
+      }
+    ],
+    "proposed_home": "mod::launch_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
+    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -7493,18 +7531,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-58e746ca5c35",
+    "id": "dup-14d812231784",
     "classification": "near",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
         "name": "spawn",
-        "content_hash": "2d8882025182ff5a"
+        "content_hash": "894dbdb8a6636f0c"
       },
       {
         "file": "tests/canary_unattributed_rejects_periphery.rs",
         "name": "spawn",
-        "content_hash": "c1af79f145292ac8"
+        "content_hash": "5c97b230812bcf5a"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/canary_false_positives_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)",
@@ -8797,18 +8835,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6adbc1efd3a6",
+    "id": "dup-a199914ac1c3",
     "classification": "near",
     "sites": [
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
         "name": "spawn",
-        "content_hash": "e542ecac2f88a1fb"
+        "content_hash": "0a263e765fb6f320"
       },
       {
         "file": "tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs",
         "name": "spawn",
-        "content_hash": "a87cde1ccc7a566e"
+        "content_hash": "58d8bc0de157f6df"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/review_round_lenses_only_log_derived_resume_periphery.rs, tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs)",
