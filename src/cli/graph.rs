@@ -1085,6 +1085,70 @@ mod tests {
             )
         }
 
+        /// Why [`LosesEveryFold`] loses its first ledger fold, and why it loses each later one.
+        const FIRST_LOSS: &str = "the first fold failed";
+        const LATER_LOSS: &str = "refused after the first";
+
+        /// A graph double that reads as the minimal projection does - it owes no rebuild and holds
+        /// no generation - and loses every ledger fold: the first for [`FIRST_LOSS`] and each
+        /// later one for [`LATER_LOSS`], as a graph a failed fold left owing refuses what
+        /// follows. It counts the folds it was asked.
+        #[derive(Default)]
+        struct LosesEveryFold {
+            folds: std::sync::atomic::AtomicUsize,
+        }
+
+        impl Projection for LosesEveryFold {
+            fn apply(
+                &self,
+                _e: &Event,
+                _access: contextgraph::FoldAccess,
+            ) -> Result<(), contextgraph::Error> {
+                Ok(())
+            }
+            crate::projection_is_never_read!();
+            fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
+                MinimalProjection.rebuild_owed()
+            }
+            fn current_generation(
+                &self,
+                identity: &str,
+            ) -> Result<Option<String>, contextgraph::Error> {
+                MinimalProjection.current_generation(identity)
+            }
+            fn apply_generation(
+                &self,
+                _entry: &Event,
+                _batch: contextgraph::EntryBatch<'_>,
+            ) -> Result<contextgraph::EntryFold, contextgraph::Error> {
+                let asked = self.folds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(contextgraph::Error(
+                    [FIRST_LOSS, LATER_LOSS][asked.min(1)].to_string(),
+                ))
+            }
+        }
+
+        /// THE BUILD ANSWERS THE FIRST FOLD IT LOST (SINK OUTCOMES rows 15 then 14).
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph whose first ledger fold fails
+        /// and whose every later one is refused for another reason,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per batch, asks the graph one fold per entry, counts every
+        /// batch event, and answers the first loss as the fold it lost, never a later one.
+        #[test]
+        fn a_build_that_loses_every_fold_answers_the_first_fold_it_lost() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = LosesEveryFold::default();
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (18, Fold::NotFolded(format!("graph: {FIRST_LOSS}"))));
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 6);
+        }
+
         /// Spec 107, criterion 12: perception is a ledger entry at `rigger graph build`'s sink.
         ///
         /// GIVEN the extraction tree, an empty store and an empty graph,
