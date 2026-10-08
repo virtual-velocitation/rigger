@@ -439,8 +439,8 @@ fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
 
 /// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
 /// when seeding the content-address cache from prior GREEN verdicts so the cache value
-/// carries which unit earned the green (the coordinate a downstream staleness pass keys
-/// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
+/// carries which unit earned the green (provenance the cache-hit evidence cites). A deferred
+/// key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
 /// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
 /// segment is recovered.
 ///
@@ -5763,8 +5763,8 @@ impl RunCtx<'_> {
                     }
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
-                    // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
-                    // staleness passes use), skipping and logging the rest. A remediation iteration
+                    // blast radius (its `grounded_seed`, the SAME radius the spawn uses),
+                    // skipping and logging the rest. A remediation iteration
                     // then re-verifies only what its change could have touched; the exhaustive suite
                     // is asserted once at the integrate door below.
                     let gate_outcome = self.run_gates_at(
@@ -9347,8 +9347,7 @@ impl RunCtx<'_> {
         // is cheap and correct regardless, since that call re-reads the run branch's CURRENT
         // tip fresh every time - a sibling that landed meanwhile is picked up automatically,
         // never stale. Once this loop finally lands a clean merge, `lock` stays held
-        // (unchanged from before this fix) through the post-merge gate suite and staleness
-        // marking below.
+        // (unchanged from before this fix) through the post-merge gate suite below.
         let mut lock = self.integrate_mu.lock().unwrap();
         // The gate scratch root a PASSING post-merge re-gate was handed (spec 113, THE GATE
         // SCRATCH ROOT HAS ONE LIFECYCLE): the `rigger-gate-<slug>` sibling of
@@ -10687,11 +10686,11 @@ impl RunCtx<'_> {
     /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
     /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
-    /// was grounded on. The SAFETY consumers do NOT read this precise seed: cross-wave staleness and
-    /// rule-6 conflict detection key off the safe-superset view (spec 17 unit 3, 3a/3b), alongside
-    /// partitioning and tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// was grounded on. The SAFETY consumers do NOT read this precise seed: rule-6 conflict
+    /// detection keys off the safe-superset view (spec 17 unit 3, 3b), alongside partitioning and
+    /// tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
     /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
-    /// partition / tier / audit / staleness / rule-6-conflict consumers via
+    /// partition / tier / audit / rule-6-conflict consumers via
     /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
     /// (best-effort but real, not always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
