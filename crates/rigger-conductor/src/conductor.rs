@@ -36591,29 +36591,29 @@ mod tests {
     }
 
     /// The gates are the instrument; the reviewers judge the residue. Every review tier's prompt
-    /// carries the gate evidence of the exact tree it judges - each gate's id, its verdict, its
-    /// input digest and its evidence lines - so no reviewer re-runs a gate the evidence shows
-    /// green. A later round judges a new tree, so it carries that tree's evidence and never the
-    /// earlier round's.
+    /// carries the evidence `run_gates_at` recorded for the exact commit it judges - each gate's
+    /// id, its verdict, its input digest and its evidence lines - so no reviewer re-runs a gate
+    /// the evidence shows green. A later round judges a new commit, so it carries that commit's
+    /// evidence and never the earlier round's.
     #[test]
-    fn every_review_tier_prompt_carries_the_gate_evidence_of_the_tree_it_judges() {
+    fn every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges() {
         let (rs, events, driver) = run_review_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         let digests = [ok_gate_digest(&events, 0), ok_gate_digest(&events, 1)];
-        assert_ne!(digests[0], digests[1], "each round judges a different tree");
+        assert_ne!(digests[0], digests[1], "each round judges a different commit");
         for agent_id in ["lens", "adversary", "adj"] {
             let prompts = driver.prompts_for(agent_id);
             assert_eq!(prompts.len(), 2, "{agent_id} reviews both rounds");
             for (round, prompt) in prompts.iter().enumerate() {
                 let (digest, other) = (&digests[round], &digests[1 - round]);
-                let tree = digest.split_once(':').unwrap().1;
+                let commit = digest_address(digest).unwrap();
                 let block = format!(
-                    "GATE EVIDENCE for the tree under review (git tree {tree}, which `git \
-                     rev-parse HEAD^{{tree}}` prints in the unit's worktree): every gate below \
-                     already ran on exactly this tree. Never re-run a gate shown PASS here, by \
+                    "GATE EVIDENCE for the commit under review (commit {commit}, which `git \
+                     rev-parse HEAD` prints in the unit's worktree): every gate below already \
+                     ran on exactly this commit. Never re-run a gate shown PASS here, by \
                      hand or through a verify helper: the gate is the instrument that proves \
                      it, and your judgment covers what no gate sees. Reproduce only a specific \
                      suspicion - one named test, a reversion probe, a single-crate `cargo test \
@@ -36622,7 +36622,7 @@ mod tests {
                 );
                 assert!(
                     prompt.contains(&block),
-                    "{agent_id} round {round} must carry its tree's gate evidence:\n{prompt}"
+                    "{agent_id} round {round} must carry its commit's gate evidence:\n{prompt}"
                 );
                 assert!(
                     !prompt.contains(other.as_str()),
@@ -36632,8 +36632,8 @@ mod tests {
         }
     }
 
-    /// A verdict-carrying GateVerdict for `unit`'s `gate` at `attempt`, digested over `tree`.
-    fn digested_verdict(unit: &str, gate: &str, attempt: u32, pass: bool, tree: &str) -> Event {
+    /// A verdict-carrying GateVerdict for `unit`'s `gate` at `attempt`, digested over `commit`.
+    fn digested_verdict(unit: &str, gate: &str, attempt: u32, pass: bool, commit: &str) -> Event {
         Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({
@@ -36645,15 +36645,30 @@ mod tests {
             META_REPLAY_KEY,
             gate_key(GateKey::Verdict, unit, attempt, 0, gate),
         )
-        .with_meta(META_INPUT_DIGEST, input_digest(gate, tree))
+        .with_meta(META_INPUT_DIGEST, input_digest(gate, commit))
     }
 
-    /// The gate evidence block names, for the one tree under review, each gate of the unit in
-    /// the order it ran with its latest verdict on that tree, its digest and every evidence
-    /// line - and nothing recorded for another unit, another tree, a skip or a post-merge
-    /// re-gate. No tree, or no gate run on it, claims nothing.
+    /// A gate digest's address is the commit `input_digest` folded into it, recovered exactly:
+    /// the part after the command hash, never a suffix match, and nothing for an empty or
+    /// malformed digest.
     #[test]
-    fn the_gate_evidence_block_lists_only_the_units_gates_on_the_tree_under_review() {
+    fn a_digest_address_is_the_commit_its_gate_ran_on() {
+        assert_eq!(digest_address(&input_digest("cargo test", "C1")), Some("C1"));
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "abc123")),
+            Some("abc123")
+        );
+        assert_eq!(digest_address(&input_digest("cargo test", "")), None);
+        assert_eq!(digest_address("no-separator"), None);
+    }
+
+    /// The gate evidence block names, for the one commit under review, each gate of the unit in
+    /// the order it ran with its latest verdict on that commit, its digest and every evidence
+    /// line - and nothing recorded for another unit, another commit (one whose sha merely ends
+    /// with this one's included), a skip or a post-merge re-gate. No commit, or no gate run on
+    /// it, claims nothing.
+    #[test]
+    fn the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review() {
         let skip = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({"gate": "skipped", "pass": true})).unwrap(),
@@ -36677,6 +36692,7 @@ mod tests {
             digested_verdict("u", "test", 1, false, "T1"),
             digested_verdict("u", "fmt", 1, true, "T1"),
             digested_verdict("other", "lint", 1, true, "T1"),
+            digested_verdict("u", "lint", 1, true, "XT1"),
             skip,
             postmerge,
             digested_verdict("u", "test", 2, true, "T1"),
@@ -36692,7 +36708,7 @@ mod tests {
                 input_digest("fmt", "T1"),
             )
         );
-        assert!(block.starts_with("\n\nGATE EVIDENCE for the tree under review (git tree T1,"));
+        assert!(block.starts_with("\n\nGATE EVIDENCE for the commit under review (commit T1,"));
         let failing = gate_evidence_block(&events[..2], "u", "T1");
         assert!(
             failing.ends_with(&format!(
