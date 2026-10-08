@@ -77,8 +77,10 @@ class; closing it is a prerequisite for §5 and §6.
 ### 2.4 Safe-superset recall is a correctness invariant, not a token cost
 Pruning, dedup, and tier filtering apply to **prompt rendering only** — never to the safety
 consumers `radii_conflict` (wave admission and `partition_by_blast_radius`), `route_review_tier`
-and rule-6 conflict detection (`dag_unit_blast_radii`), which require over-inclusion. The `safe` view stays an uncapped
-grep-superset; any confidence-tier mapping (§6) must keep the wide tier a superset of grep.
+and rule-6 conflict detection (`dag_unit_blast_radii`), which require over-inclusion. The `safe` view stays uncapped:
+the structural set of every name the index resolves, plus every whole-identifier text hit of a span it
+cannot resolve (outside spec files and the regenerated audit); any confidence-tier mapping (§6) must
+keep the wide tier a superset of it.
 Dropping a reference a safety consumer needs is a correctness regression, not a saving.
 
 ### 2.5 The knowledge graph is the retrieval surface; build its data model natively
