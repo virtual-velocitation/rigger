@@ -96,9 +96,14 @@ pub(crate) fn harness_env() -> [(&'static str, &'static str); 1] {
 }
 
 /// What `claude -p --resume <id>` prints on stderr, exiting non-zero before any turn runs, when
-/// no transcript of session `<id>` exists (Claude Code 2.1.290, probed 2026-10-07: `No
-/// conversation found with session ID: <id>`, empty stdout, exit 1). A session host that asked
-/// for a resume and reads this falls back to a fresh launch with the full task.
+/// no transcript of session `<id>` exists. This is Claude Code's own wording, matched as text
+/// because the refusal carries no structured code: pinned against Claude Code 2.1.290 by the
+/// 2026-10-07 probe (`claude -p --resume <unknown uuid> < /dev/null` printed `No conversation
+/// found with session ID: <id>`, empty stdout, exit 1), whose literal output the cli host's
+/// `a_missing_session_is_read_from_claude_codes_own_refusal` test replays. A later Claude Code
+/// that rewords it turns the fallback off - the resume then fails as an agent error - so
+/// re-probe on an upgrade. A session host that asked for a resume and reads this falls back to
+/// a fresh launch with the full task.
 pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID";
 
 /// The Claude Code session one launch runs as - the ONE session authority both process hosts

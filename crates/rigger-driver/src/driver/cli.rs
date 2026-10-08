@@ -1094,6 +1094,30 @@ thinking out loud, not json\n\
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_session_is_read_from_claude_codes_own_refusal() {
+        // The literal stderr Claude Code 2.1.290 printed (exit 1, empty stdout) when asked to
+        // resume a session whose transcript does not exist, captured by the 2026-10-07 probe.
+        use std::os::unix::process::ExitStatusExt;
+        let output = |code: i32, stderr: &str| Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        let refusal =
+            "No conversation found with session ID: dd8cc1e0-39de-4ce7-bbf0-73d89a831162\n";
+        assert!(session_missing(&output(1, refusal)));
+        assert!(
+            !session_missing(&output(0, refusal)),
+            "a session that ran to a clean exit was found, whatever it printed"
+        );
+        assert!(
+            !session_missing(&output(1, "Error: Session ID x is already in use.\n")),
+            "any other failure is the agent's, never a missing session"
+        );
+    }
+
     /// The checked-in fixture agent that stands in for a session host's `claude`: it refuses a
     /// `--resume` of any session but `$SESSION_AGENT_KNOWN` exactly as Claude Code does, and
     /// otherwise echoes its argv and its task.
