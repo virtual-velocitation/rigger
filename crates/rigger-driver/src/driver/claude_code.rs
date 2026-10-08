@@ -1910,9 +1910,9 @@ mod tests {
     #[test]
     fn a_launch_relaunches_at_a_new_ordinal_with_no_resumed_from_this_spec() {
         // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal."
-        // Every launch spec 104 itself performs is fresh (resume is spec 105's), so two
-        // successive launches for the same spawn get two DIFFERENT session ids even when
-        // the caller advances only `launch`.
+        // A launch whose spawn names no session to continue is fresh, so two successive
+        // launches for the same spawn get two DIFFERENT session ids even when the caller
+        // advances only `launch`.
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
