@@ -5393,6 +5393,14 @@ mod tests {
                 && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
             "the worker prompt names the export as a hard rule"
         );
+        // The directory is the conductor's per-spawn choice - the unit's gate cache for a spawn
+        // that builds the unit, its review cache for a review tier - so the prompt never tells
+        // a reviewer it builds into the cache the gates use.
+        assert!(
+            RIGGER_WORKFLOW.contains("That directory is the build cache the conductor chose for this spawn")
+                && !RIGGER_WORKFLOW.contains("shared with its gates"),
+            "the worker prompt names the chosen cache without claiming every spawn shares the gates' cache"
+        );
         let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
         let heartbeat = RIGGER_WORKFLOW
             .find("buildLocation +\n    heartbeat +")
