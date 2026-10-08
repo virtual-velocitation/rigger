@@ -34,8 +34,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12541,
-        "end_line": 12548
+        "start_line": 12542,
+        "end_line": 12549
       },
       {
         "file": "crates/rigger-domain/src/contextgraph.rs",
@@ -194,8 +194,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12658,
-        "end_line": 12660
+        "start_line": 12659,
+        "end_line": 12661
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -364,8 +364,8 @@
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 28979,
-        "end_line": 29038
+        "start_line": 28981,
+        "end_line": 29040
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -449,8 +449,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 12452,
-        "end_line": 12457
+        "start_line": 12453,
+        "end_line": 12458
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -474,8 +474,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 13479,
-        "end_line": 13481
+        "start_line": 13481,
+        "end_line": 13483
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
@@ -489,8 +489,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 15956,
-        "end_line": 15961
+        "start_line": 15958,
+        "end_line": 15963
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -504,23 +504,23 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16009,
-        "end_line": 16011
+        "start_line": 16011,
+        "end_line": 16013
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16019,
-        "end_line": 16021
+        "start_line": 16021,
+        "end_line": 16023
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16025,
-        "end_line": 16027
+        "start_line": 16027,
+        "end_line": 16029
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16031,
-        "end_line": 16033
+        "start_line": 16033,
+        "end_line": 16035
       }
     ]
   },
@@ -529,43 +529,43 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16043,
-        "end_line": 16045
+        "start_line": 16045,
+        "end_line": 16047
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37923,
-        "end_line": 37925
+        "start_line": 37925,
+        "end_line": 37927
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37926,
-        "end_line": 37928
+        "start_line": 37928,
+        "end_line": 37930
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37929,
-        "end_line": 37931
+        "start_line": 37931,
+        "end_line": 37933
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37932,
-        "end_line": 37934
+        "start_line": 37934,
+        "end_line": 37936
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37935,
-        "end_line": 37937
+        "start_line": 37937,
+        "end_line": 37939
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 37938,
-        "end_line": 37940
+        "start_line": 37940,
+        "end_line": 37942
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 38062,
-        "end_line": 38064
+        "start_line": 38064,
+        "end_line": 38066
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -604,8 +604,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16049,
-        "end_line": 16055
+        "start_line": 16051,
+        "end_line": 16057
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
@@ -619,33 +619,33 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16188,
-        "end_line": 16188
+        "start_line": 16190,
+        "end_line": 16190
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 16193,
-        "end_line": 16193
+        "start_line": 16195,
+        "end_line": 16195
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 27564,
-        "end_line": 27564
+        "start_line": 27566,
+        "end_line": 27566
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 41303,
-        "end_line": 41303
+        "start_line": 41305,
+        "end_line": 41305
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 41317,
-        "end_line": 41317
+        "start_line": 41319,
+        "end_line": 41319
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 42393,
-        "end_line": 42393
+        "start_line": 42395,
+        "end_line": 42395
       },
       {
         "file": "crates/rigger-driver/src/reaped_child.rs",
@@ -1064,18 +1064,18 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 18955,
-        "end_line": 18955
-      },
-      {
-        "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 39010,
-        "end_line": 39010
+        "start_line": 18957,
+        "end_line": 18957
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "start_line": 39012,
         "end_line": 39012
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "start_line": 39014,
+        "end_line": 39014
       },
       {
         "file": "crates/rigger-config-files/src/config_store.rs",
@@ -4024,8 +4024,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 32148,
-        "end_line": 32163
+        "start_line": 32150,
+        "end_line": 32165
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -4039,13 +4039,13 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35755,
-        "end_line": 35763
+        "start_line": 35757,
+        "end_line": 35765
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35793,
-        "end_line": 35801
+        "start_line": 35795,
+        "end_line": 35803
       }
     ]
   },
@@ -4054,13 +4054,13 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35786,
-        "end_line": 35792
+        "start_line": 35788,
+        "end_line": 35794
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 35823,
-        "end_line": 35830
+        "start_line": 35825,
+        "end_line": 35832
       }
     ]
   },
@@ -4069,18 +4069,18 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 40218,
-        "end_line": 40262
+        "start_line": 40220,
+        "end_line": 40264
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 40679,
-        "end_line": 40718
+        "start_line": 40681,
+        "end_line": 40720
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 40827,
-        "end_line": 40874
+        "start_line": 40829,
+        "end_line": 40876
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -4094,8 +4094,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 44493,
-        "end_line": 44503
+        "start_line": 44495,
+        "end_line": 44505
       },
       {
         "file": "tests/replan_episode_identity.rs",
@@ -4109,8 +4109,8 @@
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
-        "start_line": 45545,
-        "end_line": 45547
+        "start_line": 45547,
+        "end_line": 45549
       },
       {
         "file": "crates/rigger-domain/src/metrics.rs",
