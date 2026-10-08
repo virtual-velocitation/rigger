@@ -2373,17 +2373,10 @@ pub fn reclaim_worktree_on_branch(
 /// tiers actually judged. It is deliberately non-failing - an unresolvable HEAD yields
 /// an empty stamp that the emit path then omits, never an error that fails the run.
 pub fn head_sha_of(dir: &str) -> String {
-    rev_sha_of(dir, "HEAD")
-}
-
-/// The sha `rev` resolves to in `dir`, deliberately non-failing: an empty `dir` (a repo-less /
-/// worktree-less run) or an unresolvable `rev` yields an empty string, never an error. The one
-/// resolver behind [`head_sha_of`] (the COMMIT sha).
-pub fn rev_sha_of(dir: &str, rev: &str) -> String {
     if dir.is_empty() {
         return String::new();
     }
-    run_git(dir, &["rev-parse", rev])
+    run_git(dir, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
