@@ -20812,8 +20812,9 @@ mod tests {
         use crate::test_support::{
             arm_read_fault, generation_ingested, git_answer, git_hash_object, one_lookup_each,
             planted_extraction_tree, seed_pre_ledger_rows_without_a_group, walked_handoffs,
-            write_file, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
-            SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
+            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
+            SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY,
+            WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -22069,6 +22070,112 @@ mod tests {
                 one_lookup_each(STREAM, &[SOURCE, SOURCE])
             );
             assert_eq!(recorded(&inner), once);
+        }
+
+        /// Hand `handed` twice to the sink of one run over an empty store, `graph` and `hash`:
+        /// both answers, what the store then holds, and what the store was asked past the reads
+        /// that built the run.
+        fn handed_twice_over_an_empty_store(
+            root: &str,
+            handed: &Handed,
+            graph: &dyn Projection,
+            hash: Hash<'_>,
+        ) -> ([Result<(), String>; 2], Recorded, Vec<CountedRead>) {
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, graph, root, hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let answers = [handed.emit(&ctx), handed.emit(&ctx)];
+            (answers, recorded(&inner), counted.reads()[built..].to_vec())
+        }
+
+        /// `answer` given twice, nothing recorded, and one group lookup of `identity`.
+        fn the_same_answer_twice_from_one_lookup(
+            answer: Result<(), String>,
+            identity: &str,
+        ) -> ([Result<(), String>; 2], Recorded, Vec<CountedRead>) {
+            (
+                [answer.clone(), answer],
+                Recorded::new(),
+                one_lookup_each(STREAM, &[identity]),
+            )
+        }
+
+        /// GIVEN a store that holds no recording of an identity, so its group lookup answers no
+        /// generation, WHEN one process's sink is handed the identity's batch twice and the batch
+        /// records nothing either time - its hash fails (SINK OUTCOMES row 8), its own extraction
+        /// is empty (row 7), a read of the graph's side fails after the lookup answered (row 2's
+        /// graph cases), or the file cannot be read (row 5) - THEN each handing gives the same
+        /// answer, nothing is recorded, and the store's group lookup is asked once: the memo
+        /// holds the lookup's empty answer as it holds a found generation, and holds it although
+        /// the graph's side then failed.
+        #[test]
+        fn an_identity_the_log_holds_no_recording_of_is_still_looked_up_once_when_its_batch_records_nothing(
+        ) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let source = walked(root, SOURCE);
+            let design = walked(root, "gd/src/lib.rs");
+
+            // Row 8: the hash of an extraction the sink would record fails.
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &source, &graph, &failing_hash),
+                the_same_answer_twice_from_one_lookup(
+                    Err(
+                        "the bytes of gc/src/lib.rs could not be hashed: worktree: git could not \
+                         start"
+                            .to_string()
+                    ),
+                    SOURCE
+                )
+            );
+            // Row 2, the graph's side: the lookup answered, then a read of the graph fails.
+            for (fails, said) in [
+                (
+                    GraphCall::Owed,
+                    "whether graph.db owes its rebuild could not be read",
+                ),
+                (
+                    GraphCall::Current,
+                    "graph.db's current generation of gc/src/lib.rs could not be read",
+                ),
+            ] {
+                let failing = FailingGraph {
+                    inner: &graph,
+                    fails,
+                };
+                assert_eq!(
+                    handed_twice_over_an_empty_store(root, &source, &failing, &sized_hash),
+                    the_same_answer_twice_from_one_lookup(
+                        Err(format!("{said}: graph: {GRAPH_REFUSED}")),
+                        SOURCE
+                    )
+                );
+            }
+            // Row 7: the file's own design extraction is empty once its rationale line is gone.
+            write_file(&file, BODY_B.as_bytes());
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &design, &graph, &failing_hash),
+                the_same_answer_twice_from_one_lookup(Ok(()), "gd/src/lib.rs")
+            );
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+            // Row 5, THE READ FAULT: asserted wherever this uid can be refused a read.
+            if !arm_read_fault(&file) {
+                return;
+            }
+            let refused = std::fs::read(&file).unwrap_err();
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &source, &graph, &sized_hash),
+                the_same_answer_twice_from_one_lookup(
+                    Err(format!("{} could not be read: {refused}", file.display())),
+                    SOURCE
+                )
+            );
         }
 
         /// SINK OUTCOMES row 13's fixture in one process.
