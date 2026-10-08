@@ -28,14 +28,14 @@ use std::process::Stdio;
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
     entry_event, ev, generation_ingested, run_started, seed_one_shot_fixture,
-    seed_one_shot_progress, CountedRead, OneShotFixture, ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
-    ONE_SHOT_PERCEPTION_TYPES,
+    seed_one_shot_progress, CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore,
+    ONE_SHOT_DERIVED_TYPES, ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
 use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, TypeSelection};
 use rigger::mcpserver::Server;
 use serde_json::{json, Value};
 
@@ -1080,8 +1080,9 @@ fn stream_with_ledger_entries(run: Option<&str>) -> Vec<Event> {
     events
 }
 
-/// Each event as the port hands it back: its type, its payload and its revision.
-fn answered(events: &[Event]) -> Vec<(&str, &str, i64)> {
+/// Each event as the port hands it back: its type, its payload, its revision in its stream and
+/// its position in the log.
+fn answered(events: &[Event]) -> Vec<(&str, &str, i64, u64)> {
     events
         .iter()
         .map(|e| {
@@ -1089,9 +1090,81 @@ fn answered(events: &[Event]) -> Vec<(&str, &str, i64)> {
                 e.type_.as_str(),
                 std::str::from_utf8(&e.data).unwrap(),
                 e.revision,
+                e.position,
             )
         })
         .collect()
+}
+
+/// Given one event list - a run with ledger entries and a derived edge on both sides of its
+/// boundary - held by the sqlite store and by the hand-built log the domain's own tests read
+/// through, when each is asked the two questions a read of the run asks (the boundary lookup and
+/// the typed read), then the hand-built log answers exactly as the store does: the same boundary,
+/// and the same events at the same revisions for the carried-over read from the start, the
+/// perception-refusing read from the boundary, from the start and from one past the boundary, and
+/// nothing of a stream it does not hold.
+#[test]
+fn the_hand_built_log_answers_the_boundary_lookup_and_the_typed_read_as_the_store_does() {
+    let events = stream_with_ledger_entries(Some("run-p"));
+    let store = Store::open(":memory:").unwrap();
+    store
+        .append(STREAM, ExpectedRevision::NoStream, &events)
+        .unwrap();
+    let log = HandBuiltLog::new(STREAM, events);
+
+    assert_eq!(store.last_position(STREAM, "RunStarted").unwrap(), Some(2));
+    assert_eq!(log.last_position(STREAM, "RunStarted").unwrap(), Some(2));
+    assert_eq!(
+        store.last_position(STREAM, "DecisionMade").unwrap(),
+        Some(6)
+    );
+    assert_eq!(log.last_position(STREAM, "DecisionMade").unwrap(), Some(6));
+    assert_eq!(store.last_position(STREAM, "UnitStarted").unwrap(), None);
+    assert_eq!(log.last_position(STREAM, "UnitStarted").unwrap(), None);
+    assert_eq!(log.last_position("another", "RunStarted").unwrap(), None);
+
+    let both = |stream: &str, from: i64, selection: TypeSelection| {
+        let stored = store.read_stream_typed(stream, from, selection).unwrap();
+        let built = log.read_stream_typed(stream, from, selection).unwrap();
+        assert_eq!(answered(&built), answered(&stored));
+        answered(&stored)
+            .into_iter()
+            .map(|(type_, _, revision, _)| (type_.to_string(), revision))
+            .collect::<Vec<_>>()
+    };
+    let pairs = |v: &[(&str, i64)]| -> Vec<(String, i64)> {
+        v.iter().map(|(t, r)| (t.to_string(), *r)).collect()
+    };
+    assert_eq!(
+        both(STREAM, 0, TypeSelection::Only(&CARRY_OVER)),
+        pairs(&[("DecisionMade", 0), ("DecisionMade", 6)])
+    );
+    assert_eq!(
+        both(STREAM, 2, TypeSelection::Except(&ONE_SHOT_PERCEPTION_TYPES)),
+        pairs(&[("RunStarted", 2), ("RunNote", 3), ("DecisionMade", 6)])
+    );
+    assert_eq!(
+        both(STREAM, 3, TypeSelection::Except(&ONE_SHOT_PERCEPTION_TYPES)),
+        pairs(&[("RunNote", 3), ("DecisionMade", 6)])
+    );
+    assert_eq!(
+        both(STREAM, 0, TypeSelection::Except(&ONE_SHOT_PERCEPTION_TYPES)),
+        pairs(&[
+            ("DecisionMade", 0),
+            ("RunStarted", 2),
+            ("RunNote", 3),
+            ("DecisionMade", 6)
+        ])
+    );
+    assert_eq!(
+        both(STREAM, 0, TypeSelection::Only(&["GenerationIngested"])),
+        pairs(&[("GenerationIngested", 1), ("GenerationIngested", 4)])
+    );
+    assert_eq!(
+        both("another", 0, TypeSelection::Except(&[])),
+        pairs(&[]),
+        "a stream neither holds"
+    );
 }
 
 /// Given one `events.db` file two projects share, each holding real ledger entries (payload, group
@@ -1134,7 +1207,7 @@ fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_
     assert_eq!(
         answered(&events)
             .iter()
-            .map(|(t, _, r)| (*t, *r))
+            .map(|(t, _, r, _)| (*t, *r))
             .collect::<Vec<_>>(),
         [("RunStarted", 2), ("RunNote", 3), ("DecisionMade", 6)]
     );
@@ -1172,7 +1245,7 @@ fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_
     assert_eq!(
         answered(&events)
             .iter()
-            .map(|(t, _, r)| (*t, *r))
+            .map(|(t, _, r, _)| (*t, *r))
             .collect::<Vec<_>>(),
         [("DecisionMade", 0), ("RunNote", 2), ("DecisionMade", 5)]
     );
