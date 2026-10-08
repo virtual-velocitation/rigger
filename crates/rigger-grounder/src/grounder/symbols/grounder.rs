@@ -1091,16 +1091,17 @@ mod tests {
         );
     }
 
-    /// Over a tree holding `files` (path, body), every one of `queries` grounds nothing - the empty
-    /// radius a criterion naming no code gets.
+    /// Over a tree holding `files`, `query`'s safe view is exactly `expected`.
+    fn assert_safe(files: &[(&str, &str)], query: &str, expected: &[&str], why: &str) {
+        let (_tree, g) = grounder_over(files);
+        let br = g.blast_radius(query, 8);
+        assert_eq!(br.safe, expected, "{why}; got {br:?}");
+    }
+
+    /// Over a tree holding `files`, every one of `queries` grounds nothing - the empty radius a
+    /// criterion naming no code gets.
     fn assert_grounds_nothing(files: &[(&str, &str)], queries: &[&str]) {
-        let dir = tempfile::tempdir().unwrap();
-        for (file, body) in files {
-            let path = dir.path().join(file);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, body).unwrap();
-        }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let (_tree, g) = grounder_over(files);
         for query in queries {
             let br = g.blast_radius(query, 8);
             assert_eq!(
@@ -1124,19 +1125,14 @@ mod tests {
     /// `.gitignore` the symbol index never parses), and never on the files that mention the path.
     #[test]
     fn blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
-        std::fs::write(
-            dir.path().join("notes.rs"),
-            "// see .gitignore for the build dir\n",
-        )
-        .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let br = g.blast_radius("`.gitignore` lists the build dir", 8);
-        assert_eq!(
-            br.safe,
-            vec![".gitignore".to_string()],
-            "a held path grounds on its own file alone; got {br:?}"
+        assert_safe(
+            &[
+                (".gitignore", "target/\n"),
+                ("notes.rs", "// see .gitignore for the build dir\n"),
+            ],
+            "`.gitignore` lists the build dir",
+            &[".gitignore"],
+            "a held path grounds on its own file alone",
         );
     }
 
@@ -1175,19 +1171,14 @@ mod tests {
     /// and never a name that merely contains the prefix.
     #[test]
     fn blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("consts.rs"),
-            "const KIND: &str = TYPE_RUN_STARTED;\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("other.rs"), "const K: &str = MY_TYPE_X;\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let br = g.blast_radius("the `TYPE_` constants", 8);
-        assert_eq!(
-            br.safe,
-            vec!["consts.rs".to_string()],
-            "a trailing-underscore span matches its family by prefix; got {br:?}"
+        assert_safe(
+            &[
+                ("consts.rs", "const KIND: &str = TYPE_RUN_STARTED;\n"),
+                ("other.rs", "const K: &str = MY_TYPE_X;\n"),
+            ],
+            "the `TYPE_` constants",
+            &["consts.rs"],
+            "a trailing-underscore span matches its family by prefix",
         );
     }
 
@@ -1195,15 +1186,14 @@ mod tests {
     /// as its own word, never inside `logcat`.
     #[test]
     fn blast_radius_text_search_matches_a_span_only_on_identifier_boundaries() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("word.rs"), "// run gc now\n").unwrap();
-        std::fs::write(dir.path().join("inside.rs"), "// logcat output\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let br = g.blast_radius("`gc` reclaims space", 8);
-        assert_eq!(
-            br.safe,
-            vec!["word.rs".to_string()],
-            "a span matches only as a whole identifier; got {br:?}"
+        assert_safe(
+            &[
+                ("word.rs", "// run gc now\n"),
+                ("inside.rs", "// logcat output\n"),
+            ],
+            "`gc` reclaims space",
+            &["word.rs"],
+            "a span matches only as a whole identifier",
         );
     }
 
@@ -1212,32 +1202,22 @@ mod tests {
     /// name) still falls back to the text search.
     #[test]
     fn blast_radius_text_searches_only_the_spans_the_index_does_not_resolve() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("def.rs"), "pub struct Store;\n").unwrap();
-        std::fs::write(
-            dir.path().join("prose.rs"),
-            "// the Store is only mentioned here\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("events.rs"),
-            "const STARTED: &str = \"RunStarted\";\n",
-        )
-        .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-
-        let resolved = g.blast_radius("`Store` reclaims space", 8);
-        assert!(
-            resolved.safe.contains(&"def.rs".to_string())
-                && !resolved.safe.contains(&"prose.rs".to_string()),
-            "a resolved span grounds on its structural set, not its mentions; got {resolved:?}"
+        let files = [
+            ("def.rs", "pub struct Store;\n"),
+            ("prose.rs", "// the Store is only mentioned here\n"),
+            ("events.rs", "const STARTED: &str = \"RunStarted\";\n"),
+        ];
+        assert_safe(
+            &files,
+            "`Store` reclaims space",
+            &["def.rs"],
+            "a resolved span grounds on its structural set, not its mentions",
         );
-
-        let unresolved = g.blast_radius("`RunStarted` opens a run", 8);
-        assert_eq!(
-            unresolved.safe,
-            vec!["events.rs".to_string()],
-            "an unresolved span falls back to the text search; got {unresolved:?}"
+        assert_safe(
+            &files,
+            "`RunStarted` opens a run",
+            &["events.rs"],
+            "an unresolved span falls back to the text search",
         );
     }
 
@@ -1246,33 +1226,21 @@ mod tests {
     /// handbook stay in scope.
     #[test]
     fn blast_radius_text_search_skips_specs_and_the_audit() {
-        let dir = tempfile::tempdir().unwrap();
-        for sub in ["specs", "docs/audit", "docs/handbook", "tests"] {
-            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
-        }
-        for (file, body) in [
-            ("code.rs", "const K: &str = \"unindexed_name\";\n"),
-            ("specs/107-x.md", "uses `unindexed_name`\n"),
-            (
-                "docs/audit/catalog.json",
-                "{\"name\": \"unindexed_name\"}\n",
-            ),
-            ("docs/audit/report.md", "unindexed_name\n"),
-            ("docs/handbook/page.md", "unindexed_name\n"),
-            ("tests/cli.rs", "// unindexed_name\n"),
-        ] {
-            std::fs::write(dir.path().join(file), body).unwrap();
-        }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let br = g.blast_radius("`unindexed_name` is read", 8);
-        assert_eq!(
-            br.safe,
-            vec![
-                "code.rs".to_string(),
-                "docs/handbook/page.md".to_string(),
-                "tests/cli.rs".to_string()
+        assert_safe(
+            &[
+                ("code.rs", "const K: &str = \"unindexed_name\";\n"),
+                ("specs/107-x.md", "uses `unindexed_name`\n"),
+                (
+                    "docs/audit/catalog.json",
+                    "{\"name\": \"unindexed_name\"}\n",
+                ),
+                ("docs/audit/report.md", "unindexed_name\n"),
+                ("docs/handbook/page.md", "unindexed_name\n"),
+                ("tests/cli.rs", "// unindexed_name\n"),
             ],
-            "specs and the audit are never text-search hits; got {br:?}"
+            "`unindexed_name` is read",
+            &["code.rs", "docs/handbook/page.md", "tests/cli.rs"],
+            "specs and the audit are never text-search hits",
         );
     }
 
