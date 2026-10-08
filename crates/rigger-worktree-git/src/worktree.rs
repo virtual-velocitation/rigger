@@ -2954,6 +2954,97 @@ mod tests {
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
 
+    /// What [`hash_blob`] answers for `bytes` under `root`: the object id, or the error's text.
+    fn hashed(root: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+        hash_blob(root, bytes).map_err(|e| e.0)
+    }
+
+    /// THE ONE HASH FUNCTION outside a repository (spec 107): a tree that is no git repository
+    /// still answers the object id git gives the bytes - the id `git hash-object` prints for a
+    /// file holding them - for text, for the empty file and for bytes that are not UTF-8.
+    #[test]
+    fn hash_blob_outside_a_repository_answers_the_object_id_git_hash_object_gives() {
+        use crate::test_support::{git_hash_object, write_file};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let binary = [0, 159, 146, 150, b'\n', 255];
+        write_file(&root.join("hello"), b"hello\n");
+        write_file(&root.join("empty"), b"");
+        write_file(&root.join("binary"), &binary);
+
+        assert_eq!(
+            [
+                hashed(root, b"hello\n"),
+                hashed(root, b""),
+                hashed(root, &binary)
+            ],
+            [
+                Ok("ce013625030ba8dba906f756967f9e9ca394464a".to_string()),
+                Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_string()),
+                Ok(git_hash_object(root, "binary", false)),
+            ]
+        );
+        assert_eq!(
+            [
+                git_hash_object(root, "hello", false),
+                git_hash_object(root, "empty", false)
+            ],
+            [
+                "ce013625030ba8dba906f756967f9e9ca394464a",
+                "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+            ]
+        );
+    }
+
+    /// The hash applies no filter and writes no object: in a repository whose attributes convert
+    /// line endings, bytes ending in CRLF hash as they are - not as the converted blob a path's
+    /// hash would name - and the object database does not hold the id afterwards.
+    #[test]
+    fn hash_blob_applies_no_filter_and_writes_no_object() {
+        use crate::test_support::{git_hash_object, temp_git_project_with_commit, write_file};
+
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join(".gitattributes"), b"* text eol=lf\n");
+        write_file(&root.join("crlf.txt"), b"one\r\ntwo\r\n");
+        let filtered = git_hash_object(root, "crlf.txt", false);
+        let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
+
+        assert_eq!(hashed(root, b"one\r\ntwo\r\n"), Ok(unfiltered.to_string()));
+        assert_ne!(filtered, unfiltered);
+        let mut held = BlobBatch::start(root).expect("a repository starts the batch process");
+        assert_eq!(held.blob(unfiltered).map_err(|e| e.0), Ok(None));
+    }
+
+    /// A hash process that fails fails the hash, naming the command, the root and what git said:
+    /// here a root whose `.git` is a file git cannot read as a repository.
+    #[test]
+    fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
+        use crate::test_support::write_file;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join(".git"), b"not a gitfile\n");
+        let said = crate::subprocess::git_in(root)
+            .args(["hash-object", "--no-filters", "--stdin"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!said.status.success());
+        let said = String::from_utf8(said.stderr).unwrap();
+        assert!(!said.trim().is_empty());
+
+        assert_eq!(
+            hashed(root, b"hello\n"),
+            Err(format!(
+                "git hash-object --stdin in {}: {}",
+                root.display(),
+                said.trim()
+            ))
+        );
+    }
+
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec
     /// 88, criterion 1 round 4): a plain merge-then-land, matching the production shape
