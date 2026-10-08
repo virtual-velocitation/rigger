@@ -1548,6 +1548,42 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
+/// prints it under `root`. One process per call, waited to its exit: it writes no object and
+/// applies no filter, so the id is that of the bytes as they are, and it answers outside a
+/// repository too. A process that cannot start, or that fails, fails the hash, naming the
+/// command, the root and the cause.
+pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let failed = |why: &str| {
+        Error(format!(
+            "git hash-object --stdin in {}: {why}",
+            root.display()
+        ))
+    };
+    let mut process = crate::subprocess::git_in(root)
+        .args(["hash-object", "--no-filters", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| failed(&e.to_string()))?;
+    // A write that fails is a process that stopped reading, which its exit status then says:
+    // git prints an id only once it has read its whole input.
+    if let Some(mut input) = process.stdin.take() {
+        let _ = input.write_all(bytes);
+    }
+    let out = process
+        .wait_with_output()
+        .map_err(|e| failed(&e.to_string()))?;
+    if !out.status.success() {
+        return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
 /// (spec 107): started once for a repository, asked for one object at a time, and ended by
 /// closing its standard input and waiting for it on every exit path - when this is dropped -
