@@ -16,7 +16,7 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-use crate::contextgraph::{fold_loss_clause, wired, Fold, Projection};
+use crate::contextgraph::{fold_loss_clause, wired, EntryFold, Fold, Projection};
 use crate::eventstore::{
     Appended, Error, Event, EventBatchSink, EventStore, ExpectedRevision, Filter, GroupHead,
     Position, Revision, Subscription, TypeSelection,
@@ -146,6 +146,74 @@ where
         };
         Ok(AppendedAndFolded { appended, fold })
     }
+
+    /// THE LEDGER FORM (spec 107), the only fold a ledger entry reaches outside a rebuild: append
+    /// `entry`, a `GenerationIngested` event, to `stream` in ONE store append, then fold it with
+    /// `batch`, the batch it records, through [`Projection::apply_generation`] at the position
+    /// the store issued, in ONE graph transaction. `batch` is already extracted: the function the
+    /// fold is handed only moves it out, so nothing is read, extracted or hashed while the graph
+    /// is held for the write.
+    ///
+    /// The append goes to the log first and the graph is opened only after it, as
+    /// [`append_and_fold`](FoldingStore::append_and_fold) opens it. A fold failure never fails
+    /// the append, which already landed: it is answered as the entry's [`Fold`], settled through
+    /// [`Fold::settle`], beside the store's own report and the outcome the fold named when it was
+    /// made. This form says nothing through the store's log; a caller that owes the operator a
+    /// lost fold says it through [`say_fold_lost`](FoldingStore::say_fold_lost). An entry the
+    /// store did not place has nothing to fold, and the graph is never opened for it.
+    pub fn append_entry_and_fold(
+        &self,
+        stream: &str,
+        entry: &Event,
+        batch: Vec<Event>,
+    ) -> Result<EntryAppendedAndFolded, Error> {
+        let handed = std::slice::from_ref(entry);
+        let appended = self.store.append(stream, ExpectedRevision::Any, handed)?;
+        let placed = placed(stream, handed, &appended)?;
+        let Some(entry) = placed.first() else {
+            return Ok(EntryAppendedAndFolded {
+                appended,
+                fold: Fold::Folded,
+                outcome: None,
+            });
+        };
+        let folded = match &self.graph {
+            Some(open) => fold_entry(open(), entry, batch),
+            None => fold_entry(wired(None), entry, batch),
+        };
+        let outcome = folded.as_ref().ok().copied();
+        Ok(EntryAppendedAndFolded {
+            appended,
+            fold: Fold::settle(folded.map(drop)),
+            outcome,
+        })
+    }
+}
+
+impl<O> FoldingStore<'_, O> {
+    /// Say through the injected log that `recorded` event(s) are on the log and `fold`, the fold
+    /// of them into the wired graph, was not made, and why: the one spelling of a lost fold every
+    /// append through this store is said in. A fold that was made has nothing to say, and neither
+    /// has a store wired with no graph, which folds nothing by design.
+    pub fn say_fold_lost(&self, recorded: usize, fold: &Fold) {
+        if self.graph.is_some() && *fold != Fold::Folded {
+            (self.log)(&format!(
+                "rigger: recorded {recorded} run event(s){}",
+                fold_loss_clause(fold)
+            ));
+        }
+    }
+}
+
+/// Fold `entry` with `batch` into `graph`, or answer why the graph could not be had: the batch
+/// function [`Projection::apply_generation`] is handed moves the extracted batch out and does
+/// nothing else.
+fn fold_entry<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+    graph: Result<G, crate::contextgraph::Error>,
+    entry: &Event,
+    batch: Vec<Event>,
+) -> Result<EntryFold, crate::contextgraph::Error> {
+    graph.and_then(|g| g.apply_generation(entry, Box::new(move || Ok(Some(batch)))))
 }
 
 impl<'g, O, G> EventStore for FoldingStore<'_, O>
@@ -160,14 +228,7 @@ where
         events: &[Event],
     ) -> Result<Appended, Error> {
         let done = self.append_and_fold(stream, expected, events)?;
-        // A store wired with no graph folds nothing by design and has nothing to say.
-        if self.graph.is_some() && done.fold != Fold::Folded {
-            (self.log)(&format!(
-                "rigger: recorded {} run event(s){}",
-                events.len(),
-                fold_loss_clause(&done.fold)
-            ));
-        }
+        self.say_fold_lost(events.len(), &done.fold);
         Ok(done.appended)
     }
 
@@ -241,6 +302,17 @@ where
 pub struct AppendedAndFolded {
     pub appended: Appended,
     pub fold: Fold,
+}
+
+/// What [`FoldingStore::append_entry_and_fold`] did with one ledger entry: the store's own report
+/// of the append, what became of folding the entry with its batch, and - when the fold was made -
+/// which of its outcomes it named ([`EntryFold`]), so no caller infers one from an earlier read.
+#[must_use = "a fold that is not reported is a fold that can be silently lost"]
+#[derive(Debug)]
+pub struct EntryAppendedAndFolded {
+    pub appended: Appended,
+    pub fold: Fold,
+    pub outcome: Option<EntryFold>,
 }
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk
