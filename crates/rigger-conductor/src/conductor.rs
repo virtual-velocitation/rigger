@@ -302,7 +302,7 @@ const STATUS_REVIEW_TIER: &str = "review-tier";
 const STATUS_REVIEW_ROUND_START: &str = "review-round-start";
 
 /// The `UnitStatus` token of a SPAWN SESSION mark: spawn [`META_SPAWN`] of the unit, at the
-/// mark's `attempt`, ran as the Claude Code session [`META_SESSION_ID`] names (continuing
+/// mark's `attempt` and in its `dir`, ran as the Claude Code session [`META_SESSION_ID`] names (continuing
 /// [`META_RESUMED_FROM`] when it was resumed). A later attempt or review round of the same
 /// role on the same unit reads it back ([`recorded_session`]) and continues that session
 /// instead of starting a cold one, so the record is log-carried: a driver relaunched by
@@ -4481,10 +4481,9 @@ impl RunCtx<'_> {
         let Some(task) = resume_task.filter(|t| !t.trim().is_empty()) else {
             return opts;
         };
-        let prior = self
-            .read_current_run()
-            .ok()
-            .and_then(|events| recorded_session(&events, &opts.unit, role, opts.attempt));
+        let prior = self.read_current_run().ok().and_then(|events| {
+            recorded_session(&events, &opts.unit, role, opts.attempt, &opts.dir)
+        });
         if let Some(prior) = prior {
             opts.resumed_from = prior;
             opts.resume_task = task;
@@ -4509,7 +4508,12 @@ impl RunCtx<'_> {
         self.emit_keyed_meta(
             &format!("{}/session", opts.id),
             ledger::TYPE_UNIT_STATUS,
-            json!({"id": opts.unit, "status": STATUS_SPAWN_SESSION, "attempt": opts.attempt}),
+            json!({
+                "id": opts.unit,
+                "status": STATUS_SPAWN_SESSION,
+                "attempt": opts.attempt,
+                "dir": opts.dir,
+            }),
             &[
                 (META_SPAWN, &opts.id),
                 (META_SESSION_ID, &result.session_id),
@@ -13638,11 +13642,22 @@ fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -
 }
 
 /// The session `role`'s latest spawn on `unit` at an attempt before `attempt` ran as, read
-/// from its [`STATUS_SPAWN_SESSION`] mark; `None` when no such spawn recorded one.
-fn recorded_session(events: &[Event], unit: &str, role: &str, attempt: u32) -> Option<String> {
+/// from its [`STATUS_SPAWN_SESSION`] mark; `None` when no such spawn recorded one. Only a
+/// spawn that ran in `dir` counts: a session is the persona's memory of one worktree, so one
+/// that ran elsewhere (a speculation lane's worktree, a worktree since reclaimed) is never
+/// continued here - Claude Code would resume it from any cwd, so the check is this one.
+fn recorded_session(
+    events: &[Event],
+    unit: &str,
+    role: &str,
+    attempt: u32,
+    dir: &str,
+) -> Option<String> {
     unit_status_marks(events, unit, &[STATUS_SPAWN_SESSION])
         .filter(|(_, stamped, e)| {
             *stamped < u64::from(attempt)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .is_ok_and(|v| v.get("dir").and_then(Value::as_str) == Some(dir))
                 && e.meta
                     .get(META_SPAWN)
                     .is_some_and(|id| crate::spawn::spawn_role(id) == role)
@@ -29151,10 +29166,12 @@ mod tests {
     /// process that saw the spawn return.
     #[test]
     fn each_spawns_session_is_recorded_in_the_log_and_read_back_from_it() {
-        let (_, events, _) = run_session_rounds(&[
+        let (_, events, driver) = run_session_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
+        // Every role of the unit runs in the unit's own worktree.
+        let dir = driver.dirs_for("worker")[0].clone();
         for role in [
             ROLE_IMPLEMENTER,
             ROLE_SDET_AUTHOR,
@@ -29163,14 +29180,26 @@ mod tests {
             ROLE_ADJUDICATOR,
         ] {
             assert_eq!(
-                recorded_session(&events, "implement", role, 1),
+                recorded_session(&events, "implement", role, 1, &dir),
                 Some(format!("sess-{}", spawn_id("implement", role, 0))),
                 "{role}'s round-0 session is read back from the log"
             );
             assert_eq!(
-                recorded_session(&events, "implement", role, 0),
+                recorded_session(&events, "implement", role, 0, &dir),
                 None,
                 "no spawn of {role} precedes round 0"
+            );
+            assert_eq!(
+                recorded_session(
+                    &events,
+                    "implement",
+                    role,
+                    1,
+                    "/elsewhere/rigger-wt-implement"
+                ),
+                None,
+                "a session that ran in another directory (a speculation lane's worktree, a \
+                 reclaimed one) is never continued from this one"
             );
         }
         let resumed: Vec<String> = events
