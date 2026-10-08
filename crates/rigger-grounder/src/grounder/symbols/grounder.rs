@@ -96,17 +96,13 @@ fn changed_files(
     changed
 }
 
-/// The query's symbol-candidate terms: the alphanumeric/underscore runs of at least TWO Unicode
-/// characters, so `apply_damage` stays ONE term and single-character noise is dropped. The filter
-/// counts CHARACTERS (`chars().count()`), not bytes, so a single multibyte alphanumeric character
-/// (an accented letter, a CJK ideograph) is dropped exactly like an ASCII single char rather than
-/// surviving on its 2-3 byte length. This is the ONE authority both [`Symbols::ground`] and
-/// [`Symbols::blast_radius`] extract terms with, so the two can never disagree on what a query
-/// means - a query that grounds to nothing (no terms) also has an empty blast radius. Keeping the
-/// extraction shared is exactly what lets `blast_radius` short-circuit to the empty fail-safe on a
-/// degenerate query (a one-character or all-punctuation query whose every token is dropped by the
-/// character-count filter) BEFORE it ever runs grep, rather than falling through to an unbounded
-/// whole-repo grep.
+/// The query's symbol-candidate terms for [`Symbols::ground`] (the prompt seed): the
+/// alphanumeric/underscore runs of at least TWO Unicode characters, so `apply_damage` stays ONE
+/// term and single-character noise is dropped. The filter counts CHARACTERS (`chars().count()`),
+/// not bytes, so a single multibyte alphanumeric character (an accented letter, a CJK ideograph)
+/// is dropped exactly like an ASCII single char rather than surviving on its 2-3 byte length. The
+/// prompt seed reads the WHOLE criterion, prose included; the blast radius never does - it takes
+/// its terms from [`code_terms`], the code a criterion names.
 fn query_terms(query: &str) -> Vec<&str> {
     query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -509,8 +505,8 @@ impl Grounder for Symbols {
             return Vec::new();
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
-        // stays one term). Single-character terms are dropped as noise. `blast_radius` extracts
-        // terms through the SAME `query_terms` authority, so the two views agree on emptiness.
+        // stays one term). Single-character terms are dropped as noise. This is the prompt seed's
+        // whole-text match; `blast_radius` grounds on `code_terms` instead.
         let terms = query_terms(query);
         if terms.is_empty() {
             return Vec::new();
@@ -639,13 +635,18 @@ impl Grounder for Symbols {
                 }
             }
             // A named path the index does not parse (`.gitignore`) still grounds on its own file
-            // when the tree holds it; a path the tree does not hold grounds nothing.
+            // when the tree holds it; a path the tree does not hold grounds nothing, and an
+            // absolute or `..` path, which would escape the tree, is never read.
             let root = std::path::Path::new(&self.root);
             let unindexed: Vec<&str> = terms
                 .paths
                 .iter()
                 .map(String::as_str)
-                .filter(|t| !found_paths.contains(t) && !t.split('/').any(|c| c == ".."))
+                .filter(|t| {
+                    !found_paths.contains(t)
+                        && !std::path::Path::new(t).is_absolute()
+                        && !t.split('/').any(|c| c == "..")
+                })
                 .filter(|t| root.join(t).is_file())
                 .collect();
             definers.extend(unindexed);

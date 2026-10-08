@@ -10872,32 +10872,34 @@ impl RunCtx<'_> {
     /// on `.safe` behaves exactly as it did before, and the shipped default is unaffected.
     ///
     /// Spec 29c criterion 2: when a unified graph is injected, the two views are re-derived as TWO
-    /// confidence-tier filters over the ONE seeded subgraph ([`confidence_tier_radius`]) instead of
-    /// the grounder's structural/grep split - `.precise` becomes the EXTRACTED sub-graph and `.safe`
-    /// is UNIONED with the grounder's own safe view so it only ever WIDENS (the addendum 2.4
-    /// safe-view invariant is preserved unconditionally). With no graph the grounder radius is
-    /// returned verbatim (the fallback above).
+    /// confidence-tier filters ([`confidence_tier_radius`]) over the subgraph seeded from the
+    /// grounder's structural view - `.precise` becomes the EXTRACTED sub-graph and `.safe` is
+    /// UNIONED with the grounder's own safe view so it only ever WIDENS (addendum 2.4). A criterion
+    /// naming no code keeps the empty radius. With no graph the grounder radius is returned
+    /// verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
         let base = match self.deps.grounder {
             Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
             None => BlastRadius::default(),
         };
         // Spec 29c criterion 2: when the unified graph is present, the two-view radius is TWO
-        // confidence-tier filters over the ONE seeded subgraph (addendum 6.2) -
-        // [`confidence_tier_radius`] - replacing the grounder's structural/grep two-view split.
+        // confidence-tier filters over the ONE subgraph (addendum 6.2) - [`confidence_tier_radius`].
+        // The subgraph is seeded from the grounder's own STRUCTURAL view - the files the code a
+        // criterion names resolves to - never from the prompt seed, whose whole-text match would let
+        // a prose word widen the radius; a criterion naming no code keeps the empty radius.
         // `precise` becomes the EXTRACTED sub-graph (it has no production reader - the audit records
-        // `grounded_seed` - so this never perturbs a safety consumer); `safe` is UNIONED with the
-        // graph's all-tier view so it can only WIDEN, never narrow below the grep union - the
-        // addendum 2.4 correctness invariant holds unconditionally, even on an under-populated graph.
-        // With no graph (or a graph read error) this returns the grounder radius byte-for-byte, so
-        // every graph-absent consumer and test is unchanged.
+        // `grounded_seed`); `safe` is UNIONED with the grounder's safe view so it can only widen
+        // (addendum 2.4). With no graph (or a graph read error) this returns the grounder radius
+        // byte-for-byte.
         let graph = match self.deps.graph {
             Some(g) => g,
             None => return base,
         };
-        let seed = self.grounded_seed(st);
-        // Depth 2, the same neighborhood the prompt traversal reads (criterion 1 owns the traversal;
-        // criterion 2 CONSUMES it and tier-filters).
+        if base.safe.is_empty() {
+            return base;
+        }
+        let seed = base.precise.clone();
+        // Depth 2, the same neighborhood depth the prompt traversal reads.
         let sub = match graph.subgraph(&seed, 2) {
             Ok(sub) => sub,
             Err(_) => return base,
@@ -13155,13 +13157,11 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
 /// - `precise` is the EXTRACTED sub-graph: the files reachable from the seed crossing ONLY
 ///   [`TIER_EXTRACTED`](crate::contextgraph::TIER_EXTRACTED) edges - the confident, resolved
 ///   neighborhood that seeds a prompt.
-/// - `safe` is `EXTRACTED u INFERRED u AMBIGUOUS`: the files reachable crossing edges of ANY
-///   confidence tier - the over-inclusive superset the safety consumers need (addendum 2.4).
-///   Because [`TIER_AMBIGUOUS`](crate::contextgraph::TIER_AMBIGUOUS) is exactly the
-///   grep-visible-only occurrences (a reference resolving to no known definition), the wide tier
-///   carries the grep-recovered tail, so `safe` stays a superset of the grep union - the 2.4
-///   correctness invariant (dropping a reference a safety consumer needs is a regression, not a
-///   saving).
+/// - `safe` is `EXTRACTED u INFERRED`: the files reachable crossing STRUCTURAL edges - the
+///   over-inclusive set the safety consumers need. A
+///   [`TIER_AMBIGUOUS`](crate::contextgraph::TIER_AMBIGUOUS) edge is a text-only mention (a
+///   reference resolving to no known definition), which the blast radius never grounds on
+///   (addendum 2.4), so it is never crossed.
 ///
 /// It is a REACHABILITY filter, not a flat edge scan: a file is EXTRACTED-tier only when the seed
 /// reaches it across EXTRACTED edges the whole way. A file whose own definitions fold EXTRACTED
@@ -13180,11 +13180,7 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
     let safe = files_reachable(
         g,
         seed,
-        &[
-            contextgraph::TIER_EXTRACTED,
-            contextgraph::TIER_INFERRED,
-            contextgraph::TIER_AMBIGUOUS,
-        ],
+        &[contextgraph::TIER_EXTRACTED, contextgraph::TIER_INFERRED],
     );
     BlastRadius {
         precise: precise.into_iter().collect(),
