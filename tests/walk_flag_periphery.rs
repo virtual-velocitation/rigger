@@ -437,3 +437,77 @@ fn without_the_extraction_pass_neither_walk_hands_a_flagged_sink_any_batch() {
 
     assert_eq!(handed, Vec::<(usize, bool)>::new());
 }
+
+/// Given a project holding the extraction tree's source file and the out-of-line test module it
+/// declares, when the operator runs `rigger step` over a log that records nothing, then the run's
+/// sink - handed each batch beside its flag - records every derived event the walk mints under
+/// the key the walk minted, in the walk's order, the flagged batch's one boundary event among
+/// them under the generation the tree's fixture records: the flag it is handed changes nothing
+/// it records.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_step_records_the_flagged_batch_as_the_walk_minted_it() {
+    use common::cli::{
+        identified_git_project, init_event_log, read_run_events, step_line, write_workflow,
+    };
+    use common::fixtures::{minted_events, TEST_MODULE_BODY};
+
+    /// One keyed event as the log and the walk compare: its key, its type and its payload read
+    /// as JSON, so the order a store writes a payload's fields in is no part of the comparison.
+    type Keyed = (String, String, serde_json::Value);
+    let keyed = |key: String, event: &Event| -> Keyed {
+        let payload = serde_json::from_slice(&event.data).expect("a payload is JSON");
+        (key, event.type_.clone(), payload)
+    };
+
+    let dir = identified_git_project();
+    let root = dir.path();
+    write_file(
+        &root.join(".gitignore"),
+        format!("{}/\n", rigger::config::RIGGER_DIR).as_bytes(),
+    );
+    write_workflow(root, "");
+    init_event_log(root);
+    write_file(&root.join(SOURCE_PATH), SOURCE_BODY.as_bytes());
+    write_file(&root.join(TEST_MODULE_PATH), TEST_MODULE_BODY.as_bytes());
+    let _ = common::git::run_git(root, &["add", "-A"]);
+    let _ = common::git::run_git(root, &["commit", "-q", "-m", "tree"]);
+    let minted: Vec<Keyed> = minted_events(root)
+        .into_iter()
+        .map(|(key, event)| keyed(key, &event))
+        .collect();
+
+    step_line(root, "the step that ingests the tree");
+
+    let recorded: Vec<Keyed> = read_run_events(root)
+        .iter()
+        .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
+        .map(|event| {
+            let key = event.meta.get(rigger::ingest::META_REPLAY_KEY);
+            keyed(key.expect("a derived event is keyed").clone(), event)
+        })
+        .collect();
+    assert_eq!(recorded, minted);
+
+    let flagged = &WALKED[0];
+    assert_eq!(
+        (flagged.prefix, flagged.path, flagged.excluded),
+        ("gc", TEST_MODULE_PATH, true)
+    );
+    let of_the_flagged_batch: Vec<Keyed> = recorded
+        .into_iter()
+        .filter(|(key, _, _)| key.starts_with("gc/src/checks.rs@"))
+        .collect();
+    let as_the_fixture_records_it: Vec<Keyed> = events_of(flagged.events)
+        .iter()
+        .enumerate()
+        .map(|(i, event)| {
+            keyed(
+                format!("gc/src/checks.rs@{}#{i}", flagged.generation),
+                event,
+            )
+        })
+        .collect();
+    assert_eq!(as_the_fixture_records_it.len(), 1);
+    assert_eq!(of_the_flagged_batch, as_the_fixture_records_it);
+}
