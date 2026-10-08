@@ -90,7 +90,7 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 ## Gap 28: the conductor's integrate wedges the whole run on a git merge conflict
 
-**Intent.** A unit's integration must never wedge the run or leave the run branch broken. `partition: by-blast-radius` serializes PREDICTED overlaps into separate batches, but the grounder's blast-radius prediction is imperfect - an UNPREDICTED overlap (two batch-mates that actually edit the same region) must be RECOVERED like any other failure, not fatal.
+**Intent.** A unit's integration must never wedge the run or leave the run branch broken. `partition: by-blast-radius` never runs PREDICTED overlaps at the same time, but the grounder's blast-radius prediction is imperfect - an UNPREDICTED overlap (two co-scheduled units that actually edit the same region) must be RECOVERED like any other failure, not fatal.
 
 **Reality.** `Worktree::integrate` was a bare `git merge --no-edit`. When an unpredicted-overlap unit's merge CONFLICTED, the conductor errored MID-MERGE, left the run branch with unmerged files, and wedged `rigger step` for the ENTIRE run - a broken branch no subsequent step could advance past. Spec-12 unit-5 (Gap 21) re-gates a SUCCESSFUL merge for SEMANTIC breaks, but a textual merge CONFLICT is an earlier failure it never reaches.
 

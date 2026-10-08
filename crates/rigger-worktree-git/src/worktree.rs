@@ -66,7 +66,7 @@ pub struct Worktree {
     /// above states its `git worktree add`/adopt path does not support concurrent
     /// callers. This lock is per-WORKTREE (not per-run), so it serializes only concurrent
     /// re-asserts of THIS SAME instance - it never adds contention across different units
-    /// racing in `run_batch`; that WIDER admin-directory race is `repo_admin_lock`'s
+    /// racing in `run_wave`; that WIDER admin-directory race is `repo_admin_lock`'s
     /// (per-repository, spec 103 criterion 4), a separate lock this instance-scoped one
     /// composes with rather than duplicates. `()` payload: only mutual exclusion is needed.
     reassert_mu: std::sync::Mutex<()>,
@@ -210,7 +210,7 @@ impl Worktree {
             // `git worktree add -b` for THAT branch - rigger never asks two units to create
             // the same branch concurrently, so that shape is not a first-class case. The
             // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
-            // `run_batch`, whose heal scans and adds could interleave and corrupt each
+            // `run_wave`, whose heal scans and adds could interleave and corrupt each
             // other's admin entries - is now closed in-process by `repo_admin_lock` above
             // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
             // worktrees against this same repository, which only the `locked`/grace-period
@@ -2224,11 +2224,11 @@ pub fn heal_corrupt_worktree_admin(repo: &str) {
 /// just [`heal_corrupt_worktree_admin`] and the `git worktree add` it guards (spec 103
 /// criterion 4), widened at the whole-spec checkin seam (round 4) once a second admin-
 /// directory writer, [`Worktree::discard`], was found racing a sibling's [`Worktree::create`]
-/// in the same `run_batch` wave (`adv-checkin-r3-discard-vs-create-race-flakes-the-new-soak-
+/// in the same wave (`adv-checkin-r3-discard-vs-create-race-flakes-the-new-soak-
 /// test`): `git worktree prune`/`git worktree remove --force`/`git worktree add` all read
 /// and rewrite the SAME admin directory, so every one of them - not just `add` - must be
 /// serialized against every other. [`Worktree::create`] is a plain associated function with
-/// no owning instance - `run_batch` spawns one real OS thread per concurrent unit in a wave
+/// no owning instance - `run_wave` spawns one real OS thread per concurrent unit in a wave
 /// and each calls `create` independently against the SAME shared repository, so nothing
 /// before criterion 4 serialized one thread's heal scan against a sibling thread's in-flight
 /// `git worktree add` writing into that same admin directory (the exact shape the Goal
@@ -6944,7 +6944,7 @@ mod tests {
     #[test]
     fn concurrent_worktree_creates_in_one_repository_all_succeed_across_50_rounds() {
         // Spec 103 criterion 4: the ORIGINAL race this whole mechanism exists to close.
-        // `run_batch` spawns one real OS thread per concurrent unit in a wave and each
+        // `run_wave` spawns one real OS thread per concurrent unit in a wave and each
         // calls `Worktree::create` independently against the SAME shared repository - a
         // heal scan on one thread could delete a sibling's in-flight `git worktree add`
         // admin entry mid-write. Drive that EXACT shape directly: two threads, 50 rounds,

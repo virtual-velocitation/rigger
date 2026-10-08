@@ -1735,7 +1735,7 @@ mod tests {
     fn a_concurrent_sibling_approve_does_not_hard_error_a_units_genuine_empty_verdict_reject() {
         // Reject-fix guard (spec 18, unit 3): the store-sourced backstop must correlate the
         // emitted approve to THIS spawn's OWN emit by its [`META_SPAWN`] stamp, NEVER to a
-        // shared-stream position window a CONCURRENT sibling can fall inside. `run_batch` runs
+        // shared-stream position window a CONCURRENT sibling can fall inside. `run_wave` runs
         // up to MAX_CONCURRENCY sibling units in parallel, all emitting to the ONE store, so a
         // sibling adjudicator's approve can be recorded BETWEEN this unit's own adjudicator park
         // and result. This promotes the differential repro the adversary proved
@@ -1808,7 +1808,7 @@ mod tests {
         // Reject-fix guard (spec 18, unit 3, adv-u18-3r3-parked-sibling-open-window-suppresses-
         // backstop-on-replay): the emit-only-approve backstop must STILL fire when a concurrent
         // sibling spawn is parked-but-UNANSWERED (no recorded result) below this adjudicator's
-        // own approve. `run_batch` runs units in parallel, so an earlier-parked sibling with no
+        // own approve. `run_wave` runs units in parallel, so an earlier-parked sibling with no
         // result yet is the COMMON case under fan-out, not a corner. This unit `u`'s adjudicator
         // emitted its OWN approve-shaped verdict STAMPED with its spawn id and reported a
         // substantive result with NO verdict line - the exact emit-only-approve persona the

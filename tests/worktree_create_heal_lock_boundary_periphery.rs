@@ -11,14 +11,14 @@
 //! rounds`. That unit's own SDET pass reached a provably-empty periphery accounting
 //! (decision `sdet-u103c4-periphery-accounting-empty`), reasoned through - and adjudicator-
 //! approved (`adj-u103c4-verdict-approve`) - on the grounds that `repo_create_lock` is a new
-//! PRIVATE fn and `conductor.rs::run_batch`, "the only cross-module caller of
+//! PRIVATE fn and `conductor.rs::run_wave`, "the only cross-module caller of
 //! `Worktree::create`", was untouched by that unit's own diff.
 //!
 //! That premise no longer holds once the WHOLE SPEC is assembled (the checkin seam this file
 //! is authored at): criterion 7 (unit u103c7, POST-MERGE GATES RUN ON THE LANDED TREE) adds a
 //! SECOND, genuinely new cross-module caller of `Worktree::create` -
 //! `RunCtx::integrate_and_emit`'s throwaway `rigger-postmerge-<unit>-<attempt>` scratch
-//! worktree (`src/conductor.rs`) - against the SAME shared repo `run_batch` creates unit
+//! worktree (`src/conductor.rs`) - against the SAME shared repo `run_wave` creates unit
 //! worktrees in, during the SAME wave. That call site is preceded by `Worktree::discard`,
 //! whose `clear_worktree_dir` path runs `git worktree remove --force` and `git worktree
 //! prune` UNGUARDED by `repo_create_lock` - exactly the gap the architecture lens raised
@@ -185,7 +185,7 @@ fn discard_then_create_never_corrupts_a_concurrent_siblings_admin_entry() {
     // worktree prune` against the shared repo's admin directory - immediately before
     // `Worktree::create_branch_at` + `Worktree::create` for its throwaway post-merge scratch
     // worktree, and this can run concurrently with a sibling unit's own plain `Worktree::
-    // create` in the same `run_batch` wave. BEFORE the round-4 checkin fix, `repo_create_lock`
+    // create` in the same wave. BEFORE the round-4 checkin fix, `repo_create_lock`
     // (since renamed to `repo_admin_lock`) only ever serialized `create` calls against each
     // other, leaving `discard`'s admin-directory writes unguarded - this exact test caught
     // that gap empirically (a ~3.6% panic rate reproduced in 55 isolated runs, `fatal: could

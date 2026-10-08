@@ -505,9 +505,19 @@
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
   },
   {
-    "id": "dup-53e62db783ac",
+    "id": "dup-b1d15044e7fc",
     "disposition": "not-a-duplicate",
-    "reason": "`is_empty`/`is_any` report emptiness of four different types (a config section, a failure filter, a CLI selection, a run's unended spawns) over their own fields."
+    "reason": "`is_empty`/`is_any` report emptiness of five different types (a config section, a failure filter, a CLI selection, a run's unended spawns, a criterion's code terms) over their own fields."
+  },
+  {
+    "id": "dup-877c7e2e92fb",
+    "disposition": "not-a-duplicate",
+    "reason": "`Grep::ground` and `Grep::ground_identifier` are the two one-line entry points of the one shared `search`, each selecting its match mode (substring for grounding, whole identifier for the blast-radius text search); the search itself exists once."
+  },
+  {
+    "id": "dup-e36c95e103ac",
+    "disposition": "not-a-duplicate",
+    "reason": "Two grounder tests sharing only a write-files, open, assert fixture shape: one pins that a resolved name grounds on its definer and call sites without a comment mention, the other that the structural view is cross-language."
   },
   {
     "id": "dup-af8b91bc2b2a",
@@ -905,9 +915,9 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-95d708ab4d02",
+    "id": "dup-13bf253013ad",
     "disposition": "not-a-duplicate",
-    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
+    "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check, the blast-radius eval's code-span wrapper); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -1043,5 +1053,10 @@
     "id": "dup-bada7e276fc1",
     "disposition": "not-a-duplicate",
     "reason": "`LaunchSession::of` already delegates its fresh case to `LaunchSession::fresh`; the remaining arm builds the resumed session, a different value."
+  },
+  {
+    "id": "dup-9c17d63a062c",
+    "disposition": "not-a-duplicate",
+    "reason": "Each of the three blast-radius tests is already one call of the shared `assert_safe` fixture and differs only in its literals: a held path grounding on its own file, a trailing-underscore span matching its family by prefix, and a span matching only on identifier boundaries are three separate grounding rules, each pinned by its own named test so a regression names the rule it broke."
   }
 ]

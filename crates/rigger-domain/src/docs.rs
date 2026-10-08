@@ -422,7 +422,15 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 - named verification ("a test proves X ... pinned at the Y seam"), not just a state;
 - ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
-  one's").
+  one's");
+- the code it touches named in backticks (`run_wave`, `crates/x/src/ingest.rs`). The unit's
+  blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
+  criterion naming no code runs alone, graph or no graph. A span naming a defined symbol grounds
+  on its definition and references, an undefined name on the files holding it as a whole word,
+  and a file path on that file; a multi-word span (`rigger validate`) grounds nothing, so name
+  the symbol a command runs through rather than the command line. A name ending in `_`
+  (`TYPE_`) matches its whole family; when that family is wide, name the constants the unit
+  touches instead.
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
