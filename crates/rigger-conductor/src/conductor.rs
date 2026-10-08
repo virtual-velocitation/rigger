@@ -512,6 +512,14 @@ fn input_digest(command: &str, commit_sha: &str) -> String {
     format!("{hash:016x}:{commit_sha}")
 }
 
+/// The commit a gate digest addresses - the `commit_sha` [`input_digest`] folded in after the
+/// command hash - or `None` for an empty or malformed digest. The one parse of the address, so
+/// a reader asking "which gates ran on this commit" ([`gate_evidence_block`]) never re-spells
+/// the digest's layout.
+fn digest_address(digest: &str) -> Option<&str> {
+    digest.split_once(':').map(|(_, commit)| commit)
+}
+
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
 /// for the ratchet's evidence. `gate` and `evidence` default so a legacy verdict without
 /// them decodes.
@@ -547,24 +555,24 @@ fn unit_gate_runs<'a>(
 }
 
 /// THE GATES GRADE, THE REVIEWERS JUDGE THE RESIDUE: the block every review tier's prompt
-/// carries naming what the deterministic gates already proved on the exact tree it judges -
-/// git tree `tree`, the tree half of each gate's [`META_INPUT_DIGEST`] - so no reviewer spends
-/// its round re-running an instrument the log shows green on that digest. One line per gate,
-/// in the order the gates ran, carrying its verdict, its input digest and its recorded evidence
-/// lines; a gate recorded more than once on this tree (an infra rerun, a later attempt over
-/// the same tree, a cache hit) shows its latest verdict. Empty - and so claiming nothing - when
-/// there is no tree (a worktree-less review) or no gate of `unit` ran on it.
-fn gate_evidence_block(events: &[Event], unit: &str, tree: &str) -> String {
-    if tree.is_empty() {
+/// carries naming what the deterministic gates already proved on the exact commit it judges -
+/// `commit`, the [`digest_address`] of each gate's [`META_INPUT_DIGEST`], the same
+/// [`worktree::head_sha_of`] `run_gates_at` addresses its gates by - so no reviewer spends its
+/// round re-running an instrument the log shows green on that commit. One line per gate, in the
+/// order the gates ran, carrying its verdict, its input digest and its recorded evidence lines;
+/// a gate recorded more than once on this commit (an infra rerun, a cache hit) shows its latest
+/// verdict. Empty - and so claiming nothing - when there is no commit (a worktree-less review)
+/// or no gate of `unit` ran on it.
+fn gate_evidence_block(events: &[Event], unit: &str, commit: &str) -> String {
+    if commit.is_empty() {
         return String::new();
     }
-    let on_tree = format!(":{tree}");
     let mut rows: Vec<(String, bool, String, String)> = Vec::new();
     for (e, _, v) in unit_gate_runs(events, unit) {
         let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
             continue;
         };
-        if !digest.ends_with(&on_tree) {
+        if digest_address(digest) != Some(commit) {
             continue;
         }
         let row = (v.gate, v.pass, digest.clone(), v.evidence);
@@ -577,9 +585,9 @@ fn gate_evidence_block(events: &[Event], unit: &str, tree: &str) -> String {
         return String::new();
     }
     let mut b = format!(
-        "\n\nGATE EVIDENCE for the tree under review (git tree {tree}, which `git rev-parse \
-         HEAD^{{tree}}` prints in the unit's worktree): every gate below already ran on exactly \
-         this tree. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
+        "\n\nGATE EVIDENCE for the commit under review (commit {commit}, which `git rev-parse \
+         HEAD` prints in the unit's worktree): every gate below already ran on exactly this \
+         commit. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
          gate is the instrument that proves it, and your judgment covers what no gate sees. \
          Reproduce only a specific suspicion - one named test, a reversion probe, a single-crate \
          `cargo test -p <crate> <test>` - in your own scratch worktree, never the whole battery.\n"
@@ -11017,11 +11025,12 @@ impl RunCtx<'_> {
 
     /// The base every review tier's prompt opens with - the lenses and the adversary through
     /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
-    /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the tree the reviewer
-    /// judges, the committed HEAD tree of `dir`, read from this run's log.
+    /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the commit the reviewer
+    /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
+    /// digests are ([`Self::run_gates_at`]) - read from this run's log.
     fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
-        let tree = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
-        let evidence = gate_evidence_block(&self.read_current_run()?, &st.name, &tree);
+        let commit = crate::worktree::head_sha_of(dir);
+        let evidence = gate_evidence_block(&self.read_current_run()?, &st.name, &commit);
         Ok(format!("{}{evidence}", self.build_prompt(st)?))
     }
 
@@ -36603,7 +36612,10 @@ mod tests {
         ]);
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         let digests = [ok_gate_digest(&events, 0), ok_gate_digest(&events, 1)];
-        assert_ne!(digests[0], digests[1], "each round judges a different commit");
+        assert_ne!(
+            digests[0], digests[1],
+            "each round judges a different commit"
+        );
         for agent_id in ["lens", "adversary", "adj"] {
             let prompts = driver.prompts_for(agent_id);
             assert_eq!(prompts.len(), 2, "{agent_id} reviews both rounds");
@@ -36653,7 +36665,10 @@ mod tests {
     /// malformed digest.
     #[test]
     fn a_digest_address_is_the_commit_its_gate_ran_on() {
-        assert_eq!(digest_address(&input_digest("cargo test", "C1")), Some("C1"));
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "C1")),
+            Some("C1")
+        );
         assert_eq!(
             digest_address(&input_digest("cargo test", "abc123")),
             Some("abc123")
