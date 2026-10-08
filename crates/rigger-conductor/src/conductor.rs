@@ -38946,6 +38946,232 @@ mod tests {
         );
     }
 
+    /// A grounder that answers through `inner` with its text-search fallback removed: its safe view
+    /// is `inner`'s own uncapped structural view. The measurement below reads the structural share
+    /// through the production radius with it, so nothing about the radius is re-modelled.
+    #[cfg(feature = "symbols")]
+    struct StructuralOnly<'a>(&'a dyn Grounder);
+    #[cfg(feature = "symbols")]
+    impl Grounder for StructuralOnly<'_> {
+        fn ground(&self, query: &str, k: usize) -> Vec<crate::grounder::Ref> {
+            self.0.ground(query, k)
+        }
+        fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+            let full = self.0.blast_radius(query, usize::MAX);
+            BlastRadius {
+                precise: full.precise.iter().take(k).cloned().collect(),
+                safe: full.precise,
+            }
+        }
+    }
+
+    /// The share of `radii` that lands in a co-scheduling batch with a peer, partitioned by the
+    /// conductor's own rule.
+    #[cfg(feature = "symbols")]
+    fn co_scheduled_share(radii: &[(String, Vec<String>)]) -> f64 {
+        let batches = partition_by_blast_radius(radii);
+        let paired: usize = batches.iter().filter(|b| b.len() >= 2).map(Vec::len).sum();
+        paired as f64 / radii.len().max(1) as f64
+    }
+
+    /// MEASUREMENT, run explicitly over a real tree: each criterion in `RIGGER_MEASURE_CRITERIA`
+    /// (a JSON list of `{id, criterion}`) grounded through [`RunCtx::grounded_blast_radius`] with
+    /// the tree's symbols index and its `.rigger/graph.db` present (`RIGGER_MEASURE_ROOT`), exactly
+    /// as a run grounds a unit. Prints the co-scheduled share of the structural radii (the text
+    /// fallback removed), the text-fallback files alone, and the combined radius, then the pairs
+    /// named in `RIGGER_MEASURE_PAIRS` (`a+b,c+d`, unit-id prefixes) and every pair the text
+    /// fallback alone keeps apart, with the span that hit each shared file.
+    #[cfg(feature = "symbols")]
+    #[test]
+    #[ignore = "measurement over a real tree: set RIGGER_MEASURE_ROOT and RIGGER_MEASURE_CRITERIA"]
+    fn measure_blast_radius_retention_through_grounded_blast_radius() {
+        let root = std::env::var("RIGGER_MEASURE_ROOT").expect("RIGGER_MEASURE_ROOT");
+        let criteria: Vec<serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::env::var("RIGGER_MEASURE_CRITERIA").expect("RIGGER_MEASURE_CRITERIA"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let units: Vec<(String, String)> = criteria
+            .iter()
+            .map(|v| {
+                (
+                    v["id"].as_str().unwrap().to_string(),
+                    v["criterion"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let identity = std::fs::read_to_string(format!("{root}/.rigger/project.id")).unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(
+            &format!("{root}/.rigger/graph.db"),
+            identity.trim(),
+        )
+        .unwrap();
+        assert!(
+            !graph.rebuild_owed().unwrap(),
+            "the measured graph owes its rebuild"
+        );
+        let symbols = crate::grounder::symbols::grounder::Symbols::open(&root, None);
+        let structural_only = StructuralOnly(&symbols);
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let radii_with = |grounder: &dyn Grounder,
+                          graph: Option<&dyn Projection>|
+         -> Vec<(String, Vec<String>)> {
+            let deps = Deps {
+                grounder: Some(grounder),
+                graph,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            units
+                .iter()
+                .map(|(id, criterion)| {
+                    let st = Stage {
+                        name: id.clone(),
+                        coverage: criterion.clone(),
+                        ..Default::default()
+                    };
+                    (id.clone(), ctx.grounded_blast_radius(&st).safe)
+                })
+                .collect()
+        };
+        let combined = radii_with(&symbols, Some(&graph));
+        let structural = radii_with(&structural_only, Some(&graph));
+        let median_width = |r: &[(String, Vec<String>)]| {
+            let mut w: Vec<usize> = r.iter().map(|(_, f)| f.len()).collect();
+            w.sort_unstable();
+            w[(w.len() - 1) / 2]
+        };
+        for (label, grounder) in [
+            ("no graph", &symbols as &dyn Grounder),
+            ("no graph, structural", &structural_only),
+        ] {
+            let radii = radii_with(grounder, None);
+            println!(
+                "{label}: retention {:.3}, median width {}",
+                co_scheduled_share(&radii),
+                median_width(&radii)
+            );
+        }
+        println!(
+            "with graph: median width structural {} combined {}",
+            median_width(&structural),
+            median_width(&combined)
+        );
+        let fallback_of = |query: &str| -> BTreeSet<String> {
+            let br = symbols.blast_radius(query, usize::MAX);
+            br.safe
+                .into_iter()
+                .filter(|f| !br.precise.contains(f))
+                .collect()
+        };
+        let text: Vec<(String, Vec<String>)> = units
+            .iter()
+            .map(|(id, c)| (id.clone(), fallback_of(c).into_iter().collect()))
+            .collect();
+        println!(
+            "retention structural {:.3} text {:.3} combined {:.3} over {} units; empty radii: {:?}",
+            co_scheduled_share(&structural),
+            co_scheduled_share(&text),
+            co_scheduled_share(&combined),
+            units.len(),
+            combined
+                .iter()
+                .filter(|(_, r)| r.is_empty())
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        );
+        println!(
+            "co-scheduled batches: {:?}",
+            partition_by_blast_radius(&combined)
+                .into_iter()
+                .filter(|b| b.len() >= 2)
+                .collect::<Vec<_>>()
+        );
+        let set = |r: &[String]| r.iter().cloned().collect::<BTreeSet<String>>();
+        let find = |prefix: &str| {
+            units
+                .iter()
+                .position(|(id, _)| id.starts_with(prefix))
+                .unwrap()
+        };
+        for pair in std::env::var("RIGGER_MEASURE_PAIRS")
+            .unwrap_or_default()
+            .split(',')
+        {
+            let Some((a, b)) = pair.split_once('+') else {
+                continue;
+            };
+            let (a, b) = (find(a), find(b));
+            let shared: Vec<String> = set(&structural[a].1)
+                .intersection(&set(&structural[b].1))
+                .cloned()
+                .collect();
+            println!(
+                "structural {} x {}: serialized {} on {:?}",
+                units[a].0,
+                units[b].0,
+                radii_conflict(&combined[a].1, &combined[b].1),
+                shared
+            );
+        }
+        // The span of `criterion` whose text fallback reached `file`, by grounding each code span
+        // on its own through the same production radius.
+        let spans_hitting = |criterion: &str, file: &str| -> Vec<String> {
+            criterion
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .filter(|span| fallback_of(&format!("`{span}`")).contains(file))
+                .map(str::to_string)
+                .collect()
+        };
+        let mut literal_pairs: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
+        let mut text_only_pairs = 0;
+        for a in 0..units.len() {
+            for b in a + 1..units.len() {
+                let (ca, cb) = (&combined[a].1, &combined[b].1);
+                if ca.is_empty() || cb.is_empty() || !radii_conflict(ca, cb) {
+                    continue;
+                }
+                if radii_conflict(&structural[a].1, &structural[b].1)
+                    && !structural[a].1.is_empty()
+                    && !structural[b].1.is_empty()
+                {
+                    continue;
+                }
+                text_only_pairs += 1;
+                let mut hit: BTreeSet<String> = BTreeSet::new();
+                for f in set(ca).intersection(&set(cb)) {
+                    for side in [a, b] {
+                        for span in spans_hitting(&units[side].1, f) {
+                            literal_pairs
+                                .entry(span.clone())
+                                .or_default()
+                                .1
+                                .insert(f.clone());
+                            hit.insert(span);
+                        }
+                    }
+                }
+                for span in hit {
+                    literal_pairs.entry(span).or_default().0 += 1;
+                }
+            }
+        }
+        println!("pairs kept apart by the text fallback alone: {text_only_pairs}");
+        for (span, (pairs, files)) in &literal_pairs {
+            println!(
+                "  `{span}`: {pairs} pair(s); {} file(s): {:?}",
+                files.len(),
+                files
+            );
+        }
+    }
+
     /// spec 17 unit 6 (criterion 6, `plan17-c6`): the two-facet fix, proven in ONE scenario under
     /// the real structural `symbols` grounder (the default since turbovec's retirement).
     ///
