@@ -913,3 +913,25 @@ pub fn assert_light_lane_extent_note(out: &str) {
         "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
     );
 }
+
+/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
+pub fn index_lag_advisory(files: &[&str]) -> String {
+    format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        files.len(),
+        files.join(", ")
+    )
+}
+
+/// Every graph index-lag advisory line among `stderr`, what `rigger validate` wrote there, in
+/// order.
+pub fn index_lag_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("fallen behind"))
+}
+
+/// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
+/// printed that a test compares.
+pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
+    text.lines().filter(|line| keep(line)).collect()
+}

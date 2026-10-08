@@ -34,12 +34,9 @@ mod common;
 
 use common::cli::rigger_file;
 use common::cli::run_rigger;
-use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
 use common::cli::validate_after_init;
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
 use rigger::grounder::symbols::store as symstore;
 use std::path::Path;
@@ -85,8 +82,6 @@ fn seed_duplicated_key(root: &Path, rounds: usize) {
 
 /// Seed one `CodeEntityExtracted` per entry of `keys`, in order, each carrying that replay key.
 fn seed_derived_keys(root: &Path, keys: &[&str]) {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
     for &key in keys {
         events.push(
@@ -97,9 +92,11 @@ fn seed_derived_keys(root: &Path, keys: &[&str]) {
             .with_meta(rigger::ingest::META_REPLAY_KEY, key),
         );
     }
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
 }
 
 /// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT covered
@@ -108,8 +105,6 @@ fn seed_derived_keys(root: &Path, keys: &[&str]) {
 /// type's own delete only ever sees its own one row), so the bloat measurement's per-type
 /// scoping must never merge these into a false duplicate pair.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
         Event::new(
@@ -120,9 +115,11 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
         Event::new(rigger::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
             .with_meta(rigger::ingest::META_REPLAY_KEY, key),
     ];
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
 }
 
 // ---------------------------------------------------------------------------------------
@@ -475,19 +472,9 @@ fn plant_stale_recordings(root: &Path, files: &[&str]) {
 /// order (`why`).
 #[cfg(feature = "symbols")]
 fn assert_names_as_lagging(stderr: &str, files: &[&str], why: &str) {
-    let advisories: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.contains("fallen behind"))
-        .collect();
-    let expected = format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger reindex <file>...` to refresh it.",
-        files.len(),
-        files.join(", "),
-    );
     assert_eq!(
-        advisories,
-        vec![expected.as_str()],
+        common::cli::index_lag_lines(stderr),
+        vec![common::cli::index_lag_advisory(files).as_str()],
         "{why}; stderr:\n{stderr}"
     );
 }

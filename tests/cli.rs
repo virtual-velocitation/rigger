@@ -10231,23 +10231,12 @@ fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
 /// below) that ONLY a plain recorded error re-parks.
 #[test]
 fn a_plain_error_on_a_review_spawn_re_parks_a_fresh_attempt_then_a_real_verdict_folds() {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
     let dir = temp_repoless_project();
     let root = dir.path();
     write_gated_reviewed_workflow(root);
 
     // Read the run stream exactly as production does, to assert the unit was charged no attempt.
-    let read_run_stream = || -> Vec<rigger::eventstore::Event> {
-        let backend =
-            Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-        let store = Namespaced::new(&backend, &run_stream_identity(root));
-        store
-            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-            .unwrap()
-    };
+    let read_run_stream = || read_run_events(root);
 
     // Step 1: the implementer parks; drain it with a real success through the courier CLI.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -19777,7 +19766,6 @@ fn release_ready_hands_off_a_unique_per_run_pr_head_naming_the_spec_stem_and_run
 /// SECOND real process - never a single in-process call standing in for both halves.
 #[test]
 fn the_real_spec_flag_persists_on_a_real_step_and_reaches_the_status_pr_head() {
-    use rigger::eventstore::sqlite::Store;
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     let rigger = root.join(".rigger");
@@ -19826,13 +19814,7 @@ stages:
     // `--spec` argument landed in the body untouched: proves the main.rs call site actually
     // threads `args.spec`, not a dropped or hand-typed value.
     let (run_id, persisted_spec, unit_id) = {
-        use rigger::eventstore::namespace::Namespaced;
-        use rigger::eventstore::{Direction, EventStore};
-        let backend = Store::open(rigger.join("events.db").to_str().unwrap()).unwrap();
-        let store = Namespaced::new(&backend, &run_stream_identity(root));
-        let events = store
-            .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-            .unwrap();
+        let events = read_run_events(root);
         let started = events
             .iter()
             .find(|e| e.type_ == rigger::run::TYPE_RUN_STARTED)
@@ -20110,14 +20092,10 @@ fn release_ready_is_silent_on_status_for_a_spec_defective_run() {
 /// instead of re-resolving it from the environment. One unit is started and integrated so the
 /// run is done and the handoff surfaces.
 fn seed_done_run_with_persisted_base(root: &Path, base: &str) {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+    use rigger::eventstore::{Event, ExpectedRevision};
 
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(rigger_dir.join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
     let events = [
         Event::new(
             rigger::run::TYPE_RUN_STARTED,
@@ -20133,9 +20111,11 @@ fn seed_done_run_with_persisted_base(root: &Path, base: &str) {
             br#"{"id":"u1","commit":"abc"}"#.to_vec(),
         ),
     ];
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .unwrap();
+    common::cli::with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+    });
 }
 
 // --- Spec 39, criterion 1: idempotent always-on dash start on the native `rigger step` path.
@@ -25456,12 +25436,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     );
 
     // The DECISION landed, stamped with the bound spawn; the REFUSED one landed nothing.
-    let events_backend =
-        SqliteStore::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let events_store = Namespaced::new(&events_backend, &run_stream_identity(root));
-    let recorded = events_store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap();
+    let recorded = read_run_events(root);
     let decisions: Vec<_> = recorded
         .iter()
         .filter(|e| e.type_ == "DecisionMade")
@@ -27149,25 +27124,14 @@ fn a_workflow_driver_run_records_each_walked_batch_under_the_blob_git_hash_objec
     );
 }
 
-/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
-#[cfg(feature = "symbols")]
-fn index_lag_advisory(files: &[&str]) -> Option<String> {
-    Some(format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger reindex <file>...` to refresh it.",
-        files.len(),
-        files.join(", ")
-    ))
-}
-
 /// The graph index-lag line of `rigger validate` run in `cwd`, none when it draws none;
 /// validate must succeed, since an advisory never fails it.
 fn validate_index_lag(cwd: &Path) -> Option<String> {
     let (_out, err, ok) = run_rigger(cwd, &["validate"]);
     assert!(ok, "validate must exit 0; stderr:\n{err}");
-    err.lines()
-        .find(|line| line.contains("the context graph has fallen behind"))
-        .map(str::to_string)
+    common::cli::index_lag_lines(&err)
+        .first()
+        .map(|line| line.to_string())
 }
 
 /// An initialized project holding each of `files` (`(path, body)`), its store under `store_dir`
@@ -27206,7 +27170,10 @@ fn validate_names_the_file_whose_bytes_left_the_generation_its_entry_and_the_gra
 
     std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
 
     run_rigger_ok(root, &["graph", "build"]);
 
@@ -27242,7 +27209,10 @@ fn validate_names_a_file_whose_latest_entry_alone_left_the_generation_its_bytes_
         [Some(held)],
         "premise: the graph still holds the generation the file's bytes extract to"
     );
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["steady.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["steady.rs"]))
+    );
 }
 
 /// Spec 107, criterion 13: the graph's side alone names a file, and a `graph.db` that owes its
@@ -27276,7 +27246,10 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
         )
     });
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
 
     common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
 
@@ -27286,7 +27259,10 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
         common::fixtures::record_unfolded_entry(store, "steady.rs", "stale")
     });
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["steady.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["steady.rs"]))
+    );
 }
 
 /// Spec 107, criterion 13: with no `graph.db`, or one that cannot be read, the advisory
@@ -27320,12 +27296,18 @@ fn validate_compares_the_log_alone_when_graph_db_is_absent_or_unreadable() {
     let graph_db = common::cli::rigger_file(root, "graph.db");
     assert!(!graph_db.exists(), "premise: nothing built a graph.db");
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
     assert!(!graph_db.exists(), "the advisory creates no graph.db");
 
     std::fs::write(&graph_db, b"not a database").unwrap();
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
 }
 
 /// Spec 107, criterion 13: the advisory reads the tree under the ONE ROOT.
@@ -27355,7 +27337,10 @@ fn validate_in_a_subdirectory_holding_the_store_reads_the_tree_from_the_reposito
 
     std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
 
-    assert_eq!(validate_index_lag(&sub), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(&sub),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
 }
 
 /// Spec 107, criterion 13: the flag is the tree's, whether `walk_exclusions` names the identity.
@@ -27429,7 +27414,10 @@ fn validate_names_no_gc_path_outside_the_walks_scope_whose_entry_records_no_byte
         common::fixtures::record_unfolded_entry(store, "kept.rs", "stale");
     });
 
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["kept.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["kept.rs"]))
+    );
 }
 
 /// Spec 107, criterion 13: the light lane's stub samples nothing.
@@ -27507,7 +27495,10 @@ fn validate_names_a_file_reverted_to_bytes_an_earlier_entry_recorded() {
         "premise: the bytes extract to the first entry's generation, and the latest entry and \
          the graph hold the second's"
     );
-    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert_eq!(
+        validate_index_lag(root),
+        Some(common::cli::index_lag_advisory(&["churn.rs"]))
+    );
 
     run_rigger_ok(root, &["graph", "build"]);
 
@@ -27552,8 +27543,8 @@ fn validate_names_every_lagging_file_in_sorted_order_and_records_nothing() {
     assert_eq!(
         [validate_index_lag(root), validate_index_lag(root)],
         [
-            index_lag_advisory(&["a.rs", "b.rs"]),
-            index_lag_advisory(&["a.rs", "b.rs"])
+            Some(common::cli::index_lag_advisory(&["a.rs", "b.rs"])),
+            Some(common::cli::index_lag_advisory(&["a.rs", "b.rs"]))
         ]
     );
     assert_eq!(

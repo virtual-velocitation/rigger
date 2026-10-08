@@ -1860,9 +1860,7 @@ const ABSENT_PATH: &str = "src/absent.rs";
 
 /// The report lines among what `rigger setup` printed.
 fn report_lines(out: &str) -> Vec<&str> {
-    out.lines()
-        .filter(|line| line.starts_with("identities "))
-        .collect()
+    common::cli::lines_where(out, |line| line.starts_with("identities "))
 }
 
 /// The recording of `generation` under `prefix` for `file` at `secs`, naming no blob.
