@@ -176,13 +176,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-27610bbbcb28",
-    "classification": "exact",
+    "id": "dup-a9c4f3d90dac",
+    "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "unit_of_gate_key",
         "content_hash": "94519a9bf8532f03"
+      },
+      {
+        "file": "crates/rigger-conductor/src/conductor.rs",
+        "name": "digest_address",
+        "content_hash": "36cc5769f99b8cc5"
       },
       {
         "file": "crates/rigger-domain/src/spawn.rs",
@@ -1122,7 +1127,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-da5c9dfefd76",
+    "id": "dup-bf2ad6b655fa",
     "classification": "semantic",
     "sites": [
       {
@@ -3562,6 +3567,11 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/agents/sdet-author.md\"",
+        "content_hash": "ea68bfe8ed1f915f"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/agents\"",
         "content_hash": "4ffd8f3df8f8b275"
       },
@@ -4067,7 +4077,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 588 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 589 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -4973,13 +4983,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ed7dd2365bce",
+    "id": "dup-468c9f4fc26f",
     "classification": "semantic",
     "sites": [
       {
         "file": "crates/rigger-domain/src/agent.rs",
         "name": "spawn_request",
-        "content_hash": "ba1ab9247a5311ac"
+        "content_hash": "5cbc06d4b398a5c1"
       },
       {
         "file": "tests/common/mod.rs",

@@ -1,5 +1,15 @@
 [
   {
+    "id": "dup-468c9f4fc26f",
+    "disposition": "not-a-duplicate",
+    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
+  },
+  {
+    "id": "dup-a9c4f3d90dac",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker, `unit_of` splits a spawn id at its last `/`, and `digest_address` takes the commit after a gate digest's `:` separator: three key grammars with different delimiters, each parsed in exactly one place."
+  },
+  {
     "id": "dup-dc79af9af1c6",
     "disposition": "not-a-duplicate",
     "reason": "Both already delegate to the shared `install_into_claude_settings`; each merges a different settings entry (the PreToolUse lookup hook vs the statusLine command)."
@@ -83,11 +93,6 @@
     "id": "dup-a9ed3e0e9d47",
     "disposition": "not-a-duplicate",
     "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
-  },
-  {
-    "id": "dup-27610bbbcb28",
-    "disposition": "not-a-duplicate",
-    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
   },
   {
     "id": "dup-360e8b87398d",
@@ -413,11 +418,6 @@
     "id": "dup-21b08556e493",
     "disposition": "not-a-duplicate",
     "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
-  },
-  {
-    "id": "dup-ed7dd2365bce",
-    "disposition": "not-a-duplicate",
-    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
   },
   {
     "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
