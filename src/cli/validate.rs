@@ -503,13 +503,13 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
     )
 }
 
-/// The GRAPH INDEX LAG advisory line (spec 92 criterion 1, FRESH ON EVERY INTEGRATION), rendered
-/// from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`] found
-/// disagreeing with `graph.db`'s own last recorded generation for them. `None` when the sample is
-/// empty - nothing to warn about, not merely nothing measured (the pure formatting stays separate
-/// from the gathering, exactly like [`index_staleness_message`] above). Names every lagging file
-/// (never just a bare count) and the fix, `rigger reindex`, so the same fix that keeps the
-/// `symbols` index fresh also closes the gap this advisory reports.
+/// The GRAPH INDEX LAG advisory line (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY),
+/// rendered from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`]
+/// named: each one's current bytes extract to a generation other than its latest ledger entry's
+/// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
+/// about, not merely nothing measured (the pure formatting stays separate from the gathering,
+/// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
+/// count) and the command the line points the operator at, `rigger reindex`.
 fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     if lagging.is_empty() {
         return None;

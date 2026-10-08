@@ -3024,13 +3024,13 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27603,
-        "end_line": 27603
+        "start_line": 27596,
+        "end_line": 27596
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27621,
-        "end_line": 27621
+        "start_line": 27614,
+        "end_line": 27614
       },
       {
         "file": "tests/common/cli.rs",
@@ -3984,8 +3984,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 608,
-        "end_line": 608
+        "start_line": 598,
+        "end_line": 598
       },
       {
         "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
@@ -7959,8 +7959,8 @@
       },
       {
         "file": "tests/validate_advisories.rs",
-        "start_line": 659,
-        "end_line": 668
+        "start_line": 649,
+        "end_line": 658
       }
     ]
   },

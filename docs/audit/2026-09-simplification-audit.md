@@ -2829,8 +2829,8 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/cli.rs:27038-27038` `".rigger/instructions/README.md"`
 - `tests/cli.rs:27108-27108` `"gw/.rigger/workflow.yml"`
 - `tests/cli.rs:27146-27146` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27603-27603` `"gw/.rigger/workflow.yml"`
-- `tests/cli.rs:27621-27621` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27596-27596` `"gw/.rigger/workflow.yml"`
+- `tests/cli.rs:27614-27614` `"gw/.rigger/workflow.yml"`
 - `tests/common/cli.rs:248-248` `".rigger"`
 - `tests/common/cli.rs:259-259` `".rigger"`
 - `tests/common/cli.rs:280-280` `".rigger"`
@@ -3100,7 +3100,7 @@ project identity so one backend can hold many projects without their data mixing
 - `tests/store_secrets.rs:129-129` `".rigger/store.conn secret-file channel"`
 - `tests/store_secrets.rs:145-145` `".rigger"`
 - `tests/validate_advisories.rs:243-243` `".rigger"`
-- `tests/validate_advisories.rs:608-608` `".rigger"`
+- `tests/validate_advisories.rs:598-598` `".rigger"`
 - `tests/validate_footprint_default_scratch_root_periphery.rs:34-34` `".rigger"`
 - `tests/validate_footprint_default_scratch_root_periphery.rs:35-35` `".rigger"`
 - `tests/validate_footprint_default_scratch_root_periphery.rs:70-70` `".rigger"`
@@ -5069,7 +5069,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/migration_is_deli
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/migration_is_deliberate_periphery.rs:505-514` `validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired`
-- `tests/validate_advisories.rs:659-668` `validate_is_silent_on_a_gated_scaffolded_fanout_template`
+- `tests/validate_advisories.rs:649-658` `validate_is_silent_on_a_gated_scaffolded_fanout_template`
 
 #### `dup-8f0f2622431b` (exact, 2 sites)
 

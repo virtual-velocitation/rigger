@@ -27170,24 +27170,6 @@ fn validate_index_lag(cwd: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Record a ledger entry of the `gc` batch of `path` at `generation` in the log of the store
-/// `store_root` holds, by a plain append that folds nothing: the log's side alone moves.
-fn record_unfolded_entry(store_root: &Path, path: &str, generation: &str) {
-    use rigger::eventstore::ExpectedRevision;
-    common::cli::with_run_store(store_root, |store| {
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &[
-                    common::fixtures::generation_ingested("gc", path, generation, "", false)
-                        .event(1),
-                ],
-            )
-            .unwrap();
-    });
-}
-
 /// An initialized project holding each of `files` (`(path, body)`), its store under `store_dir`
 /// relative to the repository's top level.
 fn initialized_project_holding(store_dir: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
@@ -27199,12 +27181,6 @@ fn initialized_project_holding(store_dir: &str, files: &[(&str, &str)]) -> tempf
         common::fixtures::write_text(dir.path(), path, body);
     }
     dir
-}
-
-/// The generation the walk of the tree at `root` keys the `gc` batch of `path` under now.
-#[cfg(feature = "symbols")]
-fn code_generation_now(root: &Path, path: &str) -> String {
-    common::fixtures::handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{path}")).generation()
 }
 
 /// Spec 107, criterion 13: the ledger answers the index-lag advisory.
@@ -27255,9 +27231,11 @@ fn validate_names_a_file_whose_latest_entry_alone_left_the_generation_its_bytes_
     );
     let root = dir.path();
     run_rigger_ok(root, &["graph", "build"]);
-    let held = code_generation_now(root, "steady.rs");
+    let held = common::fixtures::code_generation_now(root, "steady.rs");
 
-    record_unfolded_entry(root, "steady.rs", "stale");
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, "steady.rs", "stale")
+    });
 
     assert_eq!(
         common::fixtures::held_generations(&common::cli::open_graph(root), &["gc/steady.rs"]),
@@ -27290,7 +27268,13 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
     let root = dir.path();
     run_rigger_ok(root, &["graph", "build"]);
     std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
-    record_unfolded_entry(root, "churn.rs", &code_generation_now(root, "churn.rs"));
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(
+            store,
+            "churn.rs",
+            &common::fixtures::code_generation_now(root, "churn.rs"),
+        )
+    });
 
     assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
 
@@ -27298,7 +27282,9 @@ fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
 
     assert_eq!(validate_index_lag(root), None);
 
-    record_unfolded_entry(root, "steady.rs", "stale");
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, "steady.rs", "stale")
+    });
 
     assert_eq!(validate_index_lag(root), index_lag_advisory(&["steady.rs"]));
 }
@@ -27321,8 +27307,16 @@ fn validate_compares_the_log_alone_when_graph_db_is_absent_or_unreadable() {
         ],
     );
     let root = dir.path();
-    record_unfolded_entry(root, "steady.rs", &code_generation_now(root, "steady.rs"));
-    record_unfolded_entry(root, "churn.rs", "stale");
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(
+            store,
+            "steady.rs",
+            &common::fixtures::code_generation_now(root, "steady.rs"),
+        )
+    });
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, "churn.rs", "stale")
+    });
     let graph_db = common::cli::rigger_file(root, "graph.db");
     assert!(!graph_db.exists(), "premise: nothing built a graph.db");
 
@@ -27408,13 +27402,16 @@ fn validate_names_no_out_of_line_test_module_whose_entry_records_its_boundary_ba
     assert_eq!(validate_index_lag(root), None);
 }
 
-/// Spec 107, criterion 13: the advisory takes a file's bytes from the tree's one read rule.
+/// Spec 107, criterion 13: a recorded `gc` path outside the walk's scope is never a candidate of
+/// the sample.
 ///
 /// GIVEN a project whose log holds an entry of a `gc` path under a hidden directory, outside the
 /// walk's scope, at the generation of `gc`'s batch for no bytes, the path holding a regular
 /// readable file, and a stale entry of a file inside the scope,
 /// WHEN the operator runs `rigger validate`,
-/// THEN it names the file inside the scope alone.
+/// THEN it names the file inside the scope alone: the tree's one read rule hands no bytes for
+/// the hidden path, so the sample never takes it. That such a path, compared, extracts to the
+/// batch for no bytes is pinned beside the comparison, in the grounder's own tests.
 #[cfg(feature = "symbols")]
 #[test]
 fn validate_names_no_gc_path_outside_the_walks_scope_whose_entry_records_no_bytes() {
@@ -27427,17 +27424,10 @@ fn validate_names_no_gc_path_outside_the_walks_scope_whose_entry_records_no_byte
     let no_bytes = rigger::ingest::batch_generation(
         &rigger::grounder::symbols::events::bytes_batch(hidden, None, false),
     );
-    assert_ne!(
-        no_bytes,
-        rigger::ingest::batch_generation(&rigger::grounder::symbols::events::bytes_batch(
-            hidden,
-            Some(b"fn hidden() {}\n"),
-            false
-        )),
-        "premise: the file's own bytes extract to another generation"
-    );
-    record_unfolded_entry(root, hidden, &no_bytes);
-    record_unfolded_entry(root, "kept.rs", "stale");
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, hidden, &no_bytes);
+        common::fixtures::record_unfolded_entry(store, "kept.rs", "stale");
+    });
 
     assert_eq!(validate_index_lag(root), index_lag_advisory(&["kept.rs"]));
 }
@@ -27453,7 +27443,9 @@ fn validate_names_no_gc_path_outside_the_walks_scope_whose_entry_records_no_byte
 fn validate_without_the_extraction_pass_samples_no_file_for_index_lag() {
     let dir = initialized_project_holding("", &[("kept.rs", "fn kept() {}\n")]);
     let root = dir.path();
-    record_unfolded_entry(root, "kept.rs", "stale");
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, "kept.rs", "stale")
+    });
     assert_eq!(
         common::fixtures::recorded_entry_keys(&read_run_events(root)),
         ["gc/kept.rs@stale#1"],
@@ -27493,10 +27485,10 @@ fn validate_names_a_file_reverted_to_bytes_an_earlier_entry_recorded() {
     );
     let root = dir.path();
     run_rigger_ok(root, &["graph", "build"]);
-    let first = code_generation_now(root, "churn.rs");
+    let first = common::fixtures::code_generation_now(root, "churn.rs");
     std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
     run_rigger_ok(root, &["graph", "build"]);
-    let second = code_generation_now(root, "churn.rs");
+    let second = common::fixtures::code_generation_now(root, "churn.rs");
     assert_eq!(validate_index_lag(root), None);
 
     std::fs::write(root.join("churn.rs"), original).unwrap();
@@ -27505,7 +27497,7 @@ fn validate_names_a_file_reverted_to_bytes_an_earlier_entry_recorded() {
         (
             entry_generations(root, "gc/churn.rs"),
             common::fixtures::held_generations(&common::cli::open_graph(root), &["gc/churn.rs"]),
-            code_generation_now(root, "churn.rs"),
+            common::fixtures::code_generation_now(root, "churn.rs"),
         ),
         (
             vec![first.clone(), second.clone()],

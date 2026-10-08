@@ -36,7 +36,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
-    the_group_lookup_answers_a_identity_entry_recorded_under_its_group(store);
+    the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store);
 }
 
 /// An event of type `t` stamped with `group` (when given) and a `tag` entry naming it.
@@ -276,7 +276,7 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 /// whose only recording is an entry, and one whose derived row follows an entry, which is answered
 /// by that derived row as before. Every answer is the one the whole-stream reference gives over the
 /// perception types.
-fn the_group_lookup_answers_a_identity_entry_recorded_under_its_group(store: &dyn EventStore) {
+fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
     use crate::test_support::keyed_derived_event;
     use rigger_domain::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
     use rigger_domain::ingest::META_REPLAY_KEY;

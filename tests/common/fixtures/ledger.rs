@@ -278,3 +278,25 @@ pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection) {
     assert_ne!(Fold::of(wired(Some(graph)), &stray), Fold::Folded);
     assert!(graph.rebuild_owed().unwrap());
 }
+
+/// The generation the walk of the tree at `root` keys the `gc` batch of `path` under now.
+#[cfg(feature = "symbols")]
+pub fn code_generation_now(root: &std::path::Path, path: &str) -> String {
+    handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{path}")).generation()
+}
+
+/// Record a ledger entry of the `gc` batch of `path` at `generation` on the run stream of
+/// `store`, by a plain append that folds nothing: the log's side alone moves.
+pub fn record_unfolded_entry(
+    store: &dyn rigger::eventstore::EventStore,
+    path: &str,
+    generation: &str,
+) {
+    store
+        .append(
+            rigger::conductor::STREAM,
+            rigger::eventstore::ExpectedRevision::Any,
+            &[super::generation_ingested("gc", path, generation, "", false).event(1)],
+        )
+        .unwrap();
+}

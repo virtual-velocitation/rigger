@@ -412,23 +412,13 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 /// samples nothing.
 fn seed_graph_generation(root: &Path, file: &str) {
     #[cfg(feature = "symbols")]
-    let generation =
-        common::fixtures::handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{file}"))
-            .generation();
+    let generation = common::fixtures::code_generation_now(root, file);
     #[cfg(not(feature = "symbols"))]
     let generation = "unextracted".to_string();
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .append(
-            rigger::conductor::STREAM,
-            ExpectedRevision::Any,
-            &[
-                Event::new("RunStarted", b"{}".to_vec()),
-                common::fixtures::generation_ingested("gc", file, &generation, "", false).event(1),
-            ],
-        )
-        .unwrap();
+    common::cli::seed_run_events(root, &[("RunStarted", "{}")]);
+    common::cli::with_run_store(root, |store| {
+        common::fixtures::record_unfolded_entry(store, file, &generation)
+    });
     assert!(
         !rigger_file(root, "graph.db").exists(),
         "premise: no graph.db stands, so the log's side alone is compared"
