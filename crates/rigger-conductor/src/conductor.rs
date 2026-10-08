@@ -4483,11 +4483,16 @@ impl RunCtx<'_> {
         // adjudicator - always the CALLER's already-computed value (`run_reviewer`'s own
         // `reviews` parameter), never re-derived here.
         reviews: &[String],
-        // The unit cache this spawn builds into ([`Self::spawn_env`]): the review cache for a
-        // review tier, the unit's own for the sdet-author, which builds the unit's tree.
-        cache: &str,
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
+        // The unit cache this spawn builds into ([`Self::spawn_env`]), from its role alone: the
+        // sdet-author builds the unit's own tree, so it keeps the unit's cache, warm for the
+        // gates that run right after it; every review tier builds into the unit's review cache.
+        let cache = if role == ROLE_SDET_AUTHOR {
+            crate::worktree::UNIT_CACHE_PREFIX
+        } else {
+            crate::worktree::UNIT_REVIEW_CACHE_PREFIX
+        };
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown {role} {agent_id:?}",
@@ -4522,7 +4527,7 @@ impl RunCtx<'_> {
             // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
             // CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
             // incremental vars a gate build and the implementer got, and the `cache` sibling
-            // of this `dir` the caller names - the unit's own for the sdet-author, the unit's
+            // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
             // review cache for a review tier - so a reviewer's reproduction never builds into
             // the cache the unit's gates use.
             env: Self::spawn_env(&build_env, dir, cache),
@@ -5258,9 +5263,6 @@ impl RunCtx<'_> {
             // The sdet-author writes periphery tests - it is not a review tier judging
             // another agent's output, so it carries no roster (spec 67, criterion 4).
             &[],
-            // It builds the unit's own tree, so it keeps the unit's own cache, warm for
-            // the gates that run right after it.
-            crate::worktree::UNIT_CACHE_PREFIX,
         ) {
             // A log that cannot be read is a fault, propagated - never a cold start.
             Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
@@ -7343,17 +7345,8 @@ impl RunCtx<'_> {
         let mut verdictless = false;
         for retry in window {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts = self.reviewer_spawn_opts(
-                &id,
-                tier,
-                agent_id,
-                dir,
-                attempt,
-                parallel,
-                st,
-                reviews,
-                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
-            )?;
+            let opts =
+                self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
