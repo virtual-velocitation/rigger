@@ -1024,11 +1024,7 @@ mod tests {
         let handed = handed_flags(|sink| {
             ingest_project_batched_paced(root, 1, sink);
         });
-        let recorded: Vec<(String, bool)> = crate::extraction_tree::WALKED
-            .iter()
-            .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
-            .collect();
-        assert_eq!(handed, recorded);
+        assert_eq!(handed, crate::extraction_tree::walked_handoffs());
         let set: Vec<&str> = handed
             .iter()
             .filter(|(_, excluded)| *excluded)

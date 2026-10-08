@@ -2068,11 +2068,11 @@ mandatory sweep: .rigger-path string literals - 596 site(s), collected mechanica
 - `crates/rigger-grounder/src/ingest.rs:864-864` `".rigger"`
 - `crates/rigger-grounder/src/ingest.rs:866-866` `".rigger"`
 - `crates/rigger-grounder/src/ingest.rs:900-900` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1622-1622` `".rigger"`
-- `crates/rigger-grounder/src/ingest.rs:1626-1626` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1635-1635` `".rigger/persona.md"`
-- `crates/rigger-grounder/src/ingest.rs:1648-1648` `"gd/.rigger/"`
-- `crates/rigger-grounder/src/ingest.rs:1649-1649` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
+- `crates/rigger-grounder/src/ingest.rs:1618-1618` `".rigger"`
+- `crates/rigger-grounder/src/ingest.rs:1622-1622` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1631-1631` `".rigger/persona.md"`
+- `crates/rigger-grounder/src/ingest.rs:1644-1644` `"gd/.rigger/"`
+- `crates/rigger-grounder/src/ingest.rs:1645-1645` `"premise: the whole walk lowers both docs and nothing under .rigger; got {walked:?}"`
 - `crates/rigger-process/src/reap.rs:749-749` `".rigger"`
 - `crates/rigger-process/src/reap.rs:1090-1090` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`

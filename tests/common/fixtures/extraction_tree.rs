@@ -219,6 +219,15 @@ pub const WALKED: [WalkedBatch; 6] = [
     },
 ];
 
+/// The `(identity, flag)` of each batch of [`WALKED`], in walk order: what a walk of the tree
+/// hands a sink that records each batch's identity beside the flag it was handed with.
+pub fn walked_handoffs() -> Vec<(String, bool)> {
+    WALKED
+        .iter()
+        .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
+        .collect()
+}
+
 /// The batch [`WALKED`] holds under `prefix` for `path`.
 fn walked(prefix: &str, path: &str) -> &'static WalkedBatch {
     WALKED

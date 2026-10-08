@@ -21,8 +21,8 @@ use rigger::ingest::{sink_walked_batches, BatchSink};
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    events_of, planted_extraction_tree, wire_owned, write_file, SOURCE_BODY, SOURCE_PATH,
-    TEST_MODULE_PATH, WALKED, WORKFLOW_PATH,
+    events_of, planted_extraction_tree, walked_handoffs, wire_owned, write_file, SOURCE_BODY,
+    SOURCE_PATH, TEST_MODULE_PATH, WALKED, WORKFLOW_PATH,
 };
 #[cfg(feature = "symbols")]
 use rigger::grounder::symbols::events::{file_batches, project_batches, project_batches_paced};
@@ -62,15 +62,6 @@ fn owned(pairs: &[(&str, bool)]) -> Vec<(String, bool)> {
     pairs
         .iter()
         .map(|(identity, flag)| (identity.to_string(), *flag))
-        .collect()
-}
-
-/// The `(identity, flag)` the extraction tree's fixture records for each batch, in walk order.
-#[cfg(feature = "symbols")]
-fn fixture_handoffs() -> Vec<(String, bool)> {
-    WALKED
-        .iter()
-        .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
         .collect()
 }
 
@@ -133,7 +124,7 @@ fn every_public_whole_tree_walk_hands_only_the_out_of_line_test_modules_gc_batch
         ("gd/src/lib.rs", false),
         (workflow.as_str(), false),
     ]);
-    assert_eq!(fixture_handoffs(), expected);
+    assert_eq!(walked_handoffs(), expected);
 
     let [default_width, one_worker, four_workers] = whole_walks(dir.path());
     assert_eq!(default_width, expected);
@@ -273,7 +264,7 @@ fn the_flagged_batches_are_exactly_the_identities_walk_exclusions_names() {
 fn a_module_no_longer_declared_under_cfg_test_is_handed_clear() {
     let dir = tree_declaring_the_module_plainly();
     let root = dir.path();
-    let all_clear: Vec<(String, bool)> = fixture_handoffs()
+    let all_clear: Vec<(String, bool)> = walked_handoffs()
         .into_iter()
         .map(|(identity, _)| (identity, false))
         .collect();
@@ -378,11 +369,11 @@ fn the_fallible_sink_driver_hands_on_the_flag_the_real_walk_handed_each_batch() 
 
     assert_eq!(
         drive(true),
-        (Err("gc/src/checks.rs".to_string()), fixture_handoffs())
+        (Err("gc/src/checks.rs".to_string()), walked_handoffs())
     );
     assert_eq!(
         drive(false),
-        (Err("gc/src/lib.rs".to_string()), fixture_handoffs())
+        (Err("gc/src/lib.rs".to_string()), walked_handoffs())
     );
 }
 
@@ -494,19 +485,15 @@ fn a_step_records_the_flagged_batch_as_the_walk_minted_it() {
         (flagged.prefix, flagged.path, flagged.excluded),
         ("gc", TEST_MODULE_PATH, true)
     );
+    let identity = &walked_handoffs()[0].0;
     let of_the_flagged_batch: Vec<Keyed> = recorded
         .into_iter()
-        .filter(|(key, _, _)| key.starts_with("gc/src/checks.rs@"))
+        .filter(|(key, _, _)| key.starts_with(&format!("{identity}@")))
         .collect();
     let as_the_fixture_records_it: Vec<Keyed> = events_of(flagged.events)
         .iter()
         .enumerate()
-        .map(|(i, event)| {
-            keyed(
-                format!("gc/src/checks.rs@{}#{i}", flagged.generation),
-                event,
-            )
-        })
+        .map(|(i, event)| keyed(format!("{identity}@{}#{i}", flagged.generation), event))
         .collect();
     assert_eq!(as_the_fixture_records_it.len(), 1);
     assert_eq!(of_the_flagged_batch, as_the_fixture_records_it);
