@@ -1082,6 +1082,91 @@ mod tests {
         );
     }
 
+    /// The text search matches a span only on identifier boundaries: `gc` matches where it stands
+    /// as its own word, never inside `logcat`.
+    #[test]
+    fn blast_radius_text_search_matches_a_span_only_on_identifier_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("word.rs"), "// run gc now\n").unwrap();
+        std::fs::write(dir.path().join("inside.rs"), "// logcat output\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`gc` reclaims space", 8);
+        assert_eq!(
+            br.safe,
+            vec!["word.rs".to_string()],
+            "a span matches only as a whole identifier; got {br:?}"
+        );
+    }
+
+    /// A span the index resolves to a definition grounds on its structural set alone, never on
+    /// every file mentioning the word; a span the index cannot resolve (a string-literal event
+    /// name) still falls back to the text search.
+    #[test]
+    fn blast_radius_text_searches_only_the_spans_the_index_does_not_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("def.rs"), "pub struct Store;\n").unwrap();
+        std::fs::write(
+            dir.path().join("prose.rs"),
+            "// the Store is only mentioned here\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("events.rs"),
+            "const STARTED: &str = \"RunStarted\";\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let resolved = g.blast_radius("`Store` reclaims space", 8);
+        assert!(
+            resolved.safe.contains(&"def.rs".to_string())
+                && !resolved.safe.contains(&"prose.rs".to_string()),
+            "a resolved span grounds on its structural set, not its mentions; got {resolved:?}"
+        );
+
+        let unresolved = g.blast_radius("`RunStarted` opens a run", 8);
+        assert_eq!(
+            unresolved.safe,
+            vec!["events.rs".to_string()],
+            "an unresolved span falls back to the text search; got {unresolved:?}"
+        );
+    }
+
+    /// The text search never matches a spec file or the regenerated audit: no unit edits the
+    /// first and every unit regenerates the second, so neither is a conflict. Tests and the
+    /// handbook stay in scope.
+    #[test]
+    fn blast_radius_text_search_skips_specs_and_the_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["specs", "docs/audit", "docs/handbook", "tests"] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        }
+        for (file, body) in [
+            ("code.rs", "const K: &str = \"unindexed_name\";\n"),
+            ("specs/107-x.md", "uses `unindexed_name`\n"),
+            (
+                "docs/audit/catalog.json",
+                "{\"name\": \"unindexed_name\"}\n",
+            ),
+            ("docs/audit/report.md", "unindexed_name\n"),
+            ("docs/handbook/page.md", "unindexed_name\n"),
+            ("tests/cli.rs", "// unindexed_name\n"),
+        ] {
+            std::fs::write(dir.path().join(file), body).unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`unindexed_name` is read", 8);
+        assert_eq!(
+            br.safe,
+            vec![
+                "code.rs".to_string(),
+                "docs/handbook/page.md".to_string(),
+                "tests/cli.rs".to_string()
+            ],
+            "specs and the audit are never text-search hits; got {br:?}"
+        );
+    }
+
     /// A span keeps the name it carries through generic and call arguments, trailing marks and
     /// member access: `spawn_unit<T>`, `finish(x)`, `parked:` and `store.open()` each match the
     /// symbol they name, and a dotted term is a path only when it ends in a file extension.
