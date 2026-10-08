@@ -136,7 +136,8 @@ const KEYWORDS: &[&str] = &["fn", "pub", "mut", "self", "let", "use", "mod", "im
 /// The file extensions that make a dotted term a PATH (`ingest.rs`) rather than a member access
 /// (`store.open`).
 const FILE_EXTENSIONS: &[&str] = &[
-    "rs", "md", "toml", "yml", "yaml", "json", "sh", "py", "ts", "js", "txt", "lock", "html", "css",
+    "rs", "md", "toml", "yml", "yaml", "json", "sh", "py", "ts", "js", "txt", "lock", "html",
+    "css", "db",
 ];
 
 /// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
@@ -1109,6 +1110,15 @@ mod tests {
                 "{query} names the code in {file}; got {br:?}"
             );
         }
+        // A store file (`graph.db`) is a path, never the symbol `db`.
+        let store_dir = tempfile::tempdir().unwrap();
+        std::fs::write(store_dir.path().join("handle.rs"), "fn db() {}\n").unwrap();
+        let g = Symbols::open(store_dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`graph.db`", 8);
+        assert!(
+            !br.safe.contains(&"handle.rs".to_string()),
+            "a .db file name never grounds on a symbol named db; got {br:?}"
+        );
     }
 
     /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
