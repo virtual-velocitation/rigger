@@ -937,6 +937,67 @@ mod tests {
         );
     }
 
+    /// A span of several words (`rigger validate`) is searched for as ONE phrase: the radius is the
+    /// files holding the phrase, never every file holding one of its words, and a plain word inside
+    /// it (`rigger`, `validate`) matches no symbol. A span naming only language keywords names no
+    /// code at all.
+    #[test]
+    fn blast_radius_searches_a_multi_word_span_as_one_phrase_and_never_grounds_on_keywords() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("verb.rs"), "// run rigger validate first\n").unwrap();
+        std::fs::write(dir.path().join("word.rs"), "// rigger is everywhere\n").unwrap();
+        std::fs::write(
+            dir.path().join("check.rs"),
+            "pub fn validate(&mut self) {}\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let br = g.blast_radius("`rigger validate` refuses a drifted spec", 8);
+        assert_eq!(
+            br.safe,
+            vec!["verb.rs".to_string()],
+            "a multi-word span grounds on its phrase hits alone; got {br:?}"
+        );
+
+        let keywords = g.blast_radius("the method takes `&mut self` and is `pub fn`", 8);
+        assert_eq!(
+            keywords,
+            BlastRadius::default(),
+            "language keywords are never terms; got {keywords:?}"
+        );
+    }
+
+    /// A span keeps the name it carries through generic and call arguments, trailing marks and
+    /// member access: `spawn_unit<T>`, `finish(x)`, `parked:` and `store.open()` each match the
+    /// symbol they name, and a dotted term is a path only when it ends in a file extension.
+    #[test]
+    fn blast_radius_reads_the_name_inside_generics_calls_marks_and_member_access() {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, def) in [
+            ("generic.rs", "spawn_unit"),
+            ("call.rs", "finish"),
+            ("mark.rs", "parked"),
+            ("member.rs", "open"),
+        ] {
+            std::fs::write(dir.path().join(file), format!("fn {def}() {{}}\n")).unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        for (query, file) in [
+            ("`spawn_unit<T>`", "generic.rs"),
+            ("`finish(x)`", "call.rs"),
+            ("`parked:`", "mark.rs"),
+            ("`store.open()`", "member.rs"),
+            ("`call.rs`", "call.rs"),
+        ] {
+            let br = g.blast_radius(query, 8);
+            assert!(
+                br.safe.contains(&file.to_string()),
+                "{query} names the code in {file}; got {br:?}"
+            );
+        }
+    }
+
     /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
     /// truncating it and never by a conflict-with-everything flag: the safe view carries EVERY file
     /// of the hub's neighborhood (even past the `k` cap), so the overlap test keeps it apart from

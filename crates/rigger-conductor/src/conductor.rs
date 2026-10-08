@@ -35152,6 +35152,75 @@ mod tests {
     }
 
     #[test]
+    fn run_wave_leaves_a_stage_the_width_refuses_neither_terminal_nor_integrated_across_waves() {
+        // Spec 102, criterion 1: a stage the width refuses is never failed. At
+        // `max_parallel_units: 1` a unit parked in an earlier wave holds the one slot, so this
+        // wave admits nothing and both ready stages stay neither integrated nor terminal; once
+        // the parked unit resolves, the next wave admits and integrates them.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_parallel_units = 1;
+        let scratch = tempfile::tempdir().unwrap();
+        cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for name in ["s0", "s1"] {
+            cfg.workflow.stages.insert(
+                name.to_string(),
+                Stage {
+                    name: name.to_string(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stages = cfg.workflow.stages.clone();
+        let ready: Vec<String> = vec!["s0".into(), "s1".into()];
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        let mut in_flight: HashSet<String> = HashSet::from(["parked".to_string()]);
+
+        let admitted = ctx
+            .run_wave(
+                &stages,
+                &ready,
+                &mut integrated,
+                &mut terminal,
+                &mut in_flight,
+            )
+            .unwrap();
+        assert!(
+            !admitted,
+            "the parked unit holds the only slot, so nothing is admitted"
+        );
+        assert!(
+            integrated.is_empty() && terminal.is_empty(),
+            "a stage the width refuses is neither integrated nor terminal: \
+             integrated={integrated:?} terminal={terminal:?}"
+        );
+
+        // The parked unit resolves; the next wave offers both stages again.
+        in_flight.remove("parked");
+        ctx.run_wave(
+            &stages,
+            &ready,
+            &mut integrated,
+            &mut terminal,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert_eq!(
+            integrated,
+            ready.iter().cloned().collect::<HashSet<_>>(),
+            "both refused stages integrate once the slot frees"
+        );
+    }
+
+    #[test]
     fn occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one() {
         // Spec 102, criterion 1: occupancy is RE-DERIVED FROM THE LOG, not a process-local
         // counter - "a resumed step after a driver crash counts the spawn still in
@@ -39040,13 +39109,15 @@ mod tests {
     /// Drive ONE `run_wave` call at width `width` over the stages `names` - each grounding on its
     /// own name, run by its own agent of that name, partitioned by blast radius over `grounder` -
     /// under `probe`, over a log already holding a `BlastRadiusComputed` for each `recorded`
-    /// `(unit, safe files)`; returns the stages the call integrated.
+    /// `(unit, safe files)`, with the units `parked` already in flight from an earlier wave;
+    /// returns the stages the call integrated.
     fn probe_one_wave(
         width: u32,
         names: &[&str],
         grounder: &dyn Grounder,
         probe: &OverlapProbe,
         recorded: &[(&str, &[&str])],
+        parked: &[&str],
     ) -> HashSet<String> {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = width;
@@ -39083,8 +39154,8 @@ mod tests {
         let ctx = RunCtx::for_test(&cfg, &deps);
         let stages = cfg.workflow.stages.clone();
         let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-        let (mut integrated, mut terminal, mut in_flight) =
-            (HashSet::new(), HashSet::new(), HashSet::new());
+        let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
+        let mut in_flight: HashSet<String> = parked.iter().map(|p| p.to_string()).collect();
         ctx.run_wave(
             &stages,
             &ready,
@@ -39129,7 +39200,14 @@ mod tests {
         let grounder =
             crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
         let probe = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(2, &["spawn_unit", "parse_spec"], &grounder, &probe, &[]);
+        let integrated = probe_one_wave(
+            2,
+            &["spawn_unit", "parse_spec"],
+            &grounder,
+            &probe,
+            &[],
+            &[],
+        );
         assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
         assert_eq!(
             probe.peak(),
@@ -39145,7 +39223,8 @@ mod tests {
     fn run_wave_runs_units_side_by_side_only_when_their_radii_are_disjoint() {
         let assert_peak = |radii: &[(&str, &[&str])], peak: usize, why: &str| {
             let probe = OverlapProbe::new(&[]);
-            let integrated = probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe, &[]);
+            let integrated =
+                probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe, &[], &[]);
             assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
             assert_eq!(probe.peak(), peak, "{why}");
         };
@@ -39181,12 +39260,35 @@ mod tests {
             &grounder,
             &probe,
             &[("u_a", &["shared.rs"]), ("u_b", &["shared.rs"])],
+            &[],
         );
         assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
         assert_eq!(
             probe.peak(),
             1,
             "the recorded radii overlap, so the units never run side by side"
+        );
+    }
+
+    /// A unit PARKED in an earlier wave still runs off-process, so it is compared like any unit in
+    /// flight: a ready unit whose recorded radius overlaps the parked unit's waits, while a
+    /// disjoint ready unit starts.
+    #[test]
+    fn run_wave_keeps_a_ready_unit_apart_from_a_parked_unit_of_an_earlier_wave() {
+        let probe = OverlapProbe::new(&[]);
+        let grounder = stub_radii(&[("u_a", &["x.rs"]), ("u_b", &["b.rs"])]);
+        let integrated = probe_one_wave(
+            3,
+            &["u_a", "u_b"],
+            &grounder,
+            &probe,
+            &[("parked", &["x.rs"])],
+            &["parked"],
+        );
+        assert_eq!(
+            integrated,
+            HashSet::from(["u_b".to_string()]),
+            "u_a shares x.rs with the parked unit and waits; the disjoint u_b runs"
         );
     }
 
@@ -39206,6 +39308,7 @@ mod tests {
             &["u_a_slow", "u_b_fast", "u_c_next"],
             &grounder,
             &probe,
+            &[],
             &[],
         );
         assert_eq!(
