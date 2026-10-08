@@ -36,6 +36,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
+    the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store);
 }
 
 /// An event of type `t` stamped with `group` (when given) and a `tag` entry naming it.
@@ -255,6 +256,136 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
         ],
         "the change moves a.rs to h2, the revert moves b.rs back to h1, and a never-recorded \
          identity answers none"
+    );
+}
+
+/// THE GROUP LOOKUP ANSWERS A LEDGER ENTRY (spec 107): a hand-built `GenerationIngested` recorded
+/// under its group is its identity's newest member like any grouped event - `latest_in_group`
+/// answers its position, type and metadata - and the domain reader answers the generation its
+/// replay key names. Three identities on one stream: one whose entry follows a derived batch, one
+/// whose only recording is an entry, and one whose derived row follows an entry, which is answered
+/// by that derived row as before. Every answer is the one the whole-stream reference gives over the
+/// perception types.
+fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
+    use rigger_domain::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+    use rigger_domain::ingest::{
+        keyed_derived_event, latest_generation, project_scoped_latest_generations, META_REPLAY_KEY,
+    };
+    use rigger_domain::retention::{
+        GenerationIngested, PERCEPTION_TYPES, TYPE_GENERATION_INGESTED,
+    };
+    let stream = "c-ledger";
+    let derived = |key: &str| {
+        keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()), key)
+    };
+    let entry = |prefix: &str, file: &str, generation: &str, n: usize| {
+        let entry = GenerationIngested {
+            prefix: prefix.to_string(),
+            file: file.to_string(),
+            generation: generation.to_string(),
+            blob: "b10b".to_string(),
+            excluded: false,
+        };
+        keyed_derived_event(
+            Event::new(
+                TYPE_GENERATION_INGESTED,
+                serde_json::to_vec(&entry).expect("an entry serializes"),
+            ),
+            &format!("{}@{generation}#{n}", entry.identity()),
+        )
+    };
+    let appended = store
+        .append(
+            stream,
+            ExpectedRevision::NoStream,
+            &[
+                derived("gc/a.rs@h1#0"),
+                entry("gc", "b.rs", "h1", 1),
+                entry("gc", "a.rs", "h2", 2),
+                entry("gd", "c.md", "h4", 5),
+                derived("gc/b.rs@h3#0"),
+            ],
+        )
+        .expect("the ledger stream appends");
+    let at: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
+
+    let head = |position: u64, t: &str, group: &str, key: &str| GroupHead {
+        position,
+        type_: t.to_string(),
+        meta: [(META_GROUP, group), (META_REPLAY_KEY, key)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    };
+    let heads: Vec<Option<GroupHead>> = ["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"]
+        .iter()
+        .map(|group| {
+            store
+                .latest_in_group(stream, group)
+                .unwrap_or_else(|e| panic!("the group lookup of {group} must succeed: {e}"))
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            Some(head(
+                at[2],
+                TYPE_GENERATION_INGESTED,
+                "gc/a.rs",
+                "gc/a.rs@h2#2"
+            )),
+            Some(head(
+                at[3],
+                TYPE_GENERATION_INGESTED,
+                "gd/c.md",
+                "gd/c.md@h4#5"
+            )),
+            Some(head(
+                at[4],
+                TYPE_CODE_ENTITY_EXTRACTED,
+                "gc/b.rs",
+                "gc/b.rs@h3#0"
+            )),
+            None,
+        ],
+        "an entry is its group's newest member until a later recording of the identity follows it"
+    );
+
+    let answered: Vec<(String, Option<String>)> = ["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"]
+        .iter()
+        .map(|identity| {
+            let generation = latest_generation(store, stream, identity)
+                .unwrap_or_else(|e| panic!("the lookup of {identity} must succeed: {e}"));
+            (identity.to_string(), generation)
+        })
+        .collect();
+    assert_eq!(
+        answered,
+        [
+            ("gc/a.rs".to_string(), Some("h2".to_string())),
+            ("gd/c.md".to_string(), Some("h4".to_string())),
+            ("gc/b.rs".to_string(), Some("h3".to_string())),
+            ("gc/never.rs".to_string(), None),
+        ],
+        "an entry answers its own generation, a derived row after an entry answers as before, \
+         and a never-recorded identity answers none"
+    );
+    let reference = project_scoped_latest_generations(
+        &store.read_stream(stream, 0, Direction::Forward).unwrap(),
+        &PERCEPTION_TYPES,
+    );
+    let referenced: Vec<(String, Option<String>)> = answered
+        .iter()
+        .map(|(identity, _)| {
+            (
+                identity.clone(),
+                reference.get(identity).map(|(hash, _)| hash.clone()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answered, referenced,
+        "the lookup answers what the reference answers over the perception types"
     );
 }
 

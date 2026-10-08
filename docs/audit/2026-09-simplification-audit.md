@@ -1753,7 +1753,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:5142-5160` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:28964-29023` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-domain/src/agent.rs:363-365` `no_result_error`
-- `crates/rigger-domain/src/ingest.rs:647-685` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
+- `crates/rigger-domain/src/ingest.rs:674-712` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4579-4632` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3562-3589` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
@@ -4296,9 +4296,9 @@ Proposed home: `contract::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/eventstore/contract.rs:732-752` `append_assigns_revisions`
-- `crates/rigger-store-sqlite/src/eventstore/contract.rs:861-906` `backward_stream_read_reverses_set`
-- `crates/rigger-store-sqlite/src/eventstore/contract.rs:910-935` `forward_stream_read_honors_nonzero_from`
+- `crates/rigger-store-sqlite/src/eventstore/contract.rs:863-883` `append_assigns_revisions`
+- `crates/rigger-store-sqlite/src/eventstore/contract.rs:992-1037` `backward_stream_read_reverses_set`
+- `crates/rigger-store-sqlite/src/eventstore/contract.rs:1041-1066` `forward_stream_read_honors_nonzero_from`
 
 #### `dup-4a57ceb2e317` (semantic, 2 sites)
 
@@ -5178,7 +5178,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8712 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8714 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4989-5030` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15078-15100` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

@@ -374,8 +374,8 @@
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
-        "start_line": 647,
-        "end_line": 685
+        "start_line": 674,
+        "end_line": 712
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6504,18 +6504,18 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 732,
-        "end_line": 752
+        "start_line": 863,
+        "end_line": 883
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 861,
-        "end_line": 906
+        "start_line": 992,
+        "end_line": 1037
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 910,
-        "end_line": 935
+        "start_line": 1041,
+        "end_line": 1066
       }
     ]
   },

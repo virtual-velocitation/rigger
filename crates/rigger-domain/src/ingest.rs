@@ -576,13 +576,40 @@ mod group_lookup_tests {
         );
     }
 
+    /// A ledger entry is a recording (spec 107): the newest member being a hand-built
+    /// `GenerationIngested` answers the generation its replay key names, with the one lookup a
+    /// derived row costs.
     #[test]
-    fn no_recorded_member_a_non_derived_member_or_an_unparseable_key_answers_no_generation() {
+    fn the_latest_generation_of_an_identity_whose_newest_member_is_a_ledger_entry_is_the_entrys() {
+        let store = answering(Some(head(
+            crate::retention::TYPE_GENERATION_INGESTED,
+            Some("gc/a.rs@h9#3"),
+        )));
+        assert_eq!(
+            latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
+            Some("h9".to_string())
+        );
+        assert_eq!(
+            store.asked(),
+            [("rigger".to_string(), "gc/a.rs".to_string())],
+            "one group lookup of that identity on that stream, and nothing else"
+        );
+    }
+
+    #[test]
+    fn no_recorded_member_a_non_perception_member_or_an_unparseable_key_answers_no_generation() {
         for (store, why) in [
             (answering(None), "a never-recorded identity"),
             (
                 answering(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
-                "a newest member outside the derived types (type first)",
+                "a newest member outside the perception types (type first)",
+            ),
+            (
+                answering(Some(head(
+                    crate::retention::TYPE_GENERATION_INGESTED,
+                    Some("gc/a.rs"),
+                ))),
+                "a newest ledger entry whose key does not parse",
             ),
             (
                 answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
