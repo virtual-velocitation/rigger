@@ -468,6 +468,15 @@ pub struct SpawnRequest {
     /// back-compatible field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<String>,
+    /// The build location the CONDUCTOR chose for this spawn - the `CARGO_TARGET_DIR` its
+    /// spawn environment carries: the unit's `cargo-target-<slug>` cache for a spawn that
+    /// builds the unit's tree, the unit's `review-target-<slug>` cache for a review tier.
+    /// Recorded so a driver that cannot set a worker's environment names the SAME directory
+    /// ([`WaveItem::cargo_target_dir`]) the environment-setting drivers export, from one choice.
+    /// Omitted from the wire when empty (a spawn with no unit worktree, or a request an older
+    /// binary recorded).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cargo_target_dir: String,
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] event-meta key, beside the run id's, carrying the scratch root
@@ -706,8 +715,9 @@ pub struct WaveItem {
     /// it in.
     #[serde(default)]
     pub marker_path: Option<String>,
-    /// The unit's ONE build location (spec 77, criterion 1): the `cargo-target-<unit>`
-    /// sibling of the worktree, the same directory the unit's gates build into. The SDK
+    /// The spawn's ONE build location (spec 77, criterion 1), copied from
+    /// [`SpawnRequest::cargo_target_dir`]: the `cargo-target-<unit>` sibling of the worktree the
+    /// unit's gates build into, or the unit's `review-target-<unit>` cache for a review tier. The SDK
     /// driver receives it as `CARGO_TARGET_DIR` in the spawn's environment; a driver that
     /// cannot set a worker's environment (the editor's workflow driver runs workers through
     /// an agent tool with none) must NAME it in the worker's instructions instead, or every
@@ -746,9 +756,16 @@ impl From<&SpawnRequest> for WaveItem {
             // Stamped by `rigger step` (cmd_step) from the resolved scratch root + run id;
             // a pure fold has neither, so leave it absent here.
             marker_path: None,
-            // The same derivation `spawn_env` uses for the SDK driver's CARGO_TARGET_DIR, so
-            // both drivers name one build location per unit.
-            cargo_target_dir: unit_cache_sibling(&req.dir),
+            // The build location the conductor recorded on the request - the very
+            // CARGO_TARGET_DIR its spawn environment carries - so both drivers name one build
+            // location per spawn. A request an older binary recorded carries none; it falls
+            // back to the unit's own cache, the one location every spawn used then, so a run
+            // resumed across the upgrade keeps building where it did.
+            cargo_target_dir: if req.cargo_target_dir.is_empty() {
+                unit_cache_sibling(&req.dir)
+            } else {
+                Some(req.cargo_target_dir.clone())
+            },
             // The live work-line rides the slim manifest: the wave the thin driver reads is
             // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
             // nothing (the false-green class this copy closes).
@@ -1684,6 +1701,17 @@ mod tests {
         assert!(
             json.contains("\"cargo_target_dir\":\"/scratch/cargo-target-u1\""),
             "the driver reads it off the wave: {json}"
+        );
+        let reviewer = SpawnRequest {
+            id: "u1/lens:sdet#0".into(),
+            dir: "/scratch/rigger-wt-u1".into(),
+            cargo_target_dir: "/scratch/review-target-u1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            WaveItem::from(&reviewer).cargo_target_dir.as_deref(),
+            Some("/scratch/review-target-u1"),
+            "the location the conductor recorded wins over the worktree's own cache"
         );
         let bare = SpawnRequest {
             id: "plan/plan#0".into(),
