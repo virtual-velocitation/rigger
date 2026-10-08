@@ -555,10 +555,14 @@ impl Driver<'_> {
                 (Some("result"), _) if result.is_none() => {
                     let res = spawn_result_from(&v, opts, &resolved_model);
                     spawn_store::record_result_if_absent(self.run_store, &res)?;
+                    // The session this launch ran as rides back for the conductor to record;
+                    // this host honours every requested resume (it takes no fallback), so a
+                    // resumed launch continued exactly the session its spawn named.
                     result = Some(AgentResult {
                         output: res.output,
                         resolved_model: resolved_model.clone(),
-                        ..Default::default()
+                        session_id: session_id.clone(),
+                        resumed_from: opts.resumed_from.clone(),
                     });
                     // "the host closes the input after the first `result`" - dropping the
                     // handle closes the pipe; a session that would otherwise wait on more
