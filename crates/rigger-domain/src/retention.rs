@@ -124,6 +124,38 @@ mod tests {
     }
 
     #[test]
+    fn the_constructors_event_parses_back_to_its_five_fields_under_its_group_and_replay_key() {
+        let built = [named().event(0), named().event(7)];
+        assert_eq!(
+            built.each_ref().map(|e| e.type_.as_str()),
+            [TYPE_GENERATION_INGESTED; 2]
+        );
+        assert_eq!(
+            built.each_ref().map(|e| GenerationIngested::parse(&e.data)),
+            [Ok(named()), Ok(named())]
+        );
+        let meta = |e: &crate::eventstore::Event| {
+            e.meta
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let stamped = |key: &str| {
+            std::collections::BTreeMap::from([
+                (
+                    crate::eventstore::META_GROUP.to_string(),
+                    "gc/src/a.rs".to_string(),
+                ),
+                (crate::ingest::META_REPLAY_KEY.to_string(), key.to_string()),
+            ])
+        };
+        assert_eq!(
+            built.each_ref().map(meta),
+            [stamped("gc/src/a.rs@h1#0"), stamped("gc/src/a.rs@h1#7")]
+        );
+    }
+
+    #[test]
     fn identity_is_the_prefix_and_the_file_joined_by_a_slash() {
         assert_eq!(named().identity(), "gc/src/a.rs");
     }

@@ -311,6 +311,42 @@ pub fn perceived_generations(
     Ok(project_scoped_latest_generations(&recorded, &types))
 }
 
+/// [`batch_is_current`]'s whole truth table: the log's latest generation and the graph's side
+/// against one batch generation.
+#[cfg(test)]
+mod current_tests {
+    use super::{batch_is_current, GraphSide};
+
+    #[test]
+    fn a_batch_is_current_only_when_the_log_and_the_graph_both_hold_its_generation() {
+        let cases = [
+            (Some("g1"), GraphSide::Holds(Some("g1")), true),
+            (Some("g0"), GraphSide::Holds(Some("g1")), false),
+            (Some("g1"), GraphSide::Holds(Some("g0")), false),
+            (Some("g0"), GraphSide::Holds(Some("g0")), false),
+            (None, GraphSide::Holds(Some("g1")), false),
+            (Some("g1"), GraphSide::Holds(None), false),
+            (None, GraphSide::Holds(None), false),
+        ];
+        assert_eq!(
+            cases.map(|(logged, graph, _)| batch_is_current(logged, graph, "g1")),
+            cases.map(|(_, _, current)| current)
+        );
+    }
+
+    #[test]
+    fn an_owed_graph_is_answered_from_the_log_side_alone() {
+        assert_eq!(
+            [Some("g1"), Some("g0"), None].map(|logged| batch_is_current(
+                logged,
+                GraphSide::Owed,
+                "g1"
+            )),
+            [true, false, false]
+        );
+    }
+}
+
 /// The suppression predicate's OWN contract, at the unit level: which recorded keys it hands a
 /// sink, given a stream. Both lanes compile it, because the predicate is not `symbols`-gated - it
 /// reads recorded events, it does not walk a tree. The two SEAM-level proofs BELONG to their own
