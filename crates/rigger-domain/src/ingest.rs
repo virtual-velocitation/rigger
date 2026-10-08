@@ -123,7 +123,9 @@ pub fn keyed_derived_event(event: Event, key: &str) -> Event {
 
 /// THE LATEST RECORDED GENERATION of the batch identity `identity` on `stream` (spec 101), answered
 /// by the store's group lookup ([`EventStore::latest_in_group`]) - never by reading the stream.
-/// TYPE FIRST: a newest match outside [`DERIVED_INDEX_TYPES`] answers no generation, as does one
+/// A recording is a keyed derived row or the ledger entry that stands for a batch (spec 107), and
+/// either names its generation in its replay key. TYPE FIRST: a newest match outside
+/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) answers no generation, as does one
 /// whose replay key does not parse - the fail-safe direction, since a batch with no recorded
 /// generation re-emits.
 pub fn latest_generation(
@@ -134,7 +136,7 @@ pub fn latest_generation(
     let Some(head) = store.latest_in_group(stream, identity)? else {
         return Ok(None);
     };
-    if !is_derived_index_type(&head.type_) {
+    if !crate::retention::PERCEPTION_TYPES.contains(&head.type_.as_str()) {
         return Ok(None);
     }
     Ok(head
@@ -498,7 +500,7 @@ mod dedup_tests {
 
 /// THE GROUP STAMP AND THE LATEST-GENERATION READER (spec 101), at the unit level: what a keyed
 /// derived event carries, and which generation the one domain reader cuts from the store's group
-/// answer. The store's own answer is pinned per backend by the contract suite; here the store is a
+/// answer, a derived row's or a ledger entry's (spec 107). The store's own answer is pinned per backend by the contract suite; here the store is a
 /// double answering one fixed head, so every arm of the reader is driven directly.
 #[cfg(test)]
 mod group_lookup_tests {

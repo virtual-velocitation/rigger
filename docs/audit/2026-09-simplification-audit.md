@@ -1753,7 +1753,7 @@ mandatory sweep: error-shaping helper functions - 13 site(s), collected mechanic
 - `crates/rigger-conductor/src/conductor.rs:5142-5160` `guard_review_round_tree_on_tier_err`
 - `crates/rigger-conductor/src/conductor.rs:28964-29023` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `crates/rigger-domain/src/agent.rs:363-365` `no_result_error`
-- `crates/rigger-domain/src/ingest.rs:674-712` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
+- `crates/rigger-domain/src/ingest.rs:676-714` `a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4579-4632` `a_storage_error_in_a_rebuild_propagates_and_the_next_rebuild_resumes_and_folds_it`
 - `crates/rigger-grounder/src/grounder/mod.rs:207-213` `retired_grounder_error`
 - `crates/rigger-worktree-git/src/worktree.rs:3562-3589` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`

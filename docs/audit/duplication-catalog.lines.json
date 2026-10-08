@@ -374,8 +374,8 @@
       },
       {
         "file": "crates/rigger-domain/src/ingest.rs",
-        "start_line": 674,
-        "end_line": 712
+        "start_line": 676,
+        "end_line": 714
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
