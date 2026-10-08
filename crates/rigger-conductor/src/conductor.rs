@@ -10878,6 +10878,13 @@ impl RunCtx<'_> {
     /// naming no code keeps the empty radius. With no graph the grounder radius is returned
     /// verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
+        self.grounded_blast_radius_at(st, BLAST_RADIUS_GRAPH_DEPTH)
+    }
+
+    /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the graph arm expanding the seed
+    /// `depth` hops; production passes [`BLAST_RADIUS_GRAPH_DEPTH`] alone. Depth 0 expands nothing:
+    /// the radius is the seed, the named code's files.
+    fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> BlastRadius {
         let base = match self.deps.grounder {
             Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
             None => BlastRadius::default(),
@@ -10899,8 +10906,7 @@ impl RunCtx<'_> {
             return base;
         }
         let seed = base.precise.clone();
-        // Depth 2, the same neighborhood depth the prompt traversal reads.
-        let sub = match graph.subgraph(&seed, 2) {
+        let sub = match graph.subgraph(&seed, depth) {
             Ok(sub) => sub,
             Err(_) => return base,
         };
@@ -13149,6 +13155,9 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
         },
     );
 }
+
+/// How many hops the graph arm of a blast radius expands the named code's files (addendum 2.4).
+const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 
 /// The CONFIDENCE-TIER blast radius (spec 29c criterion 2, addendum 6.2): TWO filters over the ONE
 /// tiered edge set a seeded [`Projection::subgraph`](crate::contextgraph::Projection::subgraph)
@@ -38974,34 +38983,30 @@ mod tests {
         paired as f64 / radii.len().max(1) as f64
     }
 
-    /// MEASUREMENT, run explicitly over a real tree: each criterion in `RIGGER_MEASURE_CRITERIA`
-    /// (a JSON list of `{id, criterion}`) grounded through [`RunCtx::grounded_blast_radius`] with
-    /// the tree's symbols index and its `.rigger/graph.db` present (`RIGGER_MEASURE_ROOT`), exactly
-    /// as a run grounds a unit. Prints the co-scheduled share of the structural radii (the text
-    /// fallback removed), the text-fallback files alone, and the combined radius, then the pairs
-    /// named in `RIGGER_MEASURE_PAIRS` (`a+b,c+d`, unit-id prefixes) and every pair the text
+    /// MEASUREMENT, run explicitly over a real tree, every radius taken through
+    /// [`RunCtx::grounded_blast_radius_at`] with the tree's symbols index and its `.rigger/graph.db`
+    /// present (`RIGGER_MEASURE_ROOT`), exactly as a run grounds a unit.
+    ///
+    /// With `RIGGER_MEASURE_LANDED` (a JSON list of `{id, criteria, edited}`: landed units, their
+    /// criterion texts and the files their diffs actually changed), prints for graph depth 2, 1 and
+    /// 0 each unit's recall (edited files inside the union of its criteria's radii) and false
+    /// positives (radius files it did not edit), structural and combined, then the pooled recall
+    /// and the median width.
+    ///
+    /// With `RIGGER_MEASURE_CRITERIA` (a JSON list of `{id, criterion}`), at `RIGGER_MEASURE_DEPTH`
+    /// (default [`BLAST_RADIUS_GRAPH_DEPTH`]): the co-scheduled share of the structural radii (the
+    /// text fallback removed), the text-fallback files alone, and the combined radius, then the
+    /// pairs named in `RIGGER_MEASURE_PAIRS` (`a+b,c+d`, unit-id prefixes) and every pair the text
     /// fallback alone keeps apart, with the span that hit each shared file.
     #[cfg(feature = "symbols")]
     #[test]
     #[ignore = "measurement over a real tree: set RIGGER_MEASURE_ROOT and RIGGER_MEASURE_CRITERIA"]
     fn measure_blast_radius_retention_through_grounded_blast_radius() {
         let root = std::env::var("RIGGER_MEASURE_ROOT").expect("RIGGER_MEASURE_ROOT");
-        let criteria: Vec<serde_json::Value> = serde_json::from_str(
-            &std::fs::read_to_string(
-                std::env::var("RIGGER_MEASURE_CRITERIA").expect("RIGGER_MEASURE_CRITERIA"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let units: Vec<(String, String)> = criteria
-            .iter()
-            .map(|v| {
-                (
-                    v["id"].as_str().unwrap().to_string(),
-                    v["criterion"].as_str().unwrap().to_string(),
-                )
-            })
-            .collect();
+        let read_json = |var: &str| -> Option<Vec<serde_json::Value>> {
+            let path = std::env::var(var).ok()?;
+            Some(serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap())
+        };
         let identity = std::fs::read_to_string(format!("{root}/.rigger/project.id")).unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(
             &format!("{root}/.rigger/graph.db"),
@@ -39017,8 +39022,11 @@ mod tests {
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let radii_with = |grounder: &dyn Grounder,
-                          graph: Option<&dyn Projection>|
+        // The safe view of each criterion in `criteria`, through the production radius.
+        let radii_of = |grounder: &dyn Grounder,
+                        graph: Option<&dyn Projection>,
+                        depth: i64,
+                        criteria: &[(String, String)]|
          -> Vec<(String, Vec<String>)> {
             let deps = Deps {
                 grounder: Some(grounder),
@@ -39026,7 +39034,7 @@ mod tests {
                 ..stub_deps(&store, &driver, Vec::new())
             };
             let ctx = RunCtx::for_test(&cfg, &deps);
-            units
+            criteria
                 .iter()
                 .map(|(id, criterion)| {
                     let st = Stage {
@@ -39034,17 +39042,93 @@ mod tests {
                         coverage: criterion.clone(),
                         ..Default::default()
                     };
-                    (id.clone(), ctx.grounded_blast_radius(&st).safe)
+                    (id.clone(), ctx.grounded_blast_radius_at(&st, depth).safe)
                 })
                 .collect()
         };
-        let combined = radii_with(&symbols, Some(&graph));
-        let structural = radii_with(&structural_only, Some(&graph));
         let median_width = |r: &[(String, Vec<String>)]| {
             let mut w: Vec<usize> = r.iter().map(|(_, f)| f.len()).collect();
             w.sort_unstable();
             w[(w.len() - 1) / 2]
         };
+        if let Some(landed) = read_json("RIGGER_MEASURE_LANDED") {
+            let strings = |v: &serde_json::Value| -> Vec<String> {
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s.as_str().unwrap().to_string())
+                    .collect()
+            };
+            let edited_total: usize = landed.iter().map(|u| strings(&u["edited"]).len()).sum();
+            let absent: Vec<String> = landed
+                .iter()
+                .flat_map(|u| strings(&u["edited"]))
+                .filter(|f| !std::path::Path::new(&root).join(f).exists())
+                .collect();
+            println!(
+                "landed: {} units, {edited_total} edited files, {} absent from the measured tree",
+                landed.len(),
+                absent.len()
+            );
+            for depth in [2, 1, 0] {
+                for (view, grounder) in [
+                    ("combined", &symbols as &dyn Grounder),
+                    ("structural", &structural_only),
+                ] {
+                    let mut inside_total = 0;
+                    let mut radii = Vec::new();
+                    for unit in &landed {
+                        let id = unit["id"].as_str().unwrap().to_string();
+                        let criteria: Vec<(String, String)> = strings(&unit["criteria"])
+                            .into_iter()
+                            .map(|c| (id.clone(), c))
+                            .collect();
+                        let radius: BTreeSet<String> =
+                            radii_of(grounder, Some(&graph), depth, &criteria)
+                                .into_iter()
+                                .flat_map(|(_, r)| r)
+                                .collect();
+                        let edited: BTreeSet<String> =
+                            strings(&unit["edited"]).into_iter().collect();
+                        let inside = edited.intersection(&radius).count();
+                        inside_total += inside;
+                        println!(
+                            "depth {depth} {view} {id}: recall {inside}/{} false positives {} width {}",
+                            edited.len(),
+                            radius.difference(&edited).count(),
+                            radius.len()
+                        );
+                        radii.push((id, radius.into_iter().collect::<Vec<_>>()));
+                    }
+                    println!(
+                        "depth {depth} {view}: pooled recall {inside_total}/{edited_total} = {:.3}, median width {}",
+                        inside_total as f64 / edited_total.max(1) as f64,
+                        median_width(&radii)
+                    );
+                }
+            }
+        }
+        let Some(criteria) = read_json("RIGGER_MEASURE_CRITERIA") else {
+            return;
+        };
+        let units: Vec<(String, String)> = criteria
+            .iter()
+            .map(|v| {
+                (
+                    v["id"].as_str().unwrap().to_string(),
+                    v["criterion"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let depth: i64 = std::env::var("RIGGER_MEASURE_DEPTH")
+            .map(|d| d.parse().unwrap())
+            .unwrap_or(BLAST_RADIUS_GRAPH_DEPTH);
+        println!("retention at graph depth {depth}");
+        let radii_with = |grounder: &dyn Grounder, graph: Option<&dyn Projection>| {
+            radii_of(grounder, graph, depth, &units)
+        };
+        let combined = radii_with(&symbols, Some(&graph));
+        let structural = radii_with(&structural_only, Some(&graph));
         for (label, grounder) in [
             ("no graph", &symbols as &dyn Grounder),
             ("no graph, structural", &structural_only),
