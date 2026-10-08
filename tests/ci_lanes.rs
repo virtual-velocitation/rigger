@@ -193,6 +193,32 @@ fn ci_runs_the_no_default_and_core_lanes_through_the_lanes_script() {
     );
 }
 
+/// The loop runs each non-default lane through the lanes script as a gate of its own, so a lane
+/// is an instrument, never a reviewer's hand run: every implement round gates the no-default
+/// lane, and the check-in gates both lanes on the merged tree.
+#[test]
+fn the_loop_gates_the_no_default_lane_every_round_and_both_lanes_at_check_in() {
+    let cfg = common::cli::loaded_config(&repo_root());
+    let lane_gates = |stage: &str| -> Vec<String> {
+        cfg.workflow.stages[stage]
+            .gates
+            .iter()
+            .filter_map(|id| {
+                let run = &cfg.workflow.gates[id].run;
+                LANES
+                    .iter()
+                    .find(|lane| run.ends_with(&format!("sh {LANES_SCRIPT} {lane}")))
+                    .map(|lane| format!("{id}={lane}"))
+            })
+            .collect()
+    };
+    assert_eq!(lane_gates("implement"), ["lane-no-default=no-default"]);
+    assert_eq!(
+        lane_gates("checkin"),
+        ["lane-no-default=no-default", "lane-core=core"]
+    );
+}
+
 /// The light lane lints every workspace target with warnings denied and runs every workspace
 /// test, both without the default features - the battery the default lane runs, on the
 /// grep-only `cfg` universe.

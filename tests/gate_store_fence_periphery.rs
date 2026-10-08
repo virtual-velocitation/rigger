@@ -780,6 +780,7 @@ impl AgentDriver for FixedOutputDriver {
         Ok(AgentResult {
             output: self.output.clone(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

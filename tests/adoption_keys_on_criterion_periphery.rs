@@ -200,6 +200,7 @@ impl AgentDriver for WritesFileDriver {
         Ok(AgentResult {
             output: "ok".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -241,12 +242,14 @@ impl AgentDriver for ProposesSlugDriver {
             return Ok(AgentResult {
                 output: "proposed the DAG".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if agent.id == "judge" {
             return Ok(AgentResult {
                 output: r#"{"verdict":"approve"}"#.into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if let Some((name, content)) = &self.worker_write {
@@ -257,6 +260,7 @@ impl AgentDriver for ProposesSlugDriver {
         Ok(AgentResult {
             output: "ok".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

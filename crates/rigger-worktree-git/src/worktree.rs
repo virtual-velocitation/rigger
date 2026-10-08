@@ -1675,7 +1675,7 @@ pub fn current_branch(repo: &str) -> Option<String> {
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
-// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
+// UNIT_REVIEW_CACHE_PREFIX, unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
 // than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
@@ -1683,7 +1683,7 @@ pub fn current_branch(repo: &str) -> Option<String> {
 // sites are unaffected.
 pub use crate::spawn::{
     unit_cache_sibling, unit_scratch_slug, unit_sibling, UNIT_CACHE_PREFIX,
-    UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
+    UNIT_GATE_SCRATCH_PREFIX, UNIT_REVIEW_CACHE_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
@@ -1820,7 +1820,13 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
         reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
     }
-    // The unit's gate scratch root (spec 113): a THIRD sibling of the unit worktree, on the
+    // The unit's review build cache: the sibling every review tier of the unit builds into, on
+    // the identical coordinate, so it goes with the unit's worktree on every removal path.
+    if let Some(review) = unit_sibling(worktree_dir, UNIT_REVIEW_CACHE_PREFIX) {
+        reap_dir_before_removal(&review, authorized_root);
+        let _ = std::fs::remove_dir_all(&review);
+    }
+    // The unit's gate scratch root (spec 113): a further sibling of the unit worktree, on the
     // identical coordinate the cache sibling above already reclaims, so every removal path
     // inherits it from this one authority. A no-op for anything that owns no such root.
     reclaim_gate_scratch_sibling(worktree_dir, authorized_root);
@@ -2463,35 +2469,13 @@ pub fn reclaim_worktree_on_branch(
 /// tiers actually judged. It is deliberately non-failing - an unresolvable HEAD yields
 /// an empty stamp that the emit path then omits, never an error that fails the run.
 pub fn head_sha_of(dir: &str) -> String {
-    rev_sha_of(dir, "HEAD")
-}
-
-/// The sha `rev` resolves to in `dir`, deliberately non-failing: an empty `dir` (a repo-less /
-/// worktree-less run) or an unresolvable `rev` yields an empty string, never an error. The one
-/// resolver behind [`head_sha_of`] (the COMMIT sha) and the [`HEAD_TREE`] tree address.
-pub fn rev_sha_of(dir: &str, rev: &str) -> String {
     if dir.is_empty() {
         return String::new();
     }
-    run_git(dir, &["rev-parse", rev])
+    run_git(dir, &["rev-parse", "HEAD"])
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
-
-/// The git TREE-SHA of the committed HEAD tree in `dir` - the content address of the
-/// whole worktree (spec 12, unit 1: content-addressed gate verdicts). Unlike
-/// [`head_sha_of`] (the COMMIT sha, which changes on every commit even when the tree is
-/// byte-identical), this is the TREE object sha, so two commits carrying the same file
-/// content hash EQUAL: it is a pure function of the tree's bytes, which is exactly the
-/// property the gate cache needs (a gate re-run over an unchanged tree is a hit; a
-/// changed tree misses). It is the whole-tree default; unit 3 narrows the addressed
-/// inputs to a gate's `inputs:` paths.
-///
-/// Deliberately non-failing, mirroring [`head_sha_of`] via [`rev_sha_of`]: an empty `dir` (a repo-less /
-/// worktree-less gate run) or an unresolvable HEAD yields an empty string, which the
-/// caller reads as "no tree to address" and simply skips content-addressing - never an
-/// error that fails the run.
-pub const HEAD_TREE: &str = "HEAD^{tree}";
 
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
@@ -5051,48 +5035,6 @@ mod tests {
     }
 
     #[test]
-    fn tree_sha_of_addresses_tree_content_not_the_commit() {
-        // spec 12, unit 1: the HEAD_TREE sha is the content address of the committed tree. Two
-        // DISTINCT commits (different message / parent / time, so a different COMMIT sha)
-        // that carry byte-identical trees must yield the SAME tree sha - so a gate re-run
-        // over an unchanged input is a cache hit - while a real content change must yield a
-        // DIFFERENT sha - so a changed input misses.
-        let repo = init_repo();
-        let p = repo.path().to_str().unwrap().to_string();
-
-        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
-        run_git(&p, &["add", "-A"]).unwrap();
-        run_git(&p, &["commit", "-q", "-m", "first"]).unwrap();
-        let t1 = rev_sha_of(&p, HEAD_TREE);
-        assert_eq!(t1.len(), 40, "a git tree sha is 40 hex chars: {t1:?}");
-        assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
-
-        // A fresh EMPTY commit advances the COMMIT sha but leaves the tree bytes unchanged,
-        // so the TREE sha is stable - the exact property head_sha_of does NOT have.
-        let head1 = head_sha_of(&p);
-        run_git(&p, &["commit", "--allow-empty", "-q", "-m", "empty"]).unwrap();
-        assert_ne!(head_sha_of(&p), head1, "the commit sha advances");
-        assert_eq!(
-            rev_sha_of(&p, HEAD_TREE),
-            t1,
-            "an empty commit leaves the tree bytes unchanged, so the tree sha is stable"
-        );
-
-        // A real content change must move the tree sha.
-        std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
-        run_git(&p, &["add", "-A"]).unwrap();
-        run_git(&p, &["commit", "-q", "-m", "second"]).unwrap();
-        assert_ne!(
-            rev_sha_of(&p, HEAD_TREE),
-            t1,
-            "changed content must change the tree sha"
-        );
-
-        // A worktree-less (empty) dir yields no address, so the caller skips addressing.
-        assert!(rev_sha_of("", HEAD_TREE).is_empty());
-    }
-
-    #[test]
     fn integrate_lands_a_pre_committed_artifact_unchanged() {
         // After the conductor commits before gating, integrate must merge that EXACT
         // committed artifact - not re-commit, not drop it. The merged commit equals
@@ -6150,6 +6092,16 @@ mod tests {
                 "gated",
                 "rerun.list",
                 "panel-1",
+            );
+        /// The review build cache (`review-target-<slug>`) every review tier of a unit builds
+        /// into is that unit's too: it goes on the SAME dominant graceful path, or every
+        /// reviewed unit leaks the reviewers' reproduction builds.
+        worktree_remove_also_reclaims_the_sibling_review_cache:
+            assert_remove_reclaims_the_unit_sibling(
+                UNIT_REVIEW_CACHE_PREFIX,
+                "reviewed",
+                "probe.rlib",
+                "panel-2",
             );
         /// Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
         /// store fence (spec 70 criterion 3) creates a SECOND per-unit scratch sibling next to

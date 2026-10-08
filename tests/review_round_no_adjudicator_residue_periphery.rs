@@ -74,6 +74,7 @@ impl AgentDriver for LensResidueDriver {
         Ok(AgentResult {
             output: "reviewed the diff".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

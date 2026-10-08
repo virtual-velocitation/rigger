@@ -94,6 +94,7 @@ impl AgentDriver for Window1Driver {
             return Ok(AgentResult {
                 output: "reviewed: no blocker".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if opts.id.contains("/lens:b#") {
@@ -121,6 +122,7 @@ impl AgentDriver for Window2Driver {
             return Ok(AgentResult {
                 output: "reviewed: no blocker".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         Ok(AgentResult::default())

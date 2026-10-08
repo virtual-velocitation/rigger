@@ -62,13 +62,23 @@ pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
 /// `worktree`.
 pub const UNIT_GATE_SCRATCH_PREFIX: &str = "rigger-gate-";
 
+/// Filesystem prefix of a unit's REVIEW build cache (`review-target-<slug>`), a SIBLING of its
+/// worktree under the scratch root: the `CARGO_TARGET_DIR` every review tier of the unit is
+/// spawned with, so a reviewer's own reproduction - in its scratch worktree, at whatever sha it
+/// probes - never builds into, or swaps a binary in, the unit's own cache that the implementer,
+/// the sdet-author and the gates share. See [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives
+/// here rather than in `worktree`.
+pub const UNIT_REVIEW_CACHE_PREFIX: &str = "review-target-";
+
 /// The unit slug of a scratch-root entry that is one of a unit's per-unit caches - its build
-/// cache (`cargo-target-<slug>`) or its gate scratch root (`rigger-gate-<slug>`) - or `None`
-/// for any other name. The slug may be empty (a bare `cargo-target-`). Every scratch walk
-/// classifies by this one predicate (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), so
-/// a unit's gate scratch root is reported, measured and reclaimed exactly as its cache is.
+/// cache (`cargo-target-<slug>`), its review build cache (`review-target-<slug>`) or its gate
+/// scratch root (`rigger-gate-<slug>`) - or `None` for any other name. The slug may be empty
+/// (a bare `cargo-target-`). Every scratch walk classifies by this one predicate (spec 113,
+/// THE GATE SCRATCH ROOT HAS ONE LIFECYCLE), so each is reported, measured and reclaimed
+/// exactly as the unit's build cache is.
 pub fn unit_scratch_slug(name: &str) -> Option<&str> {
     name.strip_prefix(UNIT_CACHE_PREFIX)
+        .or_else(|| name.strip_prefix(UNIT_REVIEW_CACHE_PREFIX))
         .or_else(|| name.strip_prefix(UNIT_GATE_SCRATCH_PREFIX))
 }
 
@@ -458,6 +468,15 @@ pub struct SpawnRequest {
     /// back-compatible field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<String>,
+    /// The build location the CONDUCTOR chose for this spawn - the `CARGO_TARGET_DIR` its
+    /// spawn environment carries: the unit's `cargo-target-<slug>` cache for a spawn that
+    /// builds the unit's tree, the unit's `review-target-<slug>` cache for a review tier.
+    /// Recorded so a driver that cannot set a worker's environment names the SAME directory
+    /// ([`WaveItem::cargo_target_dir`]) the environment-setting drivers export, from one choice.
+    /// Omitted from the wire when empty (a spawn with no unit worktree, or a request an older
+    /// binary recorded).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cargo_target_dir: String,
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] event-meta key, beside the run id's, carrying the scratch root
@@ -696,8 +715,9 @@ pub struct WaveItem {
     /// it in.
     #[serde(default)]
     pub marker_path: Option<String>,
-    /// The unit's ONE build location (spec 77, criterion 1): the `cargo-target-<unit>`
-    /// sibling of the worktree, the same directory the unit's gates build into. The SDK
+    /// The spawn's ONE build location (spec 77, criterion 1), copied from
+    /// [`SpawnRequest::cargo_target_dir`]: the `cargo-target-<unit>` sibling of the worktree the
+    /// unit's gates build into, or the unit's `review-target-<unit>` cache for a review tier. The SDK
     /// driver receives it as `CARGO_TARGET_DIR` in the spawn's environment; a driver that
     /// cannot set a worker's environment (the editor's workflow driver runs workers through
     /// an agent tool with none) must NAME it in the worker's instructions instead, or every
@@ -736,9 +756,16 @@ impl From<&SpawnRequest> for WaveItem {
             // Stamped by `rigger step` (cmd_step) from the resolved scratch root + run id;
             // a pure fold has neither, so leave it absent here.
             marker_path: None,
-            // The same derivation `spawn_env` uses for the SDK driver's CARGO_TARGET_DIR, so
-            // both drivers name one build location per unit.
-            cargo_target_dir: unit_cache_sibling(&req.dir),
+            // The build location the conductor recorded on the request - the very
+            // CARGO_TARGET_DIR its spawn environment carries - so both drivers name one build
+            // location per spawn. A request an older binary recorded carries none; it falls
+            // back to the unit's own cache, the one location every spawn used then, so a run
+            // resumed across the upgrade keeps building where it did.
+            cargo_target_dir: if req.cargo_target_dir.is_empty() {
+                unit_cache_sibling(&req.dir)
+            } else {
+                Some(req.cargo_target_dir.clone())
+            },
             // The live work-line rides the slim manifest: the wave the thin driver reads is
             // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
             // nothing (the false-green class this copy closes).
@@ -1035,6 +1062,9 @@ mod tests {
     fn unit_scratch_slug_names_the_unit_of_a_cache_or_gate_scratch_root_and_nothing_else() {
         assert_eq!(unit_scratch_slug("cargo-target-unit-7"), Some("unit-7"));
         assert_eq!(unit_scratch_slug("rigger-gate-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("review-target-unit-7"), Some("unit-7"));
+        assert_eq!(unit_scratch_slug("review-target-"), Some(""));
+        assert_eq!(unit_scratch_slug("review-target"), None);
         assert_eq!(unit_scratch_slug("cargo-target-"), Some(""));
         assert_eq!(unit_scratch_slug("rigger-gate-"), Some(""));
         assert_eq!(unit_scratch_slug("cargo-target"), None);
@@ -1671,6 +1701,17 @@ mod tests {
         assert!(
             json.contains("\"cargo_target_dir\":\"/scratch/cargo-target-u1\""),
             "the driver reads it off the wave: {json}"
+        );
+        let reviewer = SpawnRequest {
+            id: "u1/lens:sdet#0".into(),
+            dir: "/scratch/rigger-wt-u1".into(),
+            cargo_target_dir: "/scratch/review-target-u1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            WaveItem::from(&reviewer).cargo_target_dir.as_deref(),
+            Some("/scratch/review-target-u1"),
+            "the location the conductor recorded wins over the worktree's own cache"
         );
         let bare = SpawnRequest {
             id: "plan/plan#0".into(),

@@ -150,14 +150,19 @@ gates:                      # the project's verification library, referenced by 
   test:
     run: "sh .rigger/gates/test.sh"
     kind: core
-  # The lanes gate: the no-default and core feature lanes, through the one script CI runs
+  # The lane gates: the no-default and core feature lanes, each through the one script CI runs
   # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
   # above never built. The script derives the core lane's members from the workspace and fails a
-  # test step that ran no test. Listed at check-in only: the post-merge re-gate then covers the
-  # merged tree too, and no implement round pays for two more lane builds. It sources the
-  # container runtime snippet first, as `test` does, so container-backed tests run, not skip.
-  lanes:
-    run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default && sh .rigger/gates/lanes.sh core"
+  # test step that ran no test. The no-default lane gates every implement round: it is the lane a
+  # reviewer would otherwise rebuild by hand, and an instrument proves it once per tree instead.
+  # The core lane gates the check-in, whose post-merge re-gate covers the merged tree too. Each
+  # sources the container runtime snippet first, as `test` does, so container-backed tests run,
+  # not skip.
+  lane-no-default:
+    run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default"
+    kind: core
+  lane-core:
+    run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh core"
     kind: core
   # The content gates: checks over the lines a diff adds - `style` (Gap 4a: no em dash, U+2014,
   # in any added text) and `no-os-kill` (spec 78: no OS-level kill, process-group target or
@@ -247,7 +252,7 @@ stages:
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
   #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
   #    red -> green is enforced around the change, the full gate set
-  #    (fmt + clippy + build + test + style) must pass, THEN the unit reviews ITSELF through
+  #    (fmt + clippy + build + test + the no-default lane + style) must pass, THEN the unit reviews ITSELF through
   #    `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
   #    does it integrate (on_pass: merge). A reject or a gate failure feeds back into
   #    this same unit's remediation loop (re-ground, re-implement with the feedback)
@@ -258,7 +263,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, audit, test, style, no-os-kill, boundary, red-before-green]
+    gates: [fmt, clippy, build, audit, test, lane-no-default, style, no-os-kill, boundary, red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -275,6 +280,6 @@ stages:
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
     # The `mutation` gate is declared above but unwired from this stage until #32 lands.
-    gates: [fmt, clippy, build, audit, test, lanes, style-spec, no-os-kill-spec, boundary]
+    gates: [fmt, clippy, build, audit, test, lane-no-default, lane-core, style-spec, no-os-kill-spec, boundary]
     on_pass: merge
     coverage: "the whole spec diff passes every gate on the merged tree"

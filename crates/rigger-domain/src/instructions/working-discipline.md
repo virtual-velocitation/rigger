@@ -28,9 +28,11 @@ lookup surface: a fan-out is over its nodes, never over files. Two kinds exist i
   them. A `GAP:` line in an answer is a knowledge-graph gap: record it with `rigger_emit` as a
   DecisionMade so it surfaces for a spec. The same rule binds you: the graph first, a literal
   `grep` only when it is strictly necessary, and each such use recorded.
-- `verify` (Sonnet, with a shell): ONE instance for work that contends for machine resources -
-  a build, the gate battery, a test run, a mutant reproduction - because builds hold the
-  machine-wide build slots and mutation runs once. Wait for it; do not start a second.
+- `verify` (Sonnet, with a shell): ONE instance for a build, a test run or a mutant
+  reproduction. They compete for the machine's CPU, memory and disk, so a second at once only
+  slows both; the machine-wide build slots belong to gate commands alone. Wait for it; do not
+  start a second. A reviewer never sends it the gate battery: the gate evidence in its prompt
+  already proves what the gates ran.
 
 Keep at most 16 subagents in flight. Fan out anywhere the work is enumerable; keep every
 judgment call - decomposition, design, what a test must prove, a verdict - in your own turn.

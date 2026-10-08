@@ -85,11 +85,6 @@
     "reason": "Three slice accessors returning three different fields of three different types (community nodes, filter types, failure rules)."
   },
   {
-    "id": "dup-27610bbbcb28",
-    "disposition": "not-a-duplicate",
-    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker while `unit_of` splits a spawn id at its last `/`: different delimiters for different id grammars."
-  },
-  {
     "id": "dup-360e8b87398d",
     "disposition": "not-a-duplicate",
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
@@ -415,11 +410,6 @@
     "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
   },
   {
-    "id": "dup-ed7dd2365bce",
-    "disposition": "not-a-duplicate",
-    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
-  },
-  {
     "sweep": "bespoke source-text lexer/scanner functions duplicating the canonical tree-sitter extractor",
     "disposition": "not-a-duplicate",
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
@@ -498,11 +488,6 @@
     "id": "dup-97f834a327e5",
     "disposition": "not-a-duplicate",
     "reason": "Two `AgentDriver::spawn` doubles scripted for different scenarios (a conductor unit test versus the post-merge gate error-cleanup periphery), each returning its own canned output."
-  },
-  {
-    "id": "dup-ae7ef878296c",
-    "disposition": "not-a-duplicate",
-    "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
   },
   {
     "id": "dup-b91a09b322bf",
@@ -630,11 +615,6 @@
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },
   {
-    "id": "dup-58e746ca5c35",
-    "disposition": "not-a-duplicate",
-    "reason": "The two canary suites' `spawn` doubles script different reviewer verdicts for their own scenarios (false-positive controls versus an unattributed correct reject)."
-  },
-  {
     "id": "dup-d887cb6f63f7",
     "disposition": "not-a-duplicate",
     "reason": "Two canary scoring tests with different seeded items and different expected counts."
@@ -708,11 +688,6 @@
     "id": "dup-cb850da85ff9",
     "disposition": "not-a-duplicate",
     "reason": "`rows` and `raw_rows` read different column sets into different row types."
-  },
-  {
-    "id": "dup-6adbc1efd3a6",
-    "disposition": "not-a-duplicate",
-    "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
   },
   {
     "id": "dup-adfce3b42b86",
@@ -965,11 +940,6 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   },
   {
-    "id": "dup-649d686bdf2a",
-    "disposition": "not-a-duplicate",
-    "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
-  },
-  {
     "id": "dup-340eefdbe122",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
@@ -1030,6 +1000,36 @@
     "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
   },
   {
+    "id": "dup-5c13daf57f07",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay-key set's insert and membership test: two different operations on one set behind its owner's lock; they share only the `lock().unwrap()` idiom."
+  },
+  {
+    "id": "dup-15a59608df13",
+    "disposition": "not-a-duplicate",
+    "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
+  },
+  {
+    "id": "dup-14d812231784",
+    "disposition": "not-a-duplicate",
+    "reason": "The two canary suites' `spawn` doubles script different reviewer verdicts for their own scenarios (false-positive controls versus an unattributed correct reject)."
+  },
+  {
+    "id": "dup-a199914ac1c3",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
+  },
+  {
+    "id": "dup-d082d63b45dc",
+    "disposition": "not-a-duplicate",
+    "reason": "Two argv tests of different facts about the spawn-bound MCP server (the server is bound to the spawn's id versus it runs the configured rigger binary); they share only the build-and-parse preamble."
+  },
+  {
+    "id": "dup-bada7e276fc1",
+    "disposition": "not-a-duplicate",
+    "reason": "`LaunchSession::of` already delegates its fresh case to `LaunchSession::fresh`; the remaining arm builds the resumed session, a different value."
+  },
+  {
     "id": "dup-3eae43945289",
     "disposition": "not-a-duplicate",
     "reason": "`DashMarker::serialize` renders the dash marker's on-disk `port\npid\n` record and `GenerationIngested::identity` joins a ledger entry's prefix and file into the `<prefix>/<file>` identity its generation is recorded under; the shared token shape is a one-line `format!` of two fields, and no logic is repeated."
@@ -1038,5 +1038,15 @@
     "id": "dup-5cdeb5b1d1dd",
     "disposition": "not-a-duplicate",
     "reason": "Two `Drop` impls releasing different resources (the store's lock file is unlocked; the blob batch's `git cat-file --batch` child is waited on through its own handle); they share only the discarded-result statement shape."
+  },
+  {
+    "id": "dup-468c9f4fc26f",
+    "disposition": "not-a-duplicate",
+    "reason": "The agent port's `spawn_request` derives the request a spawn parks from an agent definition and its spawn options (the replay driver and `rigger critique` both park through it), while the test fixture builds a minimal request from bare labels with every optional field empty."
+  },
+  {
+    "id": "dup-a9c4f3d90dac",
+    "disposition": "not-a-duplicate",
+    "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker, `unit_of` splits a spawn id at its last `/`, and `digest_address` takes the commit after a gate digest's `:` separator: three key grammars with different delimiters, each parsed in exactly one place."
   }
 ]

@@ -204,6 +204,7 @@ fn on_item_streams_a_fast_items_score_while_a_slower_sibling_is_still_scoring_th
                 return Ok(AgentResult {
                     output: "{\"verdict\":\"approve\"}".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             let finding = json!({
@@ -216,6 +217,7 @@ fn on_item_streams_a_fast_items_score_while_a_slower_sibling_is_still_scoring_th
             Ok(AgentResult {
                 output: "reviewed".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }

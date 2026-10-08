@@ -31,11 +31,13 @@ pub fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
         return AgentResult {
             output: r#"{"verdict":"approve"}"#.into(),
             resolved_model: String::new(),
+            ..Default::default()
         };
     }
     AgentResult {
         output: "reviewed the diff".into(),
         resolved_model: String::new(),
+        ..Default::default()
     }
 }
 
@@ -203,6 +205,7 @@ impl AgentDriver for NoopDriver {
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -243,6 +246,7 @@ impl AgentDriver for ProposingPlannerDriver {
             return Ok(AgentResult {
                 output: self.output.into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if !opts.dir.is_empty() {
@@ -256,6 +260,7 @@ impl AgentDriver for ProposingPlannerDriver {
         Ok(AgentResult {
             output: "ok".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

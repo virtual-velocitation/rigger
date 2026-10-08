@@ -76,6 +76,7 @@ impl AgentDriver for LandingDriver {
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

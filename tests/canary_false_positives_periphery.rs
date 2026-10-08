@@ -75,6 +75,7 @@ impl AgentDriver for FalsePositiveDriver {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             "lens" => {
@@ -122,6 +123,7 @@ impl AgentDriver for FalsePositiveDriver {
         Ok(AgentResult {
             output: "reviewed".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

@@ -101,7 +101,31 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "1031427e597a3bf7"
+    "content_hash": "cb5368bd47f04c25"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "digest_address",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "00a5e107791290a7"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "unit_gate_runs",
+    "is_test": false,
+    "proposed_module": "conductor::gate",
+    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
+    "content_hash": "21a09c447e29c071"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "gate_evidence_block",
+    "is_test": false,
+    "proposed_module": "conductor::gate",
+    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
+    "content_hash": "4e4e6bd487e2ac17"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -109,7 +133,7 @@
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "2106bcd9d3bd0286"
+    "content_hash": "1786a36201ac93d4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -469,7 +493,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "f1b8a5e0de768c58"
+    "content_hash": "609a6fb4a968eeaa"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -517,7 +541,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "24e1d117c3749c93"
+    "content_hash": "cba846123f24ce65"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -593,14 +617,6 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "is_stale",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c67af26301c22415"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "effective_attempts",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -630,14 +646,6 @@
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
     "content_hash": "f58c29466a793e9c"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "mark_stale_downstream",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "87e296015138e161"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -773,7 +781,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2cc5a5fc2162a4a1"
+    "content_hash": "edfb82e23ed02776"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -781,7 +789,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "07f3398a55851eb7"
+    "content_hash": "fcd7834f7c067d9e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -789,7 +797,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2727fb2dc5c08c93"
+    "content_hash": "2c41e57340a0cf4f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -829,7 +837,23 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5f6a2bf522847732"
+    "content_hash": "20a9f41e9032c98e"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "continue_prior_session",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "463f28fecc650824"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "record_session",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "6d1591697dac0331"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -853,7 +877,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "c81e8305390e4b08"
+    "content_hash": "29dcc3d1341ea65b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -885,7 +909,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "9f6f82b8015c7b31"
+    "content_hash": "080f624baeb5dada"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -917,7 +941,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "39baaa4aee5e9a38"
+    "content_hash": "c8e91496efe0eb28"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -949,7 +973,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "bd347486e619b1b4"
+    "content_hash": "9697fa9986d0c3d8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1005,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "9b1191e3de4e1d42"
+    "content_hash": "7978cd74f6bda323"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1013,7 +1037,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "cfb0267c9af9315b"
+    "content_hash": "7e364cf3458ce48f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1045,7 +1069,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "eb018b3c6d8ef89f"
+    "content_hash": "2e0c58b39909a900"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1053,7 +1077,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "0a86ece73d9ce7b9"
+    "content_hash": "8c04b0bb494a07ea"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1077,7 +1101,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "904453caed3408b5"
+    "content_hash": "7a7d32c9d0139e3c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1093,7 +1117,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4ee9c3fd7704885b"
+    "content_hash": "5f65ff1e7fa05dcb"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1125,7 +1149,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2f9e208a5a6a0367"
+    "content_hash": "71b8ea61ff2729b1"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1165,7 +1189,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "340ab5dc3e87eefb"
+    "content_hash": "85f3564fb93f02c3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1221,7 +1245,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "61d0ba9585ba6ffe"
+    "content_hash": "35fc927b7e51a251"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1389,7 +1413,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "87be67c7ee237e3c"
+    "content_hash": "764fe3b71d32def3"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1461,7 +1485,23 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "bd16cbe1782fe860"
+    "content_hash": "d253c276036f38c5"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "review_base_prompt",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "424367b596b81b8d"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "review_gate_evidence",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "9b921a87df34b56f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1473,11 +1513,27 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "seeded_subgraph",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "0743739b555af31d"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "review_resume_task",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "5d791c0869d4a216"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "graph_context",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1f641b84e6954f9f"
+    "content_hash": "6cb369ed43696fb0"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1937,6 +1993,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "recorded_session",
+    "is_test": false,
+    "proposed_module": "conductor::emit",
+    "reason": "name contains \"record\" (event/decision emission); grouped under `conductor::emit`.",
+    "content_hash": "470539255cea45a6"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "round_delta_base",
     "is_test": false,
     "proposed_module": null,
@@ -1950,6 +2014,14 @@
     "proposed_module": "conductor::support",
     "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
     "content_hash": "4fa62c78da4a9d85"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "later_attempt_block",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "8e954b815fb58f68"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2006,22 +2078,6 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "ab27de285d5a749c"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "stale_units_from_log",
-    "is_test": false,
-    "proposed_module": "conductor::run",
-    "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "9616f0f7022bee9b"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "stale_downstream_units",
-    "is_test": false,
-    "proposed_module": "conductor::run",
-    "reason": "name contains \"unit\" (unit run loop); grouped under `conductor::run`.",
-    "content_hash": "c13d543281b2766b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2573,7 +2629,15 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5ecbc114604d7934"
+    "content_hash": "4bd84cce0086ddba"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "resume_of",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a245aea5e91eb1ad"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2582,6 +2646,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "435d3d0c0395a91c"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "targets_for",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5c5f4d82e4cdb364"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -2645,7 +2717,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7b1255565d144ae7"
+    "content_hash": "920982990ec80bf9"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3109,7 +3181,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "91a2518e8def0fb4"
+    "content_hash": "04d1f447776b4a80"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3997,7 +4069,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d4020f827e28576e"
+    "content_hash": "09b17fb3228b6a12"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4437,7 +4509,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "06283eb92f7d2781"
+    "content_hash": "90a70ebe61a6a7a7"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4649,6 +4721,94 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "session_stub",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e88eb8177422b861"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "session_cfg",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5ca688c733336d19"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "run_session_rounds",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9ccaf266a58fa5f9"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_relaunched_driver_continues_the_session_the_log_recorded",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "72ba2d6b465ba00d"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_later_round_resumes_each_roles_session_with_what_changed_alone",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "47de4efeb47e615f"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_resumed_review_tier_is_sent_the_gate_evidence_of_the_commit_it_now_judges",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "46f2857275325eef"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3ff61bdad5c85c1d"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_fallen_back_resume_is_recorded_as_requested_but_not_continued",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "18c05c3ed3c12bb0"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_later_round_continues_the_respawn_that_produced_the_rounds_output",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "507f64f086f1da66"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "each_spawns_session_is_recorded_in_the_log_and_read_back_from_it",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3f2661430226aae9"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_driver_reporting_no_session_keeps_every_spawn_fresh",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e9c03ff21b9870ea"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_later_round_reject_naming_no_required_item_respawns_the_adjudicator",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -4781,7 +4941,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4f60fd2091d095f1"
+    "content_hash": "1833ffd3f201117c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5221,7 +5381,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f743171f7a562ffa"
+    "content_hash": "274454201a9d898c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5317,7 +5477,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "699ad10e7074ba40"
+    "content_hash": "f8db6288644bf263"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5993,6 +6153,54 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "ok_gate_digest",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "283d1fe352428228"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8a252d3827bf7691"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "digested_verdict",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b56bdb7476167960"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_digest_address_is_the_commit_its_gate_ran_on",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8fed7c6bec48bc38"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "807286ae10349d94"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_reviewer_builds_into_the_units_review_cache_never_the_units_own",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "99a78efa5ab6ca10"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "review_tier_prompts",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -6009,11 +6217,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "every_reviewer_prompt_forbids_a_mutation_sweep",
+    "name": "every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3d79f238695d6098"
+    "content_hash": "a9613b5c59f2cd8a"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6221,7 +6429,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b7080854add92331"
+    "content_hash": "3f46878623db6013"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6277,7 +6485,31 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8ffcdc0cf3433b77"
+    "content_hash": "c446bbb010052726"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_fast_forward_landing_whose_commit_was_gated_replays_its_post_merge_gates",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "bd36da96e1cffb1f"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "spawn",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6f08c05c5546fd6a"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "an_identical_tree_reached_through_different_history_is_not_replayed",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e017acd901e2d52c"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6441,51 +6673,11 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4e2b83bbe7480c80"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "55e4998a017a463e"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "fea7bca390fa04fb"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "a_resume_reseeds_the_stale_set_from_the_prior_unitintegrated_marks",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2c968320e3b55ce2"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "spawn",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "76f66e508d1426f2"
-  },
-  {
-    "file": "crates/rigger-conductor/src/conductor.rs",
-    "name": "integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "65d073ee95075d5f"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6533,7 +6725,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d1e43f483730861b"
+    "content_hash": "1ddc9c55776e0361"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6597,7 +6789,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7953fdc5704a30a6"
+    "content_hash": "01420b3b9967b004"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6613,7 +6805,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "50ff01d862b22416"
+    "content_hash": "a1e67b56638d1ab4"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6621,7 +6813,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "41f0a0637bcde586"
+    "content_hash": "0fce0117ef141f64"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6645,7 +6837,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "720bc7931caf3a95"
+    "content_hash": "9fce6f9f0f730b2b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6661,7 +6853,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fe66d1c26fcee828"
+    "content_hash": "263b0c98cd47d746"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6677,7 +6869,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4fc3183122a202bf"
+    "content_hash": "b498ea3226d4e4b5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6765,7 +6957,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1d3cbb112e9aed15"
+    "content_hash": "66fbe813e87c9b28"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6773,7 +6965,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aeb8eb55d1452049"
+    "content_hash": "6dcfad45529ad2c6"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7069,7 +7261,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "79a39970edb9f0dd"
+    "content_hash": "54775e90098179a8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -7501,7 +7693,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "96285029e8f4171f"
+    "content_hash": "cc7aed4b42c6c0d8"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -8333,7 +8525,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "d13f80cc01793cf1"
+    "content_hash": "4017ff0fcb8eeb7e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8341,7 +8533,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "9f1d41eb1f698688"
+    "content_hash": "ffd8e95b78aaa427"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8365,7 +8557,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"find_\" (lookup helper); grouped under `main::support`.",
-    "content_hash": "ee3977982847f618"
+    "content_hash": "28a0d79bb47288cb"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8429,7 +8621,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"footprint\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "c8129838a6983ef0"
+    "content_hash": "c7ddcb8fc4b41c5e"
   },
   {
     "file": "src/cli/mod.rs",
@@ -8733,7 +8925,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1689610eae341b87"
+    "content_hash": "9b8d403aa034ed2b"
   },
   {
     "file": "src/cli/mod.rs",

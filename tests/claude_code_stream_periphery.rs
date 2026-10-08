@@ -224,6 +224,29 @@ fn spawn_reads_the_recorded_stream_to_a_real_result() {
 
     assert_eq!(result.output, "done: the answer is 42");
     assert_eq!(result.resolved_model, "claude-sonnet-4-5-20250929");
+    // The session the spawn ran as - the one its launch record names - rides back for the
+    // conductor to record, and a fresh launch continued none.
+    assert_eq!(result.session_id, fx.launch_records()[0].session_id);
+    assert!(!result.session_id.is_empty());
+    assert_eq!(result.resumed_from, "");
+}
+
+#[test]
+fn a_resumed_spawn_reports_the_session_it_continued() {
+    let fx = Fixture::new();
+    let o = SpawnOpts {
+        resumed_from: "sess-prior".to_string(),
+        resume_task: "fix exactly these".to_string(),
+        ..opts("u104-stream/implementer#1")
+    };
+
+    let result = fx
+        .driver()
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect("the recorded stream ends in a result");
+
+    assert_eq!(result.session_id, "sess-prior");
+    assert_eq!(result.resumed_from, "sess-prior");
 }
 
 #[test]

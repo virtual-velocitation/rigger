@@ -201,6 +201,19 @@ mod tests {
                 "the fan-out section must name {phrase:?}"
             );
         }
+        // Only a gate command takes a machine-wide build slot; an agent's build does not, so
+        // the verify helper runs one at a time because builds compete for the machine, never
+        // because they hold a slot.
+        // Read by its words, so a rewrap of the markdown never moves either verdict.
+        let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            words.contains("the machine-wide build slots belong to gate commands alone"),
+            "the verify rule must name who holds the build slots"
+        );
+        assert!(
+            !words.contains("builds hold the machine-wide build slots"),
+            "an agent's build holds no machine-wide build slot"
+        );
     }
 
     #[test]

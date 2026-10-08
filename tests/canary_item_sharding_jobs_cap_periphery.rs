@@ -107,6 +107,7 @@ fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicki
             Ok(AgentResult {
                 output: "reviewed".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -298,6 +299,7 @@ fn run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors() {
                 return Ok(AgentResult {
                     output: "{\"verdict\":\"approve\"}".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             let anchor = anchor_of(prompt);
@@ -315,6 +317,7 @@ fn run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors() {
             Ok(AgentResult {
                 output: "reviewed".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
