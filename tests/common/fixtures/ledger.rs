@@ -93,3 +93,41 @@ pub fn entry_records(events: &[Event]) -> Vec<(GenerationIngested, String, Strin
         })
         .collect()
 }
+
+/// A STORE RECORDED BEFORE THE LEDGER AND BEFORE THE GROUP STAMP (spec 107, SINK OUTCOMES row
+/// 13's fixture): record every batch the SHIPPED walk extracts from the tree at `root` into
+/// `store`'s run stream as derived rows that carry their replay key and no group, and fold each
+/// batch into `graph`. The group lookup then answers no generation for any identity of the tree
+/// while the graph holds each one's current generation.
+#[cfg(feature = "symbols")]
+pub fn seed_pre_ledger_rows_without_a_group(
+    root: &std::path::Path,
+    store: &dyn rigger::eventstore::EventStore,
+    graph: &dyn rigger::contextgraph::Projection,
+) {
+    let folding = rigger::ingest::folding_into(store, Some(graph), &|_| {});
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
+        let rows: Vec<Event> = batch
+            .iter()
+            .map(|(key, event)| {
+                let identity = rigger::ingest::derived_key_parts(key)
+                    .expect("the walk keys every batch under its identity and generation")
+                    .0;
+                let mut row = rigger::ingest::keyed_derived_event((*event).clone(), key);
+                assert_eq!(
+                    row.meta.remove(rigger::eventstore::META_GROUP).as_deref(),
+                    Some(identity)
+                );
+                row
+            })
+            .collect();
+        let done = folding
+            .append_and_fold(
+                rigger::conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &rows,
+            )
+            .unwrap();
+        assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
+    });
+}

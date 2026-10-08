@@ -20781,9 +20781,10 @@ mod tests {
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
             arm_read_fault, generation_ingested, git_answer, git_hash_object,
-            planted_extraction_tree, walked_handoffs, write_file, Handed, DOCUMENT_BODY,
-            DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
-            WORKFLOW_BODY, WORKFLOW_PATH,
+            planted_extraction_tree, seed_pre_ledger_rows_without_a_group, walked_handoffs,
+            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
+            SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY,
+            WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -21897,6 +21898,309 @@ mod tests {
                 ))
             );
             assert_eq!(recorded(&inner), Recorded::new());
+        }
+
+        // THE RUN'S SINK MEMOIZES THE LOG SIDE (spec 107 criterion 11): how many group lookups
+        // the sink makes, counted at the store it was handed.
+
+        /// One group lookup of each of `identities` on the run stream, in order: the whole of
+        /// what a counted store saw, past the reads that built the run, when the sink asked it
+        /// nothing else.
+        fn lookups(identities: &[&str]) -> Vec<CountedRead> {
+            identities
+                .iter()
+                .map(|identity| CountedRead::LatestInGroup {
+                    stream: STREAM.to_string(),
+                    group: identity.to_string(),
+                })
+                .collect()
+        }
+
+        /// GIVEN a file whose generation the log and the graph both hold, recorded by an earlier
+        /// process, WHEN one process's sink is handed its current batch twice, THEN it asks the
+        /// store's group lookup for the identity once, the second batch being answered from the
+        /// process's own memo, and records nothing.
+        #[test]
+        fn a_current_batch_handed_twice_makes_one_group_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let cfg = Config::default();
+            let handed = walked(root, SOURCE);
+            {
+                let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+                handed.emit(&RunCtx::for_test(&cfg, &deps)).unwrap();
+            }
+            let once = recorded(&inner);
+            assert_eq!(once.len(), 1);
+            let counted = ReadCountingStore::new(&inner);
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(handed.emit(&ctx), Ok(()));
+
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(recorded(&inner), once);
+        }
+
+        /// GIVEN a file no recording names, WHEN one process's sink is handed its batch, the same
+        /// batch again, the batch of its next body and then the first batch over the reverted
+        /// file, THEN the store's group lookup is asked for the identity once, at the first
+        /// batch: each later batch is answered from the generation of the entry the process last
+        /// recorded - the unchanged batch records nothing, and the moved and the reverted body
+        /// each record their entry - while another identity is asked for on its own.
+        #[test]
+        fn an_identity_is_looked_up_once_and_its_later_batches_answer_from_the_entry_recorded() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let a = walked(root, SOURCE);
+            let a_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+
+            assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
+            assert_eq!(recorded(&inner), entries(std::slice::from_ref(&a_entry)));
+            write_file(&file, BODY_B.as_bytes());
+            let b = walked(root, SOURCE);
+            assert_eq!([b.emit(&ctx), b.emit(&ctx)], [Ok(()), Ok(())]);
+            write_file(&file, SOURCE_BODY.as_bytes());
+            assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
+
+            let b_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            assert_eq!(
+                recorded(&inner),
+                entries(&[a_entry.clone(), b_entry, a_entry])
+            );
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+
+            assert_eq!(walked(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
+            assert_eq!(
+                counted.reads()[built..],
+                lookups(&[SOURCE, "gd/src/lib.rs"])
+            );
+        }
+
+        /// GIVEN a store whose group lookup goes unanswered the first time it is asked, WHEN one
+        /// process's sink is handed a batch three times, THEN the first emit fails and memoizes
+        /// nothing, so the second asks the store again and records the entry, and the third,
+        /// answered from the memo, asks nothing: two group lookups in all.
+        #[test]
+        fn a_batch_whose_group_lookup_failed_handed_again_makes_a_second_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let unanswered = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+            let counted = ReadCountingStore::new(&unanswered);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let handed = walked(root, SOURCE);
+
+            assert_eq!(
+                handed.emit(&ctx),
+                Err(format!(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: {LOOKUP_REFUSED}"
+                ))
+            );
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE]));
+            assert_eq!(recorded(&inner), Recorded::new());
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE, SOURCE]));
+            let once = entries(&[generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            )]);
+            assert_eq!(recorded(&inner), once);
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(counted.reads()[built..], lookups(&[SOURCE, SOURCE]));
+            assert_eq!(recorded(&inner), once);
+        }
+
+        /// SINK OUTCOMES row 13's fixture in one process.
+        ///
+        /// GIVEN a store recorded before the ledger and before the group stamp, so the group
+        /// lookup answers no generation for any identity while the graph holds each one's,
+        /// WHEN one process walks the tree twice,
+        /// THEN the first walk asks the group lookup once per identity, in walk order, and
+        /// records one entry per identity; the memo takes each entry's generation in place of
+        /// the lookup's empty answer, so the second walk makes no group lookup and records
+        /// nothing.
+        #[test]
+        fn a_pre_ledger_identity_takes_its_entrys_generation_so_its_second_walk_asks_no_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            seed_pre_ledger_rows_without_a_group(tree.path(), &inner, &graph);
+            let handoffs = walked_handoffs();
+            let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
+            assert_eq!(
+                identities
+                    .iter()
+                    .map(|identity| (
+                        crate::ingest::latest_generation(&inner, STREAM, identity).unwrap(),
+                        graph.current_generation(identity).unwrap()
+                    ))
+                    .collect::<Vec<_>>(),
+                WALKED
+                    .iter()
+                    .map(|batch| (None, Some(batch.generation.to_string())))
+                    .collect::<Vec<_>>(),
+                "premise: the log answers no generation and the graph holds each one"
+            );
+            let pre_ledger = recorded(&inner);
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+
+            ctx.ingest_project_batches().unwrap();
+
+            let first_walk = [pre_ledger, entries(&walked_entries())].concat();
+            assert_eq!(recorded(&inner), first_walk);
+            assert_eq!(counted.reads()[built..], lookups(&identities));
+
+            ctx.ingest_project_batches().unwrap();
+
+            assert_eq!(counted.reads()[built..], lookups(&identities));
+            assert_eq!(recorded(&inner), first_walk);
+        }
+
+        /// A LONG-LIVED RUN RESTORES AN IDENTITY A REBUILD LEFT BEHIND.
+        ///
+        /// GIVEN one process whose whole-tree walk recorded every file, its memo holding each
+        /// identity's generation, and a rebuild of `graph.db`, made while the source file held
+        /// another body, that could resolve no source for the file's code entry and so left its
+        /// identity behind,
+        /// WHEN the same process's next integration reindex names the file, back at its recorded
+        /// body,
+        /// THEN the sink makes no group lookup - the memo answers the log side - and still
+        /// records the file's code entry again, because the graph's side is read on every batch;
+        /// the graph holds the identity's generation and facts again, and the file's design
+        /// identity, which the rebuild resolved, records nothing.
+        #[test]
+        fn a_long_lived_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex() {
+            use crate::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
+
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph_db = graph_db.to_str().unwrap();
+            let graph = Projector::open(graph_db, "test").unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            ctx.ingest_project_batches().unwrap();
+            let handoffs = walked_handoffs();
+            let identities: Vec<&str> = handoffs.iter().map(|(of, _)| of.as_str()).collect();
+            let walked_once = entries(&walked_entries());
+            assert_eq!(recorded(&inner), walked_once);
+            assert_eq!(counted.reads()[built..], lookups(&identities));
+
+            // The rebuild: every entry re-extracted from the tree, no object database to ask.
+            write_file(&file, SOURCE_BODY.replace("helper", "assistant").as_bytes());
+            let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let rebuilt = Projector::rebuild(
+                &Projector::lock_rebuild(graph_db).unwrap(),
+                "test",
+                true,
+                &mut |after, sink: &mut RebuildSink| stream_past(&log, after, 1, sink),
+                &mut |entry| crate::ingest::resolve_entry(tree.path(), entry, None),
+                &mut |_| {},
+            )
+            .unwrap();
+            assert!(rebuilt.is_some(), "premise: the rebuild ran");
+            let held = |graph: &Projector| -> Vec<Option<String>> {
+                identities
+                    .iter()
+                    .map(|identity| graph.current_generation(identity).unwrap())
+                    .collect()
+            };
+            assert_eq!(
+                held(&graph),
+                WALKED
+                    .iter()
+                    .map(|batch| {
+                        Some(batch.generation.to_string())
+                            .filter(|_| (batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                    })
+                    .collect::<Vec<_>>(),
+                "premise: the rebuild left the source file's code identity behind, and no other"
+            );
+            assert_eq!(live_names(&graph), Vec::<String>::new());
+            write_file(&file, SOURCE_BODY.as_bytes());
+
+            ctx.ingest_files_into_graph(&[SOURCE_PATH.to_string()])
+                .unwrap();
+
+            assert_eq!(
+                counted.reads()[built..],
+                lookups(&identities),
+                "the reindex asks the store nothing: the memo answers the log side"
+            );
+            assert_eq!(
+                recorded(&inner),
+                [
+                    walked_once,
+                    entries(&[generation_ingested(
+                        "gc",
+                        SOURCE_PATH,
+                        "f81a57a5c4f55f52",
+                        &sized(SOURCE_BODY.as_bytes()),
+                        false
+                    )])
+                ]
+                .concat()
+            );
+            assert_eq!(
+                held(&graph),
+                WALKED
+                    .iter()
+                    .map(|batch| Some(batch.generation.to_string()))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(live_names(&graph), ["helper", "product"]);
         }
     }
 

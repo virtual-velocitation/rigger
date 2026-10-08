@@ -30,20 +30,20 @@ use std::sync::Mutex;
 use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, entry_records, generation_ingested, git_commit_all, git_hash_object,
-    live_edges, minted_events, temp_git_project_with_commit, walked_entry_events, wire_owned,
-    write_text, Handed, NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
-    TEST_MODULE_BODY, TEST_MODULE_PATH,
+    live_edges, seed_pre_ledger_rows_without_a_group, temp_git_project_with_commit,
+    walked_entry_events, wire_owned, write_text, Handed, NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH,
+    SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{Config, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{wired, EntryFold, Fold, Projection, REBUILD_OWED};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, META_GROUP};
+use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ingest::{
-    batch_is_current, derived_key_parts, entry_of_batch, folding_into, ingest_files_batched,
-    is_derived_index_type, keyed_derived_event, latest_generation, EntryFailure, GraphSide,
+    batch_is_current, entry_of_batch, folding_into, ingest_files_batched, is_derived_index_type,
+    latest_generation, EntryFailure, GraphSide,
 };
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
@@ -271,26 +271,7 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
     let root = tree.path();
     let walked = walked(root);
     let files = Files::new();
-    {
-        let (store, graph) = (files.store(), files.graph());
-        let folding = folding_into(&store, Some(&graph as &dyn Projection), &|_| {});
-        let minted = minted_events(root);
-        let identity_of = |key: &str| derived_key_parts(key).unwrap().0.to_string();
-        for batch in minted.chunk_by(|(a, _), (b, _)| identity_of(a) == identity_of(b)) {
-            let rows: Vec<Event> = batch
-                .iter()
-                .map(|(key, event)| {
-                    let mut row = keyed_derived_event(event.clone(), key);
-                    assert_eq!(row.meta.remove(META_GROUP), Some(identity_of(key)));
-                    row
-                })
-                .collect();
-            let done = folding
-                .append_and_fold(STREAM, ExpectedRevision::Any, &rows)
-                .unwrap();
-            assert_eq!(done.fold, Fold::Folded);
-        }
-    }
+    seed_pre_ledger_rows_without_a_group(root, &files.store(), &files.graph());
     let pre_ledger = files.log();
     let last_pre_ledger = pre_ledger.last().unwrap().position;
     assert_eq!(derived_count(&pre_ledger), pre_ledger.len());
