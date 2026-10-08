@@ -195,6 +195,14 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
         // adversary/adjudicator roster onto the parked request, the same additive seam
         // `title` establishes, so the wave carries it for `workflows/rigger.js` to render.
         reviews: opts.reviews.clone(),
+        // The build location the conductor chose (`spawn_env`), recorded so a driver that
+        // cannot set the worker's environment names the same directory.
+        cargo_target_dir: opts
+            .env
+            .iter()
+            .find(|(name, _)| name == "CARGO_TARGET_DIR")
+            .map(|(_, dir)| dir.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -405,7 +413,10 @@ mod tests {
             blast_radius: vec!["src/a.rs".into()],
             run_id: "run-1".into(),
             title: "the criterion".into(),
-            env: vec![("K".into(), "V".into())],
+            env: vec![
+                ("K".into(), "V".into()),
+                ("CARGO_TARGET_DIR".into(), "/work/review-target-u".into()),
+            ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
             launch: 2,
@@ -426,6 +437,7 @@ mod tests {
                 max_wall_clock: Some(900),
                 title: "the criterion".into(),
                 reviews: vec!["lens:sdet".into()],
+                cargo_target_dir: "/work/review-target-u".into(),
             }
         );
     }

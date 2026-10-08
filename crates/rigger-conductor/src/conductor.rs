@@ -512,13 +512,94 @@ fn input_digest(command: &str, commit_sha: &str) -> String {
     format!("{hash:016x}:{commit_sha}")
 }
 
+/// The commit a gate digest addresses - the `commit_sha` [`input_digest`] folded in after the
+/// command hash - or `None` for an empty or malformed digest. The one parse of the address, so
+/// a reader asking "which gates ran on this commit" ([`gate_evidence_block`]) never re-spells
+/// the digest's layout.
+fn digest_address(digest: &str) -> Option<&str> {
+    digest.split_once(':').map(|(_, commit)| commit)
+}
+
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
-/// for the ratchet's evidence. `evidence` defaults so a legacy verdict without it decodes.
+/// for the ratchet's evidence. `gate` and `evidence` default so a legacy verdict without
+/// them decodes.
 #[derive(Deserialize)]
 struct GateVerdictData {
+    #[serde(default)]
+    gate: String,
     pass: bool,
     #[serde(default)]
     evidence: String,
+}
+
+/// `unit`'s own gate-RUN verdicts in log order, each as its event, its replay key and its
+/// decoded payload: every [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) whose replay key
+/// [`unit_of_gate_key`] resolves to `unit`. A skip, a post-merge re-gate and a deferred phase
+/// gate key under other infixes, so none of them is mistaken for the unit's own gate run. The
+/// one selection behind [`recorded_gate_outcome`] and [`gate_evidence_block`].
+fn unit_gate_runs<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+) -> impl Iterator<Item = (&'a Event, &'a str, GateVerdictData)> + 'a {
+    events.iter().filter_map(move |e| {
+        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+            return None;
+        }
+        let key = e.meta.get(META_REPLAY_KEY)?;
+        if unit_of_gate_key(key) != Some(unit) {
+            return None;
+        }
+        let data = serde_json::from_slice::<GateVerdictData>(&e.data).ok()?;
+        Some((e, key.as_str(), data))
+    })
+}
+
+/// THE GATES GRADE, THE REVIEWERS JUDGE THE RESIDUE: the block every review tier's prompt
+/// carries naming what the deterministic gates already proved on the exact commit it judges -
+/// `commit`, the [`digest_address`] of each gate's [`META_INPUT_DIGEST`], the same
+/// [`worktree::head_sha_of`] `run_gates_at` addresses its gates by - so no reviewer spends its
+/// round re-running an instrument the log shows green on that commit. One line per gate, in the
+/// order the gates ran, carrying its verdict, its input digest and its recorded evidence lines;
+/// a gate recorded more than once on this commit (an infra rerun, a cache hit) shows its latest
+/// verdict. Empty - and so claiming nothing - when there is no commit (a worktree-less review)
+/// or no gate of `unit` ran on it.
+fn gate_evidence_block(events: &[Event], unit: &str, commit: &str) -> String {
+    if commit.is_empty() {
+        return String::new();
+    }
+    let mut rows: Vec<(String, bool, String, String)> = Vec::new();
+    for (e, _, v) in unit_gate_runs(events, unit) {
+        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
+            continue;
+        };
+        if digest_address(digest) != Some(commit) {
+            continue;
+        }
+        let row = (v.gate, v.pass, digest.clone(), v.evidence);
+        match rows.iter_mut().find(|r| r.0 == row.0) {
+            Some(slot) => *slot = row,
+            None => rows.push(row),
+        }
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut b = format!(
+        "\n\nGATE EVIDENCE for the commit under review (commit {commit}, which `git rev-parse \
+         HEAD` prints in the unit's worktree): every gate below already ran on exactly this \
+         commit. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
+         gate is the instrument that proves it, and your judgment covers what no gate sees. \
+         Reproduce only a specific suspicion - one named test, a reversion probe, a single-crate \
+         `cargo test -p <crate> <test>` - in your own scratch worktree, never the whole battery.\n"
+    );
+    for (gate, pass, digest, evidence) in rows {
+        let verdict = if pass { "PASS" } else { "FAIL" };
+        b.push_str(&format!("- {gate}: {verdict} (input digest {digest})\n"));
+        for line in evidence.lines() {
+            b.push_str(&format!("    {line}\n"));
+        }
+    }
+    b
 }
 
 /// The CURRENT gate outcome for `unit` as RECORDED in the event stream: `Some(true)` if the
@@ -561,25 +642,14 @@ pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
         (u32, u32),
         std::collections::BTreeMap<&str, bool>,
     > = std::collections::BTreeMap::new();
-    for e in events {
-        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
-            continue;
-        }
-        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
-            continue;
-        };
-        if unit_of_gate_key(key) != Some(unit) {
-            continue;
-        }
+    for (_, key, v) in unit_gate_runs(events, unit) {
         let Some(attempt) = gate_key_attempt(key) else {
             continue;
         };
-        if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
-            by_attempt
-                .entry((attempt, spawn::retry_of(key)))
-                .or_default()
-                .insert(key.as_str(), v.pass);
-        }
+        by_attempt
+            .entry((attempt, spawn::retry_of(key)))
+            .or_default()
+            .insert(key, v.pass);
     }
     // The latest gate run's outcome is the AND across its gates: any failing gate => `Some(false)`.
     let (_, latest) = by_attempt.iter().next_back()?;
@@ -4423,6 +4493,14 @@ impl RunCtx<'_> {
         reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
+        // The unit cache this spawn builds into ([`Self::spawn_env`]), from its role alone: the
+        // sdet-author builds the unit's own tree, so it keeps the unit's cache, warm for the
+        // gates that run right after it; every review tier builds into the unit's review cache.
+        let cache = if role == ROLE_SDET_AUTHOR {
+            crate::worktree::UNIT_CACHE_PREFIX
+        } else {
+            crate::worktree::UNIT_REVIEW_CACHE_PREFIX
+        };
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown {role} {agent_id:?}",
@@ -4454,13 +4532,13 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
-            // The ONE build-environment authority (spec 65) PLUS this spawn's own
-            // per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): a reviewer
-            // verifying inside the unit's worktree gets the same wrapper/cache/
-            // incremental vars a gate build and the implementer got, AND the same
-            // per-unit cache a gate build for this `dir` gets, so its own `cargo`
-            // invocations share both.
-            env: Self::spawn_env(&build_env, dir),
+            // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
+            // CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
+            // incremental vars a gate build and the implementer got, and the `cache` sibling
+            // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
+            // review cache for a review tier - so a reviewer's reproduction never builds into
+            // the cache the unit's gates use.
+            env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
             // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
             // is not wired in here yet.
@@ -4768,7 +4846,11 @@ impl RunCtx<'_> {
             })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
-        // their findings; it tries to prove them wrong and emits its own findings.
+        // their findings; it tries to prove them wrong and emits its own findings. It waits
+        // for every lens to FINISH, never for the first findings to appear: it weighs each
+        // lens's final position (a lens with no finding reads as "clean" only once it has
+        // ended - until then it may still be about to raise one), and the lens tier's join is
+        // where a lens's park or error surfaces before any later tier spends a spawn.
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
@@ -5688,7 +5770,7 @@ impl RunCtx<'_> {
                         // vars a gate build gets, AND land in the same per-unit
                         // cache a gate build for this `dir` gets, instead of
                         // embedding a `target/` dir inside the worktree itself.
-                        env: Self::spawn_env(&build_env, dir),
+                        env: Self::spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -6310,7 +6392,7 @@ impl RunCtx<'_> {
                         // every speculation candidate's own `cargo` invocations share the
                         // same wrapper cache AND land in its own lane's per-unit cache,
                         // never a `target/` dir embedded in its own lane worktree.
-                        env: Self::spawn_env(&build_env, &dir),
+                        env: Self::spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // A speculation candidate is an implementer lane, never a review
                         // tier: no roster to render (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -7165,8 +7247,10 @@ impl RunCtx<'_> {
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let prompt = self.build_review_prompt(st, dir, &lens_role(agent_id), round)?;
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "lens",
@@ -7601,8 +7685,10 @@ impl RunCtx<'_> {
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let prompt = self.build_review_prompt(st, dir, ROLE_ADVERSARY, round)?;
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "adversary",
@@ -7668,10 +7754,12 @@ impl RunCtx<'_> {
         // `review_protocol` (spec 103, criterion 6), appended directly here.
         let prompt = format!(
             "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7936,7 +8024,7 @@ impl RunCtx<'_> {
                     // every other call site (spec 77 c1); the planner's own `dir` is
                     // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                     // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                    env: Self::spawn_env(&build_env, ""),
+                    env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
                     // The planner/re-planner is never a review tier: no roster to render
                     // (spec 67, criterion 4).
                     reviews: Vec::new(),
@@ -8355,10 +8443,17 @@ impl RunCtx<'_> {
     /// [`run_single_stage`](Self::run_single_stage), each lane in
     /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
     /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
-    fn spawn_env(build_env: &gate::BuildEnv, dir: &str) -> Vec<(String, String)> {
+    ///
+    /// `cache` names WHICH of the unit's caches the spawn builds into: the unit's own
+    /// [`worktree::UNIT_CACHE_PREFIX`] sibling for every spawn that builds the unit's tree (the
+    /// implementer, the sdet-author, the planner), or the unit's
+    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`] sibling for a review tier, whose reproductions run
+    /// in scratch worktrees at whatever sha they probe and must never swap a binary in the cache
+    /// the unit's gates use.
+    fn spawn_env(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        if let Some(cache) = crate::worktree::unit_cache_sibling(dir) {
-            vars.push(("CARGO_TARGET_DIR".to_string(), cache));
+        if let Some(target) = crate::worktree::unit_sibling(dir, cache) {
+            vars.push(("CARGO_TARGET_DIR".to_string(), target));
         }
         vars
     }
@@ -10666,7 +10761,7 @@ impl RunCtx<'_> {
                 title: format!("resolve integrate conflict: {}", st.name),
                 attempt,
                 run_id: self.run_id.clone(),
-                env: Self::spawn_env(&build_env, &wt.dir),
+                env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
                 launch: 0,
@@ -10910,7 +11005,8 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewers raised about the unit's files) with the gate evidence of the tree in `dir`
+    /// ([`Self::review_base_prompt`]), plus the [`review_protocol`] telling this
     /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
     /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
     /// emits findings, the adversary and adjudicator (which ground after it) read them back
@@ -10921,14 +11017,42 @@ impl RunCtx<'_> {
     fn build_review_prompt(
         &self,
         st: &Stage,
+        dir: &str,
         actor: &str,
         round: Option<&ReviewRound>,
     ) -> Result<String, Error> {
         Ok(format!(
             "{}{}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             review_protocol(actor),
             round.map(ReviewRound::block).unwrap_or_default()
+        ))
+    }
+
+    /// The base every review tier's prompt opens with - the lenses and the adversary through
+    /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
+    /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the commit the reviewer
+    /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
+    /// digests are ([`Self::run_gates_at`]) - read from this run's log.
+    fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        Ok(format!(
+            "{}{}",
+            self.build_prompt(st)?,
+            self.review_gate_evidence(st, dir)?
+        ))
+    }
+
+    /// The [`gate_evidence_block`] of the commit a review tier judges in `dir` - its HEAD,
+    /// addressed by the same [`worktree::head_sha_of`] the gates' digests are
+    /// ([`Self::run_gates_at`]) - read from this run's log. The one source of the block for a
+    /// fresh review prompt ([`Self::review_base_prompt`]) and a resumed one
+    /// ([`Self::review_resume_task`]).
+    fn review_gate_evidence(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        let commit = crate::worktree::head_sha_of(dir);
+        Ok(gate_evidence_block(
+            &self.read_current_run()?,
+            &st.name,
+            &commit,
         ))
     }
 
@@ -10991,16 +11115,23 @@ impl RunCtx<'_> {
 
     /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
     /// the unit's files (this round's earlier tiers' among them, which the session has not
-    /// seen) and the round's block - its delta and REQUIRED list. The session already holds
-    /// the criterion, the grounding and its review protocol.
-    fn review_resume_task(&self, st: &Stage, round: &ReviewRound) -> String {
+    /// seen), the gate evidence of the commit this round judges in `dir` (the session saw only
+    /// an earlier round's), and the round's block - its delta and REQUIRED list. The session
+    /// already holds the criterion, the grounding and its review protocol.
+    fn review_resume_task(
+        &self,
+        st: &Stage,
+        dir: &str,
+        round: &ReviewRound,
+    ) -> Result<String, Error> {
         let seed = self.grounded_seed(st);
         let mut b = String::new();
         if let Some(g) = self.seeded_subgraph(&seed) {
             write_capped_findings(&mut b, &g, &seed);
         }
+        b.push_str(&self.review_gate_evidence(st, dir)?);
         b.push_str(&round.block());
-        b
+        Ok(b)
     }
 
     fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
@@ -12415,14 +12546,17 @@ pub fn review_protocol(actor: &str) -> String {
 /// REVIEWED (spec 103, criterion 6): its first sentences spell out in prose what [`RunCtx::
 /// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
-/// exists to catch, name in a lesson, and restore. A REVIEW NEVER MUTATES: its last sentence
+/// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
+/// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
+/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW NEVER
+/// MUTATES: its last sentence
 /// keeps mutation sweeps out of every review, since the gate that sweeps owns mutation testing
 /// and a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
 /// and adversary tiers, which also record findings through it) and [`RunCtx::
 /// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
+const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
@@ -15735,6 +15869,11 @@ mod tests {
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
+        /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
+        /// `(env, wave)`: the `CARGO_TARGET_DIR` its environment carried, and the
+        /// `cargo_target_dir` the workflow driver's wave item names for its parked request
+        /// (empty when either names none) - the two drivers' views of one build location.
+        targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
         /// before returning success - simulating a REVIEWER's own side effect
         /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
@@ -15813,6 +15952,7 @@ mod tests {
                 reviews_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
+                targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
@@ -15837,6 +15977,11 @@ mod tests {
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
             cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
+        }
+
+        /// Where each spawn of the named agent builds, `(env, wave)`, in spawn order.
+        fn targets_for(&self, agent_id: &str) -> Vec<(String, String)> {
+            cached(&self.targets_by_agent, agent_id).unwrap_or_default()
         }
 
         /// Every working dir (cwd) the named agent was spawned with, in spawn order.
@@ -15935,6 +16080,21 @@ mod tests {
                 opts.resumed_from.clone(),
                 opts.resume_task.clone(),
             ));
+            self.targets_by_agent
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push((
+                    opts.env
+                        .iter()
+                        .find(|(name, _)| name == "CARGO_TARGET_DIR")
+                        .map(|(_, dir)| dir.clone())
+                        .unwrap_or_default(),
+                    crate::spawn::WaveItem::from(&spawn_request(a, prompt, opts))
+                        .cargo_target_dir
+                        .unwrap_or_default(),
+                ));
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
             // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
             // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
@@ -19124,7 +19284,7 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens", None).unwrap();
+        let review = ctx.build_review_prompt(&unit, "", "lens", None).unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -29198,6 +29358,37 @@ mod tests {
         );
     }
 
+    /// A RESUMED review tier judges a new commit too: its later-round task carries the gate
+    /// evidence of the commit that round judges - never the earlier round's, which is all its
+    /// continued session has seen - so a resumed reviewer never re-runs a gate the log shows
+    /// green on the new commit.
+    #[test]
+    fn a_resumed_review_tier_is_sent_the_gate_evidence_of_the_commit_it_now_judges() {
+        let (rs, events, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let (earlier, now) = (ok_gate_digest(&events, 0), ok_gate_digest(&events, 1));
+        for role in ["lens:lens", ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            let (from, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every review tier");
+            assert!(!from.is_empty(), "premise: {role}'s round-1 spawn resumes");
+            let commit = digest_address(&now).unwrap();
+            assert!(
+                task.contains(&format!(
+                    "GATE EVIDENCE for the commit under review (commit {commit},"
+                )) && task.contains(&format!("- ok: PASS (input digest {now})")),
+                "{role} is sent the gate evidence of the commit it now judges:\n{task}"
+            );
+            assert!(
+                !task.contains(earlier.as_str()),
+                "{role} is never sent the earlier round's evidence:\n{task}"
+            );
+        }
+    }
+
     /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
     /// gate before any review round, and its second attempt's sdet-author continues the session
     /// its first ran as, sent the failed attempt's gate evidence as what changed.
@@ -32279,7 +32470,11 @@ mod tests {
         // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
         let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
 
-        let with_worktree = RunCtx::spawn_env(&wrapper_vars, "/scratch/rigger-wt-unit-a");
+        let with_worktree = RunCtx::spawn_env(
+            &wrapper_vars,
+            "/scratch/rigger-wt-unit-a",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-a")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert!(
@@ -32295,7 +32490,7 @@ mod tests {
         );
 
         for dir in ["", "/scratch/rigger-review-stage-0"] {
-            let got = RunCtx::spawn_env(&wrapper_vars, dir);
+            let got = RunCtx::spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
             assert_eq!(
                 got,
                 wrapper_vars.vars().to_vec(),
@@ -32304,9 +32499,27 @@ mod tests {
             );
         }
 
+        // A review tier names the unit's review cache: the same worktree derives the
+        // `review-target-<slug>` sibling instead, never the unit's own cache.
+        assert_eq!(
+            RunCtx::spawn_env(
+                &gate::BuildEnv::default(),
+                "/scratch/rigger-wt-unit-a",
+                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
+            ),
+            vec![(
+                "CARGO_TARGET_DIR".to_string(),
+                "/scratch/review-target-unit-a".to_string()
+            )],
+        );
+
         // No wrapper configured: a real unit worktree dir still gets its
         // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
-        let off = RunCtx::spawn_env(&gate::BuildEnv::default(), "/scratch/rigger-wt-unit-b");
+        let off = RunCtx::spawn_env(
+            &gate::BuildEnv::default(),
+            "/scratch/rigger-wt-unit-b",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_off_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-b")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert_eq!(
@@ -36433,6 +36646,204 @@ mod tests {
         );
     }
 
+    /// The input digest of the `ok` gate's verdict the `implement` unit recorded at `attempt`.
+    fn ok_gate_digest(events: &[Event], attempt: u32) -> String {
+        let key = gate_key(GateKey::Verdict, "implement", attempt, 0, "ok");
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key)
+            })
+            .and_then(|e| e.meta.get(META_INPUT_DIGEST).cloned())
+            .unwrap_or_else(|| panic!("no digested verdict under {key}"))
+    }
+
+    /// The gates are the instrument; the reviewers judge the residue. Every review tier's prompt
+    /// carries the evidence `run_gates_at` recorded for the exact commit it judges - each gate's
+    /// id, its verdict, its input digest and its evidence lines - so no reviewer re-runs a gate
+    /// the evidence shows green. A later round judges a new commit, so it carries that commit's
+    /// evidence and never the earlier round's.
+    #[test]
+    fn every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let digests = [ok_gate_digest(&events, 0), ok_gate_digest(&events, 1)];
+        assert_ne!(
+            digests[0], digests[1],
+            "each round judges a different commit"
+        );
+        for agent_id in ["lens", "adversary", "adj"] {
+            let prompts = driver.prompts_for(agent_id);
+            assert_eq!(prompts.len(), 2, "{agent_id} reviews both rounds");
+            for (round, prompt) in prompts.iter().enumerate() {
+                let (digest, other) = (&digests[round], &digests[1 - round]);
+                let commit = digest_address(digest).unwrap();
+                let block = format!(
+                    "GATE EVIDENCE for the commit under review (commit {commit}, which `git \
+                     rev-parse HEAD` prints in the unit's worktree): every gate below already \
+                     ran on exactly this commit. Never re-run a gate shown PASS here, by \
+                     hand or through a verify helper: the gate is the instrument that proves \
+                     it, and your judgment covers what no gate sees. Reproduce only a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - in your own scratch worktree, never the whole \
+                     battery.\n- ok: PASS (input digest {digest})\n    PASS\n"
+                );
+                assert!(
+                    prompt.contains(&block),
+                    "{agent_id} round {round} must carry its commit's gate evidence:\n{prompt}"
+                );
+                assert!(
+                    !prompt.contains(other.as_str()),
+                    "{agent_id} round {round} must not carry another round's evidence:\n{prompt}"
+                );
+            }
+        }
+    }
+
+    /// A verdict-carrying GateVerdict for `unit`'s `gate` at `attempt`, digested over `commit`.
+    fn digested_verdict(unit: &str, gate: &str, attempt: u32, pass: bool, commit: &str) -> Event {
+        Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": gate, "pass": pass, "evidence": format!("{gate}-{attempt}\nline two")
+            }))
+            .unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Verdict, unit, attempt, 0, gate),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest(gate, commit))
+    }
+
+    /// A gate digest's address is the commit `input_digest` folded into it, recovered exactly:
+    /// the part after the command hash, never a suffix match, and nothing for an empty or
+    /// malformed digest.
+    #[test]
+    fn a_digest_address_is_the_commit_its_gate_ran_on() {
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "C1")),
+            Some("C1")
+        );
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "abc123")),
+            Some("abc123")
+        );
+        assert_eq!(digest_address(&input_digest("cargo test", "")), None);
+        assert_eq!(digest_address("no-separator"), None);
+    }
+
+    /// The gate evidence block names, for the one commit under review, each gate of the unit in
+    /// the order it ran with its latest verdict on that commit, its digest and every evidence
+    /// line - and nothing recorded for another unit, another commit (one whose sha merely ends
+    /// with this one's included), a skip or a post-merge re-gate. No commit, or no gate run on
+    /// it, claims nothing.
+    #[test]
+    fn the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review() {
+        let skip = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "skipped", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Skip, "u", 1, 0, "skipped"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("skipped", "T1"));
+        let postmerge = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "pm", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::PostMergeVerdict, "u", 1, 0, "pm"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("pm", "T1"));
+        let events = vec![
+            digested_verdict("u", "fmt", 0, true, "T0"),
+            digested_verdict("u", "test", 1, false, "T1"),
+            digested_verdict("u", "fmt", 1, true, "T1"),
+            digested_verdict("other", "lint", 1, true, "T1"),
+            digested_verdict("u", "lint", 1, true, "XT1"),
+            skip,
+            postmerge,
+            digested_verdict("u", "test", 2, true, "T1"),
+        ];
+        let block = gate_evidence_block(&events, "u", "T1");
+        let rows = block.split_once("battery.\n").unwrap().1;
+        assert_eq!(
+            rows,
+            format!(
+                "- test: PASS (input digest {})\n    test-2\n    line two\n\
+                 - fmt: PASS (input digest {})\n    fmt-1\n    line two\n",
+                input_digest("test", "T1"),
+                input_digest("fmt", "T1"),
+            )
+        );
+        assert!(block.starts_with("\n\nGATE EVIDENCE for the commit under review (commit T1,"));
+        let failing = gate_evidence_block(&events[..2], "u", "T1");
+        assert!(
+            failing.ends_with(&format!(
+                "- test: FAIL (input digest {})\n    test-1\n    line two\n",
+                input_digest("test", "T1")
+            )),
+            "{failing}"
+        );
+        assert_eq!(gate_evidence_block(&events, "u", ""), "");
+        assert_eq!(gate_evidence_block(&events, "u", "T9"), "");
+        assert_eq!(gate_evidence_block(&events, "nobody", "T1"), "");
+    }
+
+    /// A reviewer's own cargo runs never build into the unit's cache, under either driver: the
+    /// lenses, the adversary and the adjudicator each get the unit's review cache - in their
+    /// spawn environment and in the workflow wave item their parked request becomes - so a reproduction in a reviewer's
+    /// scratch worktree can never swap a binary the unit's gates or another tier's test is
+    /// using. The implementer and the sdet-author build the unit's own tree and keep its cache.
+    #[test]
+    fn a_reviewer_builds_into_the_units_review_cache_never_the_units_own() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_cache = format!("{scratch}/cargo-target-implement");
+        let review_cache = format!("{scratch}/review-target-implement");
+        for (agent_id, want) in [
+            ("worker", &unit_cache),
+            (ROLE_SDET_AUTHOR, &unit_cache),
+            ("lens", &review_cache),
+            ("adversary", &review_cache),
+            ("adj", &review_cache),
+        ] {
+            assert_eq!(
+                driver.targets_for(agent_id),
+                vec![(want.clone(), want.clone())],
+                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                 workflow driver's wave"
+            );
+        }
+    }
+
     /// The prompts one approving review round hands its three tiers, `(lens, adversary,
     /// adjudicator)`: a single `review` stage with one lens, run in isolation on a stub that
     /// approves.
@@ -36492,11 +36903,13 @@ mod tests {
         );
     }
 
-    /// Mutation testing belongs to the gate that sweeps, never to a review: every review tier -
-    /// lens, adversary and adjudicator - is told never to run a mutation sweep, itself or
-    /// through a verify helper.
+    /// The gates grade the work, a review judges the residue: every review tier - lens,
+    /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
+    /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
+    /// the unit's review cache, and never to run a mutation sweep, itself or through a verify
+    /// helper, since mutation testing belongs to the gate that sweeps.
     #[test]
-    fn every_reviewer_prompt_forbids_a_mutation_sweep() {
+    fn every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -36509,6 +36922,18 @@ mod tests {
                      testing belongs to the gate that sweeps, never to a review."
                 ),
                 "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
+            );
+            assert!(
+                prompt.contains(
+                    "Never re-run the gate battery, or any gate the gate evidence shows green on \
+                     the tree under review: the gates are the instrument that grades the work, \
+                     and a review judges what they cannot see. To reproduce a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - create your own throwaway scratch worktree and run it \
+                     there, building into the CARGO_TARGET_DIR your spawn carries: the unit's \
+                     review cache, never the cache the unit's gates use."
+                ),
+                "the {tier} must leave the battery to the gates; prompt was:\n{prompt}"
             );
         }
     }

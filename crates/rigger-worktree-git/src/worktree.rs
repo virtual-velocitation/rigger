@@ -1585,7 +1585,7 @@ pub fn current_branch(repo: &str) -> Option<String> {
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
-// unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
+// UNIT_REVIEW_CACHE_PREFIX, unit_scratch_slug and unit_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather
 // than
 // here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
 // `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
@@ -1593,7 +1593,7 @@ pub fn current_branch(repo: &str) -> Option<String> {
 // sites are unaffected.
 pub use crate::spawn::{
     unit_cache_sibling, unit_scratch_slug, unit_sibling, UNIT_CACHE_PREFIX,
-    UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
+    UNIT_GATE_SCRATCH_PREFIX, UNIT_REVIEW_CACHE_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
@@ -1730,7 +1730,13 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
         reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
     }
-    // The unit's gate scratch root (spec 113): a THIRD sibling of the unit worktree, on the
+    // The unit's review build cache: the sibling every review tier of the unit builds into, on
+    // the identical coordinate, so it goes with the unit's worktree on every removal path.
+    if let Some(review) = unit_sibling(worktree_dir, UNIT_REVIEW_CACHE_PREFIX) {
+        reap_dir_before_removal(&review, authorized_root);
+        let _ = std::fs::remove_dir_all(&review);
+    }
+    // The unit's gate scratch root (spec 113): a further sibling of the unit worktree, on the
     // identical coordinate the cache sibling above already reclaims, so every removal path
     // inherits it from this one authority. A no-op for anything that owns no such root.
     reclaim_gate_scratch_sibling(worktree_dir, authorized_root);
@@ -5797,6 +5803,16 @@ mod tests {
                 "gated",
                 "rerun.list",
                 "panel-1",
+            );
+        /// The review build cache (`review-target-<slug>`) every review tier of a unit builds
+        /// into is that unit's too: it goes on the SAME dominant graceful path, or every
+        /// reviewed unit leaks the reviewers' reproduction builds.
+        worktree_remove_also_reclaims_the_sibling_review_cache:
+            assert_remove_reclaims_the_unit_sibling(
+                UNIT_REVIEW_CACHE_PREFIX,
+                "reviewed",
+                "probe.rlib",
+                "panel-2",
             );
         /// Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
         /// store fence (spec 70 criterion 3) creates a SECOND per-unit scratch sibling next to

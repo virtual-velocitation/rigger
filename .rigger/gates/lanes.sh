@@ -1,7 +1,7 @@
 #!/bin/sh
 # The feature lanes beyond the default one, run by CI (.github/workflows/rust.yml) and by the
-# check-in stage's `lanes` gate (.rigger/workflow.yml) through this one script, so the loop and
-# CI never run different commands. tests/ci_lanes.rs pins both callers and the derivation.
+# `lane-no-default` and `lane-core` gates (.rigger/workflow.yml) through this one script, so the
+# loop and CI never run different commands. tests/ci_lanes.rs pins both callers and the derivation.
 #
 # Usage: sh .rigger/gates/lanes.sh <no-default|core>
 #   LANES_DRY=1 prints each command (as `+ <command>`) and runs none.

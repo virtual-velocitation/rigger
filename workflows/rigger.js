@@ -650,15 +650,15 @@ async function runWorker(req, fatal) {
     `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
     `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
     `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
-  // One build location per unit (spec 77, criterion 1). The conductor pins the unit's
-  // `cargo-target-<unit>` sibling as CARGO_TARGET_DIR in the spawn's environment for drivers
-  // that can set one; this driver runs workers through an agent tool with no environment, so
+  // One build location per spawn (spec 77, criterion 1). The conductor pins the cache it chose
+  // (the unit's `cargo-target-<unit>`, or its `review-target-<unit>` for a review tier) as
+  // CARGO_TARGET_DIR in the spawn's environment for drivers that can set one; this driver runs workers through an agent tool with no environment, so
   // the wave names the directory and the worker is told to export it. Without this, every
   // `cargo test` a worker runs builds a fresh 50 GB `target/` inside its worktree.
   const buildLocation = req.cargo_target_dir
     ? `BUILD LOCATION (hard rule): every cargo command you run inside your worktree (build, test, clippy, mutants, anything that compiles) MUST run with\n` +
       `  export CARGO_TARGET_DIR='${req.cargo_target_dir}'\n` +
-      `set first, in the same shell. That directory is your unit's ONE build cache, shared with its gates, so nothing compiles twice; a \`target/\` inside the worktree itself is a defect that fills the disk - never create one.\n`
+      `set first, in the same shell. That directory is the build cache the conductor chose for this spawn - the unit's own cache, which its gates also build into, when you build the unit's tree; the unit's review cache when you review it, so a reproduction never swaps a binary the gates use. A \`target/\` inside the worktree itself is a defect that fills the disk - never create one.\n`
     : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +

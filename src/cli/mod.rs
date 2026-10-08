@@ -3513,8 +3513,9 @@ fn reclaim_orphan_scratch(
                 removed += 1;
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
-            // A per-unit / ad-hoc `cargo-target-<slug>` cache, or a unit's gate scratch root
-            // (`rigger-gate-<slug>`, spec 113). Mirror the worktree liveness check on the
+            // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
+            // (`review-target-<slug>`), or its gate scratch root (`rigger-gate-<slug>`, spec 113).
+            // Mirror the worktree liveness check on the
             // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
             // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
             // `-<slug>` tail) never matches and is spared.
@@ -3571,8 +3572,9 @@ fn scan_residue(
                 // dir the run never reclaims (Gap 14: orphaned build caches until a disk fills).
                 report.caches.push((name, dir_size_bytes(&entry.path())));
             } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
-                // (`rigger-gate-<slug>`, spec 113). It is reclaimed with
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19), review cache
+                // (`review-target-<slug>`) or gate scratch root (`rigger-gate-<slug>`, spec 113).
+                // It is reclaimed with
                 // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
                 // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
                 // longer live - a leftover a crash stranded between removing the worktree and
@@ -3664,8 +3666,9 @@ fn find_shadow_stores(root: &Path) -> Vec<PathBuf> {
             let name = entry.file_name();
             if ft.is_dir() {
                 let n = name.to_string_lossy();
-                // A per-unit build cache (`cargo-target-<slug>`, Gap 19) or gate scratch root
-                // (`rigger-gate-<slug>`, spec 113) is pruned like the shared `cargo-target`: it
+                // A per-unit build cache (`cargo-target-<slug>`, Gap 19), review cache
+                // (`review-target-<slug>`) or gate scratch root (`rigger-gate-<slug>`, spec 113) is
+                // pruned like the shared `cargo-target`: it
                 // never holds a real `events.db`, and descending a leaked multi-gigabyte cache
                 // would defeat this walk's cheap-beside-a-target guarantee
                 // (adv-u3gap19-shadow-walk-descends-per-unit-caches).
@@ -4029,7 +4032,7 @@ fn scratch_footprint(
     );
     let wt_dead: u64 = residue.worktrees.iter().map(|(_, bytes)| bytes).sum();
     // `residue.caches` conflates the shared cache (bare `cargo-target`/`target`) with
-    // per-unit caches (`cargo-target-<slug>`, `rigger-gate-<slug>`); only the latter belong to
+    // per-unit caches (`cargo-target-<slug>`, `review-target-<slug>`, `rigger-gate-<slug>`); only the latter belong to
     // THIS category - the shared cache's dead share is decided unconditionally above, not read
     // from here.
     let dead_caches: Vec<&(String, u64)> = residue
@@ -5392,6 +5395,14 @@ mod tests {
             RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
                 && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
             "the worker prompt names the export as a hard rule"
+        );
+        // The directory is the conductor's per-spawn choice - the unit's gate cache for a spawn
+        // that builds the unit, its review cache for a review tier - so the prompt never tells
+        // a reviewer it builds into the cache the gates use.
+        assert!(
+            RIGGER_WORKFLOW.contains("That directory is the build cache the conductor chose for this spawn")
+                && !RIGGER_WORKFLOW.contains("shared with its gates"),
+            "the worker prompt names the chosen cache without claiming every spawn shares the gates' cache"
         );
         let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
         let heartbeat = RIGGER_WORKFLOW
