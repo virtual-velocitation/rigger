@@ -4003,7 +4003,7 @@ impl RunCtx<'_> {
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
         let width = self.cfg.workflow.defaults.max_parallel_units as usize;
-        let radii = self.wave_radii(stages, ready);
+        let radii = self.wave_radii(stages, ready)?;
         let mut waiting: Vec<String> = ready.to_vec();
         let mut running: HashSet<String> = HashSet::new();
         let mut admitted_any = false;
@@ -4153,36 +4153,40 @@ impl RunCtx<'_> {
 
     /// Each ready stage's SAFE-SUPERSET radius (spec 16 unit 3) for the wave's co-scheduling
     /// rule, or `None` when the rule does not apply - no grounder, or no ready stage requests
-    /// `partition: by-blast-radius` - so every stage is free to pair. A radius is computed by
-    /// grounding the stage's `coverage` (or its name): the union of the structural
-    /// cross-reference graph and grep, uncapped, so a name-level miss can never co-schedule two
-    /// conflicting units. A hub's whole neighborhood is in it, so a hub needs no rule of its own.
+    /// `partition: by-blast-radius` - so every stage is free to pair. The radius is the RECORDED
+    /// one: the unit's latest `BlastRadiusComputed` in this run, the same radius the retention
+    /// metric reads and a crash-resumed driver re-reads, so the live decision and the log agree.
+    /// A unit with no recorded radius yet has its [`grounded_blast_radius`](Self::grounded_blast_radius)
+    /// computed and recorded at attempt 0 here - the record its first attempt would otherwise
+    /// make - and read back the same way. A grounder that records nothing (no structural index)
+    /// has the computed radius used as is.
     fn wave_radii(
         &self,
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
-    ) -> Option<HashMap<String, Vec<String>>> {
-        let grounder = match self.deps.grounder {
-            Some(g) if self.partition_requested(stages, ready) => g,
-            _ => return None,
-        };
-        Some(
-            ready
-                .iter()
-                .map(|name| {
+    ) -> Result<Option<HashMap<String, Vec<String>>>, Error> {
+        if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
+            return Ok(None);
+        }
+        let mut recorded: HashMap<String, Vec<String>> = self
+            .read_current_run()?
+            .iter()
+            .filter_map(crate::metrics::recorded_radius)
+            .collect();
+        let mut radii = HashMap::new();
+        for name in ready {
+            let safe = match recorded.remove(name) {
+                Some(safe) => safe,
+                None => {
                     let st = &stages[name];
-                    let query = if st.coverage.is_empty() {
-                        name.as_str()
-                    } else {
-                        st.coverage.as_str()
-                    };
-                    (
-                        name.clone(),
-                        grounder.blast_radius(query, GROUNDED_SEED_K).safe,
-                    )
-                })
-                .collect(),
-        )
+                    let radius = self.grounded_blast_radius(st);
+                    self.record_blast_radius(st, 0, &self.grounded_seed(st), &radius)?;
+                    radius.safe
+                }
+            };
+            radii.insert(name.clone(), safe);
+        }
+        Ok(Some(radii))
     }
 
     /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a

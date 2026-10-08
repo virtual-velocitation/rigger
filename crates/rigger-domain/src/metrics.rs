@@ -198,6 +198,17 @@ pub fn radii_conflict(a: &[String], b: &[String]) -> bool {
     b.iter().any(|f| taken.contains(f.as_str()))
 }
 
+/// A `BlastRadiusComputed` audit event's `(unit, safe files)`, or `None` for any other event or
+/// one with no unit id. The ONE decoder of a recorded radius: the retention fold and the
+/// conductor's wave scheduling both read a unit's radius through it, so the schedule and the
+/// metric read the same recorded radius.
+pub fn recorded_radius(e: &Event) -> Option<(String, Vec<String>)> {
+    if e.type_ != TYPE_BLAST_RADIUS_COMPUTED {
+        return None;
+    }
+    Some((field_str(e, "id")?, field_str_vec(e, "safe")))
+}
+
 /// Greedily group stage names into batches no two members of which [`radii_conflict`] (§3.2,
 /// §8). `items` pairs each stage name with the files of its safe radius. A stage joins the FIRST
 /// existing batch it conflicts with no member of; otherwise it opens a new batch - so an EMPTY
@@ -966,10 +977,9 @@ pub fn project(events: &[Event]) -> Metrics {
                 // safe view per unit for the parallelism-retention metric; nothing else in this
                 // read-model reacts to it. A `serialize` key an older log carries is ignored: only
                 // an overlap keeps two units apart.
-                let Some(id) = field_str(e, "id") else {
-                    continue;
-                };
-                blast_radii.insert(id, field_str_vec(e, "safe"));
+                if let Some((id, safe)) = recorded_radius(e) {
+                    blast_radii.insert(id, safe);
+                }
             }
             // Unknown / foreign event types (DecisionMade, LessonLearned, ...) are
             // ignored so the same shared log feeds every read-model.
