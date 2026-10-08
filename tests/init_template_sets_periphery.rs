@@ -118,11 +118,6 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
             ("build", "cargo build --workspace"),
             ("fmt", "cargo fmt --all --check"),
             (
-                "lane-no-default",
-                "cargo clippy --workspace --all-targets --no-default-features -- -D warnings && \
-                 cargo test --workspace --no-default-features"
-            ),
-            (
                 "lint",
                 "cargo clippy --workspace --all-targets -- -D warnings"
             ),
@@ -196,7 +191,7 @@ fn init_rerun_on_a_rust_project_writes_back_only_a_deleted_set_file() {
     assert!(
         validated
             .lines()
-            .any(|l| l == "config valid: 6 agents, 4 stages, 6 gates"),
+            .any(|l| l == "config valid: 6 agents, 4 stages, 5 gates"),
         "stdout:\n{validated}"
     );
 }
@@ -243,19 +238,10 @@ fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
     assert_eq!(
         stage_lists(&cfg),
         (
-            [
-                "fmt",
-                "build",
-                "test",
-                "lane-no-default",
-                "lint",
-                "red-before-green"
-            ]
-            .map(String::from)
-            .to_vec(),
-            ["fmt", "build", "test", "lane-no-default", "lint"]
+            ["fmt", "build", "test", "lint", "red-before-green"]
                 .map(String::from)
                 .to_vec(),
+            ["fmt", "build", "test", "lint"].map(String::from).to_vec(),
         )
     );
 }

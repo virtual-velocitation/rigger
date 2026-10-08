@@ -37,31 +37,14 @@ fn a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_lin
     let wf = &cfg.workflow;
     assert_eq!(
         wf.gates.keys().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "build",
-            "fmt",
-            "lane-no-default",
-            "lint",
-            "red-before-green",
-            "test"
-        ],
-        "the Rust set declares exactly its six gates"
+        ["build", "fmt", "lint", "red-before-green", "test"],
+        "the Rust set declares exactly its five gates"
     );
     assert_eq!(
         wf.stages["implement"].gates,
-        [
-            "fmt",
-            "build",
-            "test",
-            "lane-no-default",
-            "lint",
-            "red-before-green"
-        ]
+        ["fmt", "build", "test", "lint", "red-before-green"]
     );
-    assert_eq!(
-        wf.stages["checkin"].gates,
-        ["fmt", "build", "test", "lane-no-default", "lint"]
-    );
+    assert_eq!(wf.stages["checkin"].gates, ["fmt", "build", "test", "lint"]);
     let missing = missing_checklist_lines(dir.path());
     assert!(
         missing.is_empty(),
