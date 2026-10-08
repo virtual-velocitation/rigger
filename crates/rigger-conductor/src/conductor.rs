@@ -39031,10 +39031,15 @@ mod tests {
 
     /// A driver whose every spawn holds for its agent's configured time (`hold`, else 400 ms) and
     /// records its wall-clock window, so a wave test reads how many spawns GENUINELY overlapped and
-    /// in which order they started - which the synchronous [`Stub`] can never show.
+    /// in which order they started - which the synchronous [`Stub`] can never show. A probe made
+    /// with [`meeting`](Self::meeting) also holds each spawn until that many spawns are inside at
+    /// once (or a generous timeout passes), so two spawns the wave runs side by side are SURE to
+    /// overlap however the threads are scheduled, while a serialized wave still reads a peak of 1.
     struct OverlapProbe {
         hold: HashMap<String, std::time::Duration>,
         windows: Mutex<Vec<(String, std::time::Instant, std::time::Instant)>>,
+        meet: usize,
+        arrived: (Mutex<usize>, std::sync::Condvar),
     }
     impl OverlapProbe {
         fn new(hold: &[(&str, u64)]) -> Self {
@@ -39044,6 +39049,16 @@ mod tests {
                     .map(|(a, ms)| (a.to_string(), std::time::Duration::from_millis(*ms)))
                     .collect(),
                 windows: Mutex::new(Vec::new()),
+                meet: 0,
+                arrived: (Mutex::new(0), std::sync::Condvar::new()),
+            }
+        }
+
+        /// A probe whose spawns wait for `meet` of them to be inside at once.
+        fn meeting(meet: usize) -> Self {
+            OverlapProbe {
+                meet,
+                ..OverlapProbe::new(&[])
             }
         }
 
@@ -39081,6 +39096,15 @@ mod tests {
             _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             let start = std::time::Instant::now();
+            if self.meet > 0 {
+                let (count, cv) = &self.arrived;
+                let mut n = count.lock().unwrap();
+                *n += 1;
+                cv.notify_all();
+                let _ = cv
+                    .wait_timeout_while(n, std::time::Duration::from_secs(10), |n| *n < self.meet)
+                    .unwrap();
+            }
             let hold = self
                 .hold
                 .get(&a.id)
@@ -39208,7 +39232,7 @@ mod tests {
         }
         let grounder =
             crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
-        let probe = OverlapProbe::new(&[]);
+        let probe = OverlapProbe::meeting(2);
         let integrated = probe_one_wave(
             2,
             &["spawn_unit", "parse_spec"],
@@ -39231,7 +39255,12 @@ mod tests {
     #[test]
     fn run_wave_runs_units_side_by_side_only_when_their_radii_are_disjoint() {
         let assert_peak = |radii: &[(&str, &[&str])], peak: usize, why: &str| {
-            let probe = OverlapProbe::new(&[]);
+            // Side-by-side units meet inside the probe, so their overlap never rests on timing.
+            let probe = if peak == 2 {
+                OverlapProbe::meeting(2)
+            } else {
+                OverlapProbe::new(&[])
+            };
             let integrated =
                 probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe, &[], &[]);
             assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
