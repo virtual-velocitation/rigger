@@ -804,7 +804,7 @@ impl OneShotFixture {
 }
 
 /// A `RunStarted` for run `run` over `criteria`, stamped with its run id as the conductor mints it.
-fn run_started(run: &str, criteria: &[&str]) -> Event {
+pub fn run_started(run: &str, criteria: &[&str]) -> Event {
     Event::new(
         "RunStarted",
         serde_json::to_vec(&serde_json::json!({"run": run, "criteria": criteria})).unwrap(),

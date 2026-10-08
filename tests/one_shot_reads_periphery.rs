@@ -27,14 +27,15 @@ use std::process::Stdio;
 
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
-    ev, seed_one_shot_fixture, seed_one_shot_progress, CountedRead, OneShotFixture,
-    ReadCountingStore, ONE_SHOT_DERIVED_TYPES, ONE_SHOT_PERCEPTION_TYPES,
+    entry_event, ev, generation_ingested, run_started, seed_one_shot_fixture,
+    seed_one_shot_progress, CountedRead, OneShotFixture, ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
+    ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
 use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision};
+use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
 use rigger::mcpserver::Server;
 use serde_json::{json, Value};
 
@@ -1043,5 +1044,310 @@ fn watch_leaves_a_disorder_before_the_run_boundary_to_validate() {
     assert!(
         polled.contains("store integrity") && polled.contains("1 row(s)"),
         "a disorder inside the run is reported: {polled}"
+    );
+}
+
+/// A real ledger entry of `gc/src/a.rs` at `generation`, as the log carries one: its payload, its
+/// identity as the group and its replay key.
+fn ledger_entry(generation: &str) -> Event {
+    entry_event(
+        &generation_ingested("gc", "src/a.rs", generation, "b1", false),
+        2,
+    )
+}
+
+/// A run stream holding perception on both sides of its boundary: a decision and a ledger entry,
+/// then - when `run` names one - that run's `RunStarted`, then a note, a second ledger entry, a
+/// derived edge and a second decision.
+fn stream_with_ledger_entries(run: Option<&str>) -> Vec<Event> {
+    let mut events = vec![
+        ev(
+            "DecisionMade",
+            r#"{"id":"d-0","summary":"chose d-0","governs":["a.rs"]}"#,
+        ),
+        ledger_entry("h0"),
+    ];
+    events.extend(run.map(|run| run_started(run, &[])));
+    events.extend([
+        ev("RunNote", "{}"),
+        ledger_entry("h1"),
+        ev("EdgeInferred", r#"{"from":"a","rel":"CALLS","to":"b"}"#),
+        ev(
+            "DecisionMade",
+            r#"{"id":"d-1","summary":"chose d-1","governs":["b.rs"]}"#,
+        ),
+    ]);
+    events
+}
+
+/// Each event as the port hands it back: its type, its payload and its revision.
+fn answered(events: &[Event]) -> Vec<(&str, &str, i64)> {
+    events
+        .iter()
+        .map(|e| {
+            (
+                e.type_.as_str(),
+                std::str::from_utf8(&e.data).unwrap(),
+                e.revision,
+            )
+        })
+        .collect()
+}
+
+/// Given one `events.db` file two projects share, each holding real ledger entries (payload, group
+/// and replay key) and a derived edge in its run stream - `started` with a `RunStarted` between
+/// its two entries, `unstarted` with none - when each project's current run is read through the
+/// product's composition (a project namespace over the file-backed store), then no ledger entry
+/// and no derived event is in either slice: the store is asked to refuse the five perception types
+/// from the boundary (or from the start, where no run started) and materializes only what the run
+/// read keeps, though the stream itself holds both entries.
+#[test]
+fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_the_namespace() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let started = Namespaced::new(&backend, "started");
+    let unstarted = Namespaced::new(&backend, "unstarted");
+    started
+        .append(
+            STREAM,
+            ExpectedRevision::NoStream,
+            &stream_with_ledger_entries(Some("run-p")),
+        )
+        .unwrap();
+    unstarted
+        .append(
+            STREAM,
+            ExpectedRevision::NoStream,
+            &stream_with_ledger_entries(None),
+        )
+        .unwrap();
+    let perception = ONE_SHOT_PERCEPTION_TYPES.map(String::from).to_vec();
+    let boundary_lookup = CountedRead::LastPosition {
+        stream: STREAM.to_string(),
+        event_type: "RunStarted".to_string(),
+    };
+
+    let counted = ReadCountingStore::new(&started);
+    let (events, run_id) = rigger::run::read::read_current_run(&counted, STREAM).unwrap();
+    assert_eq!(run_id, "run-p");
+    assert_eq!(
+        answered(&events)
+            .iter()
+            .map(|(t, _, r)| (*t, *r))
+            .collect::<Vec<_>>(),
+        [("RunStarted", 2), ("RunNote", 3), ("DecisionMade", 6)]
+    );
+    assert_eq!(payload_ids(&events), ["", "", "d-1"]);
+    assert_eq!(
+        counted.reads(),
+        [
+            boundary_lookup.clone(),
+            CountedRead::Typed {
+                stream: STREAM.to_string(),
+                from: 0,
+                only: true,
+                types: CARRY_OVER.map(String::from).to_vec(),
+                materialized: 2,
+            },
+            CountedRead::Typed {
+                stream: STREAM.to_string(),
+                from: 2,
+                only: false,
+                types: perception.clone(),
+                materialized: 3,
+            },
+        ]
+    );
+    let whole = rigger::run::read::read_run(&started, STREAM).unwrap();
+    assert_eq!(
+        types(&whole),
+        ["DecisionMade", "RunStarted", "RunNote", "DecisionMade"]
+    );
+    assert_eq!(payload_ids(&whole), ["d-0", "", "", "d-1"]);
+
+    let counted = ReadCountingStore::new(&unstarted);
+    let (events, run_id) = rigger::run::read::read_current_run(&counted, STREAM).unwrap();
+    assert_eq!(run_id, "");
+    assert_eq!(
+        answered(&events)
+            .iter()
+            .map(|(t, _, r)| (*t, *r))
+            .collect::<Vec<_>>(),
+        [("DecisionMade", 0), ("RunNote", 2), ("DecisionMade", 5)]
+    );
+    assert_eq!(payload_ids(&events), ["d-0", "", "d-1"]);
+    assert_eq!(
+        counted.reads(),
+        [
+            boundary_lookup,
+            CountedRead::Typed {
+                stream: STREAM.to_string(),
+                from: 0,
+                only: false,
+                types: perception,
+                materialized: 3,
+            },
+        ]
+    );
+
+    // The entries are in each stream, group and replay key intact: the read refused them.
+    for (project, revisions) in [(&started, [1, 4]), (&unstarted, [1, 3])] {
+        let entries: Vec<(i64, Option<String>)> = project
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.type_ == "GenerationIngested")
+            .map(|e| (e.revision, e.meta.get("replay_key").cloned()))
+            .collect();
+        assert_eq!(
+            entries,
+            [
+                (revisions[0], Some("gc/src/a.rs@h0#2".to_string())),
+                (revisions[1], Some("gc/src/a.rs@h1#2".to_string())),
+            ]
+        );
+    }
+}
+
+/// Seed the repoless project at `root` with [`stream_with_ledger_entries`] under its own
+/// namespace and make both ledger entries undecodable, so a command that materializes one fails -
+/// as a whole-stream read of the seeded log now does.
+fn seed_undecodable_ledger_entries(root: &Path, run: Option<&str>) {
+    common::cli::seed_store(root);
+    common::cli::write_workflow(root, "");
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    store
+        .append(
+            STREAM,
+            ExpectedRevision::NoStream,
+            &stream_with_ledger_entries(run),
+        )
+        .unwrap();
+    assert_eq!(poison(root, "type = 'GenerationIngested'"), 2);
+    assert_eq!(
+        store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .map(|events| events.len())
+            .ok(),
+        None,
+        "the poison is live: a read that materializes a ledger entry fails"
+    );
+}
+
+/// Given a project whose run stream holds a ledger entry on each side of the run's `RunStarted`,
+/// both made undecodable, when the operator runs the one-shot commands and then drives the run
+/// with `rigger step`, then each answers from the run and its carried-over decisions - a reader
+/// that materialized a ledger entry would have failed on it.
+#[test]
+fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() {
+    let dir = common::cli::temp_repoless_project();
+    let root = dir.path();
+    seed_undecodable_ledger_entries(root, Some("run-p"));
+
+    assert_eq!(
+        rigger_ok(root, &["peers"]),
+        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
+         decision d-1 | LIVE | chose d-1 | governs: b.rs\n"
+    );
+    assert_eq!(
+        mcp_peers(root),
+        json!({
+            "decisions": [
+                {"id": "d-0", "summary": "chose d-0", "governs": ["a.rs"], "live": false},
+                {"id": "d-1", "summary": "chose d-1", "governs": ["b.rs"], "live": true},
+            ],
+            "lessons": [],
+            "findings": [],
+        })
+    );
+    assert_eq!(
+        rigger_ok(root, &["prime"])
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>(),
+        [
+            "# Rigger: recent decisions",
+            "- d-1: chose d-1",
+            "- d-0: chose d-0"
+        ]
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"])
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["run run-p", "- . 0/0 units . healthy"]
+    );
+    assert_eq!(rigger_ok(root, &["watch", "--once"]), "");
+
+    assert_eq!(
+        rigger_ok(root, &["step"]),
+        concat!(
+            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
+            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
+            r#""cargo_target_dir":null}],"done":false}"#,
+            "\n"
+        ),
+        "the first step adopts the run and parks the stage's spawn"
+    );
+    rigger_ok(root, &["result", "a/implementer#0", "done"]);
+    assert_eq!(
+        rigger_ok(root, &["step"]),
+        "{\"wave\":[],\"done\":true}\n",
+        "the second step replays the result and finishes the run"
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"])
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>(),
+        ["run run-p", "a . 0/1 units . working"]
+    );
+}
+
+/// Given a project whose run stream holds two undecodable ledger entries and NO `RunStarted`, so
+/// the whole stream is the run, when the operator runs the one-shot commands and then `rigger
+/// step`, then each answers from the stream's other events and the step starts a run over them - a
+/// reader that materialized a ledger entry would have failed on it.
+#[test]
+fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_entry() {
+    let dir = common::cli::temp_repoless_project();
+    let root = dir.path();
+    seed_undecodable_ledger_entries(root, None);
+
+    assert_eq!(
+        rigger_ok(root, &["peers"]),
+        "decision d-0 | LIVE | chose d-0 | governs: a.rs\n\
+         decision d-1 | LIVE | chose d-1 | governs: b.rs\n",
+        "with no run started the whole stream is the run, so both decisions are its own"
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"]).lines().next(),
+        Some("- . 0/0 units . healthy"),
+        "no run is named"
+    );
+    assert_eq!(rigger_ok(root, &["watch", "--once"]), "");
+
+    assert_eq!(
+        rigger_ok(root, &["step"]),
+        concat!(
+            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
+            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
+            r#""cargo_target_dir":null}],"done":false}"#,
+            "\n"
+        ),
+        "the step starts a run over the stream and parks the stage's spawn"
+    );
+    assert_eq!(
+        rigger_ok(root, &["status"]).lines().nth(1),
+        Some("a . 0/1 units . working")
+    );
+    assert_eq!(
+        rigger_ok(root, &["peers"]),
+        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
+         decision d-1 | HISTORICAL | chose d-1 | governs: b.rs\n",
+        "the run the step started is after both decisions"
     );
 }
