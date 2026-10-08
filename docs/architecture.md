@@ -789,9 +789,12 @@ is recorded under can never drift between them. Four properties define it:
   identity on the server-backed one - so the question "what is this file's latest recorded
   generation?" (`ingest::latest_generation`) never reads the stream. The two sinks ask it
   differently. The run's sink asks `ingest::entry_of_batch` of each batch: it reads the log's
-  latest generation of the identity and, unless the graph owes its rebuild, the graph's current
-  one; when both hold the batch's generation it records nothing; otherwise it reads the file's
-  bytes, extracts and hashes them and records one entry of that extraction's generation. A cold
+  latest generation of the identity and the graph's current one, weighing the graph's only when
+  the graph does not owe its rebuild; a batch both hold records nothing; for any other it reads
+  the file's bytes once (none for a path that holds no file or lies outside the walk's scope),
+  extracts them, and records one entry of that extraction's generation, hashed from the bytes
+  when there are any, unless the extraction is empty or is itself the generation both hold, which
+  records nothing. A cold
   `graph build` alone still asks `ingest::batch_is_latest_recorded` of each batch: when the lookup
   answers the batch's own generation the batch is its identity's latest recorded generation -
   recorded by its own keyed rows or by the `GenerationIngested` ledger entry that stands for it -
