@@ -26958,3 +26958,107 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
         "the scaffolded README is not injected as an instruction; got:\n{out}"
     );
 }
+
+/// What the log of the project at `root` records as ledger entries, beside what a run records
+/// for the tree as it stands under the blob `git hash-object` gives each file.
+#[cfg(feature = "symbols")]
+type RecordedAndWalked = [Vec<(rigger::retention::GenerationIngested, String, String)>; 2];
+
+#[cfg(feature = "symbols")]
+fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
+    use common::fixtures::{entry_records, git_hash_object, walked_entry_events};
+    [
+        entry_records(&read_run_events(root)),
+        entry_records(&walked_entry_events(root, |file| {
+            git_hash_object(root, file, false)
+        })),
+    ]
+}
+
+/// A two-stage project holding the extraction tree's committed source file, for a run to walk.
+#[cfg(feature = "symbols")]
+fn two_stage_project_with_a_source_file() -> tempfile::TempDir {
+    use common::fixtures::{git_commit_all, write_text, SOURCE_BODY, SOURCE_PATH};
+    let dir = temp_git_project_with_commit();
+    write_workflow_fixture(dir.path(), &TWO_STAGE_WORKFLOW);
+    write_text(dir.path(), SOURCE_PATH, SOURCE_BODY);
+    git_commit_all(dir.path(), "tree");
+    dir
+}
+
+/// Spec 107, criterion 10, at the blocking driver's composition root.
+///
+/// GIVEN a project holding a committed source file and a two-stage workflow,
+/// WHEN the operator runs `rigger run` and the agent answers every spawn without touching the
+/// tree,
+/// THEN the run's log holds exactly one ledger entry per batch the walk extracts, in walk order,
+/// each entry's blob the id `git hash-object` gives its file in the project's own tree: the run
+/// was handed the one hash function, never a stand-in.
+#[cfg(all(unix, feature = "symbols"))]
+#[test]
+fn a_run_records_each_walked_batch_as_a_ledger_entry_under_the_blob_git_hash_object_gives() {
+    let dir = two_stage_project_with_a_source_file();
+    let root = dir.path();
+    let (_fakebin, path_env) = install_fake_claude(
+        r#"  *"Do the unit."*)
+    echo "did the unit"
+    ;;
+"#,
+    );
+
+    let (out, err, ok) = run_rigger_envs(root, &["run", "--base", "HEAD"], &[("PATH", &path_env)]);
+
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let [recorded, walked] = recorded_and_walked(root);
+    assert_eq!(recorded, walked);
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|(entry, group, _)| (group.as_str(), entry.blob.len()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gc/src/lib.rs", 40),
+            ("gd/src/lib.rs", 40),
+            ("gw/.rigger/workflow.yml", 40)
+        ],
+        "sanity: every walked batch is recorded from bytes git names"
+    );
+}
+
+/// Spec 107, criterion 10, at the workflow driver's composition root.
+///
+/// GIVEN a project holding a committed source file and a two-stage workflow,
+/// WHEN the operator runs `rigger run --driver workflow` and the session answers every spawn,
+/// THEN the run's log holds exactly one ledger entry per batch the walk extracts, in walk order,
+/// each entry's blob the id `git hash-object` gives its file in the project's own tree.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_workflow_driver_run_records_each_walked_batch_under_the_blob_git_hash_object_gives() {
+    let dir = two_stage_project_with_a_source_file();
+    let root = dir.path();
+    let mut mcp = McpSession::start_with(root, &["run", "--driver", "workflow", "--base", "HEAD"]);
+
+    let answered = answer_every_spawn(&mut mcp);
+    let out = mcp.finish();
+
+    assert_eq!(
+        answered,
+        ["a/implementer#0", "b/implementer#0"],
+        "sanity: the run drove both units; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let [recorded, walked] = recorded_and_walked(root);
+    assert_eq!(recorded, walked);
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|(entry, group, _)| (group.as_str(), entry.blob.len()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("gc/src/lib.rs", 40),
+            ("gd/src/lib.rs", 40),
+            ("gw/.rigger/workflow.yml", 40)
+        ],
+        "sanity: every walked batch is recorded from bytes git names"
+    );
+}
