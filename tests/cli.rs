@@ -27148,3 +27148,316 @@ fn a_workflow_driver_run_records_each_walked_batch_under_the_blob_git_hash_objec
         "sanity: every walked batch is recorded from bytes git names"
     );
 }
+
+/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
+fn index_lag_advisory(files: &[&str]) -> Option<String> {
+    Some(format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        files.len(),
+        files.join(", ")
+    ))
+}
+
+/// The graph index-lag line of `rigger validate` run in `cwd`, none when it draws none;
+/// validate must succeed, since an advisory never fails it.
+fn validate_index_lag(cwd: &Path) -> Option<String> {
+    let (_out, err, ok) = run_rigger(cwd, &["validate"]);
+    assert!(ok, "validate must exit 0; stderr:\n{err}");
+    err.lines()
+        .find(|line| line.contains("the context graph has fallen behind"))
+        .map(str::to_string)
+}
+
+/// Record a ledger entry of the `gc` batch of `path` at `generation` in the log of the store
+/// `store_root` holds, by a plain append that folds nothing: the log's side alone moves.
+fn record_unfolded_entry(store_root: &Path, path: &str, generation: &str) {
+    use rigger::eventstore::ExpectedRevision;
+    common::cli::with_run_store(store_root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    common::fixtures::generation_ingested("gc", path, generation, "", false)
+                        .event(1),
+                ],
+            )
+            .unwrap();
+    });
+}
+
+/// An initialized project holding each of `files` (`(path, body)`), its store under `store_dir`
+/// relative to the repository's top level.
+fn initialized_project_holding(store_dir: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = temp_project();
+    let holder = dir.path().join(store_dir);
+    std::fs::create_dir_all(&holder).unwrap();
+    run_rigger_ok(&holder, &["init"]);
+    for (path, body) in files {
+        common::fixtures::write_text(dir.path(), path, body);
+    }
+    dir
+}
+
+/// The generation the walk of the tree at `root` keys the `gc` batch of `path` under now.
+#[cfg(feature = "symbols")]
+fn code_generation_now(root: &Path, path: &str) -> String {
+    common::fixtures::handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{path}")).generation()
+}
+
+/// Spec 107, criterion 13: the ledger answers the index-lag advisory.
+///
+/// GIVEN a project `rigger graph build` has recorded, so the log's latest entry and `graph.db`
+/// both hold the generation each file's bytes extract to,
+/// WHEN the operator runs `rigger validate`, THEN it names no file;
+/// AND WHEN one file's bytes change, THEN it names that file and no other;
+/// AND WHEN a build records the changed file, THEN it names no file again.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_the_file_whose_bytes_left_the_generation_its_entry_and_the_graph_hold() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("churn.rs", "fn original() {}\n"),
+            ("steady.rs", "fn steady() {}\n"),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    assert_eq!(validate_index_lag(root), None);
+
+    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+
+    run_rigger_ok(root, &["graph", "build"]);
+
+    assert_eq!(validate_index_lag(root), None);
+}
+
+/// Spec 107, criterion 13: the comparison is two-sided, and the log's side alone names a file.
+///
+/// GIVEN a built project whose `graph.db` holds the generation a file's bytes extract to, and a
+/// later ledger entry of that file at another generation the graph never folded,
+/// WHEN the operator runs `rigger validate`,
+/// THEN it names that file: its bytes extract to a generation other than its latest entry's.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_a_file_whose_latest_entry_alone_left_the_generation_its_bytes_extract_to() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("churn.rs", "fn original() {}\n"),
+            ("steady.rs", "fn steady() {}\n"),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    let held = code_generation_now(root, "steady.rs");
+
+    record_unfolded_entry(root, "steady.rs", "stale");
+
+    assert_eq!(
+        common::fixtures::held_generations(&common::cli::open_graph(root), &["gc/steady.rs"]),
+        [Some(held)],
+        "premise: the graph still holds the generation the file's bytes extract to"
+    );
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["steady.rs"]));
+}
+
+/// Spec 107, criterion 13: the graph's side alone names a file, and a `graph.db` that owes its
+/// rebuild is not asked.
+///
+/// GIVEN a built project, a file whose bytes changed since, and a ledger entry of the changed
+/// bytes' generation the graph never folded, so the log holds the generation the bytes extract
+/// to and `graph.db` holds the one before,
+/// WHEN the operator runs `rigger validate`, THEN it names that file;
+/// AND WHEN `graph.db` owes its rebuild, THEN it names no file, comparing the log's side alone;
+/// AND WHEN the log's latest entry of a second file then leaves its bytes' generation, THEN it
+/// names the second file alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_compares_graph_db_too_unless_it_owes_its_rebuild() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("churn.rs", "fn original() {}\n"),
+            ("steady.rs", "fn steady() {}\n"),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+    record_unfolded_entry(root, "churn.rs", &code_generation_now(root, "churn.rs"));
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+
+    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+
+    assert_eq!(validate_index_lag(root), None);
+
+    record_unfolded_entry(root, "steady.rs", "stale");
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["steady.rs"]));
+}
+
+/// Spec 107, criterion 13: with no `graph.db`, or one that cannot be read, the advisory
+/// compares the log's side alone.
+///
+/// GIVEN a project never built, whose log holds an entry of one file at the generation its
+/// bytes extract to and an entry of a second at another generation,
+/// WHEN the operator runs `rigger validate`, THEN it names the second file alone;
+/// AND WHEN `graph.db` holds bytes that are no database, THEN it names the same file alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_compares_the_log_alone_when_graph_db_is_absent_or_unreadable() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("churn.rs", "fn original() {}\n"),
+            ("steady.rs", "fn steady() {}\n"),
+        ],
+    );
+    let root = dir.path();
+    record_unfolded_entry(root, "steady.rs", &code_generation_now(root, "steady.rs"));
+    record_unfolded_entry(root, "churn.rs", "stale");
+    let graph_db = common::cli::rigger_file(root, "graph.db");
+    assert!(!graph_db.exists(), "premise: nothing built a graph.db");
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+    assert!(!graph_db.exists(), "the advisory creates no graph.db");
+
+    std::fs::write(&graph_db, b"not a database").unwrap();
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+}
+
+/// Spec 107, criterion 13: the advisory reads the tree under the ONE ROOT.
+///
+/// GIVEN a repository whose subdirectory holds the store's `.rigger/`, a source file at the
+/// repository's top level that a build run in the subdirectory recorded, and that file's bytes
+/// changed since,
+/// WHEN the operator runs `rigger validate` in the subdirectory,
+/// THEN it names the file by its path from the repository's top level, where the working
+/// directory holds no such file.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_in_a_subdirectory_holding_the_store_reads_the_tree_from_the_repositorys_top_level() {
+    let dir = initialized_project_holding("engine", &[("churn.rs", "fn original() {}\n")]);
+    let root = dir.path();
+    let sub = root.join("engine");
+    run_rigger_ok(&sub, &["graph", "build"]);
+    assert_eq!(
+        common::fixtures::recorded_entry_keys(&read_run_events(&sub))
+            .iter()
+            .map(|key| common::fixtures::entry_key_parts(key).0)
+            .collect::<Vec<_>>(),
+        ["gc/churn.rs"],
+        "premise: the subdirectory's store records the file under its top-level path"
+    );
+    assert_eq!(validate_index_lag(&sub), None);
+
+    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+
+    assert_eq!(validate_index_lag(&sub), index_lag_advisory(&["churn.rs"]));
+}
+
+/// Spec 107, criterion 13: the flag is the tree's, whether `walk_exclusions` names the identity.
+///
+/// GIVEN a built project holding a source file and the out-of-line test module it declares,
+/// whose entry records the module's boundary batch,
+/// WHEN the operator runs `rigger validate`,
+/// THEN it names neither file: the module's bytes extract, under the flag the tree gives them,
+/// to the boundary batch its entry records.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_no_out_of_line_test_module_whose_entry_records_its_boundary_batch() {
+    use common::fixtures::{SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH};
+    let dir = initialized_project_holding(
+        "",
+        &[
+            (SOURCE_PATH, SOURCE_BODY),
+            (TEST_MODULE_PATH, TEST_MODULE_BODY),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    assert_eq!(
+        common::fixtures::entry_records(&read_run_events(root))
+            .into_iter()
+            .filter(|(entry, ..)| entry.prefix == "gc")
+            .map(|(entry, ..)| (entry.file, entry.excluded, entry.generation))
+            .collect::<Vec<_>>(),
+        [
+            (
+                TEST_MODULE_PATH.to_string(),
+                true,
+                common::fixtures::walked_generation("gc", TEST_MODULE_PATH).to_string()
+            ),
+            (
+                SOURCE_PATH.to_string(),
+                false,
+                common::fixtures::walked_generation("gc", SOURCE_PATH).to_string()
+            ),
+        ],
+        "premise: the module's entry records its boundary batch under the walk's flag"
+    );
+
+    assert_eq!(validate_index_lag(root), None);
+}
+
+/// Spec 107, criterion 13: the advisory takes a file's bytes from the tree's one read rule.
+///
+/// GIVEN a project whose log holds an entry of a `gc` path under a hidden directory, outside the
+/// walk's scope, at the generation of `gc`'s batch for no bytes, the path holding a regular
+/// readable file, and a stale entry of a file inside the scope,
+/// WHEN the operator runs `rigger validate`,
+/// THEN it names the file inside the scope alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_no_gc_path_outside_the_walks_scope_whose_entry_records_no_bytes() {
+    let hidden = ".hidden/h.rs";
+    let dir = initialized_project_holding(
+        "",
+        &[(hidden, "fn hidden() {}\n"), ("kept.rs", "fn kept() {}\n")],
+    );
+    let root = dir.path();
+    let no_bytes = rigger::ingest::batch_generation(
+        &rigger::grounder::symbols::events::bytes_batch(hidden, None, false),
+    );
+    assert_ne!(
+        no_bytes,
+        rigger::ingest::batch_generation(&rigger::grounder::symbols::events::bytes_batch(
+            hidden,
+            Some(b"fn hidden() {}\n"),
+            false
+        )),
+        "premise: the file's own bytes extract to another generation"
+    );
+    record_unfolded_entry(root, hidden, &no_bytes);
+    record_unfolded_entry(root, "kept.rs", "stale");
+
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["kept.rs"]));
+}
+
+/// Spec 107, criterion 13: the light lane's stub samples nothing.
+///
+/// GIVEN a build with the extraction pass off and a project whose log holds a stale entry of a
+/// file the tree holds,
+/// WHEN the operator runs `rigger validate`,
+/// THEN it draws no index-lag advisory.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn validate_without_the_extraction_pass_samples_no_file_for_index_lag() {
+    let dir = initialized_project_holding("", &[("kept.rs", "fn kept() {}\n")]);
+    let root = dir.path();
+    record_unfolded_entry(root, "kept.rs", "stale");
+    assert_eq!(
+        common::fixtures::recorded_entry_keys(&read_run_events(root)),
+        ["gc/kept.rs@stale#1"],
+        "premise: the log holds the stale entry"
+    );
+
+    assert_eq!(validate_index_lag(root), None);
+}

@@ -2091,6 +2091,53 @@ mod tests {
         assert_eq!(graph_index_lag_advisory(&[]), None);
     }
 
+    /// The advisory reads the log's side in ONE typed read of the perception types from the
+    /// stream's start and no whole-stream read (spec 107): over a log holding a run's start, a
+    /// stale ledger entry of a file the tree holds and an entry of a file it does not, it
+    /// materializes the two entries alone, and with no graph to ask names the stale file where
+    /// an extraction is compiled and nothing where none is.
+    #[test]
+    fn the_index_lag_advisory_reads_the_log_in_one_typed_read_of_the_perception_types() {
+        use crate::test_support::{generation_ingested, CountedRead, ReadCountingStore};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    Event::new("RunStarted", b"{}".to_vec()),
+                    generation_ingested("gc", "kept.rs", "stale", "", false).event(1),
+                    generation_ingested("gc", "gone.rs", "stale", "", false).event(1),
+                ],
+            )
+            .unwrap();
+        let store = ReadCountingStore::new(&inner);
+
+        let lagging = read_graph_index_lag(&store, None, dir.path()).unwrap();
+
+        let sampled: &[&str] = if cfg!(feature = "symbols") {
+            &["kept.rs"]
+        } else {
+            &[]
+        };
+        assert_eq!(lagging, sampled);
+        assert_eq!(
+            store.reads(),
+            [CountedRead::Typed {
+                stream: conductor::STREAM.to_string(),
+                from: 0,
+                only: true,
+                types: rigger::retention::PERCEPTION_TYPES
+                    .map(String::from)
+                    .to_vec(),
+                materialized: 2,
+            }]
+        );
+    }
+
     #[test]
     fn bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it() {
         // Exactly at the threshold: not yet a warning-worthy signal.
