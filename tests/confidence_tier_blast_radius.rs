@@ -9,9 +9,9 @@
 //! real run computes the radius over an INJECTED graph and RECORDS it as a serialized
 //! `BlastRadiusComputed` audit event - the observable artifact the runtime parallelism-retention
 //! metric and the operator read back. The load-bearing invariant that must survive that record path,
-//! on the branch where criterion 2's new code runs (a graph is present), is that the SAFE superset
-//! stays a superset of the grep union (section 2.4) - the tier-filter arm UNIONS the grounder's grep
-//! radius, so a grep-only file is never dropped.
+//! on the branch where criterion 2's new code runs (a graph is present), is that the grounder's own
+//! radius survives into the recorded safe view - the tier-filter arm UNIONS it in, so a file only
+//! the grounder reaches is never dropped (addendum 2.4 states the safe view's contract).
 //!
 //! These tests inject a STRUCTURAL grounder double (a non-empty `index_stamp`, so the audit is
 //! emitted at all), populate the unified graph through the public `contextgraph` event API (the
@@ -167,13 +167,13 @@ fn safe_of(payload: &Value) -> Vec<String> {
 
 /// The load-bearing correctness invariant of criterion 2 (section 2.4), pinned at the PUBLIC
 /// serialized boundary: with a graph injected - the branch where the tier-filter arm runs - the
-/// recorded `BlastRadiusComputed.safe` stays a SUPERSET of the grounder's grep union. The grep floor
+/// grounder's radius survives into the recorded `BlastRadiusComputed.safe`. The grounder's radius
 /// carries `grep_only.rs`, a file the graph traversal never reaches; the tier-filter arm UNIONS the
-/// grep radius in, so `grep_only.rs` must survive into the recorded `safe`.
+/// grounder's radius in, so `grep_only.rs` must survive into the recorded `safe` (addendum 2.4).
 ///
-/// Non-vacuous: if the graph arm returned only the tier-filter's `safe` (dropping the grep union),
-/// `grep_only.rs` would vanish from the recorded event and this assertion would fail - so it guards
-/// exactly the "never narrow below the grep union" invariant against a real record path.
+/// Non-vacuous: if the graph arm returned only the tier-filter's `safe` (dropping the grounder's
+/// radius), `grep_only.rs` would vanish from the recorded event and this assertion would fail - so
+/// it guards exactly the "the grounder's radius survives" invariant against a real record path.
 #[test]
 fn the_graph_path_records_a_safe_radius_that_stays_a_grep_superset() {
     let graph = tiered_projector();
@@ -188,8 +188,8 @@ fn the_graph_path_records_a_safe_radius_that_stays_a_grep_superset() {
     );
     assert!(
         safe.contains(&GREP_ONLY_FILE.to_string()),
-        "the tier-filter arm must UNION the grep radius, so the grep-only file survives into the \
-         recorded safe (section 2.4: safe never narrows below the grep union); got {safe:?}"
+        "the tier-filter arm must UNION the grounder's radius, so its file survives into the \
+         recorded safe (addendum 2.4); got {safe:?}"
     );
 }
 
