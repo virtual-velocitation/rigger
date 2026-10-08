@@ -38423,7 +38423,8 @@ mod tests {
 
     /// A grounder that returns a CANNED two-view blast radius per query and a configurable
     /// `index_stamp`, so a unit-3 wiring test controls the precise SEED view, the uncapped SAFE
-    /// view, AND the structural-active audit signal independently of any real tree. `ground` returns the PRECISE view as refs (what `build_prompt` seeds from).
+    /// view, AND the structural-active audit signal independently of any real tree. `ground`
+    /// returns the PRECISE view as refs (what `build_prompt` seeds from).
     struct StructuralStubGrounder {
         by_query: HashMap<String, BlastRadius>,
         stamp: String,

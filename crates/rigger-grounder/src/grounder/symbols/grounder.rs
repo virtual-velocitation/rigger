@@ -1268,7 +1268,7 @@ mod tests {
     /// ALL languages, mirroring `ground`'s own cross-language matching. So a query for a Rust symbol
     /// pulls in a Python file that references the same name - the OVER-inclusion (safe) direction,
     /// which is correct by construction (definers/referencers are deliberately cross-language for
-    /// grounding recall; only the fan-out HUB verdict is per-language). This pins that a Python
+    /// grounding recall). This pins that a Python
     /// referencer of a Rust-defined name lands in the precise AND safe views, and that safe stays a
     /// superset of precise. Gated behind the `symbols` feature like every test here (real parsing).
     #[test]
