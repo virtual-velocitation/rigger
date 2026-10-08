@@ -1048,5 +1048,10 @@
     "id": "dup-a9c4f3d90dac",
     "disposition": "not-a-duplicate",
     "reason": "`unit_of_gate_key` splits a gate key at its `/gate:` marker, `unit_of` splits a spawn id at its last `/`, and `digest_address` takes the commit after a gate digest's `:` separator: three key grammars with different delimiters, each parsed in exactly one place."
+  },
+  {
+    "id": "dup-cc1f48bd7d99",
+    "disposition": "not-a-duplicate",
+    "reason": "`f11` renders the plan critique's F11 advisory for one criterion and `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause: two test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
   }
 ]

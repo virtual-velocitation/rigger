@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3aea0a957ad0",
+    "id": "dup-26c89b46b494",
     "classification": "semantic",
     "sites": [
       {
@@ -2119,21 +2119,6 @@
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "d0e8d82f9118e243"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "f0c8609be186241a"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\".rigger\"",
-        "content_hash": "1630669728de1503"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "\"graph build must create .rigger/graph.db from a cold checkout\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/cli.rs",
@@ -3132,6 +3117,11 @@
       },
       {
         "file": "tests/common/cli.rs",
+        "name": "\"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\\n\"",
+        "content_hash": "5c8bc0fb7d9e9b92"
+      },
+      {
+        "file": "tests/common/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
       },
@@ -3203,11 +3193,6 @@
       {
         "file": "tests/compaction_generations_periphery.rs",
         "name": "\"rigger: migrated project identity - renamed 1 stream(s) from the legacy namespace \\\n         {legacy:?} to the minted identity {minted:?} (.rigger/project.id); recorded its \\\n         decision (position {position}){fold}\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "\"graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \\\n                 not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -4127,7 +4112,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -5820,6 +5805,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/spec.rs, crates/rigger-driver/src/liveness.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-cc1f48bd7d99",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-domain/src/spec.rs",
+        "name": "f11",
+        "content_hash": "89bc7a8b68cb459b"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "graph_build_line",
+        "content_hash": "38180b457a1c8e5d"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/spec.rs, tests/common/cli.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

@@ -1,8 +1,8 @@
-//! The ingest fold rules: the replay-key vocabulary of the derived index, the group stamp every
-//! keyed derived event carries, and the latest-generation lookup both ingest sinks ask. The
+//! The ingest fold rules: the replay-key vocabulary of the derived index and the
+//! latest-generation lookup both ingest sinks ask. The
 //! walk that builds the keys lives in the root crate's `ingest` module.
 
-use crate::eventstore::{Error, Event, EventStore, META_GROUP};
+use crate::eventstore::{Error, Event, EventStore};
 
 /// The metadata key under which an event carries its deterministic REPLAY KEY (spec 04, criterion
 /// 4): the name a content key is STAMPED under and read back from, so this module owns the wire
@@ -111,20 +111,6 @@ pub fn derived_generation(e: &Event) -> Option<(&str, &str)> {
     derived_key_parts(e.meta.get(META_REPLAY_KEY)?)
 }
 
-/// A KEYED DERIVED EVENT (spec 101): `event` stamped with its replay `key` and, when the key is the
-/// content-key shape, with the batch identity [`derived_key_parts`] cuts from it as its
-/// [`META_GROUP`]. The one builder a derived event is recorded through - by `rigger graph build`'s
-/// sink; the run's sink records a ledger entry instead (spec 107) - so every such
-/// recording carries the group [`latest_generation`] is answered from. A key that is not the
-/// content-key shape names no identity, so its event carries no group and is never answered.
-pub fn keyed_derived_event(event: Event, key: &str) -> Event {
-    let event = event.with_meta(META_REPLAY_KEY, key);
-    match derived_key_parts(key) {
-        Some((identity, _)) => event.with_meta(META_GROUP, identity),
-        None => event,
-    }
-}
-
 /// THE LATEST RECORDED GENERATION of the batch identity `identity` on `stream` (spec 101), answered
 /// by the store's group lookup ([`EventStore::latest_in_group`]) - never by reading the stream.
 /// A recording is a keyed derived row or the ledger entry that stands for a batch (spec 107), and
@@ -148,27 +134,6 @@ pub fn latest_generation(
         .get(META_REPLAY_KEY)
         .and_then(|key| derived_key_parts(key))
         .map(|(_, generation)| generation.to_string()))
-}
-
-/// FIRST-SIGHT SEEDING (spec 101): whether the keyed batch `keyed` - one file's whole batch, every
-/// key sharing one identity and one generation - is already its identity's latest recorded
-/// generation on `stream`. `rigger graph build`'s sink asks this of each batch the walk hands it;
-/// the run's sink asks [`batch_is_current`] of the log's side and the graph's instead (spec 107).
-/// `true` means the batch IS its identity's latest recorded generation, recorded by its
-/// own keyed rows or by the ledger entry that stands for it, so the batch appends nothing;
-/// `false` - a changed
-/// file, a reverted one, a never-recorded one, or a batch whose key does not parse - means it
-/// appends.
-pub fn batch_is_latest_recorded(
-    store: &dyn EventStore,
-    stream: &str,
-    keyed: &[(String, &Event)],
-) -> Result<bool, Error> {
-    let Some((identity, generation)) = keyed.first().and_then(|(key, _)| derived_key_parts(key))
-    else {
-        return Ok(false);
-    };
-    Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
 }
 
 /// The graph's side of [`batch_is_current`] (spec 107): what `graph.db` answers for an identity.
@@ -264,9 +229,8 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// `identity -> (that identity's latest recorded generation hash, the keys of that generation)`,
 /// derived from the events handed in.
 ///
-/// Neither ingest sink reads a slice to decide what it records (spec 101): `rigger graph build`
-/// asks [`batch_is_latest_recorded`] and the run's sink [`latest_generation`], each answered by
-/// the store's group lookup. This is the reference that
+/// Neither ingest sink reads a slice to decide what it records (spec 101): both ask
+/// [`latest_generation`], answered by the store's group lookup. This is the reference that
 /// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
 /// log - and the reader `rigger validate`'s index-lag sample uses. The rule, in the order it is
 /// applied:
@@ -567,18 +531,15 @@ mod dedup_tests {
     }
 }
 
-/// THE GROUP STAMP AND THE LATEST-GENERATION READER (spec 101), at the unit level: what a keyed
-/// derived event carries, and which generation the one domain reader cuts from the store's group
-/// answer, a derived row's or a ledger entry's (spec 107). The store's own answer is pinned per backend by the contract suite; here the store is a
-/// double answering one fixed head, so every arm of the reader is driven directly.
+/// THE LATEST-GENERATION READER (spec 101), at the unit level: which generation the one domain
+/// reader cuts from the store's group answer, a derived row's or a ledger entry's (spec 107). The
+/// store's own answer is pinned per backend by the contract suite; here the store is a double
+/// answering one fixed head, so every arm of the reader is driven directly.
 #[cfg(test)]
 mod group_lookup_tests {
-    use super::{
-        batch_is_latest_recorded, keyed_derived_event, latest_generation, sink_walked_batches,
-        BatchSink, META_REPLAY_KEY,
-    };
+    use super::{latest_generation, sink_walked_batches, BatchSink, META_REPLAY_KEY};
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
-    use crate::eventstore::{Event, GroupHead, META_GROUP};
+    use crate::eventstore::{Event, GroupHead};
     use crate::test_support::GroupLookupOnly;
     use std::collections::BTreeMap;
 
@@ -597,40 +558,6 @@ mod group_lookup_tests {
             type_: type_.to_string(),
             meta,
         }
-    }
-
-    #[test]
-    fn a_keyed_derived_event_carries_its_replay_key_and_its_batch_identity_as_its_group() {
-        let event = keyed_derived_event(
-            Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()),
-            "gc/vendor/pkg@1.2.3/a.rs@h1#4",
-        );
-        assert_eq!(
-            event.meta,
-            BTreeMap::from([
-                (
-                    META_GROUP.to_string(),
-                    "gc/vendor/pkg@1.2.3/a.rs".to_string()
-                ),
-                (
-                    META_REPLAY_KEY.to_string(),
-                    "gc/vendor/pkg@1.2.3/a.rs@h1#4".to_string()
-                ),
-            ]),
-            "the group is the whole `<prefix>/<file>` span the key parser cuts"
-        );
-        assert_eq!(event.type_, TYPE_CODE_ENTITY_EXTRACTED);
-        assert_eq!(event.data, b"{}".to_vec(), "the payload is untouched");
-    }
-
-    #[test]
-    fn a_key_that_is_not_the_content_key_shape_stamps_no_group() {
-        let event = keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]), "gc/a.rs");
-        assert_eq!(
-            event.meta,
-            BTreeMap::from([(META_REPLAY_KEY.to_string(), "gc/a.rs".to_string())]),
-            "no identity, so no group: the event is never answered by a group lookup"
-        );
     }
 
     #[test]
@@ -697,48 +624,6 @@ mod group_lookup_tests {
                 "{why} answers no generation, so its batch re-emits"
             );
         }
-    }
-
-    #[test]
-    fn a_batch_is_the_latest_recorded_only_when_its_generation_is_the_recorded_one() {
-        let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
-        let batch = |generation: &str| -> Vec<(String, &Event)> {
-            (0..2)
-                .map(|i| (format!("gc/a.rs@{generation}#{i}"), &ev))
-                .collect()
-        };
-        let store = answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#1"))));
-        assert!(
-            batch_is_latest_recorded(&store, "rigger", &batch("h2")).unwrap(),
-            "the recorded generation: its keys are the recorded ones, it appends nothing"
-        );
-        assert!(
-            !batch_is_latest_recorded(&store, "rigger", &batch("h1")).unwrap(),
-            "another generation (a change or a revert) appends"
-        );
-        assert_eq!(
-            store.asked(),
-            [
-                ("rigger".to_string(), "gc/a.rs".to_string()),
-                ("rigger".to_string(), "gc/a.rs".to_string())
-            ],
-            "each question is one lookup of the batch's identity"
-        );
-        let empty = answering(None);
-        assert!(
-            !batch_is_latest_recorded(&empty, "rigger", &batch("h2")).unwrap(),
-            "a never-recorded identity appends"
-        );
-        assert!(
-            !batch_is_latest_recorded(&store, "rigger", &[("gc/a.rs".to_string(), &ev)]).unwrap()
-                && !batch_is_latest_recorded(&store, "rigger", &[]).unwrap(),
-            "an unparseable or empty batch appends"
-        );
-        assert_eq!(
-            store.asked().len(),
-            2,
-            "a batch that names no identity asks the store nothing"
-        );
     }
 
     #[test]

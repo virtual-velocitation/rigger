@@ -227,8 +227,8 @@ fn a_grouped_append_under_an_unmet_expectation_records_nothing(store: &dyn Event
 /// generation the whole-stream reference `project_scoped_latest_generations` answers, and a
 /// never-recorded identity answers none.
 fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &dyn EventStore) {
+    use crate::test_support::keyed_derived_event;
     use rigger_domain::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
-    use rigger_domain::ingest::keyed_derived_event;
     let stream = "c-generations";
     let batch = |file: &str, generation: &str| -> Vec<Event> {
         [TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED]
@@ -289,8 +289,9 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 /// by that derived row as before. Every answer is the one the whole-stream reference gives over the
 /// perception types.
 fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
+    use crate::test_support::keyed_derived_event;
     use rigger_domain::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-    use rigger_domain::ingest::{keyed_derived_event, META_REPLAY_KEY};
+    use rigger_domain::ingest::META_REPLAY_KEY;
     use rigger_domain::retention::{
         GenerationIngested, PERCEPTION_TYPES, TYPE_GENERATION_INGESTED,
     };

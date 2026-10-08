@@ -9,6 +9,8 @@
 pub mod console;
 
 // The modules the moved code names by their historical `crate::` paths.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::ingest;
 #[cfg(test)]
 use rigger_domain::test_cases;
 use rigger_domain::{blocker, contextgraph, eventstore, ledger};

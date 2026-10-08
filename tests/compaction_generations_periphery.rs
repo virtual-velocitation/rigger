@@ -5026,10 +5026,11 @@ fn reset_runs_on_a_graph_that_owes_its_rebuild_refuses_naming_setup_and_writes_n
 }
 
 /// Given a current `graph.db` another writer holds locked, when the operator runs `rigger graph
-/// build` over a project with two source files, then the build appends both files' batches and
-/// says they were not folded, naming the first fold it lost (the lock) rather than the owed
-/// refusal the second batch met because of it; the graph now owes its rebuild, so the next build
-/// refuses naming `rigger setup`.
+/// build` over a project with two source files, then the build records both files' ledger
+/// entries, counts the batch events of both - a lost fold and a refused one each count - and says
+/// they were not folded, naming the first fold it lost (the lock) rather than the owed refusal
+/// the second entry met because of it; the graph now owes its rebuild, so the next build refuses
+/// naming `rigger setup`.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses() {
@@ -5042,37 +5043,47 @@ fn a_graph_build_whose_fold_is_lost_to_a_lock_says_so_and_the_next_build_refuses
     );
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src").join("lib.rs"), "pub fn alpha() {}\n").unwrap();
-    std::fs::write(root.join("src").join("more.rs"), "pub fn beta() {}\n").unwrap();
+    std::fs::write(
+        root.join("src").join("more.rs"),
+        "pub fn beta() {}\npub fn gamma() { beta(); }\n",
+    )
+    .unwrap();
     let graph_db = rigger_file(root, "graph.db");
     let before = read_run_events(root).len();
 
     let (out, err, ok) = with_graph_locked(&graph_db, || run_rigger(root, &["graph", "build"]));
-    let ingested = read_run_events(root).len() - before;
+    let recorded = common::fixtures::recorded_entry_keys(&read_run_events(root)[before..]);
     assert_eq!(
         (ok, out),
         (
             true,
-            format!(
-                "graph build: ingested {ingested} code-ingest event(s) into .rigger/graph.db; \
-                 not folded into the context graph: graph: database is locked - the next `rigger setup` finds the event missing from graph.db and rebuilds it\n"
+            common::cli::graph_build_line(
+                6,
+                "; not folded into the context graph: graph: database is locked - the next \
+                 `rigger setup` finds the event missing from graph.db and rebuilds it"
             )
         ),
-        "the build names the first fold it lost - the lock - never the owed refusal every later \
-         batch then met; stderr: {err}"
+        "the build counts both entries' batch events and names the first fold it lost - the \
+         lock - never the owed refusal the later entry then met; stderr: {err}"
     );
-    let mut files: Vec<String> = read_run_events(root)[before..]
-        .iter()
-        .filter_map(|e| {
-            serde_json::from_slice::<serde_json::Value>(&e.data).ok()?["file"]
-                .as_str()
-                .map(String::from)
-        })
-        .collect();
-    files.dedup();
     assert_eq!(
-        files,
-        vec!["src/lib.rs".to_string(), "src/more.rs".to_string()],
-        "both files' batches are on the log, one after the other"
+        (recorded.clone(), read_run_events(root).len() - before),
+        (common::fixtures::walked_entry_keys(root), 2),
+        "both files' entries are on the log, one after the other, and nothing else"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|key| {
+                let (identity, _, events) = common::fixtures::entry_key_parts(key);
+                (identity, events)
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            ("gc/src/lib.rs".to_string(), 2),
+            ("gc/src/more.rs".to_string(), 4)
+        ],
+        "sanity: the two entries stand for two and four batch events"
     );
 
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);

@@ -17,6 +17,19 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// A KEYED DERIVED EVENT, as a store recorded one before the ledger (spec 107): `event` stamped
+/// with its replay `key` and, when the key is the content-key shape, with the batch identity the
+/// one key parser cuts from it as its group. No production code records one; the tests that
+/// still append a derived event through a store build it here.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn keyed_derived_event(event: Event, key: &str) -> Event {
+    let event = event.with_meta(rigger::ingest::META_REPLAY_KEY, key);
+    match rigger::ingest::derived_key_parts(key) {
+        Some((identity, _)) => event.with_meta(rigger::eventstore::META_GROUP, identity),
+        None => event,
+    }
+}
+
 /// Each event's type, in the order given.
 pub fn types_of(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()

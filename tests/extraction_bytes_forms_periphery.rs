@@ -24,7 +24,8 @@ use rigger::config_store::{load_workflow, parse_workflow};
 use common::cli::read_run_events;
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    events_of, minted_events, wire_owned, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED,
+    entry_key_parts, events_of, minted_events, recorded_entry_keys, wire_owned, WalkedBatch,
+    SOURCE_PATH, TEST_MODULE_PATH, WALKED,
 };
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
@@ -96,15 +97,13 @@ fn planted_repository() -> tempfile::TempDir {
     dir
 }
 
-/// Every keyed event of `root`'s log beside its replay key, oldest first.
+/// Each ledger entry `root`'s log holds as `(identity, generation, batch event count)`, oldest
+/// first, the log holding no derived index event.
 #[cfg(feature = "symbols")]
-fn recorded(root: &std::path::Path) -> Vec<(String, Event)> {
-    read_run_events(root)
-        .into_iter()
-        .filter_map(|event| {
-            let key = event.meta.get(rigger::ingest::META_REPLAY_KEY)?.clone();
-            Some((key, event))
-        })
+fn recorded(root: &std::path::Path) -> Vec<(String, String, usize)> {
+    recorded_entry_keys(&read_run_events(root))
+        .iter()
+        .map(|key| entry_key_parts(key))
         .collect()
 }
 
@@ -120,27 +119,35 @@ fn walk_exclusions_over_the_extraction_tree() -> (Vec<String>, Vec<String>) {
 }
 
 /// Given the extraction tree in a repository, when the operator runs `rigger graph build`, then
-/// the log holds exactly the keyed events the library walk mints for the tree, and they are the
-/// six batches the tree's fixture records: the out-of-line test module hollowed to one boundary
-/// event under `gc` while the same path keeps its rationale under `gd`, the workflow definition's
-/// parse under `gw`, and every batch under the generation recorded for it.
+/// the log holds exactly one ledger entry per batch the library walk mints for the tree, and they
+/// name the six batches the tree's fixture records: the out-of-line test module hollowed to one
+/// boundary event under `gc` while the same path keeps its rationale under `gd`, the workflow
+/// definition's parse under `gw`, and every batch under the generation and the event count
+/// recorded for it.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_records_the_batches_the_walk_lowers_from_the_extraction_tree() {
     let dir = planted_repository();
     let root = dir.path();
-    let minted = minted_events(root);
+    let minted: Vec<(String, String, usize)> = batches(&minted_events(root))
+        .into_iter()
+        .map(|(identity, generation, events)| (identity, generation, events.len()))
+        .collect();
+    let fixture: Vec<(String, String, usize)> = walked(|_| true)
+        .into_iter()
+        .map(|(identity, generation, events)| (identity, generation, events.len()))
+        .collect();
 
     run_rigger_ok(root, &["graph", "build"]);
 
     let recorded = recorded(root);
-    assert_eq!(triples(&recorded), triples(&minted));
-    assert_eq!(batches(&recorded), walked(|_| true));
+    assert_eq!(recorded, minted);
+    assert_eq!(recorded, fixture);
 }
 
 /// Given the log a real `rigger graph build` wrote for the extraction tree, `batch_generation`
-/// over each recorded batch's events - read back from the store, stamped with their stream and
-/// position - answers the generation that batch's keys carry and the tree's fixture records.
+/// over the events of each batch the library walk mints answers the generation the build's
+/// ledger entry for that batch names and the tree's fixture records.
 #[cfg(feature = "symbols")]
 #[test]
 fn batch_generation_answers_the_generation_of_every_batch_graph_build_recorded() {
@@ -148,12 +155,13 @@ fn batch_generation_answers_the_generation_of_every_batch_graph_build_recorded()
     let root = dir.path();
     run_rigger_ok(root, &["graph", "build"]);
 
-    let recorded = grouped(&recorded(root));
-    let answered: Vec<(&str, String)> = recorded
+    let minted = grouped(&minted_events(root));
+    let answered: Vec<(&str, String)> = minted
         .iter()
         .map(|(identity, _, events)| (identity.as_str(), rigger::ingest::batch_generation(events)))
         .collect();
-    let keyed: Vec<(&str, String)> = recorded
+    let recorded = recorded(root);
+    let entered: Vec<(&str, String)> = recorded
         .iter()
         .map(|(identity, generation, _)| (identity.as_str(), generation.clone()))
         .collect();
@@ -162,7 +170,7 @@ fn batch_generation_answers_the_generation_of_every_batch_graph_build_recorded()
         .iter()
         .map(|(identity, generation, _)| (identity.as_str(), generation.clone()))
         .collect();
-    assert_eq!(answered, keyed);
+    assert_eq!(answered, entered);
     assert_eq!(answered, expected);
 }
 

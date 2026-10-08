@@ -447,6 +447,12 @@ pub fn body_line_count(out: &str) -> usize {
         .count()
 }
 
+/// The line `rigger graph build` prints for a build that counted `events` batch events, with
+/// `lost`, its fold-loss clause: empty when the build lost no fold.
+pub fn graph_build_line(events: usize, lost: &str) -> String {
+    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
+}
+
 /// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
 pub fn ingested_count(stdout: &str) -> usize {
     stdout

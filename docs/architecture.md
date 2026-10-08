@@ -772,23 +772,22 @@ is recorded under can never drift between them. Four properties define it:
   rebuild-byte-identical discipline holds.
 - **Batched fold.** Each file's whole batch is recorded in ONE store append and folded in
   ONE graph transaction, because the measured cold-build throughput was transaction-cadence
-  bound, not parse-bound - one transaction per file, not per event. A cold `graph build` appends
-  the batch's keyed derived events and folds them (`FoldingStore::append_and_fold`); the run's
-  sink appends the batch's one `GenerationIngested` ledger entry and folds the batch with it
-  through the ledger form (`FoldingStore::append_entry_and_fold`).
+  bound, not parse-bound - one transaction per file, not per event. Both sinks, the run's and a
+  cold `graph build`'s, append the batch's one `GenerationIngested` ledger entry and fold the
+  batch with it through the ledger form (`FoldingStore::append_entry_and_fold`).
 - **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
   `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). Every derived event a cold `graph build` records is built by one helper
-  (`ingest::keyed_derived_event`) that stamps it with that key AND with its GROUP
-  (`eventstore::META_GROUP`): the batch identity `<prefix>/<file>` cut from the key by the one key
-  parser. The run's sink records no derived event: it records the batch as ONE
-  `GenerationIngested` ledger entry, built by its one constructor under the same group and a
-  replay key naming the identity, the generation and the batch's event count. The store answers, per group, the newest
+  design). Neither sink records a derived event: each records the batch as ONE
+  `GenerationIngested` ledger entry, built by its one constructor under its GROUP
+  (`eventstore::META_GROUP`), the batch identity `<prefix>/<file>` cut from the key by the one key
+  parser, and a replay key naming the identity, the generation and the batch's event count. A
+  store recorded before the ledger still holds keyed derived rows, grouped the same way, and the
+  lookup reads them as recordings. The store answers, per group, the newest
   event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
   its own group index - a partial expression index on the embedded store, one link stream per
   identity on the server-backed one - so the question "what is this file's latest recorded
-  generation?" (`ingest::latest_generation`) never reads the stream. The two sinks ask it
-  differently. The run's sink asks `ingest::entry_of_batch` of each batch: it reads the log's
+  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks ask
+  `ingest::entry_of_batch` of each batch: it reads the log's
   latest generation of the identity and the graph's current one, weighing the graph's only when
   the graph does not owe its rebuild; a batch both hold records nothing; for any other it reads
   the file's bytes once (none for a path that holds no file or lies outside the walk's scope),
@@ -800,15 +799,14 @@ is recorded under can never drift between them. Four properties define it:
   the lookup succeeds and the entry's generation once the entry's append succeeds. The graph's
   side is read on every batch and never remembered, so a long-lived run records again an
   identity a rebuild left behind the next time a walk hands its batch. A cold
-  `graph build` alone still asks `ingest::batch_is_latest_recorded` of each batch: when the lookup
-  answers the batch's own generation the batch is its identity's latest recorded generation -
-  recorded by its own keyed rows or by the `GenerationIngested` ledger entry that stands for it -
-  so the build appends nothing; otherwise it appends the batch's keyed derived events. The
-  decision applies three rules in order:
+  `graph build` keeps no memo: it asks the store's group lookup for each batch, binds the hash
+  to git in the tree it walks, stamps no run id, and counts in its line the batch events of
+  each entry but one that folded as a re-recording. The
+  lookup's answer applies three rules in order:
   - **Type first.** Only the perception types - the four derived index types
     (`CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`) and the
     `GenerationIngested` ledger entry - answer a generation. A newest group member of any other
-    type, or one whose key does not parse, answers none, so the batch re-emits - the
+    type, or one whose key does not parse, answers none, so the batch is recorded - the
     fail-safe direction - and no domain event can be dropped by this path; the partition is a
     property of the code, not of a naming convention.
   - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
@@ -821,8 +819,7 @@ is recorded under can never drift between them. Four properties define it:
   - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
     equals the hash of the LATEST batch recorded for that same file. A changed file - **including
     one reverted to content it held at an earlier recorded generation** - differs from its latest
-    batch, so it is recorded again: a cold build re-emits its batch in full, the run's sink
-    records a new entry. A rule that asked whether the generation was EVER recorded would match
+    batch, so it is recorded again: either sink records a new entry. A rule that asked whether the generation was EVER recorded would match
     the reverted content's old records, record nothing, and strand the graph on a superseded
     version of that file. What the re-recorded batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
     only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the

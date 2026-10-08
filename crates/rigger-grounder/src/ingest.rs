@@ -3,13 +3,13 @@
 //! `rigger graph build` entry share, so the generation a batch is recorded under can never
 //! drift between the two ingest entries.
 //!
-//! Each caller supplies its OWN sink. The run's records a batch as ONE ledger entry of
+//! Each caller supplies its OWN sink, and both record a batch as ONE ledger entry of
 //! perception (spec 107): [`entry_of_batch`] answers what to record for the batch from the log's
 //! latest generation, the graph's current one and the bytes the tree holds, and the ledger form
 //! of the folding store ([`FoldingStore::append_entry_and_fold`]) appends the entry and folds
-//! its batch. The cold build's still records the batch's keyed derived events
-//! ([`keyed_derived_event`]) when the log's latest generation is not the batch's
-//! ([`batch_is_latest_recorded`]). What must NOT fork is the drift-prone part: the walk over
+//! its batch. The sinks differ only in the log-side lookup they hand it, the run's memo against
+//! the cold build's store read, and in the run id the run stamps. What must NOT fork is the
+//! drift-prone part: the walk over
 //! the project's per-file extraction batches and the `<prefix>/<file>@<hash>#<i>` content key,
 //! which names the identity and the generation both sinks record under. Those are derived
 //! once, so the run and a cold `graph build` agree on every generation and never double-ingest
@@ -343,9 +343,9 @@ pub struct IngestStats {
 /// mark that the file has been seen: whether a batch is to be recorded is a question about the
 /// file's LATEST recorded generation, never about whether the generation was recorded at any
 /// time, which is why a file reverted to content it held earlier is recorded again. This function
-/// owns only the walk and the keying; the sink decides what a batch RECORDS - the run's one
-/// ledger entry ([`entry_of_batch`] answers it), the cold build's keyed derived events
-/// ([`batch_is_latest_recorded`] answers that) - so the mutation authority stays with the caller.
+/// owns only the walk and the keying; the sink decides what a batch RECORDS - one ledger entry,
+/// which [`entry_of_batch`] answers for the run's sink and the cold build's alike - so the
+/// mutation authority stays with the caller.
 /// The flag beside a batch says whether the walk excluded its identity as an out-of-line
 /// test module's: set for the `gc` batch of a file [`walk_exclusions`] names and clear for every
 /// other batch, so a sink never computes it or loads an index. A sink records the file's batch

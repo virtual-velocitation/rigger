@@ -32,6 +32,46 @@ pub fn walked_entry_events(root: &std::path::Path, blob_of: impl Fn(&str) -> Str
     out
 }
 
+/// The replay key of each ledger entry a sink records for the tree at `root` as it stands and
+/// nothing recorded, in walk order: one per batch the SHIPPED walk extracts, naming the batch's
+/// identity, generation and event count.
+#[cfg(feature = "symbols")]
+pub fn walked_entry_keys(root: &std::path::Path) -> Vec<String> {
+    recorded_entry_keys(&walked_entry_events(root, |_| String::new()))
+}
+
+/// The replay key of each ledger entry among `events`, in order, `events` asserted to hold no
+/// derived index event: what a log holds of perception once both sinks record entries alone.
+pub fn recorded_entry_keys(events: &[Event]) -> Vec<String> {
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| rigger::ingest::is_derived_index_type(&event.type_))
+            .count(),
+        0,
+        "the log holds no derived index event"
+    );
+    entry_records(events)
+        .into_iter()
+        .map(|(_, _, key)| key)
+        .collect()
+}
+
+/// What a ledger entry's replay key `<identity>@<generation>#<n>` names: the batch's identity,
+/// its generation - both cut by the one key parser - and its event count.
+pub fn entry_key_parts(key: &str) -> (String, String, usize) {
+    let (identity, generation) = rigger::ingest::derived_key_parts(key)
+        .expect("an entry's key names its identity and generation");
+    let (_, events) = key
+        .rsplit_once('#')
+        .expect("an entry's key ends in its event count");
+    (
+        identity.to_string(),
+        generation.to_string(),
+        events.parse().expect("an event count"),
+    )
+}
+
 /// One batch a walk handed its sink, owned, with its flag.
 #[cfg(feature = "symbols")]
 pub struct Handed {
@@ -110,15 +150,9 @@ pub fn seed_pre_ledger_rows_without_a_group(
         let rows: Vec<Event> = batch
             .iter()
             .map(|(key, event)| {
-                let identity = rigger::ingest::derived_key_parts(key)
-                    .expect("the walk keys every batch under its identity and generation")
-                    .0;
-                let mut row = rigger::ingest::keyed_derived_event((*event).clone(), key);
-                assert_eq!(
-                    row.meta.remove(rigger::eventstore::META_GROUP).as_deref(),
-                    Some(identity)
-                );
-                row
+                (*event)
+                    .clone()
+                    .with_meta(rigger::ingest::META_REPLAY_KEY, key)
             })
             .collect();
         let done = folding

@@ -473,31 +473,27 @@ fn locate_definition_extent(
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally through the first-sight helper
-/// ([`rigger::ingest::batch_is_latest_recorded`]), which this sink alone still asks (the live run's
-/// sink asks [`rigger::ingest::entry_of_batch`], spec 107): each batch
-/// is weighed against its identity's LATEST recorded generation, answered by the store's group
-/// lookup, never by reading the log - one walk hands this command each batch identity (`gc`/`gd`
-/// per file) exactly once and this command walks once. So an unchanged file's batch
-/// is its identity's latest recorded generation - recorded by its own keyed rows or by the ledger
-/// entry that stands for it - and re-ingests nothing, while a file whose content AS THE WALK LOWERED
-/// IT differs from its latest recorded generation re-emits every event the walk extracted for it. That
-/// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
-/// to records the log still carries, and it re-emits precisely because those records are no longer
-/// that file's latest generation. The qualifier is load-bearing and the two halves differ on it: the
-/// design half reads the LIVE tree, while the code half lowers from the PERSISTED symbols index when
-/// the project has one, so on such a project the decision is taken against what that index holds.
-/// Both halves of that are claims about what this command APPENDS, over the files the walk emits a
-/// batch for: a file the walk hands over NO batch for - one the walk no longer sees, or one whose
-/// extraction the walk lowered to nothing - reaches no suppression decision here at all and retires
-/// nothing, whereas a path the tree has DELETED that the persisted index still lists IS handed over
-/// and does reach one. And a batch whose append lands but whose fold does not leaves the log right
-/// and the graph behind (`FoldingStore::append_and_fold` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
-/// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
-/// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
-/// the ones its earlier generation left live. The light lane compiles no extraction pass, so
-/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
-/// an error.
+/// store it refreshes incrementally, and what it records is PERCEPTION AS A LEDGER ENTRY (spec
+/// 107): one `GenerationIngested` for a batch, never a derived event. One walk hands this command
+/// each batch identity (`gc`/`gd` per file, `gw` for the workflow definition) exactly once, and
+/// each batch is weighed by the one function both ingest sinks ask
+/// ([`rigger::ingest::entry_of_batch`]) against its identity's LATEST recorded generation -
+/// answered by the store's group lookup, never by reading the log - and against the generation
+/// `graph.db` holds. So an unchanged file's batch is current on both sides and records nothing,
+/// while a file whose bytes extract to any other generation records one entry: a changed file, a
+/// never-recorded one, one REVERTED to content it held at an earlier generation - its key names a
+/// generation the log still carries, and it records precisely because that generation is no
+/// longer the file's latest - and one a rebuild of `graph.db` left behind, which the log holds
+/// and the graph does not. What an entry records is the extraction of the bytes this command
+/// READS, hashed by git, never the batch the walk handed: the code half lowers from the
+/// PERSISTED symbols index when the project has one, so a lowering that lags the file records
+/// the generation of the file's bytes. A file the walk hands over NO batch for - one the walk no
+/// longer sees, or one whose extraction the walk lowered to nothing - reaches no decision here
+/// and retires nothing, whereas a path the tree has DELETED that the persisted index still lists
+/// IS handed over and does reach one. An entry whose append lands but whose fold does not leaves
+/// the log right and the graph behind, and this command's line names the first fold it lost.
+/// The light lane compiles no extraction pass, so `graph build` there records nothing, degrades
+/// to an empty graph (it still creates the store) and exits 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
     // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.
@@ -519,31 +515,28 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    let (appended, fold) = ingest_tree(&store, &graph, &root)?;
+    let (counted, fold) = ingest_tree(&store, &graph, &root)?;
     println!(
-        "graph build: ingested {appended} code-ingest event(s) into {}{}",
+        "graph build: ingested {counted} code-ingest event(s) into {}{}",
         db_path("graph.db"),
         fold_loss_clause(&fold)
     );
     Ok(())
 }
 
-/// The walk of the tree at `root` into `store` and `graph`, answering how many events it appended.
+/// The walk of the tree at `root` into `store` and `graph`, answering the N of the build's line
+/// and the first fold it lost.
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
-/// this each batch identity (`gc`/`gd` per file) exactly once, so each batch asks the store, through
-/// the group lookup, whether it is already its identity's latest recorded generation
-/// ([`rigger::ingest::batch_is_latest_recorded`], the first-sight helper this sink alone still
-/// asks). An unchanged file's batch is, and appends nothing; a changed, reverted or
-/// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
-/// keys match are no longer the file's latest generation.
+/// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
+/// asks the store one group lookup for it. A batch that records nothing counts nothing.
 ///
-/// Each appended event is built by the one keyed derived-event builder
-/// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
-/// batch is appended and folded in ONE store append and ONE graph transaction through the shared
-/// batched append-and-fold authority (spec 49). The run's sink records a batch as one ledger entry
-/// through that authority's ledger form instead. There is no run to stamp, so the events carry
-/// no run id.
+/// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
+/// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
+/// An entry that folded as a re-recording, the graph already holding its generation, moved no
+/// fact and is not counted. The fold answered is the FIRST one this build could not make: a
+/// lost fold marks a current graph owed, so every entry after it is refused for that debt, and
+/// the first names the cause.
 ///
 /// The walk runs under the one walk policy both ingest sinks share
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
@@ -555,32 +548,88 @@ fn ingest_tree(
     graph: &dyn Projection,
     root: &str,
 ) -> Result<(usize, contextgraph::Fold), rigger::eventstore::Error> {
-    let mut appended = 0usize;
-    // The first fold this build could not make, if any: a lost fold marks a current graph owed,
-    // so every batch after it is refused for the same debt - the first names the cause.
-    let mut fold = contextgraph::Fold::Folded;
-    let folding = rigger::ingest::folding_into(store, Some(graph), &stderr_line);
+    let mut counted = 0usize;
+    let mut first_lost = contextgraph::Fold::Folded;
     rigger::ingest::sink_walked_batches(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
         },
-        |keyed, _excluded| {
-            if rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed)? {
+        |keyed, excluded| {
+            let Some((events, fold)) = record_batch(store, graph, root, keyed, excluded)? else {
                 return Ok(());
-            }
-            let batch: Vec<Event> = keyed
-                .iter()
-                .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
-                .collect();
-            let done = folding.append_and_fold(conductor::STREAM, ExpectedRevision::Any, &batch)?;
-            appended += batch.len();
-            if fold == contextgraph::Fold::Folded {
-                fold = done.fold;
+            };
+            counted += events;
+            if first_lost == contextgraph::Fold::Folded {
+                first_lost = fold;
             }
             Ok(())
         },
     )?;
-    Ok((appended, fold))
+    Ok((counted, first_lost))
+}
+
+/// WHAT `rigger graph build` RECORDS FOR ONE BATCH (spec 107): the batch `keyed`, as the walk
+/// handed it with its flag `excluded`, recorded as one ledger entry of perception and no derived
+/// event. It answers how many batch events the entry adds to the build line's N and what became
+/// of its fold, or nothing when the batch records nothing.
+///
+/// What is recorded is decided by [`rigger::ingest::entry_of_batch`], the one function both
+/// ingest sinks call. This sink hands it what differs from the run's: the log side read from the
+/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and the one hash
+/// function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
+/// constructor and carries no run id, there being no run, and it is appended and folded with its
+/// extraction through the ledger form of the folding store, in ONE store append and ONE graph
+/// transaction. A batch whose key names no identity, and a failed read of either side, of the
+/// bytes or of the hash, fails with that failure's text and records nothing, as a refused append
+/// does. A lost fold is answered, never said here: the build's line names it.
+///
+/// An entry counts its batch's events unless the ledger form reports it a re-recording.
+#[cfg(feature = "symbols")]
+fn record_batch(
+    store: &dyn EventStore,
+    graph: &dyn Projection,
+    root: &str,
+    keyed: &[(String, &Event)],
+    excluded: bool,
+) -> Result<Option<(usize, contextgraph::Fold)>, rigger::eventstore::Error> {
+    let recorded = rigger::ingest::entry_of_batch(
+        Path::new(root),
+        keyed,
+        excluded,
+        |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
+        graph,
+        &hash_blob_in(root),
+    )
+    .map_err(|e| rigger::eventstore::Error::Backend(e.0))?;
+    let Some(recorded) = recorded else {
+        return Ok(None);
+    };
+    let events = recorded.batch.len();
+    let done = rigger::ingest::folding_into(store, Some(graph), &stderr_line)
+        .append_entry_and_fold(
+            conductor::STREAM,
+            &recorded.entry.event(events),
+            recorded.batch,
+        )?;
+    let counted = if done.outcome == Some(contextgraph::EntryFold::ReRecording) {
+        0
+    } else {
+        events
+    };
+    Ok(Some((counted, done.fold)))
+}
+
+/// The light lane compiles no extraction pass: its walk hands the build's sink no batch, so
+/// there is nothing to record.
+#[cfg(not(feature = "symbols"))]
+fn record_batch(
+    _store: &dyn EventStore,
+    _graph: &dyn Projection,
+    _root: &str,
+    _keyed: &[(String, &Event)],
+    _excluded: bool,
+) -> Result<Option<(usize, contextgraph::Fold)>, rigger::eventstore::Error> {
+    Ok(None)
 }
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection

@@ -1,8 +1,9 @@
 //! Periphery (contract / API / integration) tests for spec 101 criterion 3: THE LATEST GENERATION
-//! IS A GROUP LOOKUP. Every recording of a batch - `rigger graph build`'s keyed derived rows and
-//! the one ledger entry the run's `rigger step` records (spec 107) - carries its batch identity
-//! as its `group`, and both ingest sinks ask the store's group lookup for an identity's latest
-//! recorded generation instead of reading the stream.
+//! IS A GROUP LOOKUP. Every recording of a batch - the one ledger entry either ingest sink
+//! records (spec 107), `rigger graph build`'s or the run's `rigger step`'s, and the keyed derived
+//! rows of a store recorded before the ledger - carries its batch identity as its `group`, and
+//! both ingest sinks ask the store's group lookup for an identity's latest recorded generation
+//! instead of reading the stream.
 //!
 //! The inside-out proofs count a step's reads over a `:memory:` store inside the crate and pin
 //! each backend's lookup through the contract suite. What they are structurally blind to, and
@@ -12,18 +13,19 @@
 //!    `rigger step` - another process, another sink - must answer it through the lookup and
 //!    record nothing for it, and must record exactly one entry for each batch that moved.
 //! 2. THE UPGRADE. A log recorded before the stamp carries keys but no group. The first ingest
-//!    over it re-emits the live index once, stamped, and every later ingest (by either sink)
-//!    answers from the stamp and appends nothing.
+//!    over it records the live index once, one grouped ledger entry per batch, and every later
+//!    ingest (by either sink) answers from those entries and records nothing.
 //! 3. THE NAMESPACE. The product stores many projects in one `events.db` behind a project
 //!    namespace; one project's recording of an identity must never answer another project's
 //!    lookup of the same identity. Drivable in both feature lanes, since it needs no walk.
 
 mod common;
 
+use common::fixtures::keyed_derived_event;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision, GroupHead, META_GROUP};
-use rigger::ingest::{keyed_derived_event, latest_generation, META_REPLAY_KEY};
+use rigger::ingest::{latest_generation, META_REPLAY_KEY};
 use std::collections::BTreeMap;
 
 /// The two ingest sinks over a real tree: the walk that mints the batches is `symbols`-gated, so
@@ -32,8 +34,8 @@ use std::collections::BTreeMap;
 mod ingest_sinks {
     use super::*;
     use common::cli::{
-        identified_git_project, init_event_log, read_run_events, run_rigger, step_line,
-        with_run_store, write_workflow,
+        graph_build_line, identified_git_project, init_event_log, read_run_events, run_rigger,
+        step_line, with_run_store, write_workflow,
     };
     use common::git::run_git;
     use std::path::Path;
@@ -47,16 +49,11 @@ mod ingest_sinks {
             .collect()
     }
 
-    /// Every derived event appended to `root`'s run stream since it held `before` events.
-    fn derived_since(root: &Path, before: usize) -> Vec<Event> {
-        derived(&read_run_events(root)[before..])
-    }
-
     /// One batch of a [`walk`]: its identity, its generation and its keys.
     type Batch = (String, String, Vec<String>);
 
-    /// An ingest sink, as the binary ships it: `rigger graph build`, which records a batch as its
-    /// keyed derived rows, or the run's `rigger step`, which records it as one ledger entry.
+    /// An ingest sink, as the binary ships it: `rigger graph build` or the run's `rigger step`.
+    /// Each records a batch as one ledger entry.
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Sink {
         Build,
@@ -71,44 +68,39 @@ mod ingest_sinks {
                 Sink::Step => &["step"],
             }
         }
+    }
 
-        /// The replay keys of what the sink records for `batches`, in order: every key of each
-        /// batch, or the one key of each batch's entry - its identity, its generation and its
-        /// event count.
-        fn keys(self, batches: &[Batch]) -> Vec<String> {
-            match self {
-                Sink::Build => batches
-                    .iter()
-                    .flat_map(|(_, _, keys)| keys.clone())
-                    .collect(),
-                Sink::Step => batches
-                    .iter()
-                    .map(|(identity, generation, keys)| {
-                        format!("{identity}@{generation}#{}", keys.len())
-                    })
-                    .collect(),
-            }
-        }
+    /// The replay keys of what a sink records for `batches`, in order: the one key of each
+    /// batch's entry - its identity, its generation and its event count.
+    fn entry_keys(batches: &[Batch]) -> Vec<String> {
+        batches
+            .iter()
+            .map(|(identity, generation, keys)| format!("{identity}@{generation}#{}", keys.len()))
+            .collect()
+    }
 
-        /// Every event of perception appended to `root`'s run stream since it held `before`
-        /// events, each asserted to be of the kind the sink records: a derived row for the
-        /// build, a ledger entry for the step.
-        fn appended(self, root: &Path, before: usize) -> Vec<Event> {
-            let appended: Vec<Event> = read_run_events(root)[before..]
-                .iter()
-                .filter(|e| rigger::retention::PERCEPTION_TYPES.contains(&e.type_.as_str()))
-                .cloned()
-                .collect();
-            for event in &appended {
-                assert_eq!(
-                    event.type_ == rigger::retention::TYPE_GENERATION_INGESTED,
-                    self == Sink::Step,
-                    "{self:?} recorded a {}",
-                    event.type_
-                );
-            }
+    /// Every event of perception appended to `root`'s run stream since it held `before` events,
+    /// each asserted to be a ledger entry: no sink records a derived row.
+    fn appended(root: &Path, before: usize) -> Vec<Event> {
+        let appended: Vec<Event> = read_run_events(root)[before..]
+            .iter()
+            .filter(|e| rigger::retention::PERCEPTION_TYPES.contains(&e.type_.as_str()))
+            .cloned()
+            .collect();
+        assert_eq!(
             appended
-        }
+                .iter()
+                .map(|e| e.type_.as_str())
+                .collect::<Vec<_>>(),
+            vec![rigger::retention::TYPE_GENERATION_INGESTED; appended.len()],
+            "a sink records perception as ledger entries alone"
+        );
+        appended
+    }
+
+    /// How many batch events `batches` hold in all.
+    fn events_of(batches: &[Batch]) -> usize {
+        batches.iter().map(|(_, _, keys)| keys.len()).sum()
     }
 
     /// The batches of `batches` whose identity `keep` answers for, in walk order.
@@ -120,7 +112,7 @@ mod ingest_sinks {
             .collect()
     }
 
-    /// What the step records for each of `batches` from the bytes `root` holds, as
+    /// What a sink records for each of `batches` from the bytes `root` holds, as
     /// [`entry_records`](common::fixtures::entry_records) answers it: the entries of the shipped
     /// walk's own fixture that name those batches' identities, in walk order.
     fn entries_of(
@@ -360,20 +352,20 @@ mod ingest_sinks {
 
         let before = read_run_events(root).len();
         step_line(root, "the step that ingests the moved tree");
-        let appended = Sink::Step.appended(root, before);
+        let recorded = appended(root, before);
         let moved = batches_where(&now, |identity| {
             identity == format!("gc/{CHANGED}") || identity == format!("gc/{REVERTED}")
         });
         assert_eq!(moved.len(), 2);
         assert_eq!(
-            common::fixtures::entry_records(&appended),
+            common::fixtures::entry_records(&recorded),
             entries_of(root, &moved),
             "the step records one entry for the changed batch and one for the reverted, from the \
              bytes it read, each under its identity as its group, and no other perception"
         );
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
-            Sink::Step.keys(&moved),
+            meta_of(&recorded, META_REPLAY_KEY),
+            entry_keys(&moved),
             "each entry's key names its batch's generation and event count"
         );
         assert_eq!(
@@ -393,7 +385,7 @@ mod ingest_sinks {
         let settled = read_run_events(root).len();
         step_line(root, "the step over the settled tree");
         assert_eq!(
-            meta_of(&Sink::Step.appended(root, settled), META_REPLAY_KEY),
+            meta_of(&appended(root, settled), META_REPLAY_KEY),
             Vec::<String>::new(),
             "a later step's lookups answer every batch as recorded, so it records nothing"
         );
@@ -403,9 +395,9 @@ mod ingest_sinks {
     /// lookup cannot read back (its newest member's type is not text),
     /// WHEN `rigger graph build` walks the tree,
     /// THEN the build FAILS rather than reporting success: an unanswered lookup is never read as
-    /// "already recorded", so the build names the store's error, prints no ingested-count line, and
-    /// appends nothing for that batch - while every other batch of the walk, whose lookup did answer,
-    /// is appended whole, grouped, in walk order.
+    /// "already recorded", so the build names the read that failed and the store's error, prints no
+    /// ingested-count line, and records nothing for that batch - while every other batch of the
+    /// walk, whose lookup did answer, is recorded as its one entry, grouped, in walk order.
     #[test]
     fn a_graph_build_whose_recorded_generation_is_unreadable_fails_and_appends_nothing_for_that_batch(
     ) {
@@ -433,33 +425,28 @@ mod ingest_sinks {
             "a failed build reports no ingested count; stdout: {out}"
         );
         assert!(
-            err.contains("Invalid column type Blob"),
-            "the build names the store's error; stderr: {err}"
+            err.contains(&format!(
+                "the log's latest generation of {broken} could not be read: event store: "
+            )) && err.contains("Invalid column type Blob"),
+            "the build names the read that failed and the store's error; stderr: {err}"
         );
 
         // Restore the recording's type so the log reads back; the build has already run.
         restore_recording(root, &broken);
-        let others: Vec<String> = now
-            .iter()
-            .filter(|(identity, _, _)| *identity != broken)
-            .flat_map(|(_, _, keys)| keys.clone())
-            .collect();
+        let others = batches_where(&now, |identity| identity != broken);
         assert_eq!(
-            others.len() + keys_of(&now, &[&broken]).len(),
-            now.iter().map(|(_, _, keys)| keys.len()).sum::<usize>(),
+            (others.len() + 1, others.is_empty()),
+            (now.len(), false),
             "sanity: the walk emits the broken file's batch alongside the others"
         );
-        assert!(
-            !keys_of(&now, &[&broken]).is_empty() && !others.is_empty(),
-            "sanity: both halves of the walk are non-empty"
-        );
-        let appended = derived_since(root, before);
+        let recorded = appended(root, before);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
-            others,
-            "every batch whose lookup answered is appended whole, and the unreadable one is not"
+            common::fixtures::entry_records(&recorded),
+            entries_of(root, &others),
+            "every batch whose lookup answered is recorded as its entry, from the bytes the build \
+             read, and the unreadable one is not"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+        assert_eq!(meta_of(&recorded, META_REPLAY_KEY), entry_keys(&others));
     }
 
     /// Replace the store's group index with one of the same name that no group lookup can use (a
@@ -489,7 +476,7 @@ mod ingest_sinks {
         let root = dir.path();
         tree(root, &[(UNCHANGED, "pub fn kept() {}\n")]);
         let now = walk(root);
-        let all = Sink::Step.keys(&now);
+        let all = entry_keys(&now);
         break_group_index(root);
         let before = read_run_events(root).len();
 
@@ -508,7 +495,7 @@ mod ingest_sinks {
             "the step fails naming the read and the store's lookup error; stderr: {err}"
         );
         assert_eq!(
-            meta_of(&Sink::Step.appended(root, before), META_REPLAY_KEY),
+            meta_of(&appended(root, before), META_REPLAY_KEY),
             Vec::<String>::new(),
             "no batch is recorded when no lookup answered"
         );
@@ -517,15 +504,15 @@ mod ingest_sinks {
         execute(root, "DROP INDEX idx_events_group");
         let failed = read_run_events(root).len();
         step_line(root, "the step once the store answers again");
-        let appended = Sink::Step.appended(root, failed);
+        let recorded = appended(root, failed);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
+            meta_of(&recorded, META_REPLAY_KEY),
             all,
             "the next step records every batch the failed step could not, in walk order"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&all));
+        assert_eq!(meta_of(&recorded, META_GROUP), identities_of(&all));
         assert_eq!(
-            common::fixtures::entry_records(&appended),
+            common::fixtures::entry_records(&recorded),
             entries_of(root, &now)
         );
     }
@@ -592,8 +579,8 @@ mod ingest_sinks {
         let now = tree_with_a_refused_file(root);
         let refused = format!("gc/{REFUSED}");
         let refused_batch = batches_where(&now, |identity| identity == refused);
-        let refused_keys = sink.keys(&refused_batch);
-        let others = sink.keys(&batches_where(&now, |identity| identity != refused));
+        let refused_keys = entry_keys(&refused_batch);
+        let others = entry_keys(&batches_where(&now, |identity| identity != refused));
         refuse_appends_of(root, &refused);
         let before = read_run_events(root).len();
 
@@ -606,13 +593,13 @@ mod ingest_sinks {
             err.contains(REFUSAL),
             "rigger {args:?} names the store's refusal; stderr: {err}"
         );
-        let appended = sink.appended(root, before);
+        let recorded = appended(root, before);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
+            meta_of(&recorded, META_REPLAY_KEY),
             others,
             "every other batch, the ones after the refusal included, is recorded in walk order"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+        assert_eq!(meta_of(&recorded, META_GROUP), identities_of(&others));
 
         // Let the store record every append again.
         execute(root, "DROP TRIGGER refuse_group");
@@ -622,35 +609,35 @@ mod ingest_sinks {
             ok,
             "rigger {args:?} once the store accepts appends must succeed; stderr: {err}"
         );
-        let appended = sink.appended(root, failed);
+        let recorded = appended(root, failed);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
+            meta_of(&recorded, META_REPLAY_KEY),
             refused_keys,
             "the next run records exactly the batch the store refused"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&refused_keys));
-        (refused_out, next_out, refused_batch[0].2.len())
+        assert_eq!(meta_of(&recorded, META_GROUP), identities_of(&refused_keys));
+        (refused_out, next_out, events_of(&refused_batch))
     }
 
     /// GIVEN a project whose store refuses to append one file's batch while every lookup answers,
     /// WHEN `rigger graph build` walks the tree,
     /// THEN the build FAILS naming the refusal and prints no ingested-count line, rather than
-    /// reporting success over a batch it never recorded, and appends every other batch;
-    /// AND once the store accepts appends, the next build appends exactly the refused batch and
-    /// reports exactly that count.
+    /// reporting success over a batch it never recorded, and records one entry for every other
+    /// batch;
+    /// AND once the store accepts appends, the next build records exactly the refused batch's
+    /// entry and reports exactly that batch's event count.
     #[test]
-    fn a_graph_build_whose_append_is_refused_fails_and_the_next_build_appends_the_refused_batch() {
+    fn a_graph_build_whose_append_is_refused_fails_and_the_next_build_records_the_refused_batch() {
         let (refused_out, next_out, refused) = refuse_then_accept(Sink::Build);
         assert_eq!(
             refused_out.trim(),
             "",
             "a failed build reports no ingested count"
         );
-        assert!(
-            next_out.starts_with(&format!(
-                "graph build: ingested {refused} code-ingest event(s) into "
-            )),
-            "the next build reports exactly the refused batch's events; stdout: {next_out}"
+        assert_eq!(
+            next_out,
+            graph_build_line(refused, ""),
+            "the next build reports exactly the refused batch's events"
         );
     }
 
@@ -671,16 +658,17 @@ mod ingest_sinks {
     }
 
     /// GIVEN a log whose derived events were recorded BEFORE the group stamp - each keyed, none
-    /// grouped - for exactly the tree the project holds,
+    /// grouped, none folded - for exactly the tree the project holds,
     /// WHEN `rigger graph build` runs over it,
-    /// THEN the group lookup found no generation for any identity, so the build re-emits the live
-    /// index once, every batch whole and in walk order, each event grouped; and a `rigger step` after
-    /// it - the other sink, in another process - records nothing, because every lookup now answers
-    /// the build's stamped recording and the graph holds the generation the build folded.
+    /// THEN the group lookup found no generation for any identity, so the build records the live
+    /// index once, one grouped ledger entry per batch in walk order, and reports every batch
+    /// event; and a `rigger step` after it - the other sink, in another process - records
+    /// nothing, because every lookup now answers the build's entry and the graph holds the
+    /// generation the build folded.
     ///
-    /// No migration rewrites a recorded event: the unstamped copies are still in the log afterwards.
+    /// No migration rewrites a recorded event: the unstamped rows are still in the log afterwards.
     #[test]
-    fn a_log_recorded_before_the_group_stamp_re_emits_the_live_index_once_then_answers() {
+    fn a_log_recorded_before_the_group_stamp_records_the_live_index_once_then_answers() {
         let dir = ingestable_project();
         let root = dir.path();
         tree(
@@ -715,21 +703,24 @@ mod ingest_sinks {
         );
 
         let before = read_run_events(root).len();
-        graph_build(root, "the first build over a pre-stamp log");
-        let appended = derived_since(root, before);
+        let (out, err, ok) = run_rigger(root, &["graph", "build"]);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
-            all,
-            "the first ingest over a pre-stamp log re-emits every batch of the live index, once"
+            (ok, out),
+            (true, graph_build_line(all.len(), "")),
+            "the first build over a pre-stamp log counts every batch it folds; stderr: {err}"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&all));
+        let recorded = appended(root, before);
         assert_eq!(
-            meta_of(
-                &derived(&read_run_events(root))[..all.len()],
-                META_REPLAY_KEY
-            ),
+            common::fixtures::entry_records(&recorded),
+            entries_of(root, &now),
+            "the first ingest over a pre-stamp log records every batch of the live index, once"
+        );
+        assert_eq!(meta_of(&recorded, META_REPLAY_KEY), entry_keys(&now));
+        assert_eq!(
+            meta_of(&derived(&read_run_events(root)), META_REPLAY_KEY),
             all,
-            "the unstamped recordings are left in place, never rewritten"
+            "the unstamped recordings are left in place, never rewritten, and no derived row joins \
+             them"
         );
         assert_eq!(
             answered(root, &now),
@@ -739,11 +730,11 @@ mod ingest_sinks {
         );
 
         let settled = read_run_events(root).len();
-        step_line(root, "the step after the stamping build");
+        step_line(root, "the step after the build");
         assert_eq!(
-            meta_of(&Sink::Step.appended(root, settled), META_REPLAY_KEY),
+            meta_of(&appended(root, settled), META_REPLAY_KEY),
             Vec::<String>::new(),
-            "the step answers every batch from the build's stamp and records nothing"
+            "the step answers every batch from the build's entries and records nothing"
         );
     }
 
@@ -762,18 +753,17 @@ mod ingest_sinks {
     /// - `src/followed.rs`: an entry at the current generation FOLLOWED by a derived row of an old
     ///   one, so its latest recording is a derived row.
     ///
-    /// The build asks the log alone: it records every walked batch but the spared file's - the
-    /// entry at the current generation answers its check, the stale entry does not, and the
-    /// identity whose latest recording is a derived row is answered by that row. The step asks the
-    /// log AND the graph: `graph.db` holds no generation of the spared file, whose entry was never
-    /// folded, so the step records the spared file's batch too - again, as an entry - and folds it.
+    /// Either sink asks the log AND the graph: the stale entry does not answer its batch's
+    /// generation, the identity whose latest recording is a derived row is answered by that row,
+    /// and `graph.db` holds no generation of the spared file, whose entry was never folded, so
+    /// the first sink records every walked batch, the spared file's too - again, as an entry -
+    /// and folds it.
     ///
     /// Asserts that of whichever sink runs first; then that the group lookup answers every walked
     /// identity at its current generation, the spared one from an entry; then, of the second
-    /// sink, another process: a build after the step records nothing, and a step after the build
-    /// records exactly the spared file's entry, the one generation the log holds and `graph.db`
-    /// does not. Returns both sinks' stdout and the count of batch events the first recorded, for
-    /// each sink's own report line.
+    /// sink, another process: it records nothing, the log and `graph.db` both holding every
+    /// generation. Returns both sinks' stdout and the count of batch events the first recorded,
+    /// for each sink's own report line.
     fn sinks_over_an_entry_at_the_current_generation(
         first: Sink,
         second: Sink,
@@ -841,20 +831,7 @@ mod ingest_sinks {
             "before any sink runs, the lookup answers the spared entry's generation, the stale \
              entry's, the derived row that follows an entry, and no other identity"
         );
-        let spared_batch = batches_where(&now, |identity| identity == spared);
-        let others = batches_where(&now, |identity| identity != spared);
-        assert_eq!(spared_batch.len(), 1);
-        assert_eq!(others.len() + 1, now.len());
         assert_ne!(spared_events, 0, "sanity: the spared batch holds events");
-        // What each sink records as the first to run, and as the second.
-        let records_first = |sink: Sink| match sink {
-            Sink::Build => others.clone(),
-            Sink::Step => now.clone(),
-        };
-        let records_second = |sink: Sink| match sink {
-            Sink::Build => Vec::new(),
-            Sink::Step => spared_batch.clone(),
-        };
 
         let before = read_run_events(root).len();
         let (first_out, err, ok) = run_rigger(root, first.args());
@@ -862,16 +839,14 @@ mod ingest_sinks {
             ok,
             "{first:?} must succeed; stdout: {first_out}; stderr: {err}"
         );
-        let appended = first.appended(root, before);
-        let recorded = records_first(first);
-        let keys = first.keys(&recorded);
+        let recorded = appended(root, before);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
-            keys,
-            "the build records every batch but the one an entry records at its current generation; \
-             the step records that one too, which graph.db does not hold"
+            common::fixtures::entry_records(&recorded),
+            entries_of(root, &now),
+            "the first sink records every batch, the one an entry records at its current \
+             generation too, which graph.db does not hold"
         );
-        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&keys));
+        assert_eq!(meta_of(&recorded, META_REPLAY_KEY), entry_keys(&now));
         assert_eq!(
             answered(root, &now),
             now.iter()
@@ -897,24 +872,12 @@ mod ingest_sinks {
             ok,
             "{second:?} must succeed; stdout: {second_out}; stderr: {err}"
         );
-        let appended = second.appended(root, settled);
         assert_eq!(
-            meta_of(&appended, META_REPLAY_KEY),
-            second.keys(&records_second(second)),
-            "a build after the step records nothing; a step after the build records the one \
-             generation the log holds and graph.db does not"
+            meta_of(&appended(root, settled), META_REPLAY_KEY),
+            Vec::<String>::new(),
+            "the second sink records nothing: the log and graph.db both hold every generation"
         );
-        if second == Sink::Step {
-            assert_eq!(
-                common::fixtures::entry_records(&appended),
-                entries_of(root, &spared_batch)
-            );
-        }
-        (
-            first_out,
-            second_out,
-            recorded.iter().map(|(_, _, keys)| keys.len()).sum(),
-        )
+        (first_out, second_out, events_of(&now))
     }
 
     /// GIVEN a log holding a ledger entry of one file at the tree's current generation, a stale
@@ -932,25 +895,26 @@ mod ingest_sinks {
             step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
             "the step parks its stage; stdout: {step_out}"
         );
-        assert!(
-            build_out.starts_with("graph build: ingested 0 code-ingest event(s) into "),
-            "the build after it reports nothing ingested; stdout: {build_out}"
+        assert_eq!(
+            build_out,
+            graph_build_line(0, ""),
+            "the build after it reports nothing ingested"
         );
     }
 
     /// GIVEN the same log,
     /// WHEN `rigger graph build` ingests the tree,
-    /// THEN the build records every batch but the first file's and reports exactly that count, and
-    /// a `rigger step` after it parks its stage and records the first file's entry alone.
+    /// THEN the build records one entry for every batch, the first file's among them - the log
+    /// holds its generation and `graph.db` does not - and reports every batch event, and a
+    /// `rigger step` after it parks its stage and records nothing.
     #[test]
-    fn a_graph_build_spares_the_batch_a_ledger_entry_records_at_its_current_generation() {
-        let (build_out, step_out, appended) =
+    fn a_graph_build_records_again_the_generation_the_log_holds_and_graph_db_does_not() {
+        let (build_out, step_out, events) =
             sinks_over_an_entry_at_the_current_generation(Sink::Build, Sink::Step);
-        assert!(
-            build_out.starts_with(&format!(
-                "graph build: ingested {appended} code-ingest event(s) into "
-            )),
-            "the build reports every event but the spared batch's; stdout: {build_out}"
+        assert_eq!(
+            build_out,
+            graph_build_line(events, ""),
+            "the build reports every batch event, the spared batch's among them"
         );
         assert!(
             step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),

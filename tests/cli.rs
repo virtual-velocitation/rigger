@@ -17,6 +17,7 @@ use std::process::Command;
 mod common;
 use common::git::run_git;
 
+use common::cli::graph_build_line;
 use common::cli::plant_stale_marker;
 use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
@@ -2194,22 +2195,13 @@ fn symbol_index_is_byte_identical_across_processes() {
     );
 }
 
-/// The line `rigger graph build` prints for a build that counted `events` batch events and lost
-/// no fold.
-fn graph_build_line(events: usize) -> String {
-    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db\n")
-}
-
 /// How many batch events `entries` stand for: the sum of the event counts their replay keys
 /// carry.
 #[cfg(feature = "symbols")]
 fn batch_events(entries: &[(rigger::retention::GenerationIngested, String, String)]) -> usize {
     entries
         .iter()
-        .map(|(_, _, key)| {
-            let (_, count) = key.rsplit_once('#').expect("a replay key ends in #<n>");
-            count.parse::<usize>().expect("an event count")
-        })
+        .map(|(_, _, key)| common::fixtures::entry_key_parts(key).2)
         .sum()
 }
 
@@ -2243,7 +2235,7 @@ fn graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run() {
     let [recorded, walked] = recorded_and_walked(root);
     assert_eq!(
         (ok, out, recorded.clone(), read_run_events(root).len()),
-        (true, graph_build_line(batch_events(&walked)), walked, 1),
+        (true, graph_build_line(batch_events(&walked), ""), walked, 1),
         "the build records one ledger entry and nothing else; stderr: {err}"
     );
     assert_eq!(
@@ -2280,7 +2272,7 @@ fn graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run() {
             recorded_and_walked(root)[0].clone(),
             read_run_events(root).len()
         ),
-        (true, graph_build_line(0), recorded, 1),
+        (true, graph_build_line(0, ""), recorded, 1),
         "a re-build over an unchanged tree records nothing; stderr: {err}"
     );
 }
@@ -2320,7 +2312,7 @@ fn graph_build_records_a_changed_file_as_one_entry_from_the_bytes_it_holds_now()
         (ok, out, recorded, read_run_events(root).len()),
         (
             true,
-            graph_build_line(batch_events(&changed)),
+            graph_build_line(batch_events(&changed), ""),
             [first.clone(), changed.clone()].concat(),
             3
         ),
@@ -2364,7 +2356,7 @@ fn graph_build_in_the_light_lane_records_no_entry_and_no_derived_event_and_exits
 
     assert_eq!(
         (ok, out, common::fixtures::types_of(&read_run_events(root))),
-        (true, graph_build_line(0), Vec::<&str>::new()),
+        (true, graph_build_line(0, ""), Vec::<&str>::new()),
         "the light lane's build records nothing and exits 0; stderr: {err}"
     );
 }
