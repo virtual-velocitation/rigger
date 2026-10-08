@@ -43,7 +43,11 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 - named verification ("a test proves X ... pinned at the Y seam"), not just a state;
 - ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
-  one's").
+  one's");
+- the code it touches named in backticks (`run_wave`, `crates/x/src/ingest.rs`). The unit's
+  blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
+  criterion naming no code runs alone, and a multi-word span (`rigger validate`) matches as one
+  phrase.
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
