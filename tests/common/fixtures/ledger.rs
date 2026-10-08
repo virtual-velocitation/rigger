@@ -175,3 +175,21 @@ pub fn rebuild_from_the_tree(graph_db: &std::path::Path, log: &[Event], root: &s
     .unwrap();
     assert!(rebuilt.is_some(), "premise: the rebuild ran");
 }
+
+/// LEAVE `graph` OWING ITS REBUILD: the generic fold refuses a ledger entry and marks the graph
+/// it refused, so every fold after it is refused for that debt.
+pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection) {
+    use rigger::contextgraph::{wired, Fold};
+
+    let mut stray = GenerationIngested {
+        prefix: "gc".to_string(),
+        file: "src/stray.rs".to_string(),
+        generation: "h0".to_string(),
+        blob: String::new(),
+        excluded: false,
+    }
+    .event(1);
+    stray.position = 1;
+    assert_ne!(Fold::of(wired(Some(graph)), &stray), Fold::Folded);
+    assert!(graph.rebuild_owed().unwrap());
+}

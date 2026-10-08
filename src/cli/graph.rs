@@ -972,14 +972,358 @@ mod tests {
     #[cfg(feature = "symbols")]
     mod walk {
         use super::super::*;
-        use crate::test_support::{FailAppendMetaContaining, GroupLookupOnly, MinimalProjection};
+        use crate::test_support::{
+            entry_records, generation_ingested, git_hash_object, held_generations, one_lookup_each,
+            owe_a_rebuild, planted_extraction_tree, rebuild_from_the_tree,
+            seed_pre_ledger_rows_without_a_group, source_with, walked_generations, walked_handoffs,
+            write_file, FailAppendMetaContaining, GroupLookupOnly, Handed, MinimalProjection,
+            ReadCountingStore, MOVED, SOURCE_BODY, SOURCE_PATH, WALKED,
+        };
+        use rigger::contextgraph::Fold;
         use rigger::eventstore::Error;
+        use rigger::retention::GenerationIngested;
 
-        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
-        /// that error rather than skipping the batch and reporting success - an unanswered lookup is
-        /// never read as "already recorded", the fail-unsafe direction.
+        /// One ledger entry as a test compares it: its payload, its group and its replay key.
+        type Entry = (GenerationIngested, String, String);
+
+        /// The identity of the extraction tree's source file's code batch.
+        const SOURCE: &str = "gc/src/lib.rs";
+
+        /// What the run stream of `store` holds: its ledger entries, in log order, and how many
+        /// events it holds in all. The two agree only when the stream holds no other event, and
+        /// so no derived event.
+        fn recorded(store: &dyn EventStore) -> (Vec<Entry>, usize) {
+            let events = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap();
+            (entry_records(&events), events.len())
+        }
+
+        /// A stream holding `entries` and nothing else, as [`recorded`] answers it.
+        fn only(entries: Vec<Entry>) -> (Vec<Entry>, usize) {
+            let held = entries.len();
+            (entries, held)
+        }
+
+        /// The entry of `<prefix>/<path>` at `generation` standing for `events` batch events, its
+        /// blob the id `git hash-object` gives the bytes the tree at `root` holds at the path.
+        fn entry_from_the_tree(
+            root: &Path,
+            prefix: &str,
+            path: &str,
+            generation: &str,
+            excluded: bool,
+            events: usize,
+        ) -> Entry {
+            let blob = git_hash_object(root, path, false);
+            let entry = generation_ingested(prefix, path, generation, &blob, excluded);
+            entry_records(&[entry.event(events)]).remove(0)
+        }
+
+        /// The entry a build records for each batch a walk of the extraction tree at `root`
+        /// hands it, in walk order.
+        fn walked_entries(root: &Path) -> Vec<Entry> {
+            WALKED
+                .iter()
+                .map(|batch| {
+                    entry_from_the_tree(
+                        root,
+                        batch.prefix,
+                        batch.path,
+                        batch.generation,
+                        batch.excluded,
+                        batch.events.len(),
+                    )
+                })
+                .collect()
+        }
+
+        /// The batch the shipped whole-tree walk of `root` hands for `identity`.
+        fn walked(root: &str, identity: &str) -> Handed {
+            Handed::by(
+                |sink| {
+                    rigger::ingest::ingest_project_batched(root, sink);
+                },
+                identity,
+            )
+        }
+
+        /// The entry a build records for the source file's code batch from the bytes the tree at
+        /// `root` holds now, its generation the one the shipped walk keys those bytes under.
+        fn source_entry_now(root: &Path) -> Entry {
+            let handed = walked(root.to_str().unwrap(), SOURCE);
+            entry_from_the_tree(
+                root,
+                "gc",
+                SOURCE_PATH,
+                &handed.generation(),
+                handed.excluded,
+                handed.keyed.len(),
+            )
+        }
+
+        /// The identity of each batch a walk of the extraction tree hands, in walk order.
+        fn walked_identities() -> Vec<String> {
+            walked_handoffs()
+                .into_iter()
+                .map(|(identity, _)| identity)
+                .collect()
+        }
+
+        /// `owned` as the borrowed names a fixture takes.
+        fn names(owned: &[String]) -> Vec<&str> {
+            owned.iter().map(String::as_str).collect()
+        }
+
+        /// Spec 107, criterion 12: perception is a ledger entry at `rigger graph build`'s sink.
+        ///
+        /// GIVEN the extraction tree, an empty store and an empty graph,
+        /// WHEN the build's sink walks the tree,
+        /// THEN the store holds one ledger entry per batch the walk hands and no other event -
+        /// each entry's generation its batch's, its blob the id git gives the file's bytes, its
+        /// flag the walk's - the sink having asked the store one group lookup per identity, the
+        /// graph holds each identity's generation, and the build counts every batch event;
+        /// AND WHEN it walks the unchanged tree again, THEN it asks each lookup once more,
+        /// records nothing and counts nothing.
         #[test]
-        fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
+        fn a_build_records_each_batch_as_one_ledger_entry_and_an_unchanged_tree_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let graph = Projector::open(":memory:", "test").unwrap();
+            let identities = walked_identities();
+            let lookups = one_lookup_each(conductor::STREAM, &names(&identities));
+
+            let built = ingest_tree(&counted, &graph, root).unwrap();
+
+            assert_eq!(built, (18, Fold::Folded));
+            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
+            assert_eq!(counted.reads(), lookups);
+            assert_eq!(
+                held_generations(&graph, &names(&identities)),
+                walked_generations()
+            );
+
+            let again = ingest_tree(&counted, &graph, root).unwrap();
+
+            assert_eq!(again, (0, Fold::Folded));
+            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
+            assert_eq!(counted.reads(), [lookups.clone(), lookups].concat());
+        }
+
+        /// GIVEN a store and a graph a build recorded the extraction tree into,
+        /// WHEN the source file's code changes and the build's sink walks the tree,
+        /// THEN it records exactly one more event, the ledger entry of the file's code batch at
+        /// the generation and under the blob of the bytes the tree holds now, counts that
+        /// batch's four events, and the graph holds the new generation.
+        #[test]
+        fn a_changed_file_records_one_entry_with_the_generation_and_blob_of_the_bytes_read() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            assert_eq!(
+                ingest_tree(&store, &graph, root).unwrap(),
+                (18, Fold::Folded),
+                "premise: the first build records and folds the whole tree"
+            );
+            let walked_once = walked_entries(tree.path());
+            write_file(
+                &tree.path().join(SOURCE_PATH),
+                source_with(MOVED).as_bytes(),
+            );
+            let moved = source_entry_now(tree.path());
+            assert_ne!(
+                (&moved.0.generation, &moved.0.blob),
+                (&walked_once[1].0.generation, &walked_once[1].0.blob),
+                "premise: the moved body has its own generation and its own blob"
+            );
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(
+                recorded(&store),
+                only([walked_once, vec![moved.clone()]].concat())
+            );
+            assert_eq!(
+                graph.current_generation(SOURCE).unwrap(),
+                Some(moved.0.generation)
+            );
+        }
+
+        /// SINK OUTCOMES rows 9 then 13.
+        ///
+        /// GIVEN a store recorded before the ledger and before the group stamp, so the group
+        /// lookup answers no generation for any identity while the graph holds each one's,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per identity after the pre-ledger rows, each folding as a
+        /// re-recording that leaves the graph's generation where it stood, and counts none of
+        /// them.
+        #[test]
+        fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_the_build_does_not_count(
+        ) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            seed_pre_ledger_rows_without_a_group(tree.path(), &store, &graph);
+            let identities = walked_identities();
+            assert_eq!(
+                (
+                    recorded(&store),
+                    held_generations(&graph, &names(&identities))
+                ),
+                ((Vec::new(), 18), walked_generations()),
+                "premise: eighteen derived rows, no entry, and the graph holds each generation"
+            );
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (0, Fold::Folded));
+            assert_eq!(recorded(&store), (walked_entries(tree.path()), 18 + 6));
+            assert_eq!(
+                held_generations(&graph, &names(&identities)),
+                walked_generations()
+            );
+        }
+
+        /// The graph build line's N counts each SINK OUTCOMES row that counts, and no other.
+        ///
+        /// GIVEN the pre-ledger store of row 13's fixture and a source file whose code has since
+        /// changed,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per identity and counts the four events of the changed
+        /// batch alone: the one entry the graph folded is counted, the five re-recordings are
+        /// not.
+        #[test]
+        fn a_build_counts_the_batch_the_graph_folds_and_not_the_re_recordings_beside_it() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            seed_pre_ledger_rows_without_a_group(tree.path(), &store, &graph);
+            write_file(
+                &tree.path().join(SOURCE_PATH),
+                source_with(MOVED).as_bytes(),
+            );
+            let mut entries = walked_entries(tree.path());
+            entries[1] = source_entry_now(tree.path());
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(recorded(&store), (entries, 18 + 6));
+        }
+
+        /// SINK OUTCOMES row 14, then row 4.
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph that owes its rebuild,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per batch, counts every batch event, and answers the
+        /// refusal as the fold it lost, which the build line's fold-loss clause names; the graph
+        /// takes no generation;
+        /// AND WHEN it walks the unchanged tree again, THEN the log side alone answers: it
+        /// records nothing, counts nothing and loses no fold.
+        #[test]
+        fn an_entry_a_graph_that_owes_its_rebuild_refuses_is_recorded_counted_and_named_as_lost() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph =
+                Projector::open(graph_dir.path().join("graph.db").to_str().unwrap(), "test")
+                    .unwrap();
+            owe_a_rebuild(&graph);
+            let identities = walked_identities();
+
+            let (counted, fold) = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(
+                (counted, fold_loss_clause(&fold)),
+                (
+                    18,
+                    format!(
+                        "; not folded into the context graph: graph: {}",
+                        contextgraph::REBUILD_OWED
+                    )
+                )
+            );
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+            assert_eq!(
+                held_generations(&graph, &names(&identities)),
+                vec![None; identities.len()]
+            );
+
+            let again = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(again, (0, Fold::Folded));
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+        }
+
+        /// THE NEXT BUILD RESTORES AN IDENTITY A REBUILD LEFT BEHIND.
+        ///
+        /// GIVEN a store and a `graph.db` a build recorded the extraction tree into, and a
+        /// rebuild of `graph.db`, made while the source file held another body, that could
+        /// resolve no source for the file's code entry and so left its identity behind,
+        /// WHEN the file is back at its recorded body and the build's sink walks the tree,
+        /// THEN it records the file's code entry again, though the log's latest generation of
+        /// the identity is the batch's, counts its four events, and the graph holds the
+        /// identity's generation again; no other identity records anything.
+        #[test]
+        fn an_identity_a_rebuild_left_behind_is_recorded_again_and_restored_by_the_next_build() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let store = Store::open(":memory:").unwrap();
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            assert_eq!(
+                ingest_tree(&store, &graph, root).unwrap(),
+                (18, Fold::Folded),
+                "premise: the first build records and folds the whole tree"
+            );
+            let walked_once = walked_entries(tree.path());
+            let identities = walked_identities();
+
+            write_file(&file, source_with(MOVED).as_bytes());
+            let log = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap();
+            rebuild_from_the_tree(&graph_db, &log, tree.path());
+            assert_eq!(
+                held_generations(&graph, &names(&identities)),
+                WALKED
+                    .iter()
+                    .map(|batch| {
+                        Some(batch.generation.to_string())
+                            .filter(|_| (batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                    })
+                    .collect::<Vec<_>>(),
+                "premise: the rebuild left the source file's code identity behind, and no other"
+            );
+            write_file(&file, SOURCE_BODY.as_bytes());
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(
+                recorded(&store),
+                only([walked_once.clone(), vec![walked_once[1].clone()]].concat())
+            );
+            assert_eq!(
+                held_generations(&graph, &names(&identities)),
+                walked_generations()
+            );
+        }
+
+        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS,
+        /// naming the read that failed, rather than skipping the batch and reporting success - an
+        /// unanswered lookup is never read as "already recorded", the fail-unsafe direction.
+        #[test]
+        fn a_build_whose_recorded_generation_is_unreadable_fails_naming_that_read() {
             let tree = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(tree.path().join("src")).unwrap();
             std::fs::write(
@@ -989,7 +1333,11 @@ mod tests {
             .unwrap();
             let store = GroupLookupOnly::new(Err("group index unreadable".into()));
             match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
-                Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
+                Err(Error::Backend(msg)) => assert_eq!(
+                    msg,
+                    "the log's latest generation of gc/src/lib.rs could not be read: \
+                     event store: group index unreadable"
+                ),
                 other => panic!("the lookup's failure is the build's, got {other:?}"),
             }
             assert_eq!(
@@ -1001,45 +1349,40 @@ mod tests {
 
         /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
         /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
-        /// than reporting success over a batch it never recorded, and still appends every other batch.
+        /// than reporting success over a batch it never recorded, and still records every other batch.
         #[test]
-        fn a_build_whose_append_fails_fails_with_that_error_and_appends_every_other_batch() {
+        fn a_build_whose_append_fails_fails_with_that_error_and_records_every_other_batch() {
             let tree = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(tree.path().join("src")).unwrap();
             std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
             std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
             let root = tree.path().to_str().unwrap();
-            let mut walked: Vec<Vec<String>> = Vec::new();
-            rigger::ingest::ingest_project_batched(root, |keyed, _| {
-                walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
-            });
-            assert_eq!(
-                walked.len(),
-                2,
-                "sanity: one batch per file; walked {walked:?}"
-            );
+            let other = walked(root, "gc/src/b.rs");
 
             let inner = Store::open(":memory:").unwrap();
             let store = FailAppendMetaContaining {
                 inner: &inner,
                 needle: "gc/src/a.rs",
             };
-            match ingest_tree(&store, &MinimalProjection, root) {
+            let graph = Projector::open(":memory:", "test").unwrap();
+            match ingest_tree(&store, &graph, root) {
                 Err(Error::Backend(msg)) => assert_eq!(
                     msg,
                     "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
                 ),
                 other => panic!("the append's failure is the build's, got {other:?}"),
             }
-            let recorded: Vec<String> = inner
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .unwrap()
-                .iter()
-                .map(|e| e.meta[rigger::ingest::META_REPLAY_KEY].clone())
-                .collect();
             assert_eq!(
-                recorded, walked[1],
-                "the refused batch records nothing and the other appends whole"
+                recorded(&inner),
+                only(vec![entry_from_the_tree(
+                    tree.path(),
+                    "gc",
+                    "src/b.rs",
+                    &other.generation(),
+                    false,
+                    other.keyed.len()
+                )]),
+                "the refused batch records nothing and the other records its entry"
             );
         }
     }

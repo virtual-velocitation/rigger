@@ -41,7 +41,7 @@ use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, entry_records, gate_def, generation_ingested, git_commit_all,
     git_hash_object, held_generations, live_edges, logged_generations, one_lookup_each,
-    rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group, source_with,
+    owe_a_rebuild, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group, source_with,
     temp_git_project_with_commit, walked_entry_events, wire_owned, write_text, CountedRead, Handed,
     NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, REWORDED, SOURCE_BODY,
     SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
@@ -49,7 +49,7 @@ use common::fixtures::{
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{wired, EntryFold, Fold, Projection, REBUILD_OWED};
+use rigger::contextgraph::{EntryFold, Fold, Projection, REBUILD_OWED};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
@@ -709,17 +709,7 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    {
-        // The public fold refuses a ledger entry and marks the graph owing.
-        let graph = files.graph();
-        let mut stray = generation_ingested("gc", "src/stray.rs", "h0", "", false).event(1);
-        stray.position = 1;
-        assert_ne!(
-            Fold::of(wired(Some(&graph as &dyn Projection)), &stray),
-            Fold::Folded
-        );
-        assert!(graph.rebuild_owed().unwrap());
-    }
+    owe_a_rebuild(&files.graph());
     let owed_applied = applied_positions(&files.graph_db());
     let first_walk = walked(root);
     let lost = format!(

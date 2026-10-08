@@ -2194,36 +2194,40 @@ fn symbol_index_is_byte_identical_across_processes() {
     );
 }
 
-/// The count of `CodeEntityExtracted` events the cold-checkout `graph build` recorded into the
-/// run stream, read back through the same namespaced store the binary writes. Used to prove the
-/// incremental refresh: a re-build over an unchanged tree re-ingests NOTHING (an unchanged file's
-/// batch is its identity's latest recorded generation), so this count is stable across a second
-/// build.
-#[cfg(feature = "symbols")]
-fn code_entity_event_count(root: &Path) -> usize {
-    use rigger::eventstore::namespace::Namespaced;
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction, EventStore};
-
-    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
-    let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
-        .unwrap()
-        .iter()
-        .filter(|e| e.type_ == rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
-        .count()
+/// The line `rigger graph build` prints for a build that counted `events` batch events and lost
+/// no fold.
+fn graph_build_line(events: usize) -> String {
+    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db\n")
 }
 
-/// Cold-checkout build (spec 45, criterion 3): `rigger graph build` folds the project's source
-/// into `.rigger/graph.db` with NO run - no `RunStarted`, no event beyond the code-ingest events
-/// the fold already emits - so the graph is populated from source alone, on a repo the tool has
-/// merely cloned. Proven end-to-end through the shipped surface: `graph build` creates the store,
-/// then `graph --around` reads back the code-entity nodes and the `CALLS` edge the fold emits.
-/// The second build proves the incremental refresh - an unchanged tree re-ingests nothing.
+/// How many batch events `entries` stand for: the sum of the event counts their replay keys
+/// carry.
+#[cfg(feature = "symbols")]
+fn batch_events(entries: &[(rigger::retention::GenerationIngested, String, String)]) -> usize {
+    entries
+        .iter()
+        .map(|(_, _, key)| {
+            let (_, count) = key.rsplit_once('#').expect("a replay key ends in #<n>");
+            count.parse::<usize>().expect("an event count")
+        })
+        .sum()
+}
+
+/// Cold-checkout build (spec 45, criterion 3; spec 107, criterion 12): `rigger graph build`
+/// records the project's source as LEDGER ENTRIES and folds it into `.rigger/graph.db` with NO
+/// run.
+///
+/// GIVEN a cold checkout holding one source file,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN the log holds exactly one event, the ledger entry of the file's code batch - its
+/// generation the batch's, its blob the id `git hash-object` gives the file - and no derived
+/// event and no `RunStarted`; the line counts the batch's events; and `graph --around` reads back
+/// the code-entity nodes and the `CALLS` edge the entry's batch folded;
+/// AND WHEN the operator builds the unchanged tree again, THEN the build records nothing and
+/// its line counts nothing.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_build_folds_source_into_the_graph_with_no_run() {
+fn graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run() {
     let dir = temp_project();
     let root = dir.path();
     // A callee and a caller in one file: the fold emits `combat.rs::helper` / `combat.rs::caller`
@@ -2235,10 +2239,20 @@ fn graph_build_folds_source_into_the_graph_with_no_run() {
     .unwrap();
 
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
-    assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
-    assert!(
-        root.join(".rigger").join("graph.db").exists(),
-        "graph build must create .rigger/graph.db from a cold checkout"
+
+    let [recorded, walked] = recorded_and_walked(root);
+    assert_eq!(
+        (ok, out, recorded.clone(), read_run_events(root).len()),
+        (true, graph_build_line(batch_events(&walked)), walked, 1),
+        "the build records one ledger entry and nothing else; stderr: {err}"
+    );
+    assert_eq!(
+        recorded
+            .iter()
+            .map(|(entry, group, _)| (group.as_str(), entry.blob.len()))
+            .collect::<Vec<_>>(),
+        vec![("gc/combat.rs", 40)],
+        "sanity: the one entry is the source file's code batch, recorded from bytes git names"
     );
 
     // Read it back through the shipped inspector command: the code-entity nodes AND the CALLS edge
@@ -2257,19 +2271,101 @@ fn graph_build_folds_source_into_the_graph_with_no_run() {
         "the CALLS edge the fold emits must be present in the built graph; got:\n{g}"
     );
 
-    // Incremental refresh: a second build over the byte-identical tree re-ingests NOTHING (the
-    // content-keyed dedup, seeded from the log) and still exits clean.
-    let before = code_entity_event_count(root);
-    assert!(
-        before > 0,
-        "the first build must have recorded code-ingest events"
-    );
-    let (_o2, e2, ok2) = run_rigger(root, &["graph", "build"]);
-    assert!(ok2, "a second graph build must succeed; stderr: {e2}");
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+
     assert_eq!(
-        before,
-        code_entity_event_count(root),
-        "a re-build over an unchanged tree must not re-ingest (content-keyed incremental refresh)"
+        (
+            ok,
+            out,
+            recorded_and_walked(root)[0].clone(),
+            read_run_events(root).len()
+        ),
+        (true, graph_build_line(0), recorded, 1),
+        "a re-build over an unchanged tree records nothing; stderr: {err}"
+    );
+}
+
+/// Spec 107, criterion 12.
+///
+/// GIVEN a project `rigger graph build` has recorded,
+/// WHEN one source file changes and the operator builds again,
+/// THEN the build records exactly one more event, the ledger entry of that file's code batch at
+/// the generation and under the blob of the bytes the file holds now, and its line counts that
+/// batch's events.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_records_a_changed_file_as_one_entry_from_the_bytes_it_holds_now() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(root.join("combat.rs"), "fn helper() {}\n").unwrap();
+    std::fs::write(root.join("steady.rs"), "fn steady() {}\n").unwrap();
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(ok, "the first build succeeds; stderr: {err}; stdout: {out}");
+    let [first, walked_first] = recorded_and_walked(root);
+    assert_eq!(first, walked_first, "premise: one entry per file");
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+
+    let [recorded, walked_now] = recorded_and_walked(root);
+    let changed: Vec<_> = walked_now
+        .into_iter()
+        .filter(|(_, group, _)| group == "gc/combat.rs")
+        .collect();
+    assert_eq!(
+        (ok, out, recorded, read_run_events(root).len()),
+        (
+            true,
+            graph_build_line(batch_events(&changed)),
+            [first.clone(), changed.clone()].concat(),
+            3
+        ),
+        "the build records the changed file's entry and nothing else; stderr: {err}"
+    );
+    let entry_of = |entries: &[(rigger::retention::GenerationIngested, String, String)]| {
+        entries
+            .iter()
+            .find(|(_, group, _)| group == "gc/combat.rs")
+            .map(|(entry, ..)| (entry.generation.clone(), entry.blob.clone()))
+    };
+    assert_ne!(
+        entry_of(&changed),
+        entry_of(&first),
+        "sanity: the changed bytes have their own generation and blob"
+    );
+    assert_eq!(
+        (batch_events(&first), batch_events(&changed)),
+        (4, 4),
+        "sanity: two events for each one-function file at first, then four for the two \
+         functions and the call between them"
+    );
+}
+
+/// The light lane's build records nothing (spec 107, criterion 12): with the extraction pass off
+/// there is no walk, so over a tree that carries real source `rigger graph build` records no
+/// ledger entry and no derived event - its run stream stays empty - and still exits 0, its line
+/// counting nothing.
+#[cfg(not(feature = "symbols"))]
+#[test]
+fn graph_build_in_the_light_lane_records_no_entry_and_no_derived_event_and_exits_clean() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(
+        root.join("combat.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+
+    assert_eq!(
+        (ok, out, common::fixtures::types_of(&read_run_events(root))),
+        (true, graph_build_line(0), Vec::<&str>::new()),
+        "the light lane's build records nothing and exits 0; stderr: {err}"
     );
 }
 
