@@ -2022,19 +2022,20 @@ mod entry_of_batch_tests {
         }
     }
 
-    /// SINK OUTCOMES row 7: a `gd` file emptied or deleted after the walk, and a workflow
-    /// definition deleted after it, extract to the empty batch, which has no generation: nothing
-    /// is recorded, nothing is hashed and the emit succeeds.
+    /// SINK OUTCOMES row 7: a `gd` file emptied after the walk - a source file whose rationale
+    /// lines are gone - one deleted after it, and a workflow definition deleted after it, extract
+    /// to the empty batch, which has no generation: nothing is recorded, nothing is hashed and
+    /// the emit succeeds.
     #[test]
     fn a_gd_or_gw_file_whose_own_extraction_is_empty_records_nothing_and_succeeds() {
         let emptied = planted_extraction_tree(write_file);
-        write_file(&emptied.path().join(DOCUMENT_PATH), b"");
+        write_file(&emptied.path().join(SOURCE_PATH), b"");
         let deleted = planted_extraction_tree(write_file);
         std::fs::remove_file(deleted.path().join(DOCUMENT_PATH)).unwrap();
         std::fs::remove_file(deleted.path().join(WORKFLOW_PATH)).unwrap();
         let never = Err("the hash is never asked");
         let cases = [
-            (emptied.path(), walked("gd", DOCUMENT_PATH, false)),
+            (emptied.path(), walked("gd", SOURCE_PATH, false)),
             (deleted.path(), walked("gd", DOCUMENT_PATH, false)),
             (deleted.path(), walked("gw", WORKFLOW_PATH, false)),
         ];
@@ -2049,7 +2050,11 @@ mod entry_of_batch_tests {
         }
         // The same batches over the planted files record their entries.
         let planted = planted_extraction_tree(write_file);
-        for (prefix, path) in [("gd", DOCUMENT_PATH), ("gw", WORKFLOW_PATH)] {
+        for (prefix, path) in [
+            ("gd", SOURCE_PATH),
+            ("gd", DOCUMENT_PATH),
+            ("gw", WORKFLOW_PATH),
+        ] {
             let (answer, _) = answered(
                 planted.path(),
                 walked(prefix, path, false),
