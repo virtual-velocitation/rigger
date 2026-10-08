@@ -83,6 +83,128 @@ pub fn read_current_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ingest::DERIVED_INDEX_TYPES;
+    use crate::retention::{GenerationIngested, PERCEPTION_TYPES, TYPE_GENERATION_INGESTED};
+    use crate::test_support::{
+        ev, CountedRead, HandBuiltLog, ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES,
+    };
+
+    const STREAM: &str = "run";
+
+    /// A hand-built ledger entry of `gc/src/a.rs` at `generation`.
+    fn entry(generation: &str) -> Event {
+        let entry = GenerationIngested {
+            prefix: "gc".to_string(),
+            file: "src/a.rs".to_string(),
+            generation: generation.to_string(),
+            blob: "b1".to_string(),
+            excluded: false,
+        };
+        Event::new(
+            TYPE_GENERATION_INGESTED,
+            serde_json::to_vec(&entry).unwrap(),
+        )
+    }
+
+    /// One event of each derived type, then a ledger entry at `generation`: all of perception.
+    fn perception(generation: &str) -> Vec<Event> {
+        let mut events: Vec<Event> = DERIVED_INDEX_TYPES.iter().map(|t| ev(t, "{}")).collect();
+        events.push(entry(generation));
+        events
+    }
+
+    fn names(types: &[&str]) -> Vec<String> {
+        types.iter().map(|t| t.to_string()).collect()
+    }
+
+    fn types(events: &[Event]) -> Vec<&str> {
+        events.iter().map(|e| e.type_.as_str()).collect()
+    }
+
+    fn positions(events: &[Event]) -> Vec<u64> {
+        events.iter().map(|e| e.position).collect()
+    }
+
+    /// READERS SKIP PERCEPTION, with a `RunStarted` before the entry: the run slice refuses the
+    /// five perception types from the boundary, so the entry and every derived event recorded in
+    /// the run are absent, as an earlier run's are, and the run's own events are all there.
+    #[test]
+    fn a_generation_ingested_after_the_run_started_is_absent_from_the_runs_slice() {
+        let mut events = vec![ev("DecisionMade", r#"{"id":"d-prior"}"#), entry("h0")];
+        events.push(ev("RunStarted", r#"{"run":"r2"}"#));
+        events.push(ev("UnitStarted", r#"{"id":"u1"}"#));
+        events.extend(perception("h1"));
+        events.push(ev("DecisionMade", r#"{"id":"d-run"}"#));
+        let log = HandBuiltLog::new(STREAM, events);
+        let store = ReadCountingStore::new(&log);
+
+        let (slice, run_id) = read_current_run(&store, STREAM).unwrap();
+        assert_eq!(types(&slice), ["RunStarted", "UnitStarted", "DecisionMade"]);
+        assert_eq!(positions(&slice), [3, 4, 10]);
+        assert_eq!(run_id, "r2");
+        assert_eq!(
+            store.reads(),
+            [
+                CountedRead::LastPosition {
+                    stream: STREAM.to_string(),
+                    event_type: "RunStarted".to_string(),
+                },
+                CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 0,
+                    only: true,
+                    types: names(&CARRY_OVER_TYPES),
+                    materialized: 2,
+                },
+                CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 3,
+                    only: false,
+                    types: names(&PERCEPTION_TYPES),
+                    materialized: 3,
+                },
+            ]
+        );
+        assert_eq!(positions(&read_run(&log, STREAM).unwrap()), [1, 3, 4, 10]);
+    }
+
+    /// READERS SKIP PERCEPTION, with no `RunStarted`: the whole stream is the run, and its one
+    /// read refuses the five perception types, so the entry and every derived event are absent.
+    #[test]
+    fn a_generation_ingested_with_no_run_started_is_absent_from_the_runs_slice() {
+        let mut events = vec![ev("UnitStarted", r#"{"id":"u1"}"#)];
+        events.extend(perception("h1"));
+        events.push(ev("DecisionMade", r#"{"id":"d-run"}"#));
+        let log = HandBuiltLog::new(STREAM, events);
+        let store = ReadCountingStore::new(&log);
+
+        let (slice, run_id) = read_current_run(&store, STREAM).unwrap();
+        assert_eq!(types(&slice), ["UnitStarted", "DecisionMade"]);
+        assert_eq!(positions(&slice), [1, 7]);
+        assert_eq!(run_id, "");
+        assert_eq!(
+            store.reads(),
+            [
+                CountedRead::LastPosition {
+                    stream: STREAM.to_string(),
+                    event_type: "RunStarted".to_string(),
+                },
+                CountedRead::Typed {
+                    stream: STREAM.to_string(),
+                    from: 0,
+                    only: false,
+                    types: names(&PERCEPTION_TYPES),
+                    materialized: 2,
+                },
+            ]
+        );
+    }
+
+    /// The fixture's spelled-out list is the perception list, name for name and in order.
+    #[test]
+    fn the_one_shot_fixtures_perception_list_is_the_perception_types() {
+        assert_eq!(ONE_SHOT_PERCEPTION_TYPES, PERCEPTION_TYPES);
+    }
 
     #[test]
     fn the_carried_over_and_adoption_types_are_exactly_these() {

@@ -218,6 +218,62 @@ impl ReplayKeys {
     }
 }
 
+#[cfg(test)]
+mod seed_tests {
+    use super::ReplayKeys;
+    use crate::conductor::META_REPLAY_KEY;
+    use crate::eventstore::Event;
+    use crate::ingest::DERIVED_INDEX_TYPES;
+    use crate::test_support::{entry_event, generation_ingested};
+
+    /// READERS SKIP PERCEPTION, the seeded key set: of a run's keyed events, a lifecycle event's
+    /// key is seeded, and neither a ledger entry's nor any derived event's is, whatever its
+    /// spelling; an event carrying no key seeds nothing.
+    #[test]
+    fn the_seed_holds_each_lifecycle_key_and_no_perception_key() {
+        let keyed =
+            |type_: &str, key: &str| Event::new(type_, vec![]).with_meta(META_REPLAY_KEY, key);
+        let entry = entry_event(&generation_ingested("gc", "src/a.rs", "h1", "b1", false), 2);
+        assert_eq!(
+            entry.meta.get(META_REPLAY_KEY).map(String::as_str),
+            Some("gc/src/a.rs@h1#2")
+        );
+        let derived_keys = ["derived#0", "derived#1", "derived#2", "derived#3"];
+        let mut prior = vec![
+            keyed("UnitStarted", "unit:u1:started"),
+            entry,
+            Event::new("UnitStarted", vec![]),
+        ];
+        prior.extend(
+            DERIVED_INDEX_TYPES
+                .iter()
+                .zip(derived_keys)
+                .map(|(type_, key)| keyed(type_, key)),
+        );
+        prior.push(keyed("GateVerdict", "gate:u1:fmt"));
+
+        let set = ReplayKeys::seeded(&prior);
+        assert!(set.contains("unit:u1:started"));
+        assert!(set.contains("gate:u1:fmt"));
+        assert!(!set.contains("gc/src/a.rs@h1#2"), "a ledger entry's key");
+        for key in derived_keys {
+            assert!(!set.contains(key), "a derived event's key: {key}");
+        }
+        assert!(
+            set.insert("gc/src/a.rs@h1#2"),
+            "an unseeded key is new work"
+        );
+        assert!(!set.insert("unit:u1:started"), "a seeded key is a replay");
+    }
+
+    #[test]
+    fn a_seed_of_no_event_holds_no_key() {
+        let set = ReplayKeys::seeded(&[]);
+        assert!(!set.contains("unit:u1:started"));
+        assert!(set.insert("unit:u1:started"));
+    }
+}
+
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
     use super::{ReplayKeys, Ticket};

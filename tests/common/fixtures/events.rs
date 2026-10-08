@@ -285,6 +285,102 @@ impl EventStore for GroupLookupOnly {
     }
 }
 
+/// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
+/// reach: its events are stamped with 1-based positions and per-stream revisions in the order
+/// given, and only the boundary lookup and the typed read answer, as the port words them. Every
+/// other method panics, and another stream holds nothing.
+pub struct HandBuiltLog {
+    stream: String,
+    events: Vec<Event>,
+}
+
+impl HandBuiltLog {
+    /// `stream` holding `events` in this order.
+    pub fn new(stream: &str, mut events: Vec<Event>) -> Self {
+        for (i, e) in events.iter_mut().enumerate() {
+            e.stream = stream.to_string();
+            e.position = (i + 1) as u64;
+            e.revision = (i + 1) as Revision;
+        }
+        HandBuiltLog {
+            stream: stream.to_string(),
+            events,
+        }
+    }
+
+    /// The events of `stream`: this log's own, or none for any other stream.
+    fn of(&self, stream: &str) -> &[Event] {
+        if stream == self.stream {
+            &self.events
+        } else {
+            &[]
+        }
+    }
+}
+
+impl EventStore for HandBuiltLog {
+    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+        panic!("a hand-built log is read-only: nothing appends")
+    }
+    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+        panic!("a hand-built log answers by type: nothing reads the whole stream")
+    }
+    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+        panic!("a hand-built log answers by type: nothing reads the log")
+    }
+    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+        panic!("a hand-built log is read once: nothing subscribes")
+    }
+    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+        panic!("a hand-built log is read once: nothing subscribes")
+    }
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        Ok(self
+            .of(stream)
+            .iter()
+            .rev()
+            .find(|e| e.type_ == event_type)
+            .map(|e| e.revision))
+    }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(self
+            .of(stream)
+            .iter()
+            .filter(|e| e.revision >= from)
+            .filter(|e| match selection {
+                TypeSelection::Only(types) => types.contains(&e.type_.as_str()),
+                TypeSelection::Except(types) => !types.contains(&e.type_.as_str()),
+            })
+            .cloned()
+            .collect())
+    }
+    fn read_stream_positions(
+        &self,
+        _: &str,
+        _: usize,
+        _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        panic!("a hand-built log answers by type: nothing reads positions")
+    }
+    fn read_stream_batched(
+        &self,
+        _: &str,
+        _: Revision,
+        _: usize,
+        _: &mut EventBatchSink,
+    ) -> Result<(), Error> {
+        panic!("a hand-built log answers by type: nothing reads the stream in batches")
+    }
+    fn latest_in_group(&self, _: &str, _: &str) -> Result<Option<GroupHead>, Error> {
+        panic!("a hand-built log answers by type: nothing looks up a group")
+    }
+}
+
 /// An `EventStore` decorator that forwards every call to `inner` unchanged except `append`, which
 /// refuses (a real `Backend` error, indistinguishable from a genuine backend fault) any batch
 /// holding an event that carries a metadata VALUE containing `needle`. It matches metadata, never
@@ -641,6 +737,17 @@ pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
     "EdgeInferred",
     "DocConceptExtracted",
     "DocLinkExtracted",
+];
+
+/// The perception types a read of the run refuses at the store - the five
+/// `retention::PERCEPTION_TYPES`, spelled out for the reason [`ONE_SHOT_DERIVED_TYPES`] is (the
+/// tests of `run::read` hold this list to that constant).
+pub const ONE_SHOT_PERCEPTION_TYPES: [&str; 5] = [
+    "CodeEntityExtracted",
+    "EdgeInferred",
+    "DocConceptExtracted",
+    "DocLinkExtracted",
+    "GenerationIngested",
 ];
 
 /// What a one-shot command may cost over [`seed_one_shot_fixture`]'s log (spec 101): the current
