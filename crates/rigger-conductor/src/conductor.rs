@@ -5113,6 +5113,10 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         dir: &str,
         attempt: u32,
+        // The gates the previous attempt failed (its `PriorFailure` gate evidence, the same the
+        // implementer is handed): what a later attempt's resumed session is told changed when
+        // no review round sent the unit back. Empty on a first attempt.
+        gate_evidence: &[String],
     ) -> Result<(), Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
@@ -5157,15 +5161,14 @@ impl RunCtx<'_> {
             sdet_prompt.push_str("\n\n");
             sdet_prompt.push_str(DOC_ONLY_ROUND);
         }
-        // A later attempt continues the sdet-author's own session, sent the delta it has to
-        // bring the periphery tests in line with (and the doc-only rule when it applies).
-        let resume_task = delta.map(|(base, paths)| {
-            let mut task = later_attempt_block(&base, &paths);
-            if doc_only {
-                task.push_str(DOC_ONLY_ROUND);
-            }
-            task
-        });
+        // A later attempt continues the sdet-author's own session, sent what sent the unit back
+        // - the review round's delta, the gates the last attempt failed, or both - to bring the
+        // periphery tests in line with (and the doc-only rule when it applies).
+        let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
+        if doc_only {
+            resume_task.push_str(DOC_ONLY_ROUND);
+        }
+        let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
         match self
             .reviewer_spawn_opts(
@@ -5841,7 +5844,7 @@ impl RunCtx<'_> {
                     // crash disposition are the next unit's - so only the replay-safe parked arm
                     // acts here: `?` propagates it, holding the unit with no commit until a later
                     // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, wt, dir, attempts)?;
+                    self.spawn_sdet_author(st, wt, dir, attempts, &prior.gate_evidence)?;
                     // Commit the implementer's worktree BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
@@ -6328,7 +6331,7 @@ impl RunCtx<'_> {
                     // this step and a later step replays the sdet and commits the candidate
                     // WITH its periphery. The lane dir persists across the park (dropping `wt`
                     // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane) {
+                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[]) {
                         debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
                         any_parked = true;
                         continue;
@@ -13687,19 +13690,33 @@ fn is_documentation_only(paths: &[String]) -> bool {
             .all(|p| p.ends_with(".md") || p.starts_with("docs/"))
 }
 
-/// The task a RESUMED sdet-author is sent on a later attempt: the implementer revised the unit
-/// since the review round at `base` sent it back, changing `paths`; its session already holds
-/// the criterion and the tests it authored.
-fn later_attempt_block(base: &str, paths: &[String]) -> String {
-    let changed = if paths.is_empty() {
-        "nothing".to_string()
-    } else {
-        paths.join(", ")
-    };
+/// The task a RESUMED sdet-author is sent on a later attempt, naming what sent the unit back:
+/// the review round's `delta` (the round-start `base` it was judged at and the paths changed
+/// since), and the `gate_evidence` of the gates the previous attempt failed. Empty when neither
+/// names anything - a first attempt - so the spawn stays fresh. Its session already holds the
+/// criterion and the tests it authored.
+fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[String]) -> String {
+    let mut causes: Vec<String> = Vec::new();
+    if let Some((base, paths)) = delta {
+        let changed = if paths.is_empty() {
+            "nothing".to_string()
+        } else {
+            paths.join(", ")
+        };
+        causes.push(format!(
+            "review sent this unit back at {base} - `git diff {base}..HEAD` since changed {changed}"
+        ));
+    }
+    for ev in gate_evidence {
+        causes.push(format!("the previous attempt failed these gates: {ev}"));
+    }
+    if causes.is_empty() {
+        return String::new();
+    }
     format!(
-        "LATER ATTEMPT: review sent this unit back at {base} and the implementer has revised it \
-         since - `git diff {base}..HEAD`, which changed {changed}. Bring the periphery tests in \
-         line with that change.\n"
+        "LATER ATTEMPT: the implementer has revised this unit since {}. Bring the periphery tests \
+         in line with that change.\n",
+        causes.join("; and ")
     )
 }
 
@@ -29157,6 +29174,41 @@ mod tests {
         assert!(
             implementer.contains(item) && implementer.contains("do not start over"),
             "the implementer is sent its prior-failure block:\n{implementer}"
+        );
+    }
+
+    /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
+    /// gate before any review round, and its second attempt's sdet-author continues the session
+    /// its first ran as, sent the failed attempt's gate evidence as what changed.
+    #[test]
+    fn a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence() {
+        let repo = temp_git_project_with_commit();
+        let driver = session_stub(&[(adjudicator_at(1, 0), r#"{"verdict":"approve"}"#)]);
+        let flaky = FlakyGate {
+            fail_first: 1,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nGATE_EVIDENCE_red_test".into(),
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            gates: &flaky,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let first = spawn_id("implement", ROLE_SDET_AUTHOR, 0);
+        let (from, task) = driver
+            .resume_of(&spawn_id("implement", ROLE_SDET_AUTHOR, 1))
+            .expect("the second attempt spawns the sdet-author");
+        assert_eq!(
+            from,
+            format!("sess-{first}"),
+            "the second attempt's sdet-author continues its first session"
+        );
+        assert!(
+            task.contains("LATER ATTEMPT") && task.contains("GATE_EVIDENCE_red_test"),
+            "it is sent the failed attempt's gate evidence:\n{task}"
         );
     }
 
