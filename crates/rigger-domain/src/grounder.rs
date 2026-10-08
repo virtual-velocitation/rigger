@@ -35,21 +35,20 @@ pub struct RankedRef {
 /// - `precise` - the ranked, capped view (definers ranked above referencers) that seeds an
 ///   agent's prompt. A spurious extra file here merely wastes a little context, so precision
 ///   is what it optimizes for.
-/// - `safe` - the SAFE-SUPERSET view (the union of the structural view and grep, uncapped) that
-///   the conductor schedules and routes review tiers by. [`radii_conflict`] keeps two units apart
-///   only when their file sets SHARE a file, so a MISSED reference could co-schedule two
-///   conflicting units. Over-inclusion is the safe error; this view is therefore never narrower
-///   than the grep radius it augments and is never capped. A HUB symbol (a name referenced across
-///   much of the tree) needs no flag of its own: its whole neighborhood is in `safe`, so the
-///   overlap test keeps it apart from exactly the units that share one of those files.
+/// - `safe` - the uncapped SAFE view the conductor schedules and routes review tiers by; what it
+///   holds is stated once, in `docs/architecture-addendum-context-management.md` section 2.4.
+///   [`radii_conflict`] keeps two units apart only when their file sets SHARE a file, so a MISSED
+///   reference could co-schedule two conflicting units; over-inclusion is the safe error. A HUB
+///   symbol (a name referenced across much of the tree) needs no flag of its own: its whole
+///   neighborhood is in `safe`, so the overlap test keeps it apart from exactly the units that
+///   share one of those files.
 ///
 /// [`radii_conflict`]: crate::metrics::radii_conflict
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlastRadius {
     /// The precise / ranked view: definer files first, then referencer files, capped at `k`.
     pub precise: Vec<String>,
-    /// The safe-superset view: the union of `precise` and grep, uncapped - always a superset of the
-    /// grep radius.
+    /// The safe view, uncapped and always holding `precise` (addendum 2.4 states the rest).
     pub safe: Vec<String>,
 }
 

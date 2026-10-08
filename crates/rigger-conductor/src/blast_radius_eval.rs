@@ -528,7 +528,7 @@ mod corpus_gates {
             let sset: HashSet<&String> = s.files.iter().collect();
             assert!(
                 bset.is_subset(&sset),
-                "unit {}: safe must be a superset of the grep baseline radius",
+                "unit {}: on this corpus safe must hold the grep baseline radius",
                 s.unit
             );
         }

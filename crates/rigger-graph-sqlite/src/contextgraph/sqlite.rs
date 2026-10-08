@@ -3385,8 +3385,8 @@ fn referenced_not_called(
 /// - else the name is DEFINED in ANOTHER file the graph knows (some other code-entity node carries
 ///   it as a definition) -> [`TIER_INFERRED`]: a derived / transitive cross-file link.
 /// - else the name is defined NOWHERE known -> [`TIER_AMBIGUOUS`]: a grep-visible-only occurrence (a
-///   macro body, reflection string, dynamic or external name). It is kept, never dropped, so the
-///   safe superset stays a grep-superset (addendum 2.4), but tiered lowest.
+///   macro body, reflection string, dynamic or external name). It is kept, never dropped, but
+///   tiered lowest, and the blast radius never crosses it (addendum 2.4).
 ///
 /// A definition node is told from a bare reference target by carrying a `name` attr (the definition
 /// arm sets it; the reference arm creates bare, attr-less targets). Called BEFORE the reference arm
@@ -10192,9 +10192,8 @@ mod tests {
             "a reference to a name defined nowhere folds AMBIGUOUS"
         );
 
-        // Safe-superset invariant (addendum 2.4): tiering NEVER drops a reference. The three tiers
-        // partition the reference edges, so their union recovers EVERY reference folded (3 here) -
-        // the safe view EXTRACTED u INFERRED u AMBIGUOUS stays a superset of the grep union.
+        // Tiering NEVER drops a reference: the three tiers partition the reference edges, so
+        // their union recovers EVERY reference folded (3 here).
         let refs: Vec<&Edge> = g.edges.iter().filter(|e| e.rel == REL_REFERENCES).collect();
         assert_eq!(
             refs.len(),

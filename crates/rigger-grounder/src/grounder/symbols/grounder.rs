@@ -1352,7 +1352,7 @@ mod tests {
     /// The blast-radius fail-safe paths (spec 16 unit 1): an empty query and a no-match query each
     /// return EMPTY views (unit 3 routes an empty radius to the full,
     /// unpartitioned panel). A `k=0` cap collapses the PRECISE view to empty, but the SAFE view is
-    /// UNCAPPED by design - it still carries the full structural-union-grep radius so the
+    /// UNCAPPED by design - it still carries the full safe radius (addendum 2.4) so the
     /// partitioning consumer can never under-include just because the prompt budget was zero.
     #[test]
     fn blast_radius_empty_and_no_match_are_the_empty_failsafe_and_k0_keeps_safe_uncapped() {

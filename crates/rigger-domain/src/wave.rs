@@ -63,8 +63,8 @@ pub fn criterion_stable_id(position: usize, criterion: &str) -> String {
 /// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
 /// belong in ONE unit"). `units` pairs each fan-out unit's id with the distinct
 /// files in its blast radius - the SAFE-superset view [`RunCtx::grounded_blast_radius`]
-/// computes (spec 17 unit 3, 3b: rule-6 detection is a SAFETY consumer, so it reads the same
-/// `structural union grep` superset [`partition_by_blast_radius`] does, NOT the precise seed).
+/// computes (spec 17 unit 3, 3b: rule-6 detection is a SAFETY consumer, so it reads the same safe
+/// view [`partition_by_blast_radius`] does - addendum 2.4 - NOT the precise seed).
 /// It returns every unordered pair of DISTINCT
 /// units whose blast radii INTERSECT, each with the shared files, so a decomposition
 /// that splits one blast radius across two units is surfaced as concrete evidence the

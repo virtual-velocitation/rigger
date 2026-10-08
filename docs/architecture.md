@@ -903,9 +903,9 @@ Grounding seeds each agent with exactly the code and memory it needs, on two axe
   tree-sitter-derived symbol index answering "where is this defined, what references it, what
   does changing this file reach". It is the UNSET default - an unset `defaults.grounder`
   resolves to it and it ships in the default build (the `symbols` cargo feature is on by
-  default) - and it serves both a precise/ranked contract for grounding and a safe-superset
-  (`structural union grep`) contract for the conductor's co-scheduling and review-tier routing,
-  where under-inclusion is a correctness bug. `grep` (a self-contained literal search, no
+  default) - and it serves both a precise/ranked contract for grounding and a safe contract
+  (stated in `docs/architecture-addendum-context-management.md` section 2.4) for the conductor's
+  co-scheduling and review-tier routing, where under-inclusion is a correctness bug. `grep` (a self-contained literal search, no
   index, no dependency) and `nop` are the explicit, named-only opt-outs, reachable ONLY when a
   workflow writes the name. Selecting a grounder NEVER silently degrades to grep: a binary
   built without the `symbols` feature raises a LOUD error naming the `grounder: grep` escape
