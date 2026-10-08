@@ -983,6 +983,128 @@ mod tests {
         assert_eq!(stats.batches_emitted, 6);
     }
 
+    /// The identity and the flag of each batch `walk` hands the recording sink it is given, in
+    /// the order the sink saw them.
+    fn handed_flags(walk: impl FnOnce(&mut dyn super::BatchSink)) -> Vec<(String, bool)> {
+        let mut handed: Vec<(String, bool)> = Vec::new();
+        walk(
+            &mut |batch: &[(String, &crate::eventstore::Event)], excluded: bool| {
+                let identity = super::derived_key_parts(&batch[0].0).unwrap().0;
+                handed.push((identity.to_string(), excluded));
+            },
+        );
+        handed
+    }
+
+    /// THE WALK HANDS EACH BATCH WITH ITS FLAG (spec 107), at the whole-tree walk: over the
+    /// extraction tree the out-of-line test module's `gc` batch is handed with its flag set and
+    /// every other batch with it clear - the other `gc` file's, each `gd` batch, the same
+    /// path's among them, and the `gw` batch.
+    #[test]
+    fn the_whole_tree_walk_hands_only_the_out_of_line_test_modules_gc_batch_with_its_flag_set() {
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+
+        let handed = handed_flags(|sink| {
+            ingest_project_batched_paced(root, 1, sink);
+        });
+        let recorded: Vec<(String, bool)> = crate::extraction_tree::WALKED
+            .iter()
+            .map(|batch| (format!("{}/{}", batch.prefix, batch.path), batch.excluded))
+            .collect();
+        assert_eq!(handed, recorded);
+        let set: Vec<&str> = handed
+            .iter()
+            .filter(|(_, excluded)| *excluded)
+            .map(|(identity, _)| identity.as_str())
+            .collect();
+        assert_eq!(set, ["gc/src/checks.rs"]);
+        assert_eq!(handed.len(), 6);
+    }
+
+    /// THE WALK HANDS EACH BATCH WITH ITS FLAG (spec 107), at the integration reindex: of the
+    /// named files' batches only the out-of-line test module's `gc` batch is handed with its
+    /// flag set - the `gc` batch of a path the index lacks, of a document and of the other
+    /// source file, and every `gd` batch, are handed with it clear.
+    #[test]
+    fn the_integration_reindex_hands_only_the_out_of_line_test_modules_gc_batch_with_its_flag_set()
+    {
+        use crate::extraction_tree::{DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH};
+
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+        let files = [
+            SOURCE_PATH.to_string(),
+            "src/absent.rs".to_string(),
+            TEST_MODULE_PATH.to_string(),
+            DOCUMENT_PATH.to_string(),
+        ];
+
+        let handed = handed_flags(|sink| {
+            super::ingest_files_batched(root, &files, sink);
+        });
+        assert_eq!(
+            handed,
+            [
+                ("gc/src/lib.rs".to_string(), false),
+                ("gc/src/absent.rs".to_string(), false),
+                ("gc/src/checks.rs".to_string(), true),
+                ("gc/docs/architecture.md".to_string(), false),
+                ("gd/docs/architecture.md".to_string(), false),
+                ("gd/src/checks.rs".to_string(), false),
+                ("gd/src/lib.rs".to_string(), false),
+            ]
+        );
+    }
+
+    /// `key_batch` hands the sink the flag it is handed, set or clear, beside the batch keyed
+    /// as it keys it whatever the flag.
+    #[test]
+    fn key_batch_hands_the_sink_the_flag_it_is_handed_beside_the_keyed_batch() {
+        use crate::eventstore::Event;
+
+        let batch = [
+            Event::new("CodeEntityExtracted", b"{\"name\":\"a\"}".to_vec()),
+            Event::new("EdgeInferred", b"{\"name\":\"b\"}".to_vec()),
+        ];
+        let generation = super::batch_generation(&batch);
+        for excluded in [true, false] {
+            let mut handed: Vec<(Vec<(String, String, Vec<u8>)>, bool)> = Vec::new();
+            super::key_batch(
+                "gc",
+                "src/a.rs",
+                &batch,
+                excluded,
+                &mut |keyed: &[(String, &Event)], flag: bool| {
+                    let keyed = keyed
+                        .iter()
+                        .map(|(key, event)| (key.clone(), event.type_.clone(), event.data.clone()))
+                        .collect();
+                    handed.push((keyed, flag));
+                },
+            );
+            assert_eq!(
+                handed,
+                vec![(
+                    vec![
+                        (
+                            format!("gc/src/a.rs@{generation}#0"),
+                            "CodeEntityExtracted".to_string(),
+                            b"{\"name\":\"a\"}".to_vec()
+                        ),
+                        (
+                            format!("gc/src/a.rs@{generation}#1"),
+                            "EdgeInferred".to_string(),
+                            b"{\"name\":\"b\"}".to_vec()
+                        ),
+                    ],
+                    excluded
+                )],
+                "key_batch handed the flag {excluded}"
+            );
+        }
+    }
+
     /// `batch_generation` answers the generation `key_batch` keys: for every batch the walk hands
     /// its sink over the extraction tree, the generation of the batch's events is the one the
     /// tree records and the one every key of the batch carries.

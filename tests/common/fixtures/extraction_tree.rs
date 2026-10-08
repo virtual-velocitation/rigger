@@ -71,23 +71,27 @@ gates:
   fmt: { run: \"cargo fmt --check\" }
 ";
 
-/// One batch the walk hands a sink: the identity's prefix and path, the batch's generation, and
-/// its events as `(type, payload text)`.
+/// One batch the walk hands a sink: the identity's prefix and path, the batch's generation, the
+/// flag the walk hands it with - whether the identity is an out-of-line test module's `gc` one -
+/// and its events as `(type, payload text)`.
 pub struct WalkedBatch {
     pub prefix: &'static str,
     pub path: &'static str,
     pub generation: &'static str,
+    pub excluded: bool,
     pub events: &'static [(&'static str, &'static str)],
 }
 
 /// What the walk hands a sink for the tree, in emit order. The out-of-line test module's `gc`
-/// batch is the one boundary event of a hollowed file; the source file's last event is the
+/// batch is the one boundary event of a hollowed file and the one batch handed with its flag set,
+/// the same path's `gd` batch being handed with it clear; the source file's last event is the
 /// evidence its in-file test module gives.
 pub const WALKED: [WalkedBatch; 6] = [
     WalkedBatch {
         prefix: "gc",
         path: TEST_MODULE_PATH,
         generation: "878ec204b714de6b",
+        excluded: true,
         events: &[(
             "EdgeInferred",
             r#"{"file":"src/checks.rs","name":"","lang":"rust","fresh":true}"#,
@@ -97,6 +101,7 @@ pub const WALKED: [WalkedBatch; 6] = [
         prefix: "gc",
         path: SOURCE_PATH,
         generation: "f81a57a5c4f55f52",
+        excluded: false,
         events: &[
             (
                 "CodeEntityExtracted",
@@ -120,6 +125,7 @@ pub const WALKED: [WalkedBatch; 6] = [
         prefix: "gd",
         path: DOCUMENT_PATH,
         generation: "ea5177040caf5338",
+        excluded: false,
         events: &[
             (
                 "DocConceptExtracted",
@@ -143,6 +149,7 @@ pub const WALKED: [WalkedBatch; 6] = [
         prefix: "gd",
         path: TEST_MODULE_PATH,
         generation: "8c6020acb1774c78",
+        excluded: false,
         events: &[
             (
                 "DocConceptExtracted",
@@ -158,6 +165,7 @@ pub const WALKED: [WalkedBatch; 6] = [
         prefix: "gd",
         path: SOURCE_PATH,
         generation: "88eadaf4024b4a86",
+        excluded: false,
         events: &[
             (
                 "DocConceptExtracted",
@@ -173,6 +181,7 @@ pub const WALKED: [WalkedBatch; 6] = [
         prefix: "gw",
         path: WORKFLOW_PATH,
         generation: "08eb9cb734e95dc1",
+        excluded: false,
         events: &[
             (
                 "DocConceptExtracted",

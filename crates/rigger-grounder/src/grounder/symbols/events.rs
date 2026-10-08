@@ -1846,6 +1846,45 @@ mod tests {
         }
     }
 
+    /// THE WALK HANDS EACH BATCH WITH ITS FLAG (spec 107), at the code half: the whole walk and
+    /// the named walk each answer, beside a file's batch, whether `walk_exclusions` names its
+    /// `gc` identity - set for the out-of-line test module alone, clear for the source file and
+    /// for a named path the index lacks.
+    #[test]
+    fn both_walks_of_the_code_half_answer_each_batchs_flag_beside_it() {
+        use crate::extraction_tree::{planted_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
+
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+        let flags =
+            |batches: &[(String, Vec<crate::eventstore::Event>, bool)]| -> Vec<(String, bool)> {
+                batches
+                    .iter()
+                    .map(|(file, _, excluded)| (file.clone(), *excluded))
+                    .collect()
+            };
+        let walked = [
+            (TEST_MODULE_PATH.to_string(), true),
+            (SOURCE_PATH.to_string(), false),
+        ];
+
+        assert_eq!(flags(&super::project_batches_paced(root, 1).0), walked);
+        assert_eq!(flags(&super::project_batches(root)), walked);
+        let named = [
+            SOURCE_PATH.to_string(),
+            "src/absent.rs".to_string(),
+            TEST_MODULE_PATH.to_string(),
+        ];
+        assert_eq!(
+            flags(&super::file_batches(root, &named)),
+            [
+                (SOURCE_PATH.to_string(), false),
+                ("src/absent.rs".to_string(), false),
+                (TEST_MODULE_PATH.to_string(), true),
+            ]
+        );
+    }
+
     /// `lower_file`'s `excluded` decides the batch on the SAME symbols: the source file excluded
     /// is hollowed to one boundary event with no evidence, and the test module not excluded
     /// carries its own definition and reference with the evidence boundary after them.

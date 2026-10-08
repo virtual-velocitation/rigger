@@ -678,20 +678,21 @@ mod group_lookup_tests {
     #[test]
     fn a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error() {
         let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
-        let batches: Vec<Vec<(String, &Event)>> = ["a", "b", "c", "d"]
-            .iter()
-            .map(|file| vec![(format!("gc/{file}.rs@h#0"), &ev)])
-            .collect();
+        let batches: Vec<(Vec<(String, &Event)>, bool)> =
+            [("a", true), ("b", false), ("c", false), ("d", true)]
+                .iter()
+                .map(|(file, excluded)| (vec![(format!("gc/{file}.rs@h#0"), &ev)], *excluded))
+                .collect();
         let walk = |sink: &mut dyn BatchSink| {
-            for batch in &batches {
-                sink(batch);
+            for (batch, excluded) in &batches {
+                sink(batch, *excluded);
             }
         };
 
         let mut sunk = Vec::new();
-        let answer = sink_walked_batches(walk, |keyed| {
+        let answer = sink_walked_batches(walk, |keyed, excluded| {
             let key = keyed[0].0.clone();
-            sunk.push(key.clone());
+            sunk.push((key.clone(), excluded));
             if key.starts_with("gc/b") || key.starts_with("gc/d") {
                 Err(key)
             } else {
@@ -705,12 +706,18 @@ mod group_lookup_tests {
         );
         assert_eq!(
             sunk,
-            ["gc/a.rs@h#0", "gc/b.rs@h#0", "gc/c.rs@h#0", "gc/d.rs@h#0"],
-            "a failed batch never stops the walk: every batch reaches the sink, in walk order"
+            [
+                ("gc/a.rs@h#0".to_string(), true),
+                ("gc/b.rs@h#0".to_string(), false),
+                ("gc/c.rs@h#0".to_string(), false),
+                ("gc/d.rs@h#0".to_string(), true),
+            ],
+            "a failed batch never stops the walk: every batch reaches the sink, in walk order, \
+             with the flag the walk handed it"
         );
 
         assert_eq!(
-            sink_walked_batches(walk, |_| Ok::<(), String>(())),
+            sink_walked_batches(walk, |_, _| Ok::<(), String>(())),
             Ok(()),
             "a walk whose every batch lands answers Ok"
         );
