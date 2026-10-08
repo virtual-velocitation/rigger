@@ -19,6 +19,16 @@
 //! asked by an outside caller over the store's group lookup, a graph file and the real hash -
 //! closed through the entry's constructor and the ledger form until the batch is current, and
 //! for the rows that record no blob or fail the emit.
+//!
+//! Criterion 11, THE RUN'S SINK MEMOIZES THE LOG SIDE, is guarded here at the one seam an outside
+//! caller reaches the memo through. The in-crate tests hand a batch to the private sink twice; a
+//! whole `conductor::run` hands an identity's batch to its sink again when its whole-tree walk is
+//! followed by the reindex of an integration naming the file. The tests at the end of this file
+//! count the group lookups such a run makes at the store it was handed
+//! (`CountedRead::LatestInGroup`): one per walked identity and none for a reindex, over an empty
+//! store, a recorded one and row 13's fixture, a revert between two reindexes still recorded; and
+//! an identity a rebuild of `graph.db` left behind mid-run recorded again at the next reindex
+//! with no group lookup.
 
 #![cfg(feature = "symbols")]
 
@@ -29,22 +39,24 @@ use std::sync::Mutex;
 
 use common::cli::applied_positions;
 use common::fixtures::{
-    agent, arm_read_fault, entry_records, generation_ingested, git_commit_all, git_hash_object,
-    live_edges, seed_pre_ledger_rows_without_a_group, temp_git_project_with_commit,
-    walked_entry_events, wire_owned, write_text, Handed, NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH,
-    SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+    agent, arm_read_fault, entry_records, gate_def, generation_ingested, git_commit_all,
+    git_hash_object, live_edges, seed_pre_ledger_rows_without_a_group,
+    temp_git_project_with_commit, walked_entry_events, wire_owned, write_text, CountedRead, Handed,
+    NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
+    TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
-use rigger::conductor::{run, Deps, STREAM};
-use rigger::config::{Config, Stage};
-use rigger::contextgraph::sqlite::Projector;
+use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
+use rigger::config::{AgentDef, Config, Stage};
+use rigger::contextgraph::sqlite::{stream_past, Projector, RebuildSink};
 use rigger::contextgraph::{wired, EntryFold, Fold, Projection, REBUILD_OWED};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
 use rigger::ingest::{
     batch_is_current, entry_of_batch, folding_into, ingest_files_batched, is_derived_index_type,
-    latest_generation, EntryFailure, GraphSide,
+    latest_generation, resolve_entry, EntryFailure, GraphSide,
 };
+use rigger::ledger::{RunState, Status};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 /// A committed git project holding a source file, the out-of-line test module it declares and a
@@ -129,21 +141,35 @@ impl Files {
                 ..Default::default()
             },
         );
-        let (store, graph) = (self.store(), self.graph());
+        self.run_through(root, &cfg, &[criterion], &NoopDriver, &self.store());
+    }
+
+    /// One whole run of `cfg` over the tree at `root`, its agents spawned through `driver` and
+    /// its log read and written through `store` - a view of this project's `events.db` - with a
+    /// fresh open of `graph.db` and the hash function the binary binds. It must succeed.
+    fn run_through(
+        &self,
+        root: &Path,
+        cfg: &Config,
+        criteria: &[&str],
+        driver: &dyn AgentDriver,
+        store: &dyn EventStore,
+    ) -> RunState {
+        let graph = self.graph();
         let log = |line: &str| self.said.lock().unwrap().push(line.to_string());
         let hash_blob = |bytes: &[u8]| rigger::worktree::hash_blob(root, bytes);
         let deps = Deps {
-            store: &store,
-            driver: &NoopDriver,
+            store,
+            driver,
             gates: &ExecRunner,
             repo: root.to_str().unwrap().to_string(),
             grounder: None,
             graph: Some(&graph),
-            criteria: vec![criterion.to_string()],
+            criteria: criteria.iter().map(|c| c.to_string()).collect(),
             log: &log,
             hash_blob: &hash_blob,
         };
-        run(&cfg, &deps).unwrap();
+        run(cfg, &deps).unwrap()
     }
 
     /// The run stream, oldest first.
@@ -740,4 +766,319 @@ fn a_run_over_a_graph_db_that_owes_its_rebuild_records_one_entry_per_generation_
         *files.said.lock().unwrap(),
         vec![lost; said_first + said_without_an_entry + said_third]
     );
+}
+
+// THE RUN'S SINK MEMOIZES THE LOG SIDE (spec 107 criterion 11), at the one seam an outside caller
+// reaches it: a whole `conductor::run` hands an identity's batch to its sink more than once in one
+// process when its whole-tree walk is followed by the reindex of an integration naming the file.
+
+/// A driver whose every agent writes the source file's body it is listed with into its worktree.
+struct SourceWriters(&'static [(&'static str, fn() -> String)]);
+
+impl AgentDriver for SourceWriters {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let (_, body) = self
+            .0
+            .iter()
+            .find(|(id, _)| *id == agent.id)
+            .expect("every spawned agent is a listed writer");
+        write_text(Path::new(&opts.dir), SOURCE_PATH, &body());
+        Ok(AgentResult::default())
+    }
+}
+
+/// A workflow over the repository at `root` of one unit per `(name, needs)`, in order: each run by
+/// the agent of its own name after the unit it needs, under a gate that passes, and merged when
+/// it passes - so each lands and its integration reindexes the files it changed.
+fn landing(root: &Path, units: &[(&str, Option<&str>)]) -> Config {
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = common::isolated_workdir(root);
+    cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+    for (name, needs) in units {
+        cfg.agents.insert((*name).into(), agent(name));
+        cfg.workflow.stages.insert(
+            (*name).into(),
+            Stage {
+                name: (*name).into(),
+                agent: (*name).into(),
+                needs: needs.iter().map(|unit| unit.to_string()).collect(),
+                coverage: "core".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+    }
+    cfg
+}
+
+/// Every group lookup among `reads`, in call order.
+fn group_lookups(reads: &[CountedRead]) -> Vec<CountedRead> {
+    reads
+        .iter()
+        .filter(|read| matches!(read, CountedRead::LatestInGroup { .. }))
+        .cloned()
+        .collect()
+}
+
+/// One group lookup of each of `identities` on the run stream, in order.
+fn one_lookup_each(identities: &[&str]) -> Vec<CountedRead> {
+    identities
+        .iter()
+        .map(|identity| CountedRead::LatestInGroup {
+            stream: STREAM.to_string(),
+            group: identity.to_string(),
+        })
+        .collect()
+}
+
+/// ONE process walks the tree, lands the source file at its moved body and lands it back.
+///
+/// WHEN a single run over `files` and the committed tree at `root` walks the whole tree, then
+/// integrates a unit that rewrites the source file to its moved body and a second unit that
+/// rewrites it back - each integration reindexing the file, so the file's code identity and its
+/// design identity are handed to the run's sink three times in the one process,
+/// THEN the store the run was handed is asked one group lookup per walked identity, in walk
+/// order, and no other: both reindexes are answered from the process's memo. The log holds the
+/// entries it held before, then `walk_records`, then the moved body's entry and the first
+/// body's again under the code identity - the revert recorded because the memo took the moved
+/// entry's generation - and no second entry under the design identity, whose generation never
+/// moved; both sides hold the first body's generation.
+/// AND WHEN a second run, a fresh process's memo, walks the tree, THEN it asks one group lookup
+/// per identity again and records nothing.
+fn one_run_walks_then_lands_the_moved_body_and_its_revert(
+    files: &Files,
+    root: &Path,
+    walk_records: Vec<Recorded>,
+) {
+    let first_walk = walked(root);
+    let a = entry_under(&first_walk, SOURCE);
+    let b = {
+        let moved = committed_tree();
+        write_text(moved.path(), SOURCE_PATH, &source_moved());
+        entry_under(&walked(moved.path()), SOURCE)
+    };
+    assert_ne!(a.0.generation, b.0.generation);
+    let before = entry_records(&files.log());
+    let cfg = landing(root, &[("moves", None), ("reverts", Some("moves"))]);
+    let driver = SourceWriters(&[
+        ("moves", source_moved),
+        ("reverts", || SOURCE_BODY.to_string()),
+    ]);
+    let store = files.store();
+    let counted = ReadCountingStore::new(&store);
+
+    let state = files.run_through(root, &cfg, &[], &driver, &counted);
+
+    assert_eq!(
+        [&state.units["moves"].status, &state.units["reverts"].status],
+        [&Status::Integrated, &Status::Integrated],
+        "sanity: both units landed, so both reindexes ran"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(SOURCE_PATH)).unwrap(),
+        SOURCE_BODY,
+        "sanity: the tree is back at its first body"
+    );
+    let asked = one_lookup_each(&identities(&first_walk));
+    assert_eq!(group_lookups(&counted.reads()), asked);
+    let recorded = [before, walk_records, vec![b, a]].concat();
+    assert_eq!(entry_records(&files.log()), recorded);
+    let walked_generations = generations(&first_walk);
+    assert_eq!(files.held(&identities(&first_walk)), walked_generations);
+    assert_eq!(files.logged(&identities(&first_walk)), walked_generations);
+    assert_eq!(*files.said.lock().unwrap(), Vec::<String>::new());
+
+    let store = files.store();
+    let counted = ReadCountingStore::new(&store);
+    let mut later = Config::default();
+    later.agents.insert("a".into(), agent("a"));
+    later.workflow.stages.insert(
+        "later".into(),
+        Stage {
+            name: "later".into(),
+            agent: "a".into(),
+            coverage: "later criterion".into(),
+            ..Default::default()
+        },
+    );
+
+    files.run_through(root, &later, &["later criterion"], &NoopDriver, &counted);
+
+    assert_eq!(group_lookups(&counted.reads()), asked);
+    assert_eq!(entry_records(&files.log()), recorded);
+}
+
+/// GIVEN a committed tree and an empty `events.db` and `graph.db`, so every group lookup of the
+/// walk answers no generation and the memo takes each recorded entry's.
+#[test]
+fn one_run_asks_the_group_lookup_once_per_identity_across_its_walk_and_two_reindexes() {
+    let tree = committed_tree();
+    let root = tree.path();
+    one_run_walks_then_lands_the_moved_body_and_its_revert(&Files::new(), root, walked(root));
+}
+
+/// GIVEN a committed tree an earlier run, another process, already recorded, so every group
+/// lookup of the walk answers the generation both sides hold, the walk records nothing and the
+/// memo holds only what the lookups answered.
+#[test]
+fn one_run_over_a_recorded_tree_answers_both_reindexes_from_what_its_walk_looked_up() {
+    let tree = committed_tree();
+    let root = tree.path();
+    let files = Files::new();
+    files.run_over(root, "first criterion");
+    assert_eq!(entry_records(&files.log()), walked(root));
+
+    one_run_walks_then_lands_the_moved_body_and_its_revert(&files, root, Vec::new());
+}
+
+/// SINK OUTCOMES row 13's fixture in one run.
+///
+/// GIVEN a store recorded before the ledger and before the group stamp, so the group lookup
+/// answers no generation for any identity while `graph.db` holds each one's: the memo takes each
+/// entry's generation in place of the lookup's empty answer.
+#[test]
+fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_its_reindexes() {
+    let tree = committed_tree();
+    let files = Files::new();
+    seed_pre_ledger_rows_without_a_group(tree.path(), &files.store(), &files.graph());
+    assert_eq!(
+        files.logged(&identities(&walked(tree.path()))),
+        vec![None; 5],
+        "premise: the group lookup answers no generation"
+    );
+
+    one_run_walks_then_lands_the_moved_body_and_its_revert(
+        &files,
+        tree.path(),
+        walked(tree.path()),
+    );
+}
+
+/// [`SOURCE_BODY`] with its rationale line reworded: a body of the source file that keeps its
+/// code, so the file's design batch moves and its code batch keeps its generation.
+fn source_reworded() -> String {
+    SOURCE_BODY.replace("stays small", "stays short")
+}
+
+/// A driver whose one agent, before it writes [`source_reworded`] into its worktree, rebuilds the
+/// run's `graph.db` from the log as it stands, re-extracting each entry from the tree at
+/// `unresolving` with no object database to ask, and keeps the generation the rebuilt graph
+/// holds for each of `identities`.
+struct RebuildsThenRewords<'a> {
+    files: &'a Files,
+    unresolving: &'a Path,
+    identities: Vec<String>,
+    held_after_rebuild: Mutex<Vec<Vec<Option<String>>>>,
+}
+
+impl AgentDriver for RebuildsThenRewords<'_> {
+    fn spawn(
+        &self,
+        _agent: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let log = self.files.log();
+        let graph_db = self.files.graph_db();
+        let rebuilt = Projector::rebuild(
+            &Projector::lock_rebuild(graph_db.to_str().unwrap()).unwrap(),
+            "test",
+            true,
+            &mut |after, sink: &mut RebuildSink| stream_past(&log, after, 1, sink),
+            &mut |entry| resolve_entry(self.unresolving, entry, None),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(rebuilt.is_some(), "premise: the rebuild ran");
+        let identities: Vec<&str> = self.identities.iter().map(String::as_str).collect();
+        self.held_after_rebuild
+            .lock()
+            .unwrap()
+            .push(self.files.held(&identities));
+        write_text(Path::new(&opts.dir), SOURCE_PATH, &source_reworded());
+        Ok(AgentResult::default())
+    }
+}
+
+/// A LONG-LIVED RUN RESTORES AN IDENTITY A REBUILD LEFT BEHIND, at the run's own seam.
+///
+/// GIVEN one run whose whole-tree walk recorded every file, and a rebuild of `graph.db` made
+/// while that run is alive that could resolve no source for the source file's code entry - the
+/// tree it read held another body and it had no object database to ask - and so left that one
+/// identity behind,
+/// WHEN the same run then integrates a unit that rewords the file's rationale line, so the
+/// reindex names the file and hands its code batch at the generation the run already recorded,
+/// THEN the store is asked no group lookup past the walk's one per identity - the memo answers
+/// the log side - and the run still records the code identity's entry again, at the same
+/// generation and the reworded bytes' blob, because the graph's side is read on every batch;
+/// the design identity's moved batch records its entry after it; and `graph.db` holds every
+/// identity's generation again.
+#[test]
+fn a_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex_with_no_group_lookup() {
+    let tree = committed_tree();
+    let root = tree.path();
+    let first_walk = walked(root);
+    let all = identities(&first_walk);
+    let a = entry_under(&first_walk, SOURCE);
+    let moved = committed_tree();
+    write_text(moved.path(), SOURCE_PATH, &source_moved());
+    let reworded = committed_tree();
+    write_text(reworded.path(), SOURCE_PATH, &source_reworded());
+    let reindexed: Vec<Recorded> = walked(reworded.path())
+        .into_iter()
+        .filter(|(entry, ..)| entry.file == SOURCE_PATH)
+        .collect();
+    assert_eq!(identities(&reindexed), vec![SOURCE, "gd/src/lib.rs"]);
+    assert_eq!(
+        (
+            reindexed[0].0.generation == a.0.generation,
+            reindexed[0].0.blob == a.0.blob,
+            reindexed[1] == entry_under(&first_walk, "gd/src/lib.rs"),
+        ),
+        (true, false, false),
+        "premise: the reworded body keeps the code generation under other bytes and moves the \
+         design batch"
+    );
+    let files = Files::new();
+    let cfg = landing(root, &[("rewords", None)]);
+    let driver = RebuildsThenRewords {
+        files: &files,
+        unresolving: moved.path(),
+        identities: all.iter().map(|identity| identity.to_string()).collect(),
+        held_after_rebuild: Mutex::new(Vec::new()),
+    };
+    let store = files.store();
+    let counted = ReadCountingStore::new(&store);
+
+    let state = files.run_through(root, &cfg, &[], &driver, &counted);
+
+    assert_eq!(state.units["rewords"].status, Status::Integrated);
+    let left_behind: Vec<Option<String>> = first_walk
+        .iter()
+        .map(|(entry, group, _)| Some(entry.generation.clone()).filter(|_| group != SOURCE))
+        .collect();
+    assert_eq!(
+        *driver.held_after_rebuild.lock().unwrap(),
+        vec![left_behind],
+        "premise: the one rebuild left the source file's code identity behind, and no other"
+    );
+    assert_eq!(group_lookups(&counted.reads()), one_lookup_each(&all));
+    assert_eq!(
+        entry_records(&files.log()),
+        [first_walk.clone(), reindexed.clone()].concat()
+    );
+    assert_eq!(
+        files.held(&all),
+        generations(&walked(reworded.path())),
+        "the graph holds the left-behind identity's generation again, and the moved design one"
+    );
+    assert_eq!(files.held(&[SOURCE]), vec![Some(a.0.generation)]);
 }
