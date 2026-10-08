@@ -24,11 +24,9 @@ mod replay_keys;
 use rigger_config_files::config;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_config_files::config_store;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{
-    blocker, canary, failure, instructions, ledger, metrics, playbooks, run, safety,
+    blocker, canary, failure, instructions, ledger, metrics, playbooks, retention, run, safety,
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{spec, test_cases};

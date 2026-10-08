@@ -771,7 +771,7 @@ impl OneShotFixture {
 
     /// The three calls ONE read of the run on `stream` makes, as the counting double records
     /// them: the boundary lookup, the carried-over knowledge by type over the whole stream, and
-    /// the run slice from the boundary with the derived types refused.
+    /// the run slice from the boundary with the perception types refused.
     pub fn read(&self, stream: &str) -> Vec<CountedRead> {
         let carry = ["DecisionMade", "LessonLearned", "ReviewFinding"];
         let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
@@ -791,7 +791,7 @@ impl OneShotFixture {
                 stream: stream.to_string(),
                 from: self.boundary,
                 only: false,
-                types: names(&ONE_SHOT_DERIVED_TYPES),
+                types: names(&ONE_SHOT_PERCEPTION_TYPES),
                 materialized: self.run_events,
             },
         ]

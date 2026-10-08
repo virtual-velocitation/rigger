@@ -28,7 +28,7 @@ use std::process::Stdio;
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
     ev, seed_one_shot_fixture, seed_one_shot_progress, CountedRead, OneShotFixture,
-    ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
+    ReadCountingStore, ONE_SHOT_DERIVED_TYPES, ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
 use rigger::driver::workflow::Driver;
@@ -829,7 +829,7 @@ fn a_current_run_read_through_a_shared_events_file_names_only_its_own_projects_r
                 stream: STREAM.to_string(),
                 from: 0,
                 only: false,
-                types: ONE_SHOT_DERIVED_TYPES.map(String::from).to_vec(),
+                types: ONE_SHOT_PERCEPTION_TYPES.map(String::from).to_vec(),
                 materialized: 2,
             },
         ]

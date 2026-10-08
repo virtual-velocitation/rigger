@@ -1988,14 +1988,11 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     //   meets that identity in this process (spec 101, [`crate::ingest::batch_is_latest_recorded`]
     //   over the group lookup), so no step reads a derived event to seed them.
     //
-    // The type test comes first, so the partition is a property of the code rather than of the
-    // key's spelling: a derived event is excluded here even if its key looks like a lifecycle key.
+    // The type test comes first ([`crate::replay_keys::ReplayKeys::seeded`]), so the partition is
+    // a property of the code rather than of the key's spelling: perception, a derived event or the
+    // ledger entry that stands for one, is excluded even if its key looks like a lifecycle key.
     // `prior_events` is the read of the run this function already took - no extra store round-trip.
-    let replayed_keys: HashSet<String> = prior_events
-        .iter()
-        .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
-        .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
-        .collect();
+    let replayed_keys = crate::replay_keys::ReplayKeys::seeded(prior_events);
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
     // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
@@ -2165,7 +2162,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         prior_attempts,
         prior_resume_bound,
         prior_failure,
-        replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
+        replayed_keys,
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         compensations: Mutex::new(pending_compensations),
@@ -3195,7 +3192,7 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -25066,7 +25063,7 @@ mod tests {
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -32059,7 +32056,7 @@ mod tests {
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),

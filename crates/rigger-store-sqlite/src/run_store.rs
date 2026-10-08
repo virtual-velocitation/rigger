@@ -226,15 +226,15 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::Direction;
-    use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::run::read::CARRY_OVER_TYPES;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
     use crate::test_support::{ev, seed_one_shot_fixture, ReadCountingStore};
+    use rigger_domain::retention::PERCEPTION_TYPES;
 
     /// ONE-SHOT COMMANDS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
     /// events and two superseded runs before the boundary, one read of the run costs exactly the
     /// boundary lookup, the carried-over knowledge by type and the run slice from the boundary
-    /// with the derived types refused at the store - and a fold over it sees the current run
+    /// with the perception types refused at the store - and a fold over it sees the current run
     /// exactly, each event once and in revision order, with every run's carried-over knowledge.
     #[test]
     fn read_run_costs_the_runs_own_events_plus_the_typed_carry_over() {
@@ -393,7 +393,7 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: false,
-                    types: DERIVED_INDEX_TYPES.iter().map(|t| t.to_string()).collect(),
+                    types: PERCEPTION_TYPES.iter().map(|t| t.to_string()).collect(),
                     materialized: 2,
                 },
             ]

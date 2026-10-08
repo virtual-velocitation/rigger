@@ -15,8 +15,9 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-#[cfg(feature = "symbols")]
+use crate::conductor::META_REPLAY_KEY;
 use crate::eventstore::Event;
+use crate::retention::PERCEPTION_TYPES;
 #[cfg(feature = "symbols")]
 use std::collections::{hash_map::Entry, HashMap};
 
@@ -59,8 +60,16 @@ fn mint(minted: &mut u64) -> u64 {
 }
 
 impl ReplayKeys {
-    /// A set holding `keys`, tracking no generation.
-    pub(crate) fn seeded(keys: HashSet<String>) -> Self {
+    /// A set seeded from `prior`, the run's recorded events, tracking no generation: it holds
+    /// the replay key of each one that carries a key and is not perception
+    /// ([`PERCEPTION_TYPES`]). The type decides, never the key's spelling, so neither a derived
+    /// event's key nor a ledger entry's is ever seeded.
+    pub(crate) fn seeded(prior: &[Event]) -> Self {
+        let keys = prior
+            .iter()
+            .filter(|e| !PERCEPTION_TYPES.contains(&e.type_.as_str()))
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+            .collect();
         ReplayKeys {
             #[cfg(feature = "symbols")]
             generations: Mutex::default(),
@@ -277,8 +286,8 @@ mod seed_tests {
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
     use super::{ReplayKeys, Ticket};
+    use crate::conductor::META_REPLAY_KEY;
     use crate::eventstore::Event;
-    use std::collections::HashSet;
 
     const IDENTITY: &str = "gc/src/a.rs";
 
@@ -308,7 +317,8 @@ mod tests {
 
     #[test]
     fn a_key_is_new_once_and_held_after() {
-        let set = ReplayKeys::seeded(HashSet::from(["seeded".to_string()]));
+        let set =
+            ReplayKeys::seeded(&[Event::new("T", vec![]).with_meta(META_REPLAY_KEY, "seeded")]);
         assert!(set.contains("seeded"));
         assert!(!set.insert("seeded"), "a seeded key is a replay");
         assert!(!set.contains("fresh"));
@@ -321,11 +331,11 @@ mod tests {
     fn a_recorded_batch_survives_nothing_and_an_unrecorded_one_survives_whole() {
         let ev = Event::new("T", vec![]);
         let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 2, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         assert_eq!(install(&set, &h1, true).0, Vec::<String>::new());
         assert_eq!(set.tracked(IDENTITY), Some(("h1".into(), keys_of(&h1))));
 
-        let other = ReplayKeys::seeded(HashSet::new());
+        let other = ReplayKeys::seeded(&[]);
         assert_eq!(install(&other, &h2, false).0, keys_of(&h2));
         assert_eq!(other.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
     }
@@ -334,7 +344,7 @@ mod tests {
     fn an_unanswered_first_sight_installs_nothing_and_a_seen_identity_is_not_asked_again() {
         let ev = Event::new("T", vec![]);
         let h1 = batch("h1", 1, &ev);
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         let unanswered = set.install(&h1, || Err("down"), |_, ev| Some(ev.clone()));
         assert_eq!(unanswered.map(|(s, _)| s.len()).err(), Some("down"));
         assert_eq!(set.tracked(IDENTITY), None);
@@ -353,7 +363,7 @@ mod tests {
     fn a_new_generation_retires_the_previous_ones_keys() {
         let ev = Event::new("T", vec![]);
         let (h1, h2) = (batch("h1", 2, &ev), batch("h2", 1, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         install(&set, &h1, true);
         assert_eq!(install(&set, &h2, false).0, keys_of(&h2));
         assert_eq!(set.tracked(IDENTITY), Some(("h2".into(), keys_of(&h2))));
@@ -369,7 +379,7 @@ mod tests {
     fn an_event_rebuild_skips_appends_nothing_and_records_no_key() {
         let ev = Event::new("T", vec![]);
         let h1 = batch("h1", 2, &ev);
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         let (survivors, _) = set
             .install(
                 &h1,
@@ -392,7 +402,7 @@ mod tests {
     fn forgetting_the_only_install_of_a_generation_removes_its_slot_and_keys() {
         let ev = Event::new("T", vec![]);
         let h1 = batch("h1", 2, &ev);
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         let (kept, ticket) = install(&set, &h1, false);
         set.forget(&ticket, &kept);
         assert_eq!(set.tracked(IDENTITY), None);
@@ -403,7 +413,7 @@ mod tests {
     fn forgetting_leaves_the_keys_an_earlier_install_of_the_same_generation_holds() {
         let ev = Event::new("T", vec![]);
         let (first, whole) = (batch("h1", 1, &ev), batch("h1", 2, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         install(&set, &first, false);
         let (kept, ticket) = install(&set, &whole, false);
         assert_eq!(kept, [whole[1].0.clone()]);
@@ -416,7 +426,7 @@ mod tests {
     fn forgetting_leaves_an_empty_slot_a_newer_generation_has_taken() {
         let ev = Event::new("T", vec![]);
         let (h2, h3) = (batch("h2", 2, &ev), batch("h3", 2, &ev));
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         let (kept, ticket) = install(&set, &h2, false);
         let (none, _) = set
             .install(&h3, || Ok::<_, ()>(false), |_, _| None)
@@ -438,7 +448,7 @@ mod tests {
             batch("h3", 2, &ev),
         );
         for (installs, generation) in [(vec![&h2, &h3], "h3"), (vec![&h2, &h1, &h2], "h2")] {
-            let set = ReplayKeys::seeded(HashSet::new());
+            let set = ReplayKeys::seeded(&[]);
             let (kept, ticket) = install(&set, installs[0], false);
             for later in &installs[1..] {
                 install(&set, later, false);
@@ -458,7 +468,7 @@ mod tests {
     fn a_batch_naming_no_identity_is_the_plain_dedup_and_forgets_its_keys() {
         let ev = Event::new("T", vec![]);
         let unshaped = [("unshaped#0".to_string(), &ev)];
-        let set = ReplayKeys::seeded(HashSet::new());
+        let set = ReplayKeys::seeded(&[]);
         let (kept, ticket) = set
             .install(
                 &unshaped,

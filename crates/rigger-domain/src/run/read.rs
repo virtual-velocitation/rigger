@@ -6,8 +6,8 @@
 
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error, Event, EventStore, TypeSelection};
-use crate::ingest::DERIVED_INDEX_TYPES;
 use crate::ledger::{TYPE_UNIT_FAILED, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED, TYPE_UNIT_STATUS};
+use crate::retention::PERCEPTION_TYPES;
 
 use super::TYPE_RUN_STARTED;
 
@@ -31,15 +31,16 @@ pub const ADOPTION_TYPES: [&str; 5] = [
     TYPE_UNIT_STATUS,
 ];
 
-/// The current run's own events, from its boundary forward, with the derived index types
+/// The current run's own events, from its boundary forward, with perception
+/// ([`PERCEPTION_TYPES`]: the derived index types and the ledger entry that stands for them)
 /// excluded at the store, together with the carried-over knowledge of every run by type - in log
 /// (position) order, each event once.
 ///
 /// A LOG PREFIX, whatever a concurrent writer appends. The carried-over knowledge is read first
-/// and the run slice second, and the slice refuses only the derived types, so it holds the run's
+/// and the run slice second, and the slice refuses only the perception types, so it holds the run's
 /// own decisions, lessons and findings too. Every carried-over event at or after the boundary was
 /// committed before the slice read began, so the slice holds it as well, and merging the two
-/// reads by position and dropping the repeated positions leaves exactly every non-derived event
+/// reads by position and dropping the repeated positions leaves exactly every non-perception event
 /// of the run up to the slice's head plus the carried-over events before the boundary: an event
 /// appended between the two reads is in the slice, never missing beside a later one.
 ///
@@ -48,19 +49,19 @@ pub const ADOPTION_TYPES: [&str; 5] = [
 /// low revision is read where the log recorded it, and a fold over this sees the disorder. A
 /// command that folds [`crate::run::current_run`] over this sees exactly the slice it saw over the
 /// whole stream, and a cross-run fold of decisions, lessons and findings sees every one of them;
-/// what it never materializes is a prior run's other events or any derived event.
+/// what it never materializes is a prior run's other events or any perception event.
 ///
 /// The boundary is [`EventStore::last_position`]'s answer for the run's `RunStarted`. With no
-/// run started yet the whole stream is the run, so everything but the derived types is read.
+/// run started yet the whole stream is the run, so everything but the perception types is read.
 pub fn read_run(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Error> {
     let Some(boundary) = store.last_position(stream, TYPE_RUN_STARTED)? else {
-        return store.read_stream_typed(stream, 0, TypeSelection::Except(&DERIVED_INDEX_TYPES));
+        return store.read_stream_typed(stream, 0, TypeSelection::Except(&PERCEPTION_TYPES));
     };
     let mut events = store.read_stream_typed(stream, 0, TypeSelection::Only(&CARRY_OVER_TYPES))?;
     events.extend(store.read_stream_typed(
         stream,
         boundary,
-        TypeSelection::Except(&DERIVED_INDEX_TYPES),
+        TypeSelection::Except(&PERCEPTION_TYPES),
     )?);
     events.sort_by_key(|e| e.position);
     events.dedup_by_key(|e| e.position);
@@ -84,7 +85,7 @@ pub fn read_current_run(
 mod tests {
     use super::*;
     use crate::ingest::DERIVED_INDEX_TYPES;
-    use crate::retention::{GenerationIngested, PERCEPTION_TYPES, TYPE_GENERATION_INGESTED};
+    use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
     use crate::test_support::{
         ev, CountedRead, HandBuiltLog, ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES,
     };

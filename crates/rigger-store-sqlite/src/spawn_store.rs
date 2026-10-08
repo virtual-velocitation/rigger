@@ -416,7 +416,7 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: false,
-                    types: names(&crate::ingest::DERIVED_INDEX_TYPES),
+                    types: names(&rigger_domain::retention::PERCEPTION_TYPES),
                     materialized: 1,
                 },
                 CountedRead::Typed {
