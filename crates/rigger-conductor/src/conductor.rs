@@ -1852,13 +1852,22 @@ pub struct Deps<'a> {
     /// Where the run says what the operator must hear that is not an event: a fold into the
     /// wired graph it could not make. The composition root wires it to stderr.
     pub log: &'a (dyn Fn(&str) + Sync),
+    /// THE ONE HASH FUNCTION (spec 107): a file's bytes to the object id git gives them, which
+    /// the run's ingest sink names in each ledger entry it records. Injected so the conductor
+    /// spawns no process: the composition root binds it to `git hash-object` in the run's tree.
+    pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
 }
 
 impl<'a> Deps<'a> {
     /// The store every event the run appends goes through: [`Deps::store`], folding each append
     /// into [`Deps::graph`] after it is on the log and saying through [`Deps::log`] a fold it could
     /// not make - the one folding store every other writer of a verb uses too.
-    fn folding(&self) -> impl EventStore + 'a {
+    fn folding(
+        &self,
+    ) -> crate::ingest::FoldingStore<
+        'a,
+        impl Fn() -> Result<&'a dyn Projection, contextgraph::Error> + Send + Sync + 'a,
+    > {
         crate::ingest::folding_into(self.store, self.graph, self.log)
     }
     /// Whether a step over these dependencies ingests the project into the graph: there is a
@@ -1977,21 +1986,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // history re-appends none of the keyed unit-lifecycle events it already emitted, and
     // re-reaching an already-run gate replays its recorded verdict.
     //
-    // The set is a PARTITION over two scopes, decided BY EVENT TYPE FIRST (spec 60):
-    //
-    // - RUN-SCOPED (this seed): unit lifecycle, gate verdicts, breaker trips - every key whose
-    //   recurrence is a property of THIS run. Seeded from the current run's slice, so a prior run's
-    //   residue can never suppress this run's own keyed emit (the Gap 11 zombie boundary).
-    // - PROJECT-SCOPED: the derived index the project-ingest pass re-derives. A file's content hash
-    //   does not change because a new run started, so those keys are not seeded here at all: the
-    //   ingest sink asks the store for each identity's latest recorded generation the FIRST time it
-    //   meets that identity in this process (spec 101, [`crate::ingest::batch_is_latest_recorded`]
-    //   over the group lookup), so no step reads a derived event to seed them.
-    //
-    // The type test comes first ([`crate::replay_keys::ReplayKeys::seeded`]), so the partition is
-    // a property of the code rather than of the key's spelling: perception, a derived event or the
-    // ledger entry that stands for one, is excluded even if its key looks like a lifecycle key.
-    // `prior_events` is the read of the run this function already took - no extra store round-trip.
+    // The set holds RUN-SCOPED keys only: unit lifecycle, gate verdicts, breaker trips - every
+    // key whose recurrence is a property of THIS run. It is seeded from the current run's slice,
+    // so a prior run's residue can never suppress this run's own keyed emit (the Gap 11 zombie
+    // boundary). Perception is never seeded (spec 107): the type test comes first
+    // ([`crate::replay_keys::ReplayKeys::seeded`]), so neither a derived event's key nor a ledger
+    // entry's enters the set even if it looks like a lifecycle key, and the ingest sink asks no
+    // key set what to record - it asks the store and the graph for each batch
+    // ([`crate::ingest::entry_of_batch`]). `prior_events` is the read of the run this function
+    // already took - no extra store round-trip.
     let replayed_keys = crate::replay_keys::ReplayKeys::seeded(prior_events);
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
@@ -2933,24 +2936,12 @@ struct RunCtx<'a> {
     /// Set the first time this process ingests the live project into the unified graph
     /// (spec 29c criterion 5): the grounding path walks and extracts the tree at most ONCE
     /// per process, so a run whose step builds many prompts pays the walk once, not per
-    /// prompt. Durable per-file idempotence (a re-ingest on a later step re-emits only
-    /// changed files) rests on the keyed emit authority, not this flag.
-    ///
-    /// Within a process the bound is NOT merely a throughput saving, so do not read it as one.
-    /// `ingest_project_into_graph` is reached from `build_prompt_with_failure` - a PER-PROMPT path -
-    /// and [`replayed_keys`](RunCtx::replayed_keys) is EXTENDED by every key the ingest sink appends,
-    /// so a SECOND walk in one process would be weighed against that extended set rather than the
-    /// run-start SEED. Concretely: the seed holds `{A}`, walk 1 emits generation `B` and extends the
-    /// set to `{A, B}`, the tree reverts to `A`, and an unbounded walk 2 finds `A` present and
-    /// suppresses the revert - stranding the graph on `B`, the exact failure the
-    /// latest-generation-per-file seed exists to prevent. Holding the walk to ONE per process is what
-    /// keeps every suppression decision a run takes weighed against the seed.
-    ///
-    /// Process-local is nonetheless right: a fresh process RE-SEEDS latest-generation-per-file from
-    /// the log, so the guarantee is rebuilt rather than carried, and the flag need not survive a
-    /// process (the log + graph already do). Exists only in
-    /// the `symbols` lane - the light lane compiles no extraction pass to ingest, so its no-op
-    /// `ingest_project_into_graph` reads no guard.
+    /// prompt. The bound is for throughput alone (spec 107): what a walk records is decided for
+    /// each batch against the log's latest generation and the graph's current one, never against
+    /// a set this process extends, so a second walk in one process would record exactly what a
+    /// fresh process's walk would. Process-local: nothing is carried between processes. Exists
+    /// only in the `symbols` lane - the light lane compiles no extraction pass to ingest, so its
+    /// no-op `ingest_project_into_graph` reads no guard.
     #[cfg(feature = "symbols")]
     ingested: std::sync::atomic::AtomicBool,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
@@ -3007,58 +2998,15 @@ struct RunCtx<'a> {
     /// re-enters through a FRESH `run()` call next step, which re-seeds from the by-then-
     /// updated log exactly like every other `prior_*` field.
     integrate_attempted: HashSet<String>,
-    /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
-    /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
-    /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
-    /// are NEVER removed. The project-scoped half now can be: the per-identity generations
-    /// [`ReplayKeys`](crate::replay_keys::ReplayKeys) tracks beside it (spec 86 criterion 3)
-    /// retire a stale generation's keys when [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets
-    /// a fresh one, and a failed append forgets the keys it installed.
-    ///
-    /// The RUN-SCOPED half is every NON-perception key (spec 04, criterion 4): seeded at run start
-    /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
-    /// process emits, so membership means "already emitted in THIS run".
+    /// The set of REPLAY KEYS a keyed lifecycle emit may be suppressed against (spec 04,
+    /// criterion 4): every NON-perception key, seeded at run start from THIS run's slice of the
+    /// prior log's [`META_REPLAY_KEY`] metadata and extended as this process emits, so membership
+    /// means "already emitted in THIS run". A key, once inserted, is never removed.
     /// [`emit_keyed`](RunCtx::emit_keyed) consults it so a step re-running the conductor over
     /// recorded history appends each keyed unit-lifecycle event AT MOST ONCE - the log stays free
     /// of duplicate UnitStarted/green/verified/reviewed/ManualReview events no matter how many
-    /// step processes replay it.
-    ///
-    /// The PROJECT-SCOPED half is the four derived index types' content keys, and it has a
-    /// TWO-PHASE life that must be read as two phases:
-    ///
-    /// 1. SEEDED per identity at FIRST SIGHT (spec 101): the first time
-    ///    [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets a batch identity in this process it
-    ///    asks the store's group lookup ([`crate::ingest::batch_is_latest_recorded`]) whether the
-    ///    batch is that identity's LATEST recorded generation, and installs the batch's keys when it
-    ///    is. In that phase membership means "the latest recorded generation of its identity for
-    ///    this project, recorded by ANY run through its own keyed rows or through the ledger entry
-    ///    that stands for it", so it names keys this run has not itself emitted - the opposite of
-    ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
-    /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
-    ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
-    ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
-    ///    identity is seen - see [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install). From
-    ///    the first batch onward the half is therefore "latest generation as of run start, PLUS
-    ///    everything this process has emitted for a generation it currently tracks as live",
-    ///    which is neither latest-generation-per-file nor a this-run-only fact, but no longer
-    ///    grows without bound either: an identity re-emitted with a changed generation drops its
-    ///    prior one's keys in the same step it adds the new one's.
-    ///
-    /// Which phase a read lands in is what matters. On the RUN path the seed governs: the walk is
-    /// bounded to once per process by
-    /// [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph), which swaps a flag and
-    /// returns, and that one walk hands the sink each batch identity (`gc`/`gd` per file) exactly
-    /// once - so no suppression decision a run takes is ever weighed against a key phase 2 added.
-    /// The walk-and-emit half [`ingest_project_batches`](RunCtx::ingest_project_batches) carries NO
-    /// such guard, so a direct second (or third, or fourth) call in the same process (what the unit
-    /// tests drive, and what a long-lived conductor process crosses many times over a run's many
-    /// review/rework rounds) IS weighed against the extended-and-retired set, which is not the set
-    /// a later step would seed from the log. Nothing may read this half as a this-run fact, and
-    /// nothing may read it once the ingest sink has run as a latest-generation-as-of-run-start
-    /// fact - but within one process it IS latest-generation-as-tracked-by-`ReplayKeys`,
-    /// which is what closes the identical-key-across-two-exclusions collision
-    /// (`adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`) without
-    /// requiring a fresh process between rounds.
+    /// step processes replay it. It holds no key of perception (spec 107): the ingest sink
+    /// ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)) neither reads nor extends it.
     replayed_keys: crate::replay_keys::ReplayKeys,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
@@ -3259,14 +3207,7 @@ impl RunCtx<'_> {
         // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
         // their run. Skipped only when the run id is empty (the pure-helper test context, which
         // appends nothing meaningful).
-        let stamped: Vec<Event> = if self.run_id.is_empty() {
-            events.to_vec()
-        } else {
-            events
-                .iter()
-                .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
-                .collect()
-        };
+        let stamped: Vec<Event> = events.iter().map(|e| self.stamped(e)).collect();
         // The events are on the log whatever became of the fold; a fold into a wired graph that
         // it could not make is said through the injected log, never swallowed. A run wired to no
         // graph - an offline replay's isolated re-drive - folds nothing by design and has nothing
@@ -3276,6 +3217,17 @@ impl RunCtx<'_> {
             crate::eventstore::ExpectedRevision::Any,
             &stamped,
         )?)
+    }
+
+    /// `event` as this run appends it: stamped with the run id, or as it is when the run id is
+    /// empty. The one stamp every append of the run carries, a ledger entry's included.
+    fn stamped(&self, event: &Event) -> Event {
+        if self.run_id.is_empty() {
+            return event.clone();
+        }
+        event
+            .clone()
+            .with_meta(crate::run::META_RUN_ID, &self.run_id)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -3357,53 +3309,48 @@ impl RunCtx<'_> {
         self.append_and_fold(ev).map(|_| ())
     }
 
-    /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
-    /// drop the events whose key is already in [`replayed_keys`](RunCtx::replayed_keys) (the replay
-    /// dedup - an already-seen key appends nothing) and INSERT every key it keeps; then append the
-    /// SURVIVORS in ONE transaction and fold them in ONE graph transaction via
-    /// [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file cadence). Each
-    /// survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying the replay key,
-    /// its payload round-tripped through the same serialize path - and an event whose data is not
-    /// JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its key is
-    /// recorded), so batching changes transaction CADENCE only, never event content, order, or the
-    /// dedup contract.
+    /// THE RUN'S INGEST SINK (spec 107): record one file's batch, as a walk handed it with its
+    /// flag `excluded`, as a LEDGER ENTRY of perception - one `GenerationIngested` - and never a
+    /// derived event.
     ///
-    /// What survives is decided by [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install),
-    /// the one owner of the replay keys and the per-identity generations: the first-sight group
-    /// lookup (spec 101, [`crate::ingest::batch_is_latest_recorded`]), the retirement of a stale
-    /// generation's keys (spec 86 criterion 3), and the dedup itself, under that type's fixed lock
-    /// order. Its locks are released before the append, so concurrent units in a wave still append
-    /// their own keyed events in parallel. A failed append hands the survivors' keys and the
-    /// install's ticket to [`ReplayKeys::forget`](crate::replay_keys::ReplayKeys::forget), which
-    /// forgets only what this call installed, so the next sight asks the store afresh instead of
-    /// reading the unrecorded batch as appended.
+    /// What is recorded is decided by [`crate::ingest::entry_of_batch`], the one function both
+    /// ingest sinks call: it asks the store's group lookup for the log's latest generation of the
+    /// batch's identity ([`crate::ingest::latest_generation`], once per batch) and this run's
+    /// graph for its side, records nothing for a batch both hold, and otherwise reads the file's
+    /// bytes under the run's tree ([`Deps::repo`]), extracts them and hashes them through
+    /// [`Deps::hash_blob`]. A batch whose key names no identity, and a failed read of either
+    /// side, of the bytes or of the hash, fails the emit and records nothing.
     ///
-    /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
+    /// The entry is built by its one constructor, stamped with the run id as every event this run
+    /// appends is, and appended and folded with its extraction through the ledger form of the
+    /// folding store, in ONE store append and ONE graph transaction. Everything slow happened
+    /// before the append: the fold only moves the extraction in. A failed append fails the emit;
+    /// a fold that could not be made - the graph owes its rebuild, or refused the write - leaves
+    /// the entry on the log and is said through [`Deps::log`], as every lost fold of the run is.
+    /// A run wired to no graph has no graph side to read, so the emit fails; its callers walk
+    /// nothing there ([`Deps::ingests`]).
+    ///
+    /// Symbols-gated: its only callers are the ingest walks, which the light lane compiles out.
     #[cfg(feature = "symbols")]
-    fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
-        let (survivors, ticket) = self.replayed_keys.install(
+    fn emit_keyed_batch(&self, keyed: &[(String, &Event)], excluded: bool) -> Result<(), Error> {
+        let graph = contextgraph::wired(self.deps.graph).map_err(|e| Error(e.to_string()))?;
+        let recorded = crate::ingest::entry_of_batch(
+            std::path::Path::new(&self.deps.repo),
             keyed,
-            || crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed),
-            |key, ev| {
-                // A non-JSON event neither appends nor records its key, exactly as the
-                // per-event sink skips it (`if let Ok(payload) = from_slice { emit_keyed(..) }`).
-                let payload: Value = serde_json::from_slice(&ev.data).ok()?;
-                let data = serde_json::to_vec(&payload).ok()?;
-                Some(crate::ingest::keyed_derived_event(
-                    Event::new(&ev.type_, data),
-                    key,
-                ))
-            },
-        )?;
-        let (kept, survivors): (Vec<String>, Vec<Event>) = survivors.into_iter().unzip();
-        let appended = self.append_and_fold_batch(&survivors);
-        if appended.is_err() {
-            // A FAILED APPEND RECORDED NOTHING (spec 101), so nothing this call installed may read
-            // as appended: see `ReplayKeys::forget` for what it forgets, and the in-flight window
-            // it leaves.
-            self.replayed_keys.forget(&ticket, &kept);
-        }
-        appended.map(|_| ())
+            excluded,
+            |identity| crate::ingest::latest_generation(self.deps.store, STREAM, identity),
+            graph,
+            self.deps.hash_blob,
+        )
+        .map_err(|e| Error(e.0))?;
+        let Some(recorded) = recorded else {
+            return Ok(());
+        };
+        let entry = self.stamped(&recorded.entry.event(recorded.batch.len()));
+        let folding = self.deps.folding();
+        let done = folding.append_entry_and_fold(STREAM, &entry, recorded.batch)?;
+        folding.say_fold_lost(1, &done.fold);
+        Ok(())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
@@ -11200,17 +11147,12 @@ impl RunCtx<'_> {
     /// Spec 29c criterion 5: populate the unified graph from the LIVE project, guarded so the
     /// tree is walked at most ONCE per process. The first prompt a process builds triggers the
     /// walk; later prompts in the same process skip it (the graph already reflects the tree). The
-    /// per-file idempotence a re-ingest on a LATER step relies on lives in the keyed emit
-    /// authority, not this flag - this bounds the walk to once per process so a step that
-    /// builds many prompts does not re-walk per prompt. That bound is load-bearing, not just a
-    /// saving: it is what keeps a run's suppression decisions weighed against the run-start SEED
-    /// rather than the set the ingest sink extends as it emits (see
-    /// [`ingested`](RunCtx::ingested) for the two-walk sequence that would otherwise suppress a
-    /// revert).
+    /// bound is for throughput: what a walk records is decided for each batch by the ingest sink,
+    /// against the log and the graph, not by this flag.
     ///
-    /// A walk that fails (a batch's group lookup went unanswered) reopens the guard before it returns
-    /// the error, so the graph is never taken as reflecting a tree whose walk did not complete: the
-    /// next prompt walks again.
+    /// A walk that fails (a batch's emit failed) reopens the guard before it returns the error,
+    /// so the graph is never taken as reflecting a tree whose walk did not complete: the next
+    /// prompt walks again.
     #[cfg(feature = "symbols")]
     fn ingest_project_into_graph(&self) -> Result<(), Error> {
         if self
@@ -11227,78 +11169,40 @@ impl RunCtx<'_> {
 
     /// The walk-and-emit half of [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)
     /// WITHOUT the once-per-process guard, so a re-ingest of a changed file can be driven directly.
-    /// Emits every file's code (29a) and design-intent (29b) extraction batch through the ONE keyed
-    /// emit authority. Ingestion is OFF when there is no project tree to read (`repo` empty) or no
-    /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
+    /// Hands every file's code (29a), design-intent (29b) and workflow-definition batch, with its
+    /// flag, to the ONE ingest sink ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)). Ingestion is
+    /// OFF when there is no project tree to read (`repo` empty) or no graph to fold into - the
+    /// shipped non-repo / graph-less paths stay byte-for-byte unchanged.
     ///
     /// The walk runs under the one walk policy both ingest sinks share
-    /// ([`crate::ingest::sink_walked_batches`]): a batch whose group lookup goes unanswered, or
-    /// whose append fails, appends nothing, the walk goes on, and the first such error is returned
-    /// once the walk ends - an unanswered lookup is never read as "nothing to append".
+    /// ([`crate::ingest::sink_walked_batches`]): a batch whose emit fails records nothing, the
+    /// walk goes on, and the first such error is returned once the walk ends - a failed read is
+    /// never taken as "nothing to record".
     #[cfg(feature = "symbols")]
     fn ingest_project_batches(&self) -> Result<(), Error> {
         if !self.deps.ingests() {
             return Ok(());
         }
         let root = self.deps.repo.clone();
-        // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
-        // content key are the shared ingest authority ([`crate::ingest::ingest_project_batched`]) - the
-        // SAME walk and keying a standalone `rigger graph build` uses, so the two can never fork the
-        // key an event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
-        // [`emit_keyed_batch`](RunCtx::emit_keyed_batch): a file's WHOLE batch is appended-and-folded
-        // through the single mutation authority in ONE store transaction and ONE graph transaction
-        // (spec 49's batched-fold cadence, since the measured cold-build throughput was
-        // transaction-cadence bound).
-        //
-        // WHAT A RE-INGEST APPENDS is decided by `replayed_keys`, which is a PARTITION over two
-        // scopes, not one seed (spec 60): every NON-perception key is seeded from THIS run's slice,
-        // because its recurrence is a property of one run, while the four derived index types are
-        // seeded per identity at first sight from the store's group lookup
-        // ([`crate::ingest::batch_is_latest_recorded`]), because a file's content hash does not
-        // change because a new run started. That half is SEEDED latest-generation-per-file and then
-        // EXTENDED with every key this process emits (see [`replayed_keys`](RunCtx::replayed_keys)),
-        // so what a run suppresses is decided by the SEED - the run reaches this walk at most once
-        // per process through `ingest_project_into_graph`'s guard, which THIS function deliberately
-        // does not carry, so a caller that drives it twice is weighed against the extended set:
-        //
-        // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
-        //   its identity's latest recorded generation - recorded by its own keyed rows or by the
-        //   ledger entry that stands for it - and it appends NOTHING, on this run and on every
-        //   later run, forever;
-        // - a file whose content AS THE WALK LOWERED IT differs from its latest recorded generation
-        //   re-emits WHATEVER BATCH THE WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED
-        //   to content it held at an earlier generation, whose keys are byte-identical to records the
-        //   log still carries: it re-emits not because its keys are new but because those records are
-        //   no longer the file's latest generation. Seeding from every key ever recorded would strand
-        //   the graph on the superseded version instead. The qualifier is load-bearing: the design
-        //   half reads the live tree, but the code half lowers from the PERSISTED symbols index when
-        //   the project has one, so on such a project the decision is taken against what that index
-        //   holds rather than against the file on disk.
-        //
-        // Both bullets are claims about what this sink APPENDS, and nothing more. What a re-emitted
-        // batch RETIRES belongs to the FOLD and covers only the code half: a code batch carries a
-        // `fresh` head and 29a's fresh-head mechanism retires that file's prior structural edges as
-        // the fold applies it, while a design batch sets no `fresh` head at all, so re-emitting one
-        // adds its edges without retiring the ones its earlier generation left live. The two bullets
-        // also reach only files the walk emits a batch for, measured on WHAT THE WALK LOWERED. A file
-        // the walk lowered to NOTHING (an ordinary edit removing its last definition and reference,
-        // on a walk that saw that edit) is dropped before this sink sees it: no batch means no
-        // supersede, so its prior entities and edges stay live and no skip decision was involved. The
-        // converse holds too and is not symmetric between the halves: the design half reads the live
-        // tree, so a path that is gone is gone to it, while the code half lowers from the persisted
-        // symbols index - so a path the tree has DELETED, or one an edit emptied, still arrives here
-        // as a NON-empty batch and does reach a skip decision while that index lists it. And whether
-        // an appended batch then FOLDS is
-        // `FoldingStore::append_and_fold`'s best-effort contract, not this partition's - a lost fold leaves
-        // the log right and the graph behind.
-        //
-        // The dedup lock is held only around the key set (released before the append), so a concurrent
-        // unit in the wave still appends its own keyed events in parallel.
+        // The walk over the project's per-file extraction batches and their
+        // `<prefix>/<file>@<hash>#<i>` content key are the shared ingest authority
+        // ([`crate::ingest::ingest_project_batched`]) - the SAME walk and keying a standalone
+        // `rigger graph build` uses. What a walked batch RECORDS is the sink's to decide (spec
+        // 107): an unchanged file, whose generation the log and the graph both hold, records
+        // nothing, on this run and on every later one; any other records one ledger entry of the
+        // bytes the sink reads, a file reverted to content it held earlier included, because that
+        // content is no longer the generation both sides hold. The code half lowers from the
+        // PERSISTED symbols index when the project has one, so a batch the walk hands can lag the
+        // file's bytes: the sink records the bytes' generation, never the walk's. A file the walk
+        // lowers to nothing hands no batch and reaches no decision, while a path the tree has
+        // deleted still arrives from the code half as its batch for no bytes while that index
+        // lists it. Whether a recorded entry then FOLDS is the folding store's best-effort
+        // contract - a lost fold leaves the log right and the graph behind.
         crate::ingest::sink_walked_batches(
             |sink| {
                 crate::ingest::ingest_project_batched(&root, sink);
             },
-            |keyed, _excluded| self.emit_keyed_batch(keyed),
+            |keyed, excluded| self.emit_keyed_batch(keyed, excluded),
         )
     }
 
@@ -11315,13 +11219,11 @@ impl RunCtx<'_> {
     /// right after every landed merge, right alongside the grounder's own (pre-existing) reindex.
     /// Bounded by `files` - the merge's OWN touched-file list - never a whole-project walk, so an
     /// integration that touches hundreds of files stays bounded by that count, not the project's.
-    /// Reuses the SAME scoped extraction and keyed-emit sink `ingest_project_batches` uses for the
-    /// whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) - never a
-    /// second lowering or dedup path - so a file's scoped generation here is byte-identical to what
-    /// a full walk would have produced for it. Off (a no-op) when there is no graph to fold into,
-    /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
-    /// A batch whose group lookup goes unanswered fails the reindex, exactly as it fails the whole-
-    /// tree walk.
+    /// Reuses the SAME scoped extraction and the SAME ingest sink `ingest_project_batches` uses for
+    /// the whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) -
+    /// never a second lowering or recording path. Off (a no-op) when there is no graph to fold
+    /// into, mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own
+    /// guard. A batch whose emit fails fails the reindex, exactly as it fails the whole-tree walk.
     #[cfg(feature = "symbols")]
     fn ingest_files_into_graph(&self, files: &[String]) -> Result<(), Error> {
         if !self.deps.ingests() || files.is_empty() {
@@ -11332,7 +11234,7 @@ impl RunCtx<'_> {
             |sink| {
                 crate::ingest::ingest_files_batched(&root, files, sink);
             },
-            |keyed, _excluded| self.emit_keyed_batch(keyed),
+            |keyed, excluded| self.emit_keyed_batch(keyed, excluded),
         )
     }
 

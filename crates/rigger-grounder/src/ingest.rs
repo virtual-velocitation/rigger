@@ -1,16 +1,19 @@
 //! Project-source ingest into the context graph: the ONE walk-and-content-key authority both
 //! the live run (`conductor::RunCtx::ingest_project_batches`) and the standalone
-//! `rigger graph build` entry share, so the content key an event is deduped under can never
+//! `rigger graph build` entry share, so the generation a batch is recorded under can never
 //! drift between the two ingest entries.
 //!
-//! Each caller supplies its OWN emit sink - the run's replay-keyed, concurrency-safe
-//! `emit_keyed`; the cold build's direct append-and-fold - because their mutation semantics
-//! legitimately differ. What must NOT fork is the drift-prone part: the walk over the project's
-//! per-file extraction batches, the `<prefix>/<file>@<hash>#<i>` content key, the keyed derived
-//! event both record ([`keyed_derived_event`]), and the first-sight question that decides whether a
-//! batch is already its identity's latest recorded generation ([`batch_is_latest_recorded`]).
-//! Those are derived once, so the run and a cold `graph build` agree on every key and never
-//! double-ingest one another's work.
+//! Each caller supplies its OWN sink. The run's records a batch as ONE ledger entry of
+//! perception (spec 107): [`entry_of_batch`] answers what to record for the batch from the log's
+//! latest generation, the graph's current one and the bytes the tree holds, and the ledger form
+//! of the folding store ([`FoldingStore::append_entry_and_fold`]) appends the entry and folds
+//! its batch. The cold build's still records the batch's keyed derived events
+//! ([`keyed_derived_event`]) when the log's latest generation is not the batch's
+//! ([`batch_is_latest_recorded`]). What must NOT fork is the drift-prone part: the walk over
+//! the project's per-file extraction batches and the `<prefix>/<file>@<hash>#<i>` content key,
+//! which names the identity and the generation both sinks record under. Those are derived
+//! once, so the run and a cold `graph build` agree on every generation and never double-ingest
+//! one another's work.
 //!
 //! Symbols-gated: the walk lowers the tree through the `symbols` extraction pass, so the light
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
@@ -426,7 +429,7 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
 /// code half, `crate::grounder::design::events::named_batches` for the design half, and
 /// [`key_batch`], the identical authorities [`walk_batches`] calls) - never a second lowering path -
 /// so a named file's scoped batch is byte-identical to what a full walk would produce for it, and
-/// the content key an event is deduped under can never drift between the two entries.
+/// the generation a batch is recorded under can never drift between the two entries.
 ///
 /// Both halves: the code (`gc/`) batch of every named file, then the design-intent (`gd/`, spec
 /// 29b) batch of every named file the walk scope admits that carries design intent - so a doc an

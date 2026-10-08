@@ -820,6 +820,8 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
     // 101), so where a worker's marker lives is read from the log, never from a reader's own
     // environment.
     let driver = ReplayDriver::new(&folding, scratch_root.as_deref().unwrap_or(""));
+    let root = repo.clone();
+    let hash_blob = hash_blob_in(&root);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -829,6 +831,7 @@ pub(crate) fn cmd_step(args: &[String]) -> Res {
         graph: Some(&graph),
         criteria,
         log: &stderr_line,
+        hash_blob: &hash_blob,
     };
     let rs = conductor::run(&cfg, &deps)?;
 
@@ -1473,6 +1476,8 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // out). The swap stays `cli::Driver::default()` until that migration + spec 105 land.
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    let root = repo.clone();
+    let hash_blob = hash_blob_in(&root);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -1482,6 +1487,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         graph: Some(&graph),
         criteria,
         log: &stderr_line,
+        hash_blob: &hash_blob,
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -1841,6 +1847,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // 3's guard.
     let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
 
+    let hash_blob = hash_blob_in(&repo);
     // The conductor orchestrates in the background; this thread serves the MCP
     // bridge over stdio. The shim drains spawns via rigger_next/result; closing
     // stdin ends the session.
@@ -1857,6 +1864,7 @@ fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
                 graph: Some(&graph),
                 criteria,
                 log: &stderr_line,
+                hash_blob: &hash_blob,
             };
             // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
             match conductor::run(&cfg, &deps) {

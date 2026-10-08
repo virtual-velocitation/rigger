@@ -391,7 +391,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-139ea399afcc",
+    "id": "dup-2b8f802a2dc3",
     "classification": "semantic",
     "sites": [
       {
@@ -402,7 +402,7 @@
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker",
-        "content_hash": "d7af3d74c6051ab1"
+        "content_hash": "ea999bb38f84fe93"
       },
       {
         "file": "crates/rigger-domain/src/agent.rs",
@@ -6052,7 +6052,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9afde62071c0",
+    "id": "dup-1f66a86debc4",
     "classification": "semantic",
     "sites": [
       {
@@ -6164,6 +6164,11 @@
         "file": "tests/cli.rs",
         "name": "Connection::open",
         "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "Connection::open",
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/common/cli.rs",
@@ -6392,7 +6397,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 67 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -420,6 +420,14 @@ pub(crate) fn stderr_line(line: &str) {
     eprintln!("{line}");
 }
 
+/// THE ONE HASH FUNCTION as a run is handed it ([`conductor::Deps::hash_blob`]) at this
+/// composition root: `git hash-object` under `root`, the run's tree.
+pub(crate) fn hash_blob_in(
+    root: &str,
+) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
+    move |bytes| rigger::worktree::hash_blob(std::path::Path::new(root), bytes)
+}
+
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
 /// the local identity migration - which needs the concrete [`Store`] for its stream-rename
@@ -2546,6 +2554,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
         let driver = ReplayDriver::new(&iso, "");
+        // A replay walks no tree (`repo` is empty), so its hash is never asked.
+        let hash_blob = hash_blob_in("");
         let deps = Deps {
             store: &iso,
             driver: &driver,
@@ -2555,6 +2565,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             graph: None,
             criteria,
             log: &stderr_line,
+            hash_blob: &hash_blob,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 
