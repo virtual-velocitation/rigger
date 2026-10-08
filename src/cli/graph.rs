@@ -464,9 +464,9 @@ fn locate_definition_extent(
 }
 
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
-/// (spec 45): no run, no `RunStarted`, no event beyond the code-ingest events the fold already
-/// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
-/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
+/// (spec 45): no run, no `RunStarted`, and the build records no event beyond one ledger entry
+/// per batch it records, so the graph exists on any repo the tool has merely cloned - not only
+/// ones a run has driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
 /// the live run uses; only this standalone entry is new, so a build and a run can never fork the
 /// generation a batch is recorded under.
 ///
@@ -542,12 +542,13 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
 /// append the store refuses, records nothing, the walk goes on, and the first such error is the
 /// build's - an unanswered lookup is not an answer in either direction, and a refused append is not
-/// a skipped batch.
+/// a skipped batch. The error is answered as its maker said it: a batch's own failure in its own
+/// text, a store's refusal as the store's.
 fn ingest_tree(
     store: &dyn EventStore,
     graph: &dyn Projection,
     root: &str,
-) -> Result<(usize, contextgraph::Fold), rigger::eventstore::Error> {
+) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
     let mut counted = 0usize;
     let mut first_lost = contextgraph::Fold::Folded;
     rigger::ingest::sink_walked_batches(
@@ -556,7 +557,7 @@ fn ingest_tree(
         },
         |keyed, excluded| {
             let Some((events, fold)) = record_batch(store, graph, root, keyed, excluded)? else {
-                return Ok(());
+                return Ok::<(), Box<dyn std::error::Error>>(());
             };
             counted += events;
             if first_lost == contextgraph::Fold::Folded {
@@ -591,7 +592,7 @@ fn record_batch(
     root: &str,
     keyed: &[(String, &Event)],
     excluded: bool,
-) -> Result<Option<(usize, contextgraph::Fold)>, rigger::eventstore::Error> {
+) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
     let recorded = rigger::ingest::entry_of_batch(
         Path::new(root),
         keyed,
@@ -599,8 +600,7 @@ fn record_batch(
         |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
         graph,
         &hash_blob_in(root),
-    )
-    .map_err(|e| rigger::eventstore::Error::Backend(e.0))?;
+    )?;
     let Some(recorded) = recorded else {
         return Ok(None);
     };
@@ -628,7 +628,7 @@ fn record_batch(
     _root: &str,
     _keyed: &[(String, &Event)],
     _excluded: bool,
-) -> Result<Option<(usize, contextgraph::Fold)>, rigger::eventstore::Error> {
+) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
     Ok(None)
 }
 
