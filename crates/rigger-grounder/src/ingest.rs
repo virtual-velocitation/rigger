@@ -1271,8 +1271,8 @@ mod resolve_entry_tests {
 
     /// A source file the fixture does not hold, the `gc` batch it extracts to at `src/lib.rs`,
     /// and the `gc` batch of that path for no bytes.
-    const OTHER_BODY: &str = "fn tree_only() {}\n";
-    const OTHER_BATCH: [(&str, &str); 2] = [
+    pub(super) const OTHER_BODY: &str = "fn tree_only() {}\n";
+    pub(super) const OTHER_BATCH: [(&str, &str); 2] = [
         (
             "CodeEntityExtracted",
             r#"{"file":"src/lib.rs","name":"tree_only","kind":"function","line":1,"lang":"rust","fresh":true}"#,
@@ -1282,13 +1282,13 @@ mod resolve_entry_tests {
             r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#,
         ),
     ];
-    const NO_BYTES_BATCH: [(&str, &str); 1] = [(
+    pub(super) const NO_BYTES_BATCH: [(&str, &str); 1] = [(
         "EdgeInferred",
         r#"{"file":"src/lib.rs","name":"","lang":"unknown","fresh":true}"#,
     )];
 
     /// The generation of the batch holding `events`, `(type, payload text)` pairs.
-    fn generation_of(events: &[(&str, &str)]) -> String {
+    pub(super) fn generation_of(events: &[(&str, &str)]) -> String {
         batch_generation(&events_of(events))
     }
 
@@ -1319,7 +1319,7 @@ mod resolve_entry_tests {
     }
 
     /// `events`, borrowed `(type, payload text)` pairs, as owned ones.
-    fn pairs(events: &[(&str, &str)]) -> Vec<(String, String)> {
+    pub(super) fn pairs(events: &[(&str, &str)]) -> Vec<(String, String)> {
         wire_owned(&events_of(events))
     }
 
@@ -1555,6 +1555,676 @@ mod resolve_entry_tests {
                 &[("", OTHER_BODY)]
             ),
             (None, Vec::<String>::new())
+        );
+    }
+}
+
+#[cfg(all(test, feature = "symbols"))]
+mod entry_of_batch_tests {
+    //! Tests for [`entry_of_batch`] (spec 107, SINK OUTCOMES rows 1 to 11): what a sink records
+    //! for one batch a walk hands it, decided from the log's side, the graph's side and the
+    //! bytes the tree holds.
+
+    use super::resolve_entry_tests::{
+        generation_of, pairs, NO_BYTES_BATCH, OTHER_BATCH, OTHER_BODY,
+    };
+    use super::{batch_generation, entry_of_batch, key_batch};
+    use crate::contextgraph::{
+        EntryBatch, EntryFold, Error as GraphError, FoldAccess, Graph, Projection,
+    };
+    use crate::eventstore::{Error as StoreError, Event};
+    use crate::extraction_tree::{
+        planted_extraction_tree, walked_batch, walked_generation, DOCUMENT_PATH, SOURCE_BODY,
+        SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WORKFLOW_PATH,
+    };
+    use crate::host_fixtures::write_file;
+    use crate::read_fault_fixtures::arm_read_fault;
+    use crate::test_support::{events_of, generation_ingested, wire_owned};
+    use rigger_domain::retention::GenerationIngested;
+    use rigger_domain::worktree::Error as HashError;
+    use std::path::Path;
+    use std::sync::Mutex;
+
+    /// What the graph's side answers a call: whether it owes its rebuild and the identity's
+    /// current generation, each an answer or a failure's text.
+    type SideAnswers = (
+        Result<bool, &'static str>,
+        Result<Option<&'static str>, &'static str>,
+    );
+
+    /// What one call answered, as one comparable value: nothing to record, the entry beside its
+    /// extraction as `(type, payload text)` pairs, or the failure's text.
+    type Answer = Result<Option<(GenerationIngested, Vec<(String, String)>)>, String>;
+
+    /// The graph's side of a call: it answers the two reads a sink's check makes and records
+    /// each, in order, as `owed` or `current <identity>`. It folds nothing.
+    struct Side {
+        answers: SideAnswers,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Projection for Side {
+        fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), GraphError> {
+            panic!("a sink's check folds nothing")
+        }
+        fn apply_generation(
+            &self,
+            _entry: &Event,
+            _batch: EntryBatch<'_>,
+        ) -> Result<EntryFold, GraphError> {
+            panic!("a sink's check folds nothing")
+        }
+        fn current_generation(&self, identity: &str) -> Result<Option<String>, GraphError> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push(format!("current {identity}"));
+            self.answers
+                .1
+                .map(|held| held.map(str::to_string))
+                .map_err(|why| GraphError(why.to_string()))
+        }
+        fn rebuild_owed(&self) -> Result<bool, GraphError> {
+            self.asked.lock().unwrap().push("owed".to_string());
+            self.answers.0.map_err(|why| GraphError(why.to_string()))
+        }
+        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, GraphError> {
+            panic!("a sink's check reads no subgraph")
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, GraphError> {
+            panic!("a sink's check resolves no mention")
+        }
+    }
+
+    /// Everything one call asked of its three sources: the identities it looked up on the log
+    /// side, the graph reads it made, in order, and the bytes it hashed.
+    #[derive(Debug, Default, PartialEq)]
+    struct Asked {
+        logged: Vec<String>,
+        graph: Vec<String>,
+        hashed: Vec<Vec<u8>>,
+    }
+
+    /// One batch as a walk hands it: its identity's prefix and path, its events as
+    /// `(type, payload text)` pairs and its flag.
+    #[derive(Clone, Copy)]
+    struct Handed<'a> {
+        prefix: &'a str,
+        path: &'a str,
+        walked: &'a [(&'a str, &'a str)],
+        excluded: bool,
+    }
+
+    /// The batch the walk lowers for `<prefix>/<path>` of the extraction tree, with `excluded`.
+    fn walked(prefix: &'static str, path: &'static str, excluded: bool) -> Handed<'static> {
+        Handed {
+            prefix,
+            path,
+            walked: walked_batch(prefix, path),
+            excluded,
+        }
+    }
+
+    /// The source file's `gc` batch as the walk lowers it from the extraction tree.
+    fn source() -> Handed<'static> {
+        walked("gc", SOURCE_PATH, false)
+    }
+
+    /// The generation of [`source`].
+    fn source_generation() -> &'static str {
+        walked_generation("gc", SOURCE_PATH)
+    }
+
+    /// The object id the hash double answers.
+    const BLOB: &str = "b10b";
+
+    /// A graph side that owes nothing and holds `current` for every identity.
+    fn holding(current: Option<&'static str>) -> SideAnswers {
+        (Ok(false), Ok(current))
+    }
+
+    /// Answer `keyed`, handed with `excluded`, under `root`: the log side answering `logged`
+    /// for every identity, the graph side `side` and the hash `hash` for every input.
+    fn answered_keyed(
+        root: &Path,
+        keyed: &[(String, &Event)],
+        excluded: bool,
+        logged: Result<Option<&str>, &str>,
+        side: SideAnswers,
+        hash: Result<&str, &str>,
+    ) -> (Answer, Asked) {
+        let graph = Side {
+            answers: side,
+            asked: Mutex::default(),
+        };
+        let looked: Mutex<Vec<String>> = Mutex::default();
+        let hashed: Mutex<Vec<Vec<u8>>> = Mutex::default();
+        let answer = entry_of_batch(
+            root,
+            keyed,
+            excluded,
+            |identity| {
+                looked.lock().unwrap().push(identity.to_string());
+                logged
+                    .map(|held| held.map(str::to_string))
+                    .map_err(|why| StoreError::Backend(why.to_string()))
+            },
+            &graph,
+            &|bytes: &[u8]| {
+                hashed.lock().unwrap().push(bytes.to_vec());
+                hash.map(str::to_string)
+                    .map_err(|why| HashError(why.to_string()))
+            },
+        )
+        .map(|recorded| recorded.map(|of| (of.entry, wire_owned(&of.batch))))
+        .map_err(|failure| failure.to_string());
+        let asked = Asked {
+            logged: looked.into_inner().unwrap(),
+            graph: graph.asked.into_inner().unwrap(),
+            hashed: hashed.into_inner().unwrap(),
+        };
+        (answer, asked)
+    }
+
+    /// [`answered_keyed`] for `handed`, keyed as the walk keys it ([`key_batch`]).
+    fn answered(
+        root: &Path,
+        handed: Handed,
+        logged: Result<Option<&str>, &str>,
+        side: SideAnswers,
+        hash: Result<&str, &str>,
+    ) -> (Answer, Asked) {
+        let events = events_of(handed.walked);
+        let mut answer = None;
+        key_batch(
+            handed.prefix,
+            handed.path,
+            &events,
+            handed.excluded,
+            &mut |keyed: &[(String, &Event)], excluded: bool| {
+                answer = Some(answered_keyed(root, keyed, excluded, logged, side, hash));
+            },
+        );
+        answer.expect("the walk's keying hands its batch once")
+    }
+
+    /// The answer that records `entry` beside the extraction `batch`.
+    fn records(entry: GenerationIngested, batch: &[(&str, &str)]) -> Answer {
+        Ok(Some((entry, pairs(batch))))
+    }
+
+    /// What a call that read both sides for `identity` and hashed each of `hashed` asked.
+    fn asked_both(identity: &str, hashed: &[&[u8]]) -> Asked {
+        Asked {
+            logged: vec![identity.to_string()],
+            graph: vec!["owed".to_string(), format!("current {identity}")],
+            hashed: hashed.iter().map(|bytes| bytes.to_vec()).collect(),
+        }
+    }
+
+    /// SINK OUTCOMES row 9: a file whose bytes extract to a batch neither side holds records one
+    /// entry of the extraction's generation, the bytes' blob and the walk's flag, beside the
+    /// extraction - whichever side misses the generation, and when both hold an older one.
+    #[test]
+    fn a_file_changed_to_a_non_empty_extraction_records_the_entry_of_the_bytes_it_read() {
+        let tree = planted_extraction_tree(write_file);
+        let current = source_generation();
+        let recorded = records(
+            generation_ingested("gc", SOURCE_PATH, current, BLOB, false),
+            walked_batch("gc", SOURCE_PATH),
+        );
+        let sides: [(Option<&str>, Option<&'static str>); 5] = [
+            (None, None),
+            (Some("0ld"), Some("0ld")),
+            (Some(current), None),
+            (Some(current), Some("0ld")),
+            (None, Some(current)),
+        ];
+        for (logged, held) in sides {
+            assert_eq!(
+                answered(tree.path(), source(), Ok(logged), holding(held), Ok(BLOB)),
+                (
+                    recorded.clone(),
+                    asked_both("gc/src/lib.rs", &[SOURCE_BODY.as_bytes()])
+                ),
+                "the log holding {logged:?} and the graph {held:?}"
+            );
+        }
+    }
+
+    /// SINK OUTCOMES row 3: a batch whose generation both sides hold records nothing, and the
+    /// tree is never read - the tree here holds other bytes, which a read would have recorded.
+    #[test]
+    fn a_batch_both_sides_hold_records_nothing_and_reads_no_bytes() {
+        let tree = planted_extraction_tree(write_file);
+        write_file(&tree.path().join(SOURCE_PATH), OTHER_BODY.as_bytes());
+        let current = source_generation();
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Ok(Some(current)),
+                holding(Some(current)),
+                Err("the hash is never asked")
+            ),
+            (Ok(None), asked_both("gc/src/lib.rs", &[]))
+        );
+    }
+
+    /// SINK OUTCOMES row 4 and the owed half of row 9: a graph that owes its rebuild is answered
+    /// from the log side alone - a batch the log holds records nothing whatever generation the
+    /// owed graph names, one it does not hold records its entry - and the graph's generation is
+    /// still read.
+    #[test]
+    fn an_owed_graph_is_answered_from_the_log_side_alone() {
+        let tree = planted_extraction_tree(write_file);
+        let current = source_generation();
+        let owed = |held| (Ok(true), Ok(held));
+        for held in [None, Some("0ld"), Some(current)] {
+            assert_eq!(
+                answered(
+                    tree.path(),
+                    source(),
+                    Ok(Some(current)),
+                    owed(held),
+                    Err("the hash is never asked")
+                ),
+                (Ok(None), asked_both("gc/src/lib.rs", &[])),
+                "the log holds the batch and the owed graph names {held:?}"
+            );
+            assert_eq!(
+                answered(tree.path(), source(), Ok(Some("0ld")), owed(held), Ok(BLOB)),
+                (
+                    records(
+                        generation_ingested("gc", SOURCE_PATH, current, BLOB, false),
+                        walked_batch("gc", SOURCE_PATH),
+                    ),
+                    asked_both("gc/src/lib.rs", &[SOURCE_BODY.as_bytes()])
+                ),
+                "the log holds another generation and the owed graph names {held:?}"
+            );
+        }
+    }
+
+    /// SINK OUTCOMES rows 10 and 11: a `gc` path holding no file, and one outside the walk's
+    /// scope that holds a readable file, each record the entry of `gc`'s batch for no bytes with
+    /// no blob - and never ask the hash, which here fails.
+    #[test]
+    fn a_deleted_gc_file_and_one_outside_the_walks_scope_record_an_entry_with_no_blob() {
+        let deleted = tempfile::tempdir().unwrap();
+        let ignored = planted_extraction_tree(write_file);
+        write_file(&ignored.path().join(".gitignore"), b"src/lib.rs\n");
+        let handed = Handed {
+            prefix: "gc",
+            path: SOURCE_PATH,
+            walked: &NO_BYTES_BATCH,
+            excluded: false,
+        };
+        let no_bytes = generation_of(&NO_BYTES_BATCH);
+        for (root, flag) in [
+            (deleted.path(), false),
+            (deleted.path(), true),
+            (ignored.path(), false),
+        ] {
+            assert_eq!(
+                answered(
+                    root,
+                    Handed {
+                        excluded: flag,
+                        ..handed
+                    },
+                    Ok(Some(source_generation())),
+                    holding(Some(source_generation())),
+                    Err("the hash is never asked")
+                ),
+                (
+                    records(
+                        generation_ingested("gc", SOURCE_PATH, &no_bytes, "", flag),
+                        &NO_BYTES_BATCH,
+                    ),
+                    asked_both("gc/src/lib.rs", &[])
+                ),
+                "under {} with the flag {flag}",
+                root.display()
+            );
+        }
+        // The walk's own batch for the ignored file is not what is recorded: handed the batch a
+        // lowering of the file's bytes gives, the sink still records the batch for no bytes.
+        assert_eq!(
+            answered(
+                ignored.path(),
+                source(),
+                Ok(None),
+                holding(None),
+                Err("the hash is never asked")
+            ),
+            (
+                records(
+                    generation_ingested("gc", SOURCE_PATH, &no_bytes, "", false),
+                    &NO_BYTES_BATCH,
+                ),
+                asked_both("gc/src/lib.rs", &[])
+            )
+        );
+    }
+
+    /// An out-of-line test module's file, handed with its flag set, records an entry whose
+    /// generation is its boundary batch's and whose flag is set; the same bytes handed with the
+    /// flag clear extract to the file's own definitions, another generation.
+    #[test]
+    fn an_out_of_line_test_modules_file_records_its_boundary_batch_with_its_flag_set() {
+        let tree = planted_extraction_tree(write_file);
+        let boundary = walked("gc", TEST_MODULE_PATH, true);
+        assert_eq!(
+            answered(tree.path(), boundary, Ok(None), holding(None), Ok(BLOB)),
+            (
+                records(
+                    generation_ingested(
+                        "gc",
+                        TEST_MODULE_PATH,
+                        walked_generation("gc", TEST_MODULE_PATH),
+                        BLOB,
+                        true
+                    ),
+                    walked_batch("gc", TEST_MODULE_PATH),
+                ),
+                asked_both("gc/src/checks.rs", &[TEST_MODULE_BODY.as_bytes()])
+            )
+        );
+
+        let unflagged = crate::grounder::symbols::events::bytes_batch(
+            TEST_MODULE_PATH,
+            Some(TEST_MODULE_BODY.as_bytes()),
+            false,
+        );
+        let own = batch_generation(&unflagged);
+        assert_ne!(own, walked_generation("gc", TEST_MODULE_PATH));
+        assert_eq!(
+            answered(
+                tree.path(),
+                Handed {
+                    excluded: false,
+                    ..boundary
+                },
+                Ok(None),
+                holding(None),
+                Ok(BLOB)
+            ),
+            (
+                Ok(Some((
+                    generation_ingested("gc", TEST_MODULE_PATH, &own, BLOB, false),
+                    wire_owned(&unflagged)
+                ))),
+                asked_both("gc/src/checks.rs", &[TEST_MODULE_BODY.as_bytes()])
+            )
+        );
+    }
+
+    /// SINK OUTCOMES rows 6 and 9 for an index lowering that lags the file's bytes: the walk
+    /// hands a stale batch, and what is recorded is the bytes' own extraction - its generation,
+    /// never the walk's - unless both sides already hold that generation, when nothing is
+    /// recorded, the bytes are not hashed and the emit succeeds.
+    #[test]
+    fn a_lagging_lowering_records_the_bytes_generation_unless_both_sides_hold_it() {
+        let tree = planted_extraction_tree(write_file);
+        let lagging = Handed {
+            prefix: "gc",
+            path: SOURCE_PATH,
+            walked: &OTHER_BATCH,
+            excluded: false,
+        };
+        let stale = generation_of(&OTHER_BATCH);
+        let stale: &'static str = Box::leak(stale.into_boxed_str());
+        let current = source_generation();
+        assert_ne!(stale, current);
+
+        // Both sides hold a generation that is neither the walk's nor the bytes'.
+        assert_eq!(
+            answered(
+                tree.path(),
+                lagging,
+                Ok(Some("0ld")),
+                holding(Some("0ld")),
+                Ok(BLOB)
+            ),
+            (
+                records(
+                    generation_ingested("gc", SOURCE_PATH, current, BLOB, false),
+                    walked_batch("gc", SOURCE_PATH),
+                ),
+                asked_both("gc/src/lib.rs", &[SOURCE_BODY.as_bytes()])
+            )
+        );
+        // Both sides hold the bytes' generation.
+        assert_eq!(
+            answered(
+                tree.path(),
+                lagging,
+                Ok(Some(current)),
+                holding(Some(current)),
+                Err("the hash is never asked")
+            ),
+            (Ok(None), asked_both("gc/src/lib.rs", &[]))
+        );
+        // Only one side holds the bytes' generation: it is recorded again.
+        for (logged, held) in [(Some(current), Some(stale)), (Some(stale), Some(current))] {
+            assert_eq!(
+                answered(tree.path(), lagging, Ok(logged), holding(held), Ok(BLOB)),
+                (
+                    records(
+                        generation_ingested("gc", SOURCE_PATH, current, BLOB, false),
+                        walked_batch("gc", SOURCE_PATH),
+                    ),
+                    asked_both("gc/src/lib.rs", &[SOURCE_BODY.as_bytes()])
+                ),
+                "the log holding {logged:?} and the graph {held:?}"
+            );
+        }
+    }
+
+    /// SINK OUTCOMES row 7: a `gd` file emptied or deleted after the walk, and a workflow
+    /// definition deleted after it, extract to the empty batch, which has no generation: nothing
+    /// is recorded, nothing is hashed and the emit succeeds.
+    #[test]
+    fn a_gd_or_gw_file_whose_own_extraction_is_empty_records_nothing_and_succeeds() {
+        let emptied = planted_extraction_tree(write_file);
+        write_file(&emptied.path().join(DOCUMENT_PATH), b"");
+        let deleted = planted_extraction_tree(write_file);
+        std::fs::remove_file(deleted.path().join(DOCUMENT_PATH)).unwrap();
+        std::fs::remove_file(deleted.path().join(WORKFLOW_PATH)).unwrap();
+        let never = Err("the hash is never asked");
+        let cases = [
+            (emptied.path(), walked("gd", DOCUMENT_PATH, false)),
+            (deleted.path(), walked("gd", DOCUMENT_PATH, false)),
+            (deleted.path(), walked("gw", WORKFLOW_PATH, false)),
+        ];
+        for (root, handed) in cases {
+            let identity = format!("{}/{}", handed.prefix, handed.path);
+            assert_eq!(
+                answered(root, handed, Ok(Some("0ld")), holding(Some("0ld")), never),
+                (Ok(None), asked_both(&identity, &[])),
+                "{identity} under {}",
+                root.display()
+            );
+        }
+        // The same batches over the planted files record their entries.
+        let planted = planted_extraction_tree(write_file);
+        for (prefix, path) in [("gd", DOCUMENT_PATH), ("gw", WORKFLOW_PATH)] {
+            let (answer, _) = answered(
+                planted.path(),
+                walked(prefix, path, false),
+                Ok(Some("0ld")),
+                holding(Some("0ld")),
+                Ok(BLOB),
+            );
+            assert_eq!(
+                answer,
+                records(
+                    generation_ingested(prefix, path, walked_generation(prefix, path), BLOB, false),
+                    walked_batch(prefix, path),
+                )
+            );
+        }
+    }
+
+    /// SINK OUTCOMES row 1: a batch whose key names no identity - a key of another shape, a
+    /// prefix no half extracts under, no key at all - fails naming the key, and asks neither
+    /// side.
+    #[test]
+    fn a_batch_whose_key_names_no_identity_fails_naming_the_key_and_asks_nothing() {
+        let tree = planted_extraction_tree(write_file);
+        let event = Event::new("EdgeInferred", b"{}".to_vec());
+        for key in ["unit-1/started", "zz/src/lib.rs@f81a57a5c4f55f52#0"] {
+            assert_eq!(
+                answered_keyed(
+                    tree.path(),
+                    &[(key.to_string(), &event)],
+                    false,
+                    Ok(None),
+                    holding(None),
+                    Ok(BLOB)
+                ),
+                (
+                    Err(format!("the batch key {key:?} names no identity")),
+                    Asked::default()
+                )
+            );
+        }
+        assert_eq!(
+            answered_keyed(tree.path(), &[], false, Ok(None), holding(None), Ok(BLOB)),
+            (
+                Err("the batch key \"\" names no identity".to_string()),
+                Asked::default()
+            )
+        );
+    }
+
+    /// SINK OUTCOMES row 2: a failing read of the log side, and one of either read of the graph
+    /// side, fails naming the read. The log side is asked first, and a read after the failing
+    /// one is never made; the graph's generation is read on an owed graph too.
+    #[test]
+    fn a_failing_read_of_the_log_side_or_of_the_graph_side_fails_naming_the_read() {
+        let tree = planted_extraction_tree(write_file);
+        let never = Err("the hash is never asked");
+        let asked = |logged: &[&str], graph: &[&str]| Asked {
+            logged: logged.iter().map(|s| s.to_string()).collect(),
+            graph: graph.iter().map(|s| s.to_string()).collect(),
+            hashed: Vec::new(),
+        };
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Err("the store is gone"),
+                holding(None),
+                never
+            ),
+            (
+                Err(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: the store is gone"
+                        .to_string()
+                ),
+                asked(&["gc/src/lib.rs"], &[])
+            )
+        );
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Ok(None),
+                (Err("the mark is unreadable"), Ok(None)),
+                never
+            ),
+            (
+                Err(
+                    "whether graph.db owes its rebuild could not be read: graph: the mark is \
+                     unreadable"
+                        .to_string()
+                ),
+                asked(&["gc/src/lib.rs"], &["owed"])
+            )
+        );
+        for owed in [false, true] {
+            assert_eq!(
+                answered(
+                    tree.path(),
+                    source(),
+                    Ok(Some(source_generation())),
+                    (Ok(owed), Err("the table is locked")),
+                    never
+                ),
+                (
+                    Err(
+                        "graph.db's current generation of gc/src/lib.rs could not be read: \
+                         graph: the table is locked"
+                            .to_string()
+                    ),
+                    asked(&["gc/src/lib.rs"], &["owed", "current gc/src/lib.rs"])
+                ),
+                "on a graph whose owed answer is {owed}"
+            );
+        }
+    }
+
+    /// SINK OUTCOMES row 8: a hash that fails fails the emit, naming the hash, for an extraction
+    /// that would have been recorded.
+    #[test]
+    fn a_failing_hash_fails_naming_the_hash() {
+        let tree = planted_extraction_tree(write_file);
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Ok(None),
+                holding(None),
+                Err("git could not start")
+            ),
+            (
+                Err(
+                    "the bytes of gc/src/lib.rs could not be hashed: worktree: git could not \
+                     start"
+                        .to_string()
+                ),
+                asked_both("gc/src/lib.rs", &[SOURCE_BODY.as_bytes()])
+            )
+        );
+    }
+
+    /// SINK OUTCOMES row 5, THE READ FAULT: a regular in-scope file this process cannot read
+    /// fails the emit, naming the read, and nothing is hashed. A batch both sides hold never
+    /// reads the file, so it still records nothing.
+    #[test]
+    fn a_read_failing_for_a_reason_other_than_absence_fails_naming_the_read() {
+        let tree = planted_extraction_tree(write_file);
+        let file = tree.path().join(SOURCE_PATH);
+        if !arm_read_fault(&file) {
+            return;
+        }
+        let refused = std::fs::read(&file).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Ok(None),
+                holding(None),
+                Err("the hash is never asked")
+            ),
+            (
+                Err(format!("{} could not be read: {refused}", file.display())),
+                asked_both("gc/src/lib.rs", &[])
+            )
+        );
+        assert_eq!(
+            answered(
+                tree.path(),
+                source(),
+                Ok(Some(source_generation())),
+                holding(Some(source_generation())),
+                Err("the hash is never asked")
+            ),
+            (Ok(None), asked_both("gc/src/lib.rs", &[]))
         );
     }
 }
