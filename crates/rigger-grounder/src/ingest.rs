@@ -338,16 +338,18 @@ pub struct IngestStats {
 /// definition), in `#i` order. The key is a pure function
 /// of the batch's bytes ALONE, so the same content always yields the same keys and different
 /// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
-/// mark that the file has been seen: whether a given key is redundant is a question about the
-/// file's LATEST recorded generation ([`batch_is_latest_recorded`] answers it), which is why a
-/// file reverted to content it held earlier re-emits its whole batch even though every one of its
-/// keys is already in the log. This function owns only the walk and the keying; the sink decides
-/// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
-/// caller. The flag beside a batch says whether the walk excluded its identity as an out-of-line
+/// mark that the file has been seen: whether a batch is to be recorded is a question about the
+/// file's LATEST recorded generation, never about whether the generation was recorded at any
+/// time, which is why a file reverted to content it held earlier is recorded again. This function
+/// owns only the walk and the keying; the sink decides what a batch RECORDS - the run's one
+/// ledger entry ([`entry_of_batch`] answers it), the cold build's keyed derived events
+/// ([`batch_is_latest_recorded`] answers that) - so the mutation authority stays with the caller.
+/// The flag beside a batch says whether the walk excluded its identity as an out-of-line
 /// test module's: set for the `gc` batch of a file [`walk_exclusions`] names and clear for every
-/// other batch, so a sink never computes it or loads an index. A sink appends the file's batch in ONE store append and folds it in ONE graph
-/// transaction (via [`FoldingStore::append_and_fold`]) - the batched-fold cadence spec 49 needs, since the
-/// measured cold-build throughput was transaction-cadence bound.
+/// other batch, so a sink never computes it or loads an index. A sink records the file's batch
+/// in ONE store append and folds it in ONE graph transaction ([`FoldingStore`]'s two forms) - the
+/// batched-fold cadence spec 49 needs, since the measured cold-build throughput was
+/// transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
 /// halves differ: the design half reads the live tree, while the code half reuses the `symbols`

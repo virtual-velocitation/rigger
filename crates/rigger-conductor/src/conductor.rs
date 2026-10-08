@@ -104,9 +104,9 @@ const GROUNDED_SEED_K: usize = 8;
 
 /// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion 4),
 /// RE-EXPORTED from [`crate::ingest`], which owns it: that module builds the
-/// `<prefix>/<file>@<hash>#<i>` content key and parses it back in the suppression predicate both
-/// this conductor and a cold `rigger graph build` share, so the name lives beside the key
-/// authority and this module borrows it rather than the other way round. One constant, one
+/// `<prefix>/<file>@<hash>#<i>` content key and parses it back to the identity and generation
+/// both this conductor's sink and a cold `rigger graph build` record under, so the name lives
+/// beside the key authority and this module borrows it rather than the other way round. One constant, one
 /// spelling, no direction of dependency from the key authority up into its orchestrator.
 ///
 /// What it buys HERE: a stepwise/replay run re-executes [`run`] over recorded history on EVERY
