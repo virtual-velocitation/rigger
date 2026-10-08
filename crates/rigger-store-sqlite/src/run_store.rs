@@ -275,8 +275,8 @@ mod tests {
     /// A READ OF THE RUN IS A LOG PREFIX (spec 101): a writer that appends a decision and then a
     /// spawn result between the read's two typed reads leaves the read holding both (the
     /// decision is never missing beside the later result), and one that appends after the read's
-    /// last call leaves it holding neither - either way the read is every non-derived event of the
-    /// run up to one head, in log order.
+    /// last call leaves it holding neither - either way the read is every non-perception event of
+    /// the run up to one head, in log order.
     #[test]
     fn read_run_is_a_log_prefix_whatever_a_concurrent_writer_appends_between_its_reads() {
         let late = || {
@@ -359,9 +359,9 @@ mod tests {
     }
 
     /// With no run started the whole stream is the run: one typed read from revision 0 refusing
-    /// only the derived types, after the boundary lookup found nothing.
+    /// only the perception types, after the boundary lookup found nothing.
     #[test]
-    fn read_run_with_no_run_started_reads_every_non_derived_event() {
+    fn read_run_with_no_run_started_reads_every_non_perception_event() {
         let inner = Store::open(":memory:").unwrap();
         inner
             .append(
@@ -435,7 +435,7 @@ mod tests {
                 [("Note", 1005), ("Note", 1001)]
             ),
             [0, 1, 1005, 1001],
-            "no boundary: the whole non-derived stream, in log order"
+            "no boundary: the whole non-perception stream, in log order"
         );
         assert_eq!(
             revisions_read(

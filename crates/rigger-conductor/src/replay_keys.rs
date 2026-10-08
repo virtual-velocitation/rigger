@@ -15,8 +15,8 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use crate::conductor::META_REPLAY_KEY;
 use crate::eventstore::Event;
+use crate::ingest::META_REPLAY_KEY;
 use crate::retention::PERCEPTION_TYPES;
 #[cfg(feature = "symbols")]
 use std::collections::{hash_map::Entry, HashMap};
@@ -230,9 +230,9 @@ impl ReplayKeys {
 #[cfg(test)]
 mod seed_tests {
     use super::ReplayKeys;
-    use crate::conductor::META_REPLAY_KEY;
     use crate::eventstore::Event;
     use crate::ingest::DERIVED_INDEX_TYPES;
+    use crate::ingest::META_REPLAY_KEY;
     use crate::test_support::{entry_event, generation_ingested};
 
     /// READERS SKIP PERCEPTION, the seeded key set: of a run's keyed events, a lifecycle event's
@@ -286,8 +286,8 @@ mod seed_tests {
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
     use super::{ReplayKeys, Ticket};
-    use crate::conductor::META_REPLAY_KEY;
     use crate::eventstore::Event;
+    use crate::ingest::META_REPLAY_KEY;
 
     const IDENTITY: &str = "gc/src/a.rs";
 

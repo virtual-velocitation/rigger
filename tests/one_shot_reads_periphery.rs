@@ -2,7 +2,7 @@
 //! FROM THE BOUNDARY. `rigger status`, `rigger watch`, the dash snapshot, the side-car behind
 //! `rigger peers`, the MCP tools and the worker couriers (`prompt`, `scratch`, `result`,
 //! `reported`, `hook stop-failure`, `resume-unit`) read the run's own events from its boundary,
-//! with the derived types excluded and the carried-over knowledge (decisions, lessons, findings)
+//! with the perception types excluded and the carried-over knowledge (decisions, lessons, findings)
 //! read by type, and the run's progress from its own stream. These run OUTSIDE the crate and
 //! guard what the inside-out tests are structurally blind to:
 //!
@@ -80,7 +80,7 @@ fn seed_beta_history(beta: &dyn EventStore, run: &str, decision: &str) {
 ///    plus the carry-over and nothing of beta;
 ///  - counted BELOW the namespace, the backend is asked the same three questions of alpha's
 ///    scoped stream with the same selections - the typed read reaches the store as a typed read,
-///    so the store refuses the derived types, never the caller after materializing them.
+///    so the store refuses the perception types, never the caller after materializing them.
 #[test]
 fn a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection() {
     let dir = tempfile::tempdir().unwrap();
@@ -782,7 +782,7 @@ fn a_refresh_to_per_run_progress_streams_drops_a_live_runs_earlier_reports_and_t
 /// Given one `events.db` two projects share, where `beta` has started a run and `alpha` has not,
 /// when `alpha`'s current run is read through the product's composition (a project namespace over
 /// the file-backed store), then alpha names NO run (beta's `RunStarted` is never alpha's boundary)
-/// and its whole stream but the derived types is its run, in one boundary lookup and one typed
+/// and its whole stream but the perception types is its run, in one boundary lookup and one typed
 /// read. Once alpha holds the one-shot fixture, the same read names alpha's run and hands back its
 /// slice alone, costing exactly the run's own events plus the typed carry-over.
 #[test]

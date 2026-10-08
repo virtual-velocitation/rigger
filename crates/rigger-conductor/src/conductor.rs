@@ -3015,7 +3015,7 @@ struct RunCtx<'a> {
     /// retire a stale generation's keys when [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets
     /// a fresh one, and a failed append forgets the keys it installed.
     ///
-    /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
+    /// The RUN-SCOPED half is every NON-perception key (spec 04, criterion 4): seeded at run start
     /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
     /// process emits, so membership means "already emitted in THIS run".
     /// [`emit_keyed`](RunCtx::emit_keyed) consults it so a step re-running the conductor over
@@ -11250,7 +11250,7 @@ impl RunCtx<'_> {
         // transaction-cadence bound).
         //
         // WHAT A RE-INGEST APPENDS is decided by `replayed_keys`, which is a PARTITION over two
-        // scopes, not one seed (spec 60): every NON-derived key is seeded from THIS run's slice,
+        // scopes, not one seed (spec 60): every NON-perception key is seeded from THIS run's slice,
         // because its recurrence is a property of one run, while the four derived index types are
         // seeded per identity at first sight from the store's group lookup
         // ([`crate::ingest::batch_is_latest_recorded`]), because a file's content hash does not
@@ -22292,7 +22292,7 @@ mod tests {
 
     /// Spec 60 criterion 2 (RUN-SCOPING SURVIVES): the seeding above turned `replayed_keys` into a
     /// PARTITION over two scopes, and this pins the half criterion 1 widened nothing in - the
-    /// RUN-SCOPED half every non-derived key still lives in. A prior run's non-ingest replay key
+    /// RUN-SCOPED half every non-perception key still lives in. A prior run's non-ingest replay key
     /// must NEVER suppress this run's own keyed emit: that is the Gap 11 zombie boundary, and
     /// widening it to the whole stream would silently delete a new run's unit lifecycle (its
     /// `UnitStarted` would be read as a replay of the PREVIOUS campaign's, so the run would record
@@ -35347,7 +35347,7 @@ mod tests {
                 "{why}: every read is a read of the run from the boundary"
             );
             // The most any one read of the run can hand back: every event from the boundary that
-            // is not derived, plus every carried-over event before it.
+            // is not perception, plus every carried-over event before it.
             let bound = crate::run::read::read_run(&inner, STREAM).unwrap().len();
             assert!(
                 store.reads().iter().all(|r| r.materialized() <= bound),

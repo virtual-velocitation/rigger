@@ -776,7 +776,7 @@ pub const ONE_SHOT_PERCEPTION_TYPES: [&str; 5] = [
 ];
 
 /// What a one-shot command may cost over [`seed_one_shot_fixture`]'s log (spec 101): the current
-/// run's own non-derived events and the carried-over knowledge of every run, and nothing else.
+/// run's own non-perception events and the carried-over knowledge of every run, and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
