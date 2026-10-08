@@ -72,6 +72,12 @@ pub fn criterion_stable_id(position: usize, criterion: &str) -> String {
 /// pairs, sorted+deduped shared files), so the same DAG produces the same critique
 /// prompt across replay steps. A partition that is already disjoint yields no
 /// conflicts. This is the DETECTION half; the adjudicator renders the verdict.
+///
+/// This asks a DIFFERENT question from [`radii_conflict`](crate::metrics::radii_conflict), so it
+/// does not share that rule. `radii_conflict` asks "may these two units run side by side?", and an
+/// empty (unassessable) radius answers no. Rule 6 asks "do these two criteria share files, so they
+/// belong in one unit?", and its answer is the shared files themselves: an empty radius shares no
+/// file, so it is evidence for no merge, and the wave still runs that unit alone.
 pub fn blast_radius_conflicts(
     units: &[(String, Vec<String>)],
 ) -> Vec<(String, String, Vec<String>)> {
