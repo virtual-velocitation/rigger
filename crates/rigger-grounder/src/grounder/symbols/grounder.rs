@@ -844,6 +844,50 @@ mod tests {
         }
     }
 
+    /// A criterion grounds its blast radius on the CODE it names, never on its prose: the query
+    /// terms are its code spans plus identifier-shaped bare tokens, so the prose words `tests`,
+    /// `run` and `parse` - which happen to be symbol names here - pull in nothing, and the radius
+    /// is `reclaim_space`'s alone. A criterion naming no code at all grounds on nothing (the empty
+    /// radius, which the scheduler serializes).
+    #[test]
+    fn blast_radius_grounds_a_criterion_on_its_code_spans_not_its_prose() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("reclaim.rs"), "fn reclaim_space() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("caller.rs"),
+            "fn go() { reclaim_space(); }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("tests.rs"), "fn tests() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("run.rs"),
+            "fn run() { parse(); tests(); }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let br = g.blast_radius(
+            "a test proves the run reclaims space: `reclaim_space` frees what tests and parse \
+             leave behind, asserted in the run's tests",
+            8,
+        );
+        let mut safe = br.safe.clone();
+        safe.sort();
+        assert_eq!(
+            safe,
+            vec!["caller.rs".to_string(), "reclaim.rs".to_string()],
+            "the radius is the named span's alone, never the prose words'; got {br:?}"
+        );
+
+        let prose = g.blast_radius("the run parses its tests and reclaims one of them", 8);
+        assert_eq!(
+            prose,
+            BlastRadius::default(),
+            "a criterion naming no code grounds on nothing; got {prose:?}"
+        );
+    }
+
     /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
     /// truncating it and never by a conflict-with-everything flag: the safe view carries EVERY file
     /// of the hub's neighborhood (even past the `k` cap), so the overlap test keeps it apart from

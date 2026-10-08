@@ -39034,12 +39034,14 @@ mod tests {
 
     /// Drive ONE `run_wave` call at width `width` over the stages `names` - each grounding on its
     /// own name, run by its own agent of that name, partitioned by blast radius over `grounder` -
-    /// under `probe`; returns the stages the call integrated.
+    /// under `probe`, over a log already holding a `BlastRadiusComputed` for each `recorded`
+    /// `(unit, safe files)`; returns the stages the call integrated.
     fn probe_one_wave(
         width: u32,
         names: &[&str],
         grounder: &dyn Grounder,
         probe: &OverlapProbe,
+        recorded: &[(&str, &[&str])],
     ) -> HashSet<String> {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = width;
@@ -39061,6 +39063,14 @@ mod tests {
             );
         }
         let store = Store::open(":memory:").unwrap();
+        for (unit, safe) in recorded {
+            let payload = json!({ "id": unit, "unit": unit, "precise": [], "safe": safe });
+            let e = Event::new(
+                TYPE_BLAST_RADIUS_COMPUTED,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            store.append(STREAM, ExpectedRevision::Any, &[e]).unwrap();
+        }
         let deps = Deps {
             grounder: Some(grounder),
             ..stub_deps(&store, probe, Vec::new())
@@ -39114,7 +39124,7 @@ mod tests {
         let grounder =
             crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
         let probe = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(2, &["spawn", "parse"], &grounder, &probe);
+        let integrated = probe_one_wave(2, &["spawn", "parse"], &grounder, &probe, &[]);
         assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
         assert_eq!(
             probe.peak(),
@@ -39130,7 +39140,7 @@ mod tests {
     fn run_wave_runs_units_side_by_side_only_when_their_radii_are_disjoint() {
         let assert_peak = |radii: &[(&str, &[&str])], peak: usize, why: &str| {
             let probe = OverlapProbe::new(&[]);
-            let integrated = probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe);
+            let integrated = probe_one_wave(2, &["u_a", "u_b"], &stub_radii(radii), &probe, &[]);
             assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
             assert_eq!(probe.peak(), peak, "{why}");
         };
@@ -39151,6 +39161,30 @@ mod tests {
         );
     }
 
+    /// The schedule reads the RECORDED radius: when the log already holds a unit's
+    /// `BlastRadiusComputed`, admission decides on that radius - the one the retention metric
+    /// reads and a crash-resumed driver re-reads - never on a fresh grounder answer. Here the log
+    /// says the two units share a file while the grounder alone would call them disjoint, so they
+    /// run one after the other.
+    #[test]
+    fn run_wave_keeps_units_apart_on_their_recorded_radii() {
+        let probe = OverlapProbe::new(&[]);
+        let grounder = stub_radii(&[("u_a", &["a.rs"]), ("u_b", &["b.rs"])]);
+        let integrated = probe_one_wave(
+            2,
+            &["u_a", "u_b"],
+            &grounder,
+            &probe,
+            &[("u_a", &["shared.rs"]), ("u_b", &["shared.rs"])],
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        assert_eq!(
+            probe.peak(),
+            1,
+            "the recorded radii overlap, so the units never run side by side"
+        );
+    }
+
     /// A unit finishing frees its slot INSIDE the wave: at width 2, while the slow unit still
     /// runs, the fast unit's slot goes to the next ready unit, which starts before the slow one
     /// ends - instead of waiting for every running unit to finish.
@@ -39162,8 +39196,13 @@ mod tests {
             ("u_b_fast", &["f.rs"]),
             ("u_c_next", &["n.rs"]),
         ]);
-        let integrated =
-            probe_one_wave(2, &["u_a_slow", "u_b_fast", "u_c_next"], &grounder, &probe);
+        let integrated = probe_one_wave(
+            2,
+            &["u_a_slow", "u_b_fast", "u_c_next"],
+            &grounder,
+            &probe,
+            &[],
+        );
         assert_eq!(
             integrated.len(),
             3,
