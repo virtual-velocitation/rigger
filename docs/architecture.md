@@ -794,7 +794,12 @@ is recorded under can never drift between them. Four properties define it:
   the file's bytes once (none for a path that holds no file or lies outside the walk's scope),
   extracts them, and records one entry of that extraction's generation, hashed from the bytes
   when there are any, unless the extraction is empty or is itself the generation both hold, which
-  records nothing. A cold
+  records nothing. The run's sink memoizes the log side for its process (`LoggedGenerations`, a
+  memo of the log and never the ledger): it asks the store's group lookup for an identity once
+  and answers that identity's later batches from the memo, which takes a lookup's answer when
+  the lookup succeeds and the entry's generation once the entry's append succeeds. The graph's
+  side is read on every batch and never remembered, so a long-lived run records again an
+  identity a rebuild left behind the next time a walk hands its batch. A cold
   `graph build` alone still asks `ingest::batch_is_latest_recorded` of each batch: when the lookup
   answers the batch's own generation the batch is its identity's latest recorded generation -
   recorded by its own keyed rows or by the `GenerationIngested` ledger entry that stands for it -

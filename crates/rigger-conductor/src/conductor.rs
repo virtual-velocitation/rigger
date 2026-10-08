@@ -2161,6 +2161,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         budget_halted: std::sync::atomic::AtomicBool::new(false),
         #[cfg(feature = "symbols")]
         ingested: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(feature = "symbols")]
+        logged_generations: Default::default(),
         prior_status,
         prior_attempts,
         prior_resume_bound,
@@ -2938,12 +2940,22 @@ struct RunCtx<'a> {
     /// per process, so a run whose step builds many prompts pays the walk once, not per
     /// prompt. The bound is for throughput alone (spec 107): what a walk records is decided for
     /// each batch against the log's latest generation and the graph's current one, never against
-    /// a set this process extends, so a second walk in one process would record exactly what a
-    /// fresh process's walk would. Process-local: nothing is carried between processes. Exists
+    /// a set of keys this process extends. The log's side is asked of the store once per identity
+    /// and remembered ([`logged_generations`](RunCtx::logged_generations)), so a second walk in
+    /// one process would record what a fresh process's walk would unless another process
+    /// recorded in between. Process-local: nothing is carried between processes. Exists
     /// only in the `symbols` lane - the light lane compiles no extraction pass to ingest, so its
     /// no-op `ingest_project_into_graph` reads no guard.
     #[cfg(feature = "symbols")]
     ingested: std::sync::atomic::AtomicBool,
+    /// THE LOG SIDE AS THIS PROCESS LEARNED IT (spec 107): the log's latest generation of each
+    /// identity the ingest sink ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)) has asked the
+    /// store's group lookup about, or recorded an entry for. The sink asks the store for an
+    /// identity once and answers its later batches from here. Process-local and a memo only:
+    /// nothing is carried between processes, and the graph's side is never remembered. Exists
+    /// only in the `symbols` lane, as the sink does.
+    #[cfg(feature = "symbols")]
+    logged_generations: crate::logged_generations::LoggedGenerations,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
     /// a non-integrated, non-terminal unit that ran in a prior window has a status
     /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
@@ -3137,6 +3149,8 @@ impl<'a> RunCtx<'a> {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
@@ -3318,12 +3332,22 @@ impl RunCtx<'_> {
     /// derived event.
     ///
     /// What is recorded is decided by [`crate::ingest::entry_of_batch`], the one function both
-    /// ingest sinks call: it asks the store's group lookup for the log's latest generation of the
-    /// batch's identity ([`crate::ingest::latest_generation`], once per batch) and this run's
-    /// graph for its side, records nothing for a batch both hold, and otherwise reads the file's
-    /// bytes under the run's tree ([`Deps::repo`]), extracts them and hashes them through
-    /// [`Deps::hash_blob`]. A batch whose key names no identity, and a failed read of either
-    /// side, of the bytes or of the hash, fails the emit and records nothing.
+    /// ingest sinks call: it asks this sink for the log's latest generation of the batch's
+    /// identity and this run's graph for its side, records nothing for a batch both hold, and
+    /// otherwise reads the file's bytes under the run's tree ([`Deps::repo`]), extracts them and
+    /// hashes them through [`Deps::hash_blob`]. A batch whose key names no identity, and a failed
+    /// read of either side, of the bytes or of the hash, fails the emit and records nothing.
+    ///
+    /// The log side is MEMOIZED for the process
+    /// ([`logged_generations`](RunCtx::logged_generations)): the store's group lookup
+    /// ([`crate::ingest::latest_generation`]) is asked for an identity once, and every later
+    /// batch of that identity is answered from the memo. The memo takes a lookup's answer when
+    /// the lookup succeeds - a failed one is asked again by the next batch - and the entry's
+    /// generation once its append succeeds; a failed append leaves it on the looked-up answer.
+    /// The graph's side is read on every batch and never remembered, so a long-lived run records
+    /// again an identity a rebuild of `graph.db` left behind the next time a walk hands its
+    /// batch. An entry another process records stales the memo, which costs at most one
+    /// re-recording.
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
@@ -3342,7 +3366,11 @@ impl RunCtx<'_> {
             std::path::Path::new(&self.deps.repo),
             keyed,
             excluded,
-            |identity| crate::ingest::latest_generation(self.deps.store, STREAM, identity),
+            |identity| {
+                self.logged_generations.latest(identity, || {
+                    crate::ingest::latest_generation(self.deps.store, STREAM, identity)
+                })
+            },
             graph,
             self.deps.hash_blob,
         )
@@ -3353,6 +3381,8 @@ impl RunCtx<'_> {
         let entry = self.stamped(&recorded.entry.event(recorded.batch.len()));
         let folding = self.deps.folding();
         let done = folding.append_entry_and_fold(STREAM, &entry, recorded.batch)?;
+        self.logged_generations
+            .record(&recorded.entry.identity(), &recorded.entry.generation);
         folding.say_fold_lost(1, &done.fold);
         Ok(())
     }
@@ -25804,6 +25834,8 @@ mod tests {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
@@ -32805,6 +32837,8 @@ mod tests {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
