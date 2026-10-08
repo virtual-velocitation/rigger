@@ -28,9 +28,11 @@ pub const META_REPLAY_KEY: &str = "replay_key";
 /// [`key_batch`] above keys, and the ONLY types eligible for project-scoped suppression.
 ///
 /// This is a code-owned discriminator, not a string convention, and it is what makes the
-/// fail-safe direction a property of the code: an event of any OTHER type never reaches the key
-/// comparison below, so no domain event can be dropped by that path however its replay key
-/// happens to look. Domain events legitimately repeat (two identical review findings mean the
+/// fail-safe direction a property of the code: a reader's key comparison is reached only by an
+/// event of a type on the list that reader names - these four, or
+/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES), which adds the ledger entry that
+/// stands for a batch of them - so no domain event can be dropped by that path however its replay
+/// key happens to look. Domain events legitimately repeat (two identical review findings mean the
 /// finding was raised twice); these four do not - a file's content hash does not change because a
 /// new run started, so re-recording an unchanged file's batch records nothing new.
 pub const DERIVED_INDEX_TYPES: [&str; 4] = [
@@ -149,8 +151,9 @@ pub fn latest_generation(
 /// FIRST-SIGHT SEEDING (spec 101): whether the keyed batch `keyed` - one file's whole batch, every
 /// key sharing one identity and one generation - is already its identity's latest recorded
 /// generation on `stream`. Both ingest sinks ask this the first time they meet an identity in a
-/// process: `true` means the batch's keys ARE the recorded ones (a key is a pure function of the
-/// batch's bytes), so the sink installs them and the batch appends nothing; `false` - a changed
+/// process: `true` means the batch IS its identity's latest recorded generation, recorded by its
+/// own keyed rows or by the ledger entry that stands for it, so the sink installs its keys either
+/// way and the batch appends nothing; `false` - a changed
 /// file, a reverted one, a never-recorded one, or a batch whose key does not parse - means it
 /// appends.
 pub fn batch_is_latest_recorded(

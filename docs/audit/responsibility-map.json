@@ -1549,7 +1549,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "902113c213c8afb1"
+    "content_hash": "de8e27240a6881bd"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

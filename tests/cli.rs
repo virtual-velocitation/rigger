@@ -2196,8 +2196,9 @@ fn symbol_index_is_byte_identical_across_processes() {
 
 /// The count of `CodeEntityExtracted` events the cold-checkout `graph build` recorded into the
 /// run stream, read back through the same namespaced store the binary writes. Used to prove the
-/// incremental refresh: a re-build over an unchanged tree re-ingests NOTHING (the content key of
-/// an unchanged file is already recorded), so this count is stable across a second build.
+/// incremental refresh: a re-build over an unchanged tree re-ingests NOTHING (an unchanged file's
+/// batch is its identity's latest recorded generation), so this count is stable across a second
+/// build.
 #[cfg(feature = "symbols")]
 fn code_entity_event_count(root: &Path) -> usize {
     use rigger::eventstore::namespace::Namespaced;

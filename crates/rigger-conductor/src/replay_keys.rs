@@ -107,7 +107,8 @@ impl ReplayKeys {
     /// identity's latest recorded generation (spec 101). It is asked under the generations lock,
     /// so the unseen check, the answer and the slot it installs are one step: a concurrent call
     /// meeting the same identity waits, then finds the slot. An unanswered lookup is this call's
-    /// error and installs nothing. A recorded batch installs its keys, so none of it survives.
+    /// error and installs nothing. A batch that is its identity's latest recorded generation
+    /// installs its keys, so none of it survives.
     ///
     /// A batch naming a generation other than the one its identity's slot tracks retires that slot
     /// and its keys first (spec 86 criterion 3), so the fresh generation is never shadowed by

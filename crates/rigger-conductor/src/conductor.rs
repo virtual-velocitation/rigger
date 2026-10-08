@@ -3030,9 +3030,10 @@ struct RunCtx<'a> {
     ///    [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets a batch identity in this process it
     ///    asks the store's group lookup ([`crate::ingest::batch_is_latest_recorded`]) whether the
     ///    batch is that identity's LATEST recorded generation, and installs the batch's keys when it
-    ///    is. In that phase membership means "already recorded for this project by ANY run", so it
-    ///    names keys this run has not itself emitted - the opposite of the run-scoped half's
-    ///    meaning, and the phase every suppression decision is made in.
+    ///    is. In that phase membership means "the latest recorded generation of its identity for
+    ///    this project, recorded by ANY run through its own keyed rows or through the ledger entry
+    ///    that stands for it", so it names keys this run has not itself emitted - the opposite of
+    ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
     /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
     ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
     ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
@@ -11261,8 +11262,10 @@ impl RunCtx<'_> {
         // does not carry, so a caller that drives it twice is weighed against the extended set:
         //
         // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
-        //   already recorded and it appends NOTHING - on this run and on every later run, forever;
-        // - a file whose content AS THE WALK LOWERED IT differs from its latest recorded batch
+        //   its identity's latest recorded generation - recorded by its own keyed rows or by the
+        //   ledger entry that stands for it - and it appends NOTHING, on this run and on every
+        //   later run, forever;
+        // - a file whose content AS THE WALK LOWERED IT differs from its latest recorded generation
         //   re-emits WHATEVER BATCH THE WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED
         //   to content it held at an earlier generation, whose keys are byte-identical to records the
         //   log still carries: it re-emits not because its keys are new but because those records are

@@ -478,8 +478,9 @@ fn locate_definition_extent(
 /// is weighed against its identity's LATEST recorded generation, answered by the store's group
 /// lookup, never by reading the log - one walk hands this command each batch identity (`gc`/`gd`
 /// per file) exactly once and this command walks once. So an unchanged file's batch
-/// is already wholly recorded and re-ingests nothing, while a file whose content AS THE WALK LOWERED
-/// IT differs from its latest recorded batch re-emits every event the walk extracted for it. That
+/// is its identity's latest recorded generation - recorded by its own keyed rows or by the ledger
+/// entry that stands for it - and re-ingests nothing, while a file whose content AS THE WALK LOWERED
+/// IT differs from its latest recorded generation re-emits every event the walk extracted for it. That
 /// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
 /// to records the log still carries, and it re-emits precisely because those records are no longer
 /// that file's latest generation. The qualifier is load-bearing and the two halves differ on it: the

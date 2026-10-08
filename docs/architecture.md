@@ -784,13 +784,15 @@ is deduped under can never drift between them. Four properties define it:
   generation?" (`ingest::latest_generation`) never reads the stream. Both sinks - the run's keyed
   emit and a cold `graph build` - seed through one first-sight helper
   (`ingest::batch_is_latest_recorded`): the first time a process meets an identity it asks the
-  lookup, and when the answer is the batch's own generation it installs the batch's keys (a key is
-  a pure function of the batch's bytes, so they are the recorded keys) and appends nothing;
+  lookup, and when the answer is the batch's own generation the batch is its identity's latest
+  recorded generation - recorded by its own keyed rows or by the `GenerationIngested` ledger entry
+  that stands for it - so the sink installs the batch's keys either way and appends nothing;
   otherwise it appends the batch. From then on the process's own record of each identity's
   generation governs. The decision applies three rules in order:
-  - **Type first.** Only the four derived index types (`CodeEntityExtracted`, `EdgeInferred`,
-    `DocConceptExtracted`, `DocLinkExtracted`) answer a generation. A newest group member of any
-    other type, or one whose key does not parse, answers none, so the batch re-emits - the
+  - **Type first.** Only the perception types - the four derived index types
+    (`CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`) and the
+    `GenerationIngested` ledger entry - answer a generation. A newest group member of any other
+    type, or one whose key does not parse, answers none, so the batch re-emits - the
     fail-safe direction - and no domain event can be dropped by this path; the partition is a
     property of the code, not of a naming convention.
   - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
