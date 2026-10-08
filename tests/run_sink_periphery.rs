@@ -130,6 +130,12 @@ impl Files {
     /// One whole run over the tree at `root`, a fresh campaign named by `criterion`, each port a
     /// fresh open of the files and the hash function the one the binary binds. It must succeed.
     fn run_over(&self, root: &Path, criterion: &str) {
+        self.run_campaign(root, criterion, &self.store());
+    }
+
+    /// [`run_over`](Files::run_over) with the run's log read and written through `store`, a
+    /// view of this project's `events.db`.
+    fn run_campaign(&self, root: &Path, criterion: &str, store: &dyn EventStore) {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.stages.insert(
@@ -141,7 +147,7 @@ impl Files {
                 ..Default::default()
             },
         );
-        self.run_through(root, &cfg, &[criterion], &NoopDriver, &self.store());
+        self.run_through(root, &cfg, &[criterion], &NoopDriver, store);
     }
 
     /// One whole run of `cfg` over the tree at `root`, its agents spawned through `driver` and
@@ -897,19 +903,8 @@ fn one_run_walks_then_lands_the_moved_body_and_its_revert(
 
     let store = files.store();
     let counted = ReadCountingStore::new(&store);
-    let mut later = Config::default();
-    later.agents.insert("a".into(), agent("a"));
-    later.workflow.stages.insert(
-        "later".into(),
-        Stage {
-            name: "later".into(),
-            agent: "a".into(),
-            coverage: "later criterion".into(),
-            ..Default::default()
-        },
-    );
 
-    files.run_through(root, &later, &["later criterion"], &NoopDriver, &counted);
+    files.run_campaign(root, "later criterion", &counted);
 
     assert_eq!(group_lookups(&counted.reads()), asked);
     assert_eq!(entry_records(&files.log()), recorded);
