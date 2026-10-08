@@ -210,8 +210,16 @@ pub struct Grep {
     pub root: String,
 }
 
-impl Grounder for Grep {
-    fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+impl Grep {
+    /// The lines holding `term` as a WHOLE identifier - no `[A-Za-z0-9_]` character directly
+    /// before or after it - case-insensitively, up to `k` hits: `gc` matches `run gc now`, never
+    /// `logcat`. The blast radius text-searches a criterion's spans this way, so a short span
+    /// never reaches every file that merely contains its letters.
+    pub fn ground_identifier(&self, term: &str, k: usize) -> Vec<Ref> {
+        self.search(term, k, true)
+    }
+
+    fn search(&self, query: &str, k: usize, bounded: bool) -> Vec<Ref> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
@@ -222,7 +230,7 @@ impl Grounder for Grep {
         // use - so no walk can drift from another; this walk's ONLY leaf action is to search
         // each file's lines, stopping once it has `k` hits.
         let _ = walk_guarded(Path::new(&self.root), &mut |path| {
-            search_file(path, &self.root, &needle, k, &mut refs);
+            search_file(path, &self.root, &needle, bounded, k, &mut refs);
             // Stop the whole walk once we have collected the requested k hits - the
             // early-out that keeps grep from scanning the rest of the tree once full.
             if refs.len() >= k {
@@ -235,7 +243,33 @@ impl Grounder for Grep {
     }
 }
 
-fn search_file(path: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<Ref>) {
+impl Grounder for Grep {
+    fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+        self.search(query, k, false)
+    }
+}
+
+/// Whether `line` (lowercased) holds `needle` (lowercased) - anywhere, or when `bounded` only
+/// where no `[A-Za-z0-9_]` character stands directly before or after it.
+fn line_matches(line: &str, needle: &str, bounded: bool) -> bool {
+    if !bounded {
+        return line.contains(needle);
+    }
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices(needle).any(|(i, _)| {
+        !line[..i].chars().next_back().is_some_and(word)
+            && !line[i + needle.len()..].chars().next().is_some_and(word)
+    })
+}
+
+fn search_file(
+    path: &Path,
+    root: &str,
+    needle: &str,
+    bounded: bool,
+    k: usize,
+    refs: &mut Vec<Ref>,
+) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return, // binary or unreadable
@@ -249,7 +283,7 @@ fn search_file(path: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<R
         if refs.len() >= k {
             return;
         }
-        if line.to_lowercase().contains(needle) {
+        if line_matches(&line.to_lowercase(), needle, bounded) {
             refs.push(Ref {
                 file: rel.clone(),
                 line: (i + 1) as u32,

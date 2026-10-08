@@ -10,12 +10,13 @@
 //! Two arms with different jobs (5.5.8):
 //!
 //! - Arm (a), the IMPLEMENTATION-INVARIANT guard: on an adversarial corpus (macro, trait
-//!   object, re-export, reflection, common-name) the safe view MUST be a superset of grep. It
-//!   is a REGRESSION guard, not a discovery mechanism: because `safe = structural ∪ grep`
-//!   (5.5.1) it can only go RED if the union is built WRONG (it intersects, or drops the grep
-//!   side). The corpus deliberately carries grep-only mentions (a reflection string a symbol
-//!   index never indexes, a macro body) so a `safe = structural` or `safe = structural ∩ grep`
-//!   mutation actually drops a file and trips the superset check.
+//!   object, re-export, reflection, common-name) the safe view of a span the index cannot
+//!   resolve MUST carry every whole-identifier text hit of it, and the safe view of a name the
+//!   index resolves is its structural set alone. It is a REGRESSION guard: it goes RED if the
+//!   text-search fallback is dropped or intersected, or if a resolved name is text-searched
+//!   again. The corpus carries a reflection string naming an undefined handler (text-only, so
+//!   dropping the fallback drops a file) and a macro-body call of a defined name (text-only,
+//!   so text-searching a resolved name adds a file).
 //!
 //! - Arm (b), the real QUANTIFIED go/no-go on a PINNED polyglot repo: a parallelism-retention
 //!   gate (units stay co-schedulable versus the grep baseline; median safe-radius bounded) and
@@ -262,10 +263,10 @@ mod corpus_gates {
         format!("`{name}`")
     }
 
-    /// The queries whose `subject` safe view is NOT a superset of grep's UNCAPPED radius - the
-    /// arm-(a) invariant violations (empty = pass). Grep runs uncapped (`usize::MAX`) so the
-    /// check is against the FULL grep radius, not a top-k slice; the safe view is
-    /// `blast_radius(q).safe`.
+    /// The queries whose `subject` safe view misses a whole-identifier text hit of the query - the
+    /// arm-(a) invariant violations for spans the index cannot resolve (empty = pass). The search
+    /// runs uncapped (`usize::MAX`) so the check is against every hit, not a top-k slice; the safe
+    /// view is `blast_radius(q).safe`.
     fn safe_superset_violations(
         subject: &dyn Grounder,
         grep: &Grep,
@@ -279,7 +280,7 @@ mod corpus_gates {
                 .into_iter()
                 .collect();
             let grep_files: HashSet<String> = grep
-                .ground(q, usize::MAX)
+                .ground_identifier(q, usize::MAX)
                 .into_iter()
                 .map(|r| r.file)
                 .collect();
@@ -328,24 +329,25 @@ mod corpus_gates {
             "mod inner { pub fn helper() {} }\npub use inner::helper;\n",
         );
 
-        // reflection: `compute` is invoked ONLY by a string literal - never a symbol reference,
-        // so the structural graph cannot see reflect.rs; grep matches the string. This is the
-        // load-bearing grep-only mention that gives the whole arm its teeth.
+        // reflection: `compute` is defined and also invoked by a string literal; `on_reload` is a
+        // handler registered ONLY by name - no definition anywhere, so the index cannot resolve
+        // it and only the text search finds reflect.rs. That undefined handler is the
+        // load-bearing text-only mention that gives the fallback its teeth.
         write("compute_impl.rs", "fn compute() {}\n");
         write(
             "reflect.rs",
-            "fn invoke(_name: &str) {}\nfn boot() { invoke(\"compute\"); }\n",
+            "fn invoke(_name: &str) {}\nfn boot() { invoke(\"compute\"); invoke(\"on_reload\"); }\n",
         );
 
-        vec!["new", "render", "draw", "helper", "compute"]
+        vec!["new", "render", "draw", "helper", "compute", "on_reload"]
     }
 
-    /// Arm (a) - the implementation-invariant guard. On the adversarial corpus the safe view is
-    /// a superset of grep for EVERY query, and the grep-only reflection mention is recovered by
-    /// the union (present in `safe`, absent from the precise structural view). RED only if the
-    /// `structural ∪ grep` union is built wrong.
+    /// Arm (a) - the implementation-invariant guard. On the adversarial corpus the safe view of a
+    /// span the index cannot resolve carries every whole-identifier text hit of it (the fallback),
+    /// and the safe view of a name the index resolves is its structural set, never a text-only
+    /// mention. RED if the fallback is dropped or intersected, or a resolved name is text-searched.
     #[test]
-    fn arm_a_safe_view_is_a_grep_superset_on_the_adversarial_corpus() {
+    fn arm_a_safe_view_text_searches_exactly_the_spans_the_index_cannot_resolve() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let queries = build_adversarial_corpus(root);
@@ -354,63 +356,49 @@ mod corpus_gates {
             root: root.to_str().unwrap().to_string(),
         };
 
-        // The corpus must be non-vacuous: grep matches at least one file for every query, so an
-        // empty safe view could never pass the superset check by default.
+        // The corpus must be non-vacuous: the text search matches at least one file for every
+        // query, so an empty safe view could never pass the checks by default.
         for &q in &queries {
             assert!(
-                !grep.ground(q, usize::MAX).is_empty(),
-                "adversarial query {q:?} must match at least one file under grep"
+                !grep.ground_identifier(q, usize::MAX).is_empty(),
+                "adversarial query {q:?} must match at least one file as text"
             );
         }
 
-        // The invariant: safe ⊇ grep for every query. This is the regression guard - it can
-        // only fail if the union drops or intersects the grep side.
-        let violations = safe_superset_violations(&symbols, &grep, &queries);
+        // The fallback: the unresolved handler's safe view carries every text hit, and its
+        // reflect.rs is text-only - absent from the precise structural view - so dropping or
+        // intersecting the fallback drops it.
+        let violations = safe_superset_violations(&symbols, &grep, &["on_reload"]);
         assert!(
             violations.is_empty(),
-            "the safe view must be a superset of grep on every adversarial query; \
-             the union under-includes for: {violations:?}"
+            "an unresolved span's safe view must carry every text hit; misses for: {violations:?}"
+        );
+        let reload = symbols.blast_radius("`on_reload`", GROUND_K);
+        assert!(
+            reload.safe.contains(&"reflect.rs".to_string())
+                && !reload.precise.contains(&"reflect.rs".to_string()),
+            "the reflection string is found by the text search alone; got {reload:?}"
         );
 
-        // Teeth: the reflection string is a grep-only file the structural graph cannot index.
-        // It MUST be recovered into `safe` yet be ABSENT from the precise structural view - so a
-        // `safe = structural` (drop grep) or `safe = structural ∩ grep` (intersect) mutation
-        // drops reflect.rs and trips the superset check above.
-        let compute = symbols.blast_radius("`compute`", GROUND_K);
-        assert!(
-            compute.safe.contains(&"reflect.rs".to_string()),
-            "the safe union must recover the reflection string mention grep matches; got {compute:?}"
-        );
-        assert!(
-            !compute.precise.contains(&"reflect.rs".to_string()),
-            "a reflection string is no symbol reference; the precise structural view must miss \
-             reflect.rs (which is exactly why the grep union is load-bearing); got {compute:?}"
-        );
-        // And the real definition IS in both views (the structural graph does see the def).
-        assert!(compute.precise.contains(&"compute_impl.rs".to_string()));
-
-        // Second cross-file teeth class: `render` is CALLED only inside a macro body. The
-        // name-level tags query parses the macro_rules transcriber as an unresolved token tree,
-        // so the precise structural view does NOT link macros.rs; grep matches the `render`
-        // substring there, so the union MUST recover it into safe. A `safe = structural`
-        // (drop-grep) or `safe = structural ∩ grep` (intersect) mutation drops macros.rs and
-        // trips the superset guard for this class too. (The remaining three classes -
-        // new/common-name, draw/trait-object, helper/re-export - keep the definition and the
-        // hard-to-resolve reference in the SAME file, so precise == safe and they carry no
-        // drop-grep teeth; only the reflection and macro classes are load-bearing here.)
+        // A resolved name is its structural set: `render` is defined in widget.rs and called only
+        // inside a macro body in macros.rs, which the name-level index does not link, so
+        // macros.rs is a text-only mention and stays out of the safe view. Text-searching a
+        // resolved name again would add it.
         let render = symbols.blast_radius("`render`", GROUND_K);
         assert!(
-            render.safe.contains(&"macros.rs".to_string()),
-            "the safe union must recover the macro-body call grep matches in macros.rs; got {render:?}"
+            render.precise.contains(&"widget.rs".to_string())
+                && !render.safe.contains(&"macros.rs".to_string()),
+            "a resolved name grounds on its structural set alone; got {render:?}"
         );
-        assert!(
-            !render.precise.contains(&"macros.rs".to_string()),
-            "a macro-body call is not a resolved reference; the precise structural view must miss \
-             macros.rs (which is exactly why the grep union is load-bearing for the macro class); \
-             got {render:?}"
-        );
-        // And the real definition IS in both views (the structural graph does see the def).
-        assert!(render.precise.contains(&"widget.rs".to_string()));
+        for &q in &queries {
+            let br = symbols.blast_radius(&span(q), GROUND_K);
+            for f in &br.precise {
+                assert!(
+                    br.safe.contains(f),
+                    "{q}: safe must hold precise; got {br:?}"
+                );
+            }
+        }
     }
 
     /// The unit ids and queries of the PINNED polyglot repo (arm b). Each entry is
@@ -520,8 +508,8 @@ mod corpus_gates {
     ///
     /// The bounds below are MEASURED on this fixture and FROZEN as red-on-regression assertions
     /// (adv-quant-bound-unpinned), not hand-chosen. The reasoning for each frozen bound is in
-    /// its assertion. Because the safe view is a superset of grep by construction, this arm
-    /// proves VALUE (retained parallelism, a non-collapsed tier split), never safety.
+    /// its assertion. Arm (a) pins what the safe view carries; this arm proves VALUE (retained
+    /// parallelism, a non-collapsed tier split), never safety.
     #[test]
     fn arm_b_partitioning_and_routing_retention_gate_on_the_pinned_polyglot_repo() {
         let dir = tempfile::tempdir().unwrap();
@@ -529,9 +517,10 @@ mod corpus_gates {
         build_pinned_polyglot_repo(root);
         let (baseline, subject) = measure(root);
 
-        // The safe view is a file-set superset of the grep baseline for every unit, and because
-        // the baseline runs UNCAPPED (measure passes usize::MAX) it IS the full grep radius; with
-        // structural ⊆ grep on this corpus that makes safe == the baseline grep radius EXACTLY
+        // On this corpus every grep hit is a structural reference, so the safe view holds the
+        // grep baseline for every unit, and because the baseline runs UNCAPPED (measure passes
+        // usize::MAX) it IS the full grep radius; with structural ⊆ grep that makes safe == the
+        // baseline grep radius EXACTLY
         // (both are widths 9..=15). The hub `audit` costs no parallelism of its own: its whole
         // neighborhood is in its radius, and that neighborhood shares no file with another unit.
         for (b, s) in baseline.iter().zip(subject.iter()) {

@@ -10867,15 +10867,15 @@ impl RunCtx<'_> {
     /// `.precise` here has no production reader. `grounded_seed` stays the cheap `ground` path so the
     /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
     /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
-    /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views and
-    /// never serializes, so `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
+    /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views, so
+    /// `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
     /// on `.safe` behaves exactly as it did before, and the shipped default is unaffected.
     ///
     /// Spec 29c criterion 2: when a unified graph is injected, the two views are re-derived as TWO
     /// confidence-tier filters over the ONE seeded subgraph ([`confidence_tier_radius`]) instead of
     /// the grounder's structural/grep split - `.precise` becomes the EXTRACTED sub-graph and `.safe`
-    /// is UNIONED with the grounder's grep superset so it only ever WIDENS (the addendum 2.4
-    /// grep-superset invariant is preserved unconditionally). With no graph the grounder radius is
+    /// is UNIONED with the grounder's own safe view so it only ever WIDENS (the addendum 2.4
+    /// safe-view invariant is preserved unconditionally). With no graph the grounder radius is
     /// returned verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
         let base = match self.deps.grounder {

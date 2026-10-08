@@ -120,14 +120,29 @@ fn query_terms(query: &str) -> Vec<&str> {
 }
 
 /// What a criterion NAMES AS CODE, which is all its blast radius grounds on (never its prose):
-/// the symbol `names` matched structurally, the file `paths` it names, and the literal `phrases`
-/// searched for in the text. A criterion that names no code has none of the three.
+/// the symbol `names` matched structurally, the file `paths` it names, and the `phrases` its
+/// spans read as. A criterion that names no code has none of the three.
 #[derive(Debug, Default, PartialEq)]
 struct CodeTerms {
     names: Vec<String>,
     paths: Vec<String>,
-    phrases: Vec<String>,
+    phrases: Vec<Phrase>,
 }
+
+/// One span as text, and what the index can resolve it to: the symbol it names, or the file it
+/// names (`path`). A phrase the index resolves is grounded structurally and never text-searched;
+/// any other phrase (a multi-word span, a string-literal event name, an unindexed name) is the
+/// text search's to find.
+#[derive(Debug, PartialEq)]
+struct Phrase {
+    text: String,
+    name: Option<String>,
+    path: bool,
+}
+
+/// Files the text search never matches: spec files no unit edits, and the simplification audit
+/// every unit regenerates, so a mention there is never a conflict between two units.
+const TEXT_SEARCH_SKIPS: &[&str] = &["specs/", "docs/audit/"];
 
 /// Language keywords a code span may carry (`pub fn`, `&mut self`) that name no code of the
 /// project, so they are never terms.
@@ -186,7 +201,7 @@ impl CodeTerms {
                     push_new(&mut self.names, last_segment(piece));
                 }
                 let phrase = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
-                push_new(&mut self.phrases, clean_piece(&phrase));
+                self.push_phrase(clean_piece(&phrase), None, false);
             }
         }
     }
@@ -197,14 +212,27 @@ impl CodeTerms {
         }
         if is_path(piece) {
             push_new(&mut self.paths, piece);
+            self.push_phrase(piece, None, true);
         } else if piece
             .split("::")
             .flat_map(|s| s.split('.'))
             .all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_'))
         {
             push_new(&mut self.names, last_segment(piece));
+            self.push_phrase(piece, Some(last_segment(piece)), false);
+        } else {
+            self.push_phrase(piece, None, false);
         }
-        push_new(&mut self.phrases, piece);
+    }
+
+    fn push_phrase(&mut self, text: &str, name: Option<&str>, path: bool) {
+        if !self.phrases.iter().any(|p| p.text == text) {
+            self.phrases.push(Phrase {
+                text: text.to_string(),
+                name: name.map(str::to_string),
+                path,
+            });
+        }
     }
 }
 
@@ -597,6 +625,10 @@ impl Grounder for Symbols {
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
         // computed under ONE read lock over the index.
+        // The names the index DEFINES and the path terms naming an indexed file: a phrase that
+        // resolves to either is grounded by the structural view alone.
+        let mut defined: HashSet<&str> = HashSet::new();
+        let mut found_paths: HashSet<&str> = HashSet::new();
         let structural: Vec<String> = {
             let idx = self.idx.lock().unwrap();
             // Iterate `files()` directly to KEEP each hit's owning file.
@@ -605,11 +637,20 @@ impl Grounder for Symbols {
             let mut definers: Vec<&str> = Vec::new();
             let mut referencers: Vec<&str> = Vec::new();
             for (path, fs) in idx.files() {
-                let named = terms
+                let named: Vec<&str> = terms
                     .paths
                     .iter()
-                    .any(|t| path == t || path.ends_with(&format!("/{t}")));
-                if named || fs.defs.iter().any(|d| names.contains(&d.name.as_str())) {
+                    .map(String::as_str)
+                    .filter(|t| path == t || path.ends_with(&format!("/{t}")))
+                    .collect();
+                found_paths.extend(&named);
+                let defines: Vec<&str> = names
+                    .iter()
+                    .copied()
+                    .filter(|n| fs.defs.iter().any(|d| d.name == *n))
+                    .collect();
+                defined.extend(&defines);
+                if !named.is_empty() || !defines.is_empty() {
                     definers.push(path.as_str());
                 }
                 if fs.refs.iter().any(|r| names.contains(&r.name.as_str())) {
@@ -629,13 +670,15 @@ impl Grounder for Symbols {
             ranked
         };
 
-        // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
-        // grep for each phrase over the same root - the honest "both engines" cost (5.5.9). This clone happens
-        // BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not reorder the
-        // truncation above it or the uncapped-superset contract breaks. `usize::MAX` makes grep
-        // collect every matching file, not a top-`k` slice. A `seen` set keeps the dedup O(lines)
-        // rather than O(lines * files): grep yields one hit per matching LINE and the safe view is
-        // uncapped, so a per-file linear scan would be quadratic on a wide radius.
+        // The SAFE view: the FULL (untruncated) structural set UNIONed with an UNCAPPED text search
+        // for each phrase the index does NOT resolve - the fallback for the references a name
+        // index misses (a string-literal event name, a constant prefix, an unindexed name). A
+        // phrase the index resolves is grounded structurally alone: text-searching it would put
+        // every file mentioning a common type name in the radius. The search matches whole
+        // identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone happens BEFORE `precise`
+        // is capped, so the safe view is never bounded by `k`; do not reorder the truncation
+        // above it. A `seen` set keeps the dedup O(lines) rather than O(lines * files): the search
+        // yields one hit per matching LINE and the safe view is uncapped.
         let mut safe = structural.clone();
         let mut seen: HashSet<String> = safe.iter().cloned().collect();
         let grep = Grep {
@@ -648,11 +691,17 @@ impl Grounder for Symbols {
         // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
         // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
         let mut grep_tail: Vec<String> = Vec::new();
-        for r in terms
-            .phrases
-            .iter()
-            .flat_map(|t| grep.ground(t, usize::MAX))
-        {
+        let unresolved = terms.phrases.iter().filter(|p| {
+            !(p.name.as_deref().is_some_and(|n| defined.contains(n))
+                || (p.path && found_paths.contains(p.text.as_str())))
+        });
+        for r in unresolved.flat_map(|p| grep.ground_identifier(&p.text, usize::MAX)) {
+            if TEXT_SEARCH_SKIPS
+                .iter()
+                .any(|skip| r.file.starts_with(skip))
+            {
+                continue;
+            }
             if seen.insert(r.file.clone()) {
                 grep_tail.push(r.file);
             }
@@ -943,15 +992,14 @@ mod tests {
         );
     }
 
-    /// Spec 16 unit 1, the criterion-1 recall fixture: the SAFE-SUPERSET view recovers a reference
-    /// the name-level structural graph alone MISSES. `apply_damage` is defined in one file, called
-    /// (a real symbol reference the graph links) in another, and mentioned ONLY in a COMMENT in a
-    /// third - a comment is not a symbol, so the tags query never indexes it and the structural
-    /// graph misses that file, but a literal grep matches the substring. `structural ∪ grep`
-    /// recovers it, so the safe view is strictly a superset of the structural (precise) view - the
-    /// recall the partitioning consumer needs, safe by construction.
+    /// Spec 16 unit 1, the criterion-1 fixture: `apply_damage` is defined in one file, called (a
+    /// real symbol reference the graph links) in another, and mentioned ONLY in a COMMENT in a
+    /// third. The index resolves the name, so its radius is the structural set - the definer
+    /// ranked above the call site - and the comment mention, which no unit edits through the
+    /// name, stays out of both views (the text search is the fallback for spans the index cannot
+    /// resolve, `blast_radius_text_searches_only_the_spans_the_index_does_not_resolve`).
     #[test]
-    fn safe_superset_recovers_a_grep_only_reference_the_structural_graph_misses() {
+    fn a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("combat.rs"),
@@ -992,11 +1040,10 @@ mod tests {
             combat_at < caller_at,
             "the definer must rank above the referencer; got {br:?}"
         );
-        // The safe-superset view UNIONs an uncapped grep, so it RECOVERS the comment mention the
-        // structural graph missed - the miss the safety contract exists to backstop.
+        // The name resolves, so the comment mention is never text-searched into the safe view.
         assert!(
-            br.safe.contains(&"notes.rs".to_string()),
-            "the safe view must recover the grep-only reference the structural graph misses; got {br:?}"
+            !br.safe.contains(&"notes.rs".to_string()),
+            "a resolved name's safe view carries no comment-only mention; got {br:?}"
         );
         // And it is a strict superset of the precise (structural) view.
         for f in &br.precise {
@@ -1370,7 +1417,7 @@ mod tests {
     fn structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included() {
         let dir = tempfile::tempdir().unwrap();
         // Rust DEFINES `render`; Python CALLS `render` (a real symbol reference, in another
-        // language) and a comment-only mention grep alone recovers.
+        // language) and mentions it in a comment only.
         std::fs::write(dir.path().join("view.rs"), "fn render() {}\n").unwrap();
         std::fs::write(dir.path().join("client.py"), "def draw():\n    render()\n").unwrap();
         std::fs::write(
@@ -1391,10 +1438,11 @@ mod tests {
             br.precise.contains(&"client.py".to_string()),
             "the cross-language Python referencer must be in the precise structural view (over-inclusion); got {br:?}"
         );
-        // The comment-only Python mention is no symbol; grep recovers it into the safe superset.
+        // The comment-only Python mention is no symbol, and the resolved name is never
+        // text-searched, so it stays out of the safe view.
         assert!(
-            br.safe.contains(&"notes.py".to_string()),
-            "the safe view must recover the comment-only cross-language grep reference; got {br:?}"
+            !br.safe.contains(&"notes.py".to_string()),
+            "a resolved name's safe view carries no comment-only mention; got {br:?}"
         );
         // Safe is a superset of precise.
         for f in &br.precise {
