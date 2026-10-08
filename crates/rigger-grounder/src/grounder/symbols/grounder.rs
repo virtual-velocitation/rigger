@@ -119,6 +119,42 @@ fn query_terms(query: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The query terms a criterion's BLAST RADIUS grounds on: the code it names, never its prose.
+/// Each whitespace-separated piece of a code span (backticked text) is a term, and so is every
+/// bare token that is identifier-shaped - it contains `_` or `::`, or is camelCase / CamelCase.
+/// A span like `a::b` or `path/file.rs` stays ONE term. A plain prose word is never a term, so a
+/// criterion that names no code has none. A term needs two characters, one alphanumeric.
+fn code_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for (i, part) in query.split('`').enumerate() {
+        let in_span = i % 2 == 1;
+        for word in part.split_whitespace() {
+            let term = if in_span {
+                word.trim_end_matches("()")
+                    .trim_matches(|c: char| matches!(c, ',' | ';' | '.' | '(' | ')' | '&' | '*'))
+            } else {
+                word.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'))
+            };
+            let keep = term.chars().count() >= 2
+                && term.chars().any(char::is_alphanumeric)
+                && (in_span || identifier_shaped(term));
+            if keep && !terms.iter().any(|t| t == term) {
+                terms.push(term.to_string());
+            }
+        }
+    }
+    terms
+}
+
+/// Whether a bare prose token reads as code: it contains `_` or `::`, or mixes case with an
+/// uppercase letter past its first character (`camelCase`, `CamelCase`) - never an ALL-CAPS or
+/// Capitalized prose word.
+fn identifier_shaped(token: &str) -> bool {
+    token.contains('_')
+        || token.contains("::")
+        || (token.chars().any(char::is_lowercase) && token.chars().skip(1).any(char::is_uppercase))
+}
+
 /// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
 /// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
 /// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
@@ -394,14 +430,20 @@ impl Grounder for Symbols {
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
-    /// 1) - the `symbols` override of the grep-only trait default:
+    /// 1) - the `symbols` override of the grep-only trait default.
+    ///
+    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: its code
+    /// spans and identifier-shaped tokens), never its prose words - a prose word that happens to
+    /// be a symbol name would pull that symbol's whole neighborhood in:
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
-    ///   queried symbol ranked ABOVE the files that REFERENCE it - capped at `k`. It is what seeds
+    ///   queried symbols (and any file a path-like term names) ranked ABOVE the files that
+    ///   REFERENCE them - capped at `k`. It is what seeds
     ///   an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the UNION of the structural view and grep, UNCAPPED. It
     ///   runs BOTH engines - the structural graph AND the EXISTING [`Grep`] grounder over the same
-    ///   root - so it is never narrower than today's grep radius (5.5.9). Name-level linking MISSES
+    ///   root, once per term - so it is never narrower than the grep radius of what the criterion
+    ///   names (5.5.9). Name-level linking MISSES
     ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
     ///   a symbol); the grep union recovers them, so the partitioning consumer can never
     ///   under-partition.
@@ -416,27 +458,21 @@ impl Grounder for Symbols {
     /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
     /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
     /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
-    /// `BlastRadiusComputed` audit event. An empty query, or a degenerate query whose every term is
-    /// dropped by the character-count filter (a single character - ASCII or multibyte - or all
-    /// punctuation, the same guard `ground` applies), returns empty views (the empty-radius
-    /// fail-safe unit 3 routes to the full panel) WITHOUT running a whole-repo grep, never a partial
-    /// or a panic. A query WITH real terms that simply matches nothing is ALSO empty, but that case
-    /// does run the uncapped grep - it just comes back empty; only the empty/degenerate-terms cases
-    /// short-circuit before grep.
+    /// `BlastRadiusComputed` audit event. A query naming no code - empty, prose only, a single
+    /// character (ASCII or multibyte) or all punctuation - returns empty views (the empty-radius
+    /// fail-safe the scheduler runs alone and unit 3 routes to the full panel) WITHOUT running a
+    /// whole-repo grep, never a partial or a panic. A query WITH code terms that simply matches
+    /// nothing is ALSO empty, but that case does run the uncapped grep per term - it just comes
+    /// back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
-        // through the shared `query_terms` authority (so `apply_damage` stays one term and
-        // single-char noise is dropped).
-        let terms = query_terms(query);
-        // The empty-terms fail-safe, applied BEFORE any index read or grep: a degenerate query (an
-        // empty query, a single character, or all punctuation) that drops EVERY term grounds to
-        // nothing, so its blast radius is the empty radius too - matching `ground`, which
-        // early-returns on the same condition. Without this short-circuit `blast_radius` would fall
-        // through to the UNCAPPED `grep.ground(query, usize::MAX)` below, and a one-char query would
-        // match nearly every line in the tree - an unbounded whole-repo grep that leaves `precise`
-        // empty but `safe` covering almost the entire repo, forcing the full panel and corrupting
-        // the retention metric. `BlastRadius::default()` is empty precise and empty safe - the same
-        // empty fail-safe unit 3 routes to the full, unpartitioned panel.
+        // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
+        // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
+        // every file defining or referencing them into the radius.
+        let terms = code_terms(query);
+        // The empty-terms fail-safe, applied BEFORE any index read or text search: a query naming
+        // no code (an empty query, prose only, a single character, all punctuation) grounds to the
+        // empty radius - empty precise and empty safe - which the scheduler runs alone and unit 3
+        // routes to the full, unpartitioned panel.
         if terms.is_empty() {
             return BlastRadius::default();
         }
@@ -447,13 +483,26 @@ impl Grounder for Symbols {
             let idx = self.idx.lock().unwrap();
             // Iterate `files()` directly to KEEP each hit's owning file.
             // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
+            // A path-like term (`dir/file.rs`) names a FILE, which counts as a definer; any other
+            // term names a symbol by its last `::` segment (`grounder::tree_bytes` -> `tree_bytes`).
+            let (paths, names): (Vec<&str>, Vec<&str>) = terms
+                .iter()
+                .map(String::as_str)
+                .partition(|t| t.contains('/') || t.contains('.'));
+            let names: Vec<&str> = names
+                .iter()
+                .map(|t| t.rsplit("::").next().unwrap_or(t))
+                .collect();
             let mut definers: Vec<&str> = Vec::new();
             let mut referencers: Vec<&str> = Vec::new();
             for (path, fs) in idx.files() {
-                if fs.defs.iter().any(|d| terms.contains(&d.name.as_str())) {
+                let named = paths
+                    .iter()
+                    .any(|t| path == t || path.ends_with(&format!("/{t}")));
+                if named || fs.defs.iter().any(|d| names.contains(&d.name.as_str())) {
                     definers.push(path.as_str());
                 }
-                if fs.refs.iter().any(|r| terms.contains(&r.name.as_str())) {
+                if fs.refs.iter().any(|r| names.contains(&r.name.as_str())) {
                     referencers.push(path.as_str());
                 }
             }
@@ -471,7 +520,7 @@ impl Grounder for Symbols {
         };
 
         // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
-        // grep over the same root - the honest "both engines" cost (5.5.9). This clone happens
+        // grep for each term over the same root - the honest "both engines" cost (5.5.9). This clone happens
         // BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not reorder the
         // truncation above it or the uncapped-superset contract breaks. `usize::MAX` makes grep
         // collect every matching file, not a top-`k` slice. A `seen` set keeps the dedup O(lines)
@@ -489,7 +538,7 @@ impl Grounder for Symbols {
         // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
         // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
         let mut grep_tail: Vec<String> = Vec::new();
-        for r in grep.ground(query, usize::MAX) {
+        for r in terms.iter().flat_map(|t| grep.ground(t, usize::MAX)) {
             if seen.insert(r.file.clone()) {
                 grep_tail.push(r.file);
             }
@@ -907,7 +956,7 @@ mod tests {
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
-        let br = g.blast_radius("spawn", 8);
+        let br = g.blast_radius("`spawn`", 8);
         for f in &expected {
             assert!(
                 br.safe.contains(f),
@@ -950,7 +999,7 @@ mod tests {
         );
 
         // k=0 caps the PRECISE view to empty; the SAFE view is uncapped and still carries the radius.
-        let k0 = g.blast_radius("parse", 0);
+        let k0 = g.blast_radius("`parse`", 0);
         assert!(
             k0.precise.is_empty(),
             "k=0 caps the precise view to empty; got {k0:?}"
@@ -1062,7 +1111,7 @@ mod tests {
         .unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
-        let br = g.blast_radius("render", 8);
+        let br = g.blast_radius("`render`", 8);
         // The Rust definer is present (the precise structural view).
         assert!(
             br.precise.contains(&"view.rs".to_string()),

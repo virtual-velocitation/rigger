@@ -38875,10 +38875,11 @@ mod tests {
         let root = dir.path().to_str().unwrap();
         let symbols = Symbols::open(root, None);
 
-        // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`.
+        // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`
+        // (named in a code span, as a criterion names code).
         let st = Stage {
             name: "u".into(),
-            coverage: "target".into(),
+            coverage: "`target`".into(),
             ..Default::default()
         };
         let cfg = Config::default();
@@ -39098,7 +39099,7 @@ mod tests {
     #[test]
     fn run_wave_co_schedules_units_naming_a_hub_when_their_radii_are_disjoint() {
         let dir = tempfile::tempdir().unwrap();
-        for (hub, side) in [("spawn", "a"), ("parse", "b")] {
+        for (hub, side) in [("spawn_unit", "a"), ("parse_spec", "b")] {
             std::fs::write(
                 dir.path().join(format!("{side}_def.rs")),
                 format!("fn {hub}() {{}}\n"),
@@ -39112,7 +39113,7 @@ mod tests {
                 .unwrap();
             }
         }
-        // A long tail of once-referenced names, so `spawn` and `parse` are the tree's
+        // A long tail of once-referenced names, so `spawn_unit` and `parse_spec` are the tree's
         // high-degree outliers.
         for i in 0..30 {
             std::fs::write(
@@ -39124,7 +39125,7 @@ mod tests {
         let grounder =
             crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
         let probe = OverlapProbe::new(&[]);
-        let integrated = probe_one_wave(2, &["spawn", "parse"], &grounder, &probe, &[]);
+        let integrated = probe_one_wave(2, &["spawn_unit", "parse_spec"], &grounder, &probe, &[]);
         assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
         assert_eq!(
             probe.peak(),

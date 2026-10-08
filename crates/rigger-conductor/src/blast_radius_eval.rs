@@ -256,6 +256,12 @@ mod corpus_gates {
     /// (d16-u2-retention-isolates-serialize-cost). Arm (a) likewise runs grep uncapped.
     const GROUND_K: usize = 8;
 
+    /// A symbol name as a criterion names it - in a code span - so the symbols radius grounds on
+    /// it (a bare prose word is never a blast-radius term).
+    fn span(name: &str) -> String {
+        format!("`{name}`")
+    }
+
     /// The queries whose `subject` safe view is NOT a superset of grep's UNCAPPED radius - the
     /// arm-(a) invariant violations (empty = pass). Grep runs uncapped (`usize::MAX`) so the
     /// check is against the FULL grep radius, not a top-k slice; the safe view is
@@ -267,8 +273,11 @@ mod corpus_gates {
     ) -> Vec<String> {
         let mut bad = Vec::new();
         for &q in queries {
-            let safe: HashSet<String> =
-                subject.blast_radius(q, GROUND_K).safe.into_iter().collect();
+            let safe: HashSet<String> = subject
+                .blast_radius(&span(q), GROUND_K)
+                .safe
+                .into_iter()
+                .collect();
             let grep_files: HashSet<String> = grep
                 .ground(q, usize::MAX)
                 .into_iter()
@@ -367,7 +376,7 @@ mod corpus_gates {
         // It MUST be recovered into `safe` yet be ABSENT from the precise structural view - so a
         // `safe = structural` (drop grep) or `safe = structural ∩ grep` (intersect) mutation
         // drops reflect.rs and trips the superset check above.
-        let compute = symbols.blast_radius("compute", GROUND_K);
+        let compute = symbols.blast_radius("`compute`", GROUND_K);
         assert!(
             compute.safe.contains(&"reflect.rs".to_string()),
             "the safe union must recover the reflection string mention grep matches; got {compute:?}"
@@ -389,7 +398,7 @@ mod corpus_gates {
         // new/common-name, draw/trait-object, helper/re-export - keep the definition and the
         // hard-to-resolve reference in the SAME file, so precise == safe and they carry no
         // drop-grep teeth; only the reflection and macro classes are load-bearing here.)
-        let render = symbols.blast_radius("render", GROUND_K);
+        let render = symbols.blast_radius("`render`", GROUND_K);
         assert!(
             render.safe.contains(&"macros.rs".to_string()),
             "the safe union must recover the macro-body call grep matches in macros.rs; got {render:?}"
@@ -498,7 +507,7 @@ mod corpus_gates {
                 unit: unit.to_string(),
                 files: g.safe,
             });
-            let s: BlastRadius = symbols.blast_radius(query, GROUND_K);
+            let s: BlastRadius = symbols.blast_radius(&span(query), GROUND_K);
             subject.push(UnitRadius {
                 unit: unit.to_string(),
                 files: s.safe,
