@@ -336,7 +336,7 @@ green TDD in a worktree) -> the unit's gates -> the three-tier review OF THIS UN
 into that same unit's remediation loop and escalates after the retry bound; it does NOT
 integrate. A re-attempt continues each persona's session rather than starting a cold one: every
 spawn's Claude Code session id is recorded in the run log on a `spawn-session` mark, and the
-next attempt's implementer, and after a review round sent the unit back its sdet-author,
+next attempt's implementer and sdet-author, and after a review round sent the unit back its
 lenses, adversary and adjudicator, resume the session their role last ran as on the unit in
 the same worktree (`claude -p --resume`),
 sent only what changed - the prior-failure block, or the round's delta and REQUIRED list. A
