@@ -96,8 +96,9 @@ uncapped and holds:
   resolved name is not a reference a unit edits through.
 
 When the knowledge graph is present the radius is widened over it: the traversal is seeded from
-the files the named code resolves to (never the prompt seed, which reads the whole criterion),
-and it crosses STRUCTURAL edges only - `EXTRACTED ∪ INFERRED`; an `AMBIGUOUS` edge is a text-only
+the first k files of the structural view - the files the named code resolves to, capped at
+`GROUNDED_SEED_K` (never the prompt seed, which reads the whole criterion) - it expands
+`BLAST_RADIUS_GRAPH_DEPTH` (2) hops, and it crosses STRUCTURAL edges only - `EXTRACTED ∪ INFERRED`; an `AMBIGUOUS` edge is a text-only
 mention and is never crossed, for the same reason. A criterion naming no code keeps the empty
 radius with or without the graph.
 
