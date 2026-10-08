@@ -23,9 +23,9 @@ use std::sync::Mutex;
 
 use common::cli::applied_positions;
 use common::fixtures::{
-    agent, entry_records, git_commit_all, live_edges, minted_events, temp_git_project_with_commit,
-    walked_entry_events, write_text, NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY,
-    SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+    agent, entry_records, git_commit_all, git_hash_object, live_edges, minted_events,
+    temp_git_project_with_commit, walked_entry_events, write_text, NoopDriver, DOCUMENT_BODY,
+    DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{Config, Stage};
@@ -56,6 +56,14 @@ fn committed_tree() -> tempfile::TempDir {
 
 /// One entry a run records, as [`entry_records`] answers it.
 type Recorded = (GenerationIngested, String, String);
+
+/// What a run records for the tree at `root` as it stands and nothing recorded, each entry's
+/// blob the id `git hash-object` gives the bytes the tree holds.
+fn walked(root: &Path) -> Vec<Recorded> {
+    entry_records(&walked_entry_events(root, |file| {
+        git_hash_object(root, file, false)
+    }))
+}
 
 /// The identity each of `recorded` is grouped under.
 fn identities(recorded: &[Recorded]) -> Vec<&str> {
@@ -194,7 +202,7 @@ fn derived_count(events: &[Event]) -> usize {
 fn a_run_records_one_ledger_entry_per_batch_and_one_applied_row_per_entry_in_the_files() {
     let tree = committed_tree();
     let root = tree.path();
-    let walked = entry_records(&walked_entry_events(root));
+    let walked = walked(root);
     assert_eq!(
         walked
             .iter()
@@ -253,7 +261,7 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
 {
     let tree = committed_tree();
     let root = tree.path();
-    let walked = entry_records(&walked_entry_events(root));
+    let walked = walked(root);
     let files = Files::new();
     {
         let (store, graph) = (files.store(), files.graph());
@@ -307,13 +315,11 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
         "sanity: every entry follows the pre-ledger rows"
     );
     assert_eq!(files.applied_among(&positions), positions);
-    let facts_of_the_rows: Vec<_> = live_edges(&files.graph())
-        .into_iter()
-        .filter(|(.., source)| *source <= last_pre_ledger)
-        .collect();
     assert_eq!(
-        facts_of_the_rows, facts,
-        "a re-recording writes no fact: each live edge still names the row that asserted it"
+        live_edges(&files.graph()),
+        facts,
+        "a re-recording writes no fact: the live edges are the ones the rows asserted, each \
+         still naming its row"
     );
     assert_eq!(files.held(&identities(&walked)), generations(&walked));
     assert_eq!(files.logged(&identities(&walked)), generations(&walked));

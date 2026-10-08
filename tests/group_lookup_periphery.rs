@@ -127,10 +127,12 @@ mod ingest_sinks {
         root: &Path,
         batches: &[Batch],
     ) -> Vec<(rigger::retention::GenerationIngested, String, String)> {
-        common::fixtures::entry_records(&common::fixtures::walked_entry_events(root))
-            .into_iter()
-            .filter(|(_, group, _)| batches.iter().any(|(identity, _, _)| identity == group))
-            .collect()
+        common::fixtures::entry_records(&common::fixtures::walked_entry_events(root, |file| {
+            common::fixtures::git_hash_object(root, file, false)
+        }))
+        .into_iter()
+        .filter(|(_, group, _)| batches.iter().any(|(identity, _, _)| identity == group))
+        .collect()
     }
 
     /// Each event's `name` metadata entry, in order (empty when it carries none): its replay key

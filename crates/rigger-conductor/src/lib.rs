@@ -115,6 +115,16 @@ mod fold_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
+/// The ledger fixtures the run sink's tests share with the root crate's tests, compiled here from
+/// the same file.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/ledger.rs"]
+mod ledger_fixtures;
 #[cfg(all(
     test,
     feature = "symbols",
@@ -163,6 +173,8 @@ mod test_support {
     #[cfg(feature = "symbols")]
     pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
     #[cfg(feature = "symbols")]
     pub use crate::read_fault_fixtures::*;

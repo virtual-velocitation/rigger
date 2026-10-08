@@ -106,28 +106,6 @@ pub fn minted_events(root: &std::path::Path) -> Vec<(String, Event)> {
     out
 }
 
-/// What the run's sink records for the tree at `root` as it stands and nothing recorded: one
-/// ledger entry per batch the SHIPPED walk extracts, in walk order, each the event the entry's
-/// own constructor builds - its generation the batch's, its blob the id `git hash-object` gives
-/// the bytes the tree holds at its file, its flag the walk's, its event count the batch's.
-#[cfg(feature = "symbols")]
-pub fn walked_entry_events(root: &std::path::Path) -> Vec<Event> {
-    let mut out: Vec<Event> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, excluded| {
-        let (identity, generation) = rigger::ingest::derived_key_parts(&batch[0].0)
-            .expect("the walk keys every batch under its identity and generation");
-        let (prefix, file) = identity
-            .split_once('/')
-            .expect("an identity is <prefix>/<file>");
-        let blob = super::git_hash_object(root, file, false);
-        out.push(
-            super::generation_ingested(prefix, file, generation, &blob, excluded)
-                .event(batch.len()),
-        );
-    });
-    out
-}
-
 /// The replay key an event log row's raw metadata JSON (`meta`) carries, if any - read exactly as
 /// the store reads it.
 pub fn meta_replay_key(meta: &str) -> Option<String> {

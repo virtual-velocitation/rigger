@@ -457,7 +457,9 @@ fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
     write_file(&root.join(TEST_MODULE_PATH), TEST_MODULE_BODY.as_bytes());
     let _ = common::git::run_git(root, &["add", "-A"]);
     let _ = common::git::run_git(root, &["commit", "-q", "-m", "tree"]);
-    let walked = entry_records(&walked_entry_events(root));
+    let walked = entry_records(&walked_entry_events(root, |file| {
+        git_hash_object(root, file, false)
+    }));
 
     step_line(root, "the step that ingests the tree");
 

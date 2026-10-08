@@ -13,23 +13,3 @@ pub fn reference_replay_keys(prior: &[Event]) -> BTreeSet<String> {
         .flat_map(|(_, keys)| keys)
         .collect()
 }
-
-/// Each ledger entry among `events`, in order, as a test compares it: its payload, its group and
-/// its replay key. An entry carrying no group or no key reads as the empty string there.
-pub fn entry_records(
-    events: &[Event],
-) -> Vec<(rigger::retention::GenerationIngested, String, String)> {
-    let meta = |event: &Event, name: &str| event.meta.get(name).cloned().unwrap_or_default();
-    events
-        .iter()
-        .filter(|event| event.type_ == rigger::retention::TYPE_GENERATION_INGESTED)
-        .map(|event| {
-            (
-                rigger::retention::GenerationIngested::parse(&event.data)
-                    .expect("a ledger entry's payload parses"),
-                meta(event, rigger::eventstore::META_GROUP),
-                meta(event, rigger::ingest::META_REPLAY_KEY),
-            )
-        })
-        .collect()
-}

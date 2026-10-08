@@ -20426,7 +20426,7 @@ mod tests {
         let walked = walk_entries(&root_str);
         let halves: BTreeSet<(&str, &str)> = walked
             .iter()
-            .map(|e| (e.prefix.as_str(), e.file.as_str()))
+            .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
             .collect();
         assert_eq!(
             halves,
@@ -20436,7 +20436,7 @@ mod tests {
             ]),
             "sanity: the tree extracts under both halves"
         );
-        assert_eq!(ledger_entries(&emitted), walked);
+        assert_eq!(crate::test_support::entry_records(&emitted), walked);
         assert_eq!(derived_count(&emitted), 0);
 
         // (2) A seeded traversal returns REAL code-entity nodes the run ingested: every reached
@@ -20518,13 +20518,13 @@ mod tests {
         assert_eq!(
             first
                 .iter()
-                .map(|e| (e.prefix.as_str(), e.file.as_str()))
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([("gc", "src/churn.rs"), ("gc", "src/stable.rs")]),
             "sanity: the tree extracts one code batch per file"
         );
         ctx.ingest_project_batches().unwrap();
-        assert_eq!(ledger_entries(&log()), first);
+        assert_eq!(crate::test_support::entry_records(&log()), first);
         assert_eq!(reached("src/stable.rs"), names(&["stable_symbol"]));
         assert_eq!(reached("src/churn.rs"), names(&["original_symbol"]));
 
@@ -20536,7 +20536,7 @@ mod tests {
         .unwrap();
         let churned: Vec<_> = walk_entries(&root_str)
             .into_iter()
-            .filter(|e| e.file == "src/churn.rs")
+            .filter(|(e, ..)| e.file == "src/churn.rs")
             .collect();
         assert_eq!(churned.len(), 1);
         assert!(
@@ -20547,7 +20547,10 @@ mod tests {
         // Re-ingest on the SAME ctx: the unchanged file records nothing, the changed file one
         // entry of its new generation, and no derived event is recorded by either pass.
         ctx.ingest_project_batches().unwrap();
-        assert_eq!(ledger_entries(&log()), [first, churned].concat());
+        assert_eq!(
+            crate::test_support::entry_records(&log()),
+            [first, churned].concat()
+        );
         assert_eq!(derived_count(&log()), 0);
 
         // The new generation superseded the old in the graph: the traversal reaches the new
@@ -22308,7 +22311,7 @@ mod tests {
         assert_eq!(
             first
                 .iter()
-                .map(|e| (e.prefix.as_str(), e.file.as_str()))
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 ("gc", "src/run.rs"),
@@ -22317,7 +22320,7 @@ mod tests {
             "sanity: the tree extracts under both halves"
         );
         assert_eq!(
-            ledger_entries(&after_one),
+            crate::test_support::entry_records(&after_one),
             first,
             "the first run records one entry per batch the walk extracts"
         );
@@ -22346,13 +22349,13 @@ mod tests {
             "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
         assert_eq!(
-            ledger_entries(crate::run::current_run(&after_two)),
+            crate::test_support::entry_records(crate::run::current_run(&after_two)),
             Vec::new(),
             "an unchanged tree records no entry on a second run"
         );
         // And the log did not grow by any perception: its entries are exactly run one's, and
         // neither run recorded a derived event.
-        assert_eq!(ledger_entries(&after_two), first);
+        assert_eq!(crate::test_support::entry_records(&after_two), first);
         assert_eq!(derived_count(&after_two), 0);
     }
 
@@ -22362,36 +22365,18 @@ mod tests {
     // real run. A revert the sink swallowed would strand the graph on a superseded generation of
     // that file.
 
-    /// The ledger entries `events` carry, in log order.
+    /// One ledger entry as a test compares it: its payload, its group and its replay key.
     #[cfg(feature = "symbols")]
-    fn ledger_entries(events: &[Event]) -> Vec<crate::retention::GenerationIngested> {
-        events
-            .iter()
-            .filter(|e| e.type_ == crate::retention::TYPE_GENERATION_INGESTED)
-            .map(|e| crate::retention::GenerationIngested::parse(&e.data).unwrap())
-            .collect()
-    }
+    type RecordedEntry = (crate::retention::GenerationIngested, String, String);
 
     /// The entry a run records for each batch a whole-tree walk of `root` extracts from the tree
     /// AS IT STANDS, in walk order, under the empty blob id the fixtures' hash function answers.
     #[cfg(feature = "symbols")]
-    fn walk_entries(root: &str) -> Vec<crate::retention::GenerationIngested> {
-        let mut entries = Vec::new();
-        crate::ingest::ingest_project_batched(
-            root,
-            |keyed: &[(String, &Event)], excluded: bool| {
-                let named = keyed
-                    .first()
-                    .and_then(|(key, _)| crate::ingest::derived_key_parts(key));
-                if let Some((identity, generation)) = named {
-                    let (prefix, file) = identity.split_once('/').unwrap();
-                    entries.push(crate::test_support::generation_ingested(
-                        prefix, file, generation, "", excluded,
-                    ));
-                }
-            },
-        );
-        entries
+    fn walk_entries(root: &str) -> Vec<RecordedEntry> {
+        crate::test_support::entry_records(&crate::test_support::walked_entry_events(
+            std::path::Path::new(root),
+            |_| String::new(),
+        ))
     }
 
     /// How many derived index events `events` carry.
@@ -22527,10 +22512,10 @@ mod tests {
         let driver = Stub::new();
 
         // The entries a slice of the log, or a walk, carries for one file, in order.
-        let of_file = |entries: Vec<crate::retention::GenerationIngested>, file: &str| {
+        let of_file = |entries: Vec<RecordedEntry>, file: &str| {
             entries
                 .into_iter()
-                .filter(|e| e.file == file)
+                .filter(|(e, ..)| e.file == file)
                 .collect::<Vec<_>>()
         };
         let campaign = |unit: &str, criterion: &str| -> Config {
@@ -22564,7 +22549,7 @@ mod tests {
         assert_eq!(
             walked_a
                 .iter()
-                .map(|e| (e.prefix.as_str(), e.file.as_str()))
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 ("gc", "src/churn.rs"),
@@ -22580,7 +22565,7 @@ mod tests {
         )
         .unwrap();
         let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert_eq!(ledger_entries(&after_one), walked_a);
+        assert_eq!(crate::test_support::entry_records(&after_one), walked_a);
         assert!(
             spec60_reached_entities(&graph, "src/churn.rs").contains("alpha_symbol"),
             "sanity: run one's graph must reach the churn file's generation-A definition"
@@ -22615,7 +22600,10 @@ mod tests {
 
         // The changed file records exactly its new generation, and the untouched files - in
         // either ingest half - record nothing; no run recorded a derived event.
-        assert_eq!(ledger_entries(crate::run::current_run(&after_two)), churn_b);
+        assert_eq!(
+            crate::test_support::entry_records(crate::run::current_run(&after_two)),
+            churn_b
+        );
         assert_eq!(derived_count(&after_two), 0);
         let (_cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
 
@@ -22676,10 +22664,10 @@ mod tests {
         let driver = Stub::new();
 
         // The entries a slice of the log carries for the reverted file, in log order.
-        let churn_entries = |events: &[Event]| -> Vec<crate::retention::GenerationIngested> {
-            ledger_entries(events)
+        let churn_entries = |events: &[Event]| -> Vec<RecordedEntry> {
+            crate::test_support::entry_records(events)
                 .into_iter()
-                .filter(|e| e.file == "src/churn.rs")
+                .filter(|(e, ..)| e.file == "src/churn.rs")
                 .collect()
         };
         let campaign = |unit: &str, criterion: &str| -> Config {
@@ -22718,7 +22706,7 @@ mod tests {
         // Generation A, recorded.
         let walked_a = walk_entries(&repo_path);
         let after_one = run_over_the_tree("first criterion");
-        assert_eq!(ledger_entries(&after_one), walked_a);
+        assert_eq!(crate::test_support::entry_records(&after_one), walked_a);
         let gen_a = churn_entries(&after_one);
         assert_eq!(
             gen_a.len(),
@@ -22752,7 +22740,10 @@ mod tests {
         // The revert recorded generation A AGAIN and nothing else: the untouched file records
         // nothing on the run that re-records a reverted one, and the log carries the file's three
         // generations in the order the tree took them.
-        assert_eq!(ledger_entries(crate::run::current_run(&after_three)), gen_a);
+        assert_eq!(
+            crate::test_support::entry_records(crate::run::current_run(&after_three)),
+            gen_a
+        );
         assert_eq!(
             churn_entries(&after_three),
             [gen_a.clone(), gen_b, gen_a].concat()
