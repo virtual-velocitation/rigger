@@ -27461,3 +27461,166 @@ fn validate_without_the_extraction_pass_samples_no_file_for_index_lag() {
 
     assert_eq!(validate_index_lag(root), None);
 }
+
+/// The generation of each ledger entry the log of the store at `root` holds for `identity`, in
+/// append order.
+#[cfg(feature = "symbols")]
+fn entry_generations(root: &Path, identity: &str) -> Vec<String> {
+    common::fixtures::entry_records(&read_run_events(root))
+        .into_iter()
+        .filter(|(entry, ..)| entry.identity() == identity)
+        .map(|(entry, ..)| entry.generation)
+        .collect()
+}
+
+/// Spec 107, criterion 13, the revert corner: the advisory compares against the LATEST entry,
+/// never against every generation the file ever recorded.
+///
+/// GIVEN a project built, one file edited and the project built again, so the log's latest
+/// entry and `graph.db` both hold the edited bytes' generation and an earlier entry holds the
+/// original's,
+/// WHEN the file's original bytes are written back and the operator runs `rigger validate`,
+/// THEN it names that file, though an entry records the generation its bytes extract to;
+/// AND WHEN a build records the reverted file, THEN it names no file.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_a_file_reverted_to_bytes_an_earlier_entry_recorded() {
+    let original = "fn original() {}\n";
+    let dir = initialized_project_holding(
+        "",
+        &[("churn.rs", original), ("steady.rs", "fn steady() {}\n")],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    let first = code_generation_now(root, "churn.rs");
+    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+    run_rigger_ok(root, &["graph", "build"]);
+    let second = code_generation_now(root, "churn.rs");
+    assert_eq!(validate_index_lag(root), None);
+
+    std::fs::write(root.join("churn.rs"), original).unwrap();
+
+    assert_eq!(
+        (
+            entry_generations(root, "gc/churn.rs"),
+            common::fixtures::held_generations(&common::cli::open_graph(root), &["gc/churn.rs"]),
+            code_generation_now(root, "churn.rs"),
+        ),
+        (
+            vec![first.clone(), second.clone()],
+            vec![Some(second)],
+            first.clone()
+        ),
+        "premise: the bytes extract to the first entry's generation, and the latest entry and \
+         the graph hold the second's"
+    );
+    assert_eq!(validate_index_lag(root), index_lag_advisory(&["churn.rs"]));
+
+    run_rigger_ok(root, &["graph", "build"]);
+
+    assert_eq!(
+        entry_generations(root, "gc/churn.rs").last(),
+        Some(&first),
+        "premise: the build recorded the reverted bytes' generation as the latest entry"
+    );
+    assert_eq!(validate_index_lag(root), None);
+}
+
+/// Spec 107, criterion 13: every sampled file that lags is named on the one line, in sorted
+/// order, and the advisory is a read - it records nothing.
+///
+/// GIVEN a built project holding three files, two of whose bytes changed since - the one sorted
+/// later written first,
+/// WHEN the operator runs `rigger validate`, twice,
+/// THEN each run names exactly those two, sorted, and the log holds what it held before.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_every_lagging_file_in_sorted_order_and_records_nothing() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("b.rs", "fn b() {}\n"),
+            ("a.rs", "fn a() {}\n"),
+            ("steady.rs", "fn steady() {}\n"),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    std::fs::write(root.join("b.rs"), "fn b_renamed() {}\n").unwrap();
+    std::fs::write(root.join("a.rs"), "fn a_renamed() {}\n").unwrap();
+    let recorded = |root: &Path| {
+        read_run_events(root)
+            .into_iter()
+            .map(|event| (event.position, event.type_))
+            .collect::<Vec<_>>()
+    };
+    let before = recorded(root);
+
+    assert_eq!(
+        [validate_index_lag(root), validate_index_lag(root)],
+        [
+            index_lag_advisory(&["a.rs", "b.rs"]),
+            index_lag_advisory(&["a.rs", "b.rs"])
+        ]
+    );
+    assert_eq!(
+        recorded(root),
+        before,
+        "validate appends nothing to the log"
+    );
+}
+
+/// Spec 107, criterion 13: the advisory samples `gc` identities alone.
+///
+/// GIVEN a built project holding a source file and a document, the document recorded under a
+/// `gd` identity and no `gc` one,
+/// WHEN the document's heading changes, moving its design batch to another generation, and the
+/// operator runs `rigger validate`,
+/// THEN it names no file: the document's design batch is no candidate of the code sample.
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_names_no_document_whose_only_entry_is_a_design_batch() {
+    let dir = initialized_project_holding(
+        "",
+        &[
+            ("steady.rs", "fn steady() {}\n"),
+            ("docs/notes.md", "# Notes\n\nThe first draft.\n"),
+        ],
+    );
+    let root = dir.path();
+    run_rigger_ok(root, &["graph", "build"]);
+    let identities = |root: &Path| {
+        common::fixtures::entry_records(&read_run_events(root))
+            .into_iter()
+            .map(|(entry, ..)| entry.identity())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        identities(root),
+        [
+            "gc/steady.rs",
+            "gd/docs/notes.md",
+            "gw/.rigger/workflow.yml"
+        ],
+        "premise: the document is recorded under a gd identity alone"
+    );
+
+    std::fs::write(
+        root.join("docs/notes.md"),
+        "# Revised notes\n\nA second draft.\n",
+    )
+    .unwrap();
+
+    assert_eq!(validate_index_lag(root), None);
+    run_rigger_ok(root, &["graph", "build"]);
+    assert_eq!(
+        identities(root),
+        [
+            "gc/steady.rs",
+            "gd/docs/notes.md",
+            "gw/.rigger/workflow.yml",
+            "gd/docs/notes.md"
+        ],
+        "premise: the change moved the design batch's generation, which the next build records"
+    );
+}
