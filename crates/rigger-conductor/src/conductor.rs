@@ -153,13 +153,13 @@ pub const META_SPAWN: &str = "spawn";
 pub use crate::metrics::META_WORKTREE_SHA;
 
 /// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
-/// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
-/// and the git tree-SHA of its inputs (the whole committed tree by default). Every inline
+/// address of the gate run, [`input_digest`]`(command, commit-sha)` over the gate command
+/// and the HEAD commit the gate ran on (its tree AND its history). Every inline
 /// [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) a unit's worktree gate records carries
-/// it, so a later gate whose command + tree digest matches a prior GREEN verdict is
+/// it, so a later gate whose command + commit digest matches a prior GREEN verdict is
 /// answered as a logged cache-hit instead of re-running the command. It is audit metadata
 /// on an event that already exists - no new event type (spec 12's Global constraints) - so
-/// folds and projections ignore it. Empty (and so omitted) when there is no tree to address
+/// folds and projections ignore it. Empty (and so omitted) when there is no commit to address
 /// (a repo-less / worktree-less gate run), which simply disables content-addressing there.
 pub const META_INPUT_DIGEST: &str = "input_digest";
 
@@ -170,19 +170,6 @@ pub const META_INPUT_DIGEST: &str = "input_digest";
 /// from the hit to the exact green it reused. Present ONLY on cache-hit verdicts; a
 /// freshly-run gate's verdict omits it.
 pub const META_CACHE_HIT: &str = "cache_hit_of";
-
-/// The metadata key a `UnitIntegrated` event carries to mark the DOWNSTREAM units its
-/// integration rendered STALE (spec 12, unit 2): a comma-separated list of the unit ids
-/// whose grounded blast radius intersects this integration's touched files. A stale
-/// unit's cached gate verdicts stop hitting - its next gate re-runs against the changed
-/// world instead of reusing a green earned before this integration (see
-/// [`RunCtx::is_stale`] and the run_gates hit-site). The staleness ride is metadata on an
-/// event that ALREADY exists - no new event type (spec 12's Global constraints) - and it
-/// is self-provenanced: the mark names exactly which downstream units were invalidated,
-/// carried on the integrating unit's own integration event (its position + id are the
-/// citation). Present ONLY when at least one downstream unit was staled; an integration
-/// that touches no downstream blast radius omits it.
-pub const META_STALE: &str = "staled_units";
 
 /// The metadata key naming the integrating commit(s) a COMPENSATION reverted (spec 12,
 /// unit 4): a comma-separated list of the reverted commit shas, stamped on the `UnitFailed`
@@ -452,8 +439,8 @@ fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
 
 /// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
 /// when seeding the content-address cache from prior GREEN verdicts so the cache value
-/// carries which unit earned the green (the coordinate a downstream staleness pass keys
-/// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
+/// carries which unit earned the green (provenance the cache-hit evidence cites). A deferred
+/// key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
 /// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
 /// segment is recovered.
 ///
@@ -480,24 +467,25 @@ fn gate_key_attempt(key: &str) -> Option<u32> {
 }
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
-/// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
-/// [`worktree::HEAD_TREE`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
-/// trees are always distinct addresses - the tree is what determines the gate outcome, so
-/// it must never collide - while the command is folded to a compact FNV-1a hash (the same
-/// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
-/// identical hash across processes, machines, and builds, unlike `DefaultHasher`). So the
-/// address is a pure function of `(command, tree bytes)`: replay-deterministic, and a gate
-/// re-run over an unchanged tree with the same command reproduces the SAME digest (a hit),
-/// while any change to either side changes it (a miss). Empty `tree_sha` (no worktree tree
-/// to address) yields an empty digest, which the caller reads as "addressing disabled here".
-fn input_digest(command: &str, tree_sha: &str) -> String {
-    if tree_sha.is_empty() {
+/// `command` and the `commit_sha` it ran on. A verdict may be replayed only when every input
+/// the gate reads is unchanged, and a gate reads more than the tree: red-before-green walks the
+/// unit's commit history and the content gates diff from the run-branch ref. The HEAD commit
+/// addresses the tree AND that history, so the same commit (the integrate door's re-check, a
+/// fast-forward landing's post-merge gates) replays, while an identical tree reached through
+/// different commits re-runs. The verbatim commit sha is kept so two different commits never
+/// collide, while the command is folded to a compact FNV-1a hash (the same fixed-seed stable
+/// hash the rest of the crate uses for content oracles: identical bytes -> identical hash
+/// across processes, machines, and builds, unlike `DefaultHasher`), so the address is
+/// replay-deterministic. Empty `commit_sha` (no worktree to address) yields an empty digest,
+/// which the caller reads as "addressing disabled here".
+fn input_digest(command: &str, commit_sha: &str) -> String {
+    if commit_sha.is_empty() {
         return String::new();
     }
-    // The collision-sensitive input (the tree) rides verbatim, so the 64-bit hash covers only
+    // The collision-sensitive input (the commit) rides verbatim, so the 64-bit hash covers only
     // the short, config-authored command string.
     let hash = fnv1a_64(command.as_bytes());
-    format!("{hash:016x}:{tree_sha}")
+    format!("{hash:016x}:{commit_sha}")
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
@@ -671,14 +659,10 @@ enum GateSelection<'a> {
 }
 
 /// The result of integrating a unit ([`RunCtx::integrate_and_emit`]): the merge commit
-/// that landed (empty for a read-only / no-change unit), and the DOWNSTREAM units this
-/// integration marked STALE (spec 12, unit 2) - those whose blast radius intersects the
-/// unit's touched files. The caller stamps `staled` onto the `UnitIntegrated` event as
-/// [`META_STALE`] so the invalidation is recorded with provenance and re-seeded on resume.
+/// that landed (empty for a read-only / no-change unit).
 #[derive(Default)]
 struct Integration {
     commit: String,
-    staled: Vec<String>,
     /// The post-merge re-gate went RED (spec 12, unit 5): the merge was ROLLED BACK (nothing
     /// landed, no `UnitIntegrated`) and this carries the merge-break gate evidence, so the
     /// caller falls to remediation exactly like a pre-merge gate failure. `None` on a clean
@@ -1945,7 +1929,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .collect();
     // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
     // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
-    // gate whose command + tree-sha digest matches is answered as a logged cache-hit citing
+    // gate whose command + commit-sha digest matches is answered as a logged cache-hit citing
     // that position. prior_events is ascending by position, and we insert only-if-absent, so
     // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
     // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
@@ -1975,13 +1959,6 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             .entry(digest.clone())
             .or_insert((e.position, unit));
     }
-    // Staleness set (spec 12, unit 2): seed the units a prior UnitIntegrated marked STALE
-    // (its META_STALE names the downstream units its integration invalidated), so a
-    // stepwise resume re-refuses their cached gate hits exactly as the process that marked
-    // them would - the invalidation is replay-deterministic over the log, not lost with the
-    // marking process. Extended live below each time a unit integrates this process.
-    let stale_units = stale_units_from_log(prior_events);
-
     // Compensation replay state (spec 12, unit 4): the integrating commits a PRIOR step
     // already reverted (so a resume never re-reverts them - the reverse gear is
     // replay-deterministic over the log) and the contradiction fed back to each re-entered
@@ -2093,7 +2070,6 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
-        stale_units: Mutex::new(stale_units),
         compensations: Mutex::new(pending_compensations),
         compensation_feedback: Mutex::new(compensation_feedback),
         compensation_attempts: Mutex::new(HashMap::new()),
@@ -3000,27 +2976,13 @@ struct RunCtx<'a> {
     /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
     /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
     /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
-    /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
+    /// run_gates hit-site so a gate whose `(command, commit-sha)` digest matches a prior green
     /// is answered as a logged cache-hit citing that `position` instead of re-running the
     /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
     /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
     /// re-emit under the same digest cites the original green, never a chain of hits. The
     /// stored `unit` is the green's earner, carried as provenance in the cache-hit evidence.
-    /// Unit 2's staleness pass gates the hit at this SAME seam but keys off the REQUESTING
-    /// unit ([`stale_units`](RunCtx::stale_units) / [`is_stale`](RunCtx::is_stale)), not the
-    /// stored earner: it is the asker whose verdicts must stop hitting.
     green_digests: Mutex<HashMap<String, (u64, String)>>,
-    /// The units whose cached gate verdicts are STALE (spec 12, unit 2): each was marked by
-    /// a downstream staleness pass because an integrated unit touched files intersecting its
-    /// blast radius. Seeded ONCE at run start from the prior log's `UnitIntegrated`
-    /// [`META_STALE`] marks (so staleness survives a stepwise resume, replay-deterministic
-    /// over the log) and extended live each time a unit integrates. The run_gates content-
-    /// cache hit-site consults it via [`is_stale`](RunCtx::is_stale): a stale unit's gate is
-    /// never cache-answered - it re-runs against the changed world - while an unaffected
-    /// unit's green still hits. An integrated unit is skipped by the run loop, so a stale
-    /// mark on one is harmless; a still-pending stale unit re-verifies its gates until it
-    /// lands (re-running a gate is never wrong, only the cache benefit is withheld).
-    stale_units: Mutex<HashSet<String>>,
     /// The queued post-integration compensations (spec 12, unit 4): each is an
     /// already-integrated unit a later unit's review named as the defect source. A review
     /// site (inside a possibly-concurrent wave) PUSHES here; the single-threaded run loop
@@ -3138,7 +3100,6 @@ impl<'a> RunCtx<'a> {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -3364,15 +3325,6 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// Whether `unit`'s cached gate verdicts are STALE (spec 12, unit 2): a downstream
-    /// staleness pass invalidated them because an integrated unit touched files in its
-    /// blast radius. The run_gates content-cache hit-site checks this before honoring a
-    /// hit, so a stale unit re-runs its gate against the changed world instead of reusing a
-    /// green earned before the integration.
-    fn is_stale(&self, unit: &str) -> bool {
-        self.stale_units.lock().unwrap().contains(unit)
-    }
-
     /// The HIGH-WATER attempt `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the highest
     /// attempt at which the unit has ANY recorded evidence, reconciled by MAX across every live
     /// source so it equals what a resume would fold from the log even for a unit whose WHOLE
@@ -3451,28 +3403,6 @@ impl RunCtx<'_> {
             .filter(|k| unit_of_gate_key(k) == Some(unit))
             .filter_map(|k| gate_key_attempt(k))
             .max()
-    }
-
-    /// Mark every DOWNSTREAM unit a just-integrated `unit`'s `touched` files render stale
-    /// (spec 12, unit 2), returning the marked ids for the `UnitIntegrated` provenance
-    /// mark. The set is decided by [`stale_downstream_units`] (the single staleness
-    /// authority) and inserted LIVE into [`stale_units`](RunCtx::stale_units) so a later
-    /// gate for one of them in THIS process stops hitting the cache immediately; the caller
-    /// records the same ids as [`META_STALE`] so a resume re-seeds the identical set.
-    fn mark_stale_downstream(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        unit: &str,
-        touched: &[String],
-    ) -> Vec<String> {
-        let staled = stale_downstream_units(stages, self.deps.grounder, unit, touched);
-        if !staled.is_empty() {
-            let mut set = self.stale_units.lock().unwrap();
-            for u in &staled {
-                set.insert(u.clone());
-            }
-        }
-        staled
     }
 
     /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
@@ -4174,7 +4104,7 @@ impl RunCtx<'_> {
                         let name = name.clone();
                         let st = stages[&name].clone();
                         s.spawn(move || {
-                            let r = self.start_and_run_stage(stages, &name, &st);
+                            let r = self.start_and_run_stage(&name, &st);
                             (name, r)
                         })
                     })
@@ -4186,12 +4116,7 @@ impl RunCtx<'_> {
         results
     }
 
-    fn start_and_run_stage(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        name: &str,
-        st: &Stage,
-    ) -> Result<bool, Error> {
+    fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
         // UnitStarted carries the assigned agent, its dependencies, and the unit's
         // DETERMINISTIC branch, so the graph can project ASSIGNED_TO (unit->agent) and
         // BLOCKS (need->unit), and the ledger records the durable checkpoint branch
@@ -4238,10 +4163,10 @@ impl RunCtx<'_> {
             // status events below (spec 10 unit 4).
             &[(META_MODEL_ALIAS, &self.agent_model(&st.agent, 0))],
         )?;
-        self.run_stage(stages, st)
+        self.run_stage(st)
     }
 
-    fn run_stage(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+    fn run_stage(&self, st: &Stage) -> Result<bool, Error> {
         // Async manual-gate queue (§4.3): a stage whose effective autonomy is Manual
         // pauses - its gate is awaiting a human, so emit ManualReview and leave the
         // unit pending (Ok(false), NOT escalated). Independent units in the same wave
@@ -4273,7 +4198,7 @@ impl RunCtx<'_> {
         // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
         // below, byte-for-byte unchanged (speculation defaults off).
         if self.speculates(st) {
-            return self.run_speculation(stages, st);
+            return self.run_speculation(st);
         }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
@@ -4297,7 +4222,7 @@ impl RunCtx<'_> {
         // a later conductor process - the mirror image of the review-worktree defect this
         // criterion exists to close.
         let any_parked = std::sync::atomic::AtomicBool::new(false);
-        let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase, &any_parked);
+        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked);
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -5270,7 +5195,6 @@ impl RunCtx<'_> {
     /// this function itself propagates (see `run_stage`'s doc comment at its call site).
     fn run_single_stage(
         &self,
-        stages: &BTreeMap<String, Stage>,
         st: &Stage,
         wt: Option<&Worktree>,
         dir: &str,
@@ -5438,7 +5362,7 @@ impl RunCtx<'_> {
             // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
             // so this resumed merge carries a real approval.
             let integration =
-                self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
+                self.integrate_and_emit(wt, st, attempts, IntegrationApproval::approved())?;
             if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
@@ -5472,10 +5396,9 @@ impl RunCtx<'_> {
                 )?;
                 return Ok(false);
             }
-            self.emit_meta(
+            self.emit(
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
-                &[(META_STALE, &integration.staled.join(","))],
             )?;
             return Ok(true);
         }
@@ -5840,8 +5763,8 @@ impl RunCtx<'_> {
                     }
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
-                    // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
-                    // staleness passes use), skipping and logging the rest. A remediation iteration
+                    // blast radius (its `grounded_seed`, the SAME radius the spawn uses),
+                    // skipping and logging the rest. A remediation iteration
                     // then re-verifies only what its change could have touched; the exhaustive suite
                     // is asserted once at the integrate door below.
                     let gate_outcome = self.run_gates_at(
@@ -5993,7 +5916,6 @@ impl RunCtx<'_> {
                                 // reversing it re-opens the bug where unit-2's approved-on-
                                 // attempt-6 review was recorded as UnitFailed/UnitEscalated.
                                 let integration = self.integrate_and_emit(
-                                    stages,
                                     wt,
                                     st,
                                     attempts,
@@ -6001,10 +5923,9 @@ impl RunCtx<'_> {
                                 )?;
                                 match integration.blocked {
                                     None => {
-                                        self.emit_meta(
+                                        self.emit(
                                             ledger::TYPE_UNIT_INTEGRATED,
                                             json!({"id": st.name, "commit": integration.commit}),
-                                            &[(META_STALE, &integration.staled.join(","))],
                                         )?;
                                         return Ok(true);
                                     }
@@ -6192,7 +6113,7 @@ impl RunCtx<'_> {
     /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
     /// if none wins, the unit escalates (its K candidates were its attempts) rather than
     /// re-fanning-out forever.
-    fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+    fn run_speculation(&self, st: &Stage) -> Result<bool, Error> {
         let width = self.effective_speculation_width(st);
         let group = speculation_group_id(&st.name);
         // The PRECISE seed seeds every lane's spawn + the blast-radius-narrowed gate loop. The
@@ -6460,7 +6381,6 @@ impl RunCtx<'_> {
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
-                stages,
                 Some(&candidates[i].wt),
                 st,
                 lane,
@@ -6510,7 +6430,6 @@ impl RunCtx<'_> {
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
                 &[
-                    (META_STALE, &integration.staled.join(",")),
                     (META_SPEC_GROUP, &group),
                     (
                         META_SPEC_WINNER,
@@ -8494,13 +8413,12 @@ impl RunCtx<'_> {
         // The machine-wide build budget (spec 65): resolved once per call, alongside
         // `build_env`, and threaded to every gate this attempt runs.
         let budget = self.build_budget();
-        // The content address of this attempt's gate inputs (spec 12, unit 1): the git
-        // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
-        // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
-        // committed tree, and each gate folds its own command over it in `input_digest`.
-        // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
-        // simply disables content-addressing for this attempt's gates.
-        let tree_sha = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
+        // The content address of this attempt's gate inputs (spec 12, unit 1): the HEAD commit
+        // of the worktree, which fixes both the tree and the history a gate may read. Computed
+        // ONCE - every gate this attempt reads the same commit, and each gate folds its own
+        // command over it in `input_digest`. Empty when there is no worktree (a repo-less /
+        // `isolation: none` run), which simply disables content-addressing for these gates.
+        let commit_sha = crate::worktree::head_sha_of(dir);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -8554,20 +8472,19 @@ impl RunCtx<'_> {
             }
             // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
             // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
-            // proven the SAME command over the SAME tree. If so, answer the gate as a
+            // proven the SAME command over the SAME commit. If so, answer the gate as a
             // logged cache-hit citing that green's position - the command is not run and the
-            // ratchet does not move, exactly like an exact-key replay - so an unchanged tree
+            // ratchet does not move, exactly like an exact-key replay - so an unchanged commit
             // re-verifies near-free. Failures never enter the cache, so a red is never
-            // cache-answered (it must always re-prove). An empty digest (no worktree tree)
+            // cache-answered (it must always re-prove). An empty digest (no worktree)
             // disables the hit and the gate runs fresh below.
             //
-            // Staleness (spec 12, unit 2): a unit a downstream staleness pass marked stale
-            // (an integrated unit touched files in its blast radius) does NOT take the hit -
-            // its cached verdicts stop hitting, so its gate re-runs against the changed world
-            // instead of reusing a green earned before that integration. Unaffected units
-            // are not stale, so their greens still stand and hit here.
-            let digest = input_digest(&gc.run, &tree_sha);
-            if !digest.is_empty() && !self.is_stale(&st.name) {
+            // The digest alone decides: it addresses the HEAD commit, so a landing or a new
+            // commit that changed anything this gate reads has already changed the digest, and
+            // the very commit already proven green (the integrate door's re-check, or a fast-forward
+            // landing whose landed commit IS the gated commit) replays here.
+            let digest = input_digest(&gc.run, &commit_sha);
+            if !digest.is_empty() {
                 if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
                     let evidence = format!(
                         "cache-hit: gate {gid:?} was proven green at log position {pos} \
@@ -9262,11 +9179,6 @@ impl RunCtx<'_> {
     /// run branch - see that file's own header for the fixture-by-fixture mapping.
     fn integrate_and_emit(
         &self,
-        // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
-        // to find those whose blast radius this integration's touched files intersect. It is
-        // the run loop's live `stages` (baseline + planner-proposed included), threaded down
-        // so staleness measures against every current unit, not just the authored config.
-        stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
         // The unit being integrated: its name and agent drive the FILE_TOUCHED records, and its
         // gate library drives the post-merge re-gate (spec 12, unit 5), which re-runs the full
@@ -9435,8 +9347,7 @@ impl RunCtx<'_> {
         // is cheap and correct regardless, since that call re-reads the run branch's CURRENT
         // tip fresh every time - a sibling that landed meanwhile is picked up automatically,
         // never stale. Once this loop finally lands a clean merge, `lock` stays held
-        // (unchanged from before this fix) through the post-merge gate suite and staleness
-        // marking below.
+        // (unchanged from before this fix) through the post-merge gate suite below.
         let mut lock = self.integrate_mu.lock().unwrap();
         // The gate scratch root a PASSING post-merge re-gate was handed (spec 113, THE GATE
         // SCRATCH ROOT HAS ONE LIFECYCLE): the `rigger-gate-<slug>` sibling of
@@ -9787,10 +9698,9 @@ impl RunCtx<'_> {
             postmerge_reclaim = Some((self.postmerge_unit_dir(&st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
-        // NOW - once the tree the run branch carries is the verified one - reindex, record the
-        // artifact graph edges, and propagate staleness. A blocked integration does none of
-        // these, so a rolled-back merge leaves no phantom FILE_TOUCHED / staleness for a unit
-        // whose work never landed.
+        // NOW - once the tree the run branch carries is the verified one - reindex and record the
+        // artifact graph edges. A blocked integration does neither, so a rolled-back merge leaves
+        // no phantom FILE_TOUCHED for a unit whose work never landed.
         //
         // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
         // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
@@ -9828,13 +9738,6 @@ impl RunCtx<'_> {
                 json!({"path": f, "by": &st.agent}),
             )?;
         }
-        // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
-        // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
-        // them stale, so its next gate stops reusing a green earned before this change. The
-        // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
-        // resume seeding. Computed under the integrate lock so a concurrent integration's
-        // staleness view is serialized with the merge it observes.
-        let staled = self.mark_stale_downstream(stages, &st.name, &landed);
         // Released before the reclaim so a sibling landing waiting on the lock never waits on
         // a reap. Only the gate scratch root goes here: the unit's `cargo-target-<slug>` cache
         // and store-fence sibling stay for its worktree's removal, so a straggler lens still
@@ -9845,7 +9748,6 @@ impl RunCtx<'_> {
         }
         Ok(Integration {
             commit,
-            staled,
             blocked: None,
         })
     }
@@ -10719,11 +10621,10 @@ impl RunCtx<'_> {
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
     /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
     /// `.safe`-superset view is what every SAFETY consumer keys on: `partition_wave` and
-    /// `route_review_tier` (spec 16 unit 3), plus cross-wave staleness (`stale_downstream_units`)
-    /// and rule-6 conflict detection (`dag_unit_blast_radii`) (spec 17 unit 3, 3a/3b) - over-inclusion
-    /// is the safe error (a missed reference could co-schedule two conflicting units, route a
-    /// wide/high-risk change to the light panel, or leave a stale downstream unit reusing its
-    /// cached-green gate verdicts against changed code); `.serialize` marks a hub radius
+    /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
+    /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
+    /// missed reference could co-schedule two conflicting units or route a wide/high-risk
+    /// change to the light panel); `.serialize` marks a hub radius
     /// for its OWN batch. The `.safe` view and `.serialize` verdict are the `BlastRadiusComputed`
     /// audit's payload; the audit's `precise` is instead the actual prompt SEED
     /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
@@ -10785,11 +10686,11 @@ impl RunCtx<'_> {
     /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
     /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
-    /// was grounded on. The SAFETY consumers do NOT read this precise seed: cross-wave staleness and
-    /// rule-6 conflict detection key off the safe-superset view (spec 17 unit 3, 3a/3b), alongside
-    /// partitioning and tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// was grounded on. The SAFETY consumers do NOT read this precise seed: rule-6 conflict
+    /// detection keys off the safe-superset view (spec 17 unit 3, 3b), alongside partitioning and
+    /// tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
     /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
-    /// partition / tier / audit / staleness / rule-6-conflict consumers via
+    /// partition / tier / audit / rule-6-conflict consumers via
     /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
     /// (best-effort but real, not always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
@@ -13839,86 +13740,6 @@ fn implement_slice(st: &Stage) -> GroundingSlice {
     } else {
         GroundingSlice::Implement
     }
-}
-
-/// Seed the STALE-units set from the prior log (spec 12, unit 2): every unit named in a
-/// `UnitIntegrated` event's [`META_STALE`] mark. A stepwise resume recovers the identical
-/// invalidation the marking process held, so a stale unit's cached gate verdicts keep
-/// stopping-to-hit across the process boundary. Pure over the ordered log (a comma-joined
-/// list per mark, empty segments ignored), so it is replay-deterministic.
-fn stale_units_from_log(prior_events: &[Event]) -> HashSet<String> {
-    let mut stale = HashSet::new();
-    for e in prior_events
-        .iter()
-        .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
-    {
-        if let Some(list) = e.meta.get(META_STALE) {
-            for u in list.split(',').filter(|s| !s.is_empty()) {
-                stale.insert(u.to_string());
-            }
-        }
-    }
-    stale
-}
-
-/// The DOWNSTREAM units a just-integrated unit's `touched` files render STALE (spec 12,
-/// unit 2): every OTHER unit whose grounded blast radius intersects the integrating
-/// unit's touched file set. This is the SINGLE authority that decides staleness - it is
-/// consulted once, at the integrate seam, and both the recorded `META_STALE` mark and the
-/// live [`RunCtx::stale_units`] invalidation read its result, so a unit is judged stale
-/// in exactly one place.
-///
-/// A unit's blast radius is the files the grounder surfaces for its grounding query (its
-/// `coverage`, else its name), taken as the SAFE-superset (`structural union grep`, uncapped) view
-/// via [`Grounder::blast_radius`] `.safe` - NOT the precise seed (spec 17 unit 3, 3a). Cross-wave
-/// staleness is a SAFETY consumer: a reference visible only to grep (a macro body, a re-export, a
-/// reflection string) must STILL mark a downstream unit stale, or its cached green gate verdicts
-/// are reused and it integrates against changed code - the exact fail-open the safe view exists to
-/// close. This is the same safe superset `partition_wave` partitions on, so staleness is measured
-/// against the radius the unit is partitioned by. The integrating unit never stales itself, and
-/// PRODUCER (planner) stages are skipped: they emit a DAG, not code, so they have no gate verdict to
-/// invalidate. With no grounder no radius is computable, so nothing is staled (the empty fail-safe,
-/// best-effort but real). The result is sorted + deduped so the mark is stable across runs (replay
-/// determinism). On the symbols-INACTIVE default path the grounder's `.safe` equals its `ground`
-/// radius, so this is byte-for-byte the pre-change precise intersection.
-fn stale_downstream_units(
-    stages: &BTreeMap<String, Stage>,
-    grounder: Option<&dyn Grounder>,
-    integrating_unit: &str,
-    touched: &[String],
-) -> Vec<String> {
-    let grounder = match grounder {
-        Some(g) => g,
-        None => return Vec::new(),
-    };
-    let touched: HashSet<&str> = touched.iter().map(String::as_str).collect();
-    if touched.is_empty() {
-        return Vec::new();
-    }
-    let mut stale: Vec<String> = Vec::new();
-    for (name, st) in stages {
-        if name == integrating_unit || is_producer(st) {
-            continue;
-        }
-        // A non-producer unit grounds on its criterion (`coverage`), falling back to its
-        // name - the SAME query `RunCtx::ground_query`/`grounded_seed` use for a unit.
-        let query = if st.coverage.is_empty() {
-            name.as_str()
-        } else {
-            st.coverage.as_str()
-        };
-        let intersects = grounder
-            .blast_radius(query, GROUNDED_SEED_K)
-            .safe
-            .iter()
-            .any(|f| touched.contains(f.as_str()));
-        if intersects {
-            stale.push(name.clone());
-        }
-    }
-    stale.sort();
-    stale.dedup();
-    stale
 }
 
 /// NO UNGATED FAN-OUT UNIT (spec 103, criterion 2): a conductor invariant, checked
@@ -24815,7 +24636,6 @@ mod tests {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -31420,7 +31240,6 @@ mod tests {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -37231,7 +37050,7 @@ mod tests {
 
     #[test]
     fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
-        // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
+        // spec 12, unit 1 (HIT): a gate whose (command, commit-sha) input digest matches a
         // prior GREEN verdict is answered as a LOGGED cache-hit citing that green's position
         // - the command is NOT re-run. The unit gates GREEN on attempt 0, its review
         // REJECTS, and on attempt 1 the implementer reproduces the IDENTICAL tree. Attempt
@@ -37259,6 +37078,166 @@ mod tests {
         assert!(
             verdict_passed(&v1),
             "a cache-hit is recorded as a passing verdict"
+        );
+    }
+
+    /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing
+    /// touches a file in `beta`'s blast radius, and `beta` lands as a fast-forward, WHEN `beta`'s
+    /// post-merge gate runs on the commit its pre-merge gate already proved green, THEN the
+    /// post-merge gate is a logged cache-hit, never a second run of the command. The digest is the
+    /// HEAD commit, so an upstream landing that changed what `beta` gates would already have
+    /// changed the digest.
+    #[test]
+    fn a_fast_forward_landing_whose_commit_was_gated_replays_its_post_merge_gates() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("aw".into(), agent("aw"));
+        cfg.agents.insert("bw".into(), agent("bw"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let mk = |name: &str, worker: &str, coverage: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: worker.into(),
+            coverage: coverage.into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("alpha".into(), mk("alpha", "aw", "alpha", vec![]));
+        cfg.workflow.stages.insert(
+            "beta".into(),
+            mk("beta", "bw", "widget", vec!["alpha".into()]),
+        );
+        // alpha's file carries beta's grounding word, so alpha's landing reaches beta's radius.
+        let driver = Stub {
+            commits_by_agent: HashMap::from([
+                (
+                    "aw".to_string(),
+                    vec![("shared.rs".to_string(), "// widget helper\n".to_string())],
+                ),
+                (
+                    "bw".to_string(),
+                    vec![("beta_work.rs".to_string(), "fn beta() {}\n".to_string())],
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: repo_path.clone(),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        for name in ["alpha", "beta"] {
+            assert_eq!(rs.units[name].status, ledger::Status::Integrated);
+        }
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let post_merge = |unit: &str| {
+            let key = gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && e.meta.get(META_REPLAY_KEY) == Some(&key)
+                })
+                .unwrap_or_else(|| panic!("no post-merge verdict recorded for {key}"))
+        };
+        let beta_post = post_merge("beta");
+        assert_eq!(
+            beta_post.meta.get(META_INPUT_DIGEST),
+            gate_verdict_event(&events, "beta", 0)
+                .meta
+                .get(META_INPUT_DIGEST),
+            "premise: beta landed as a fast-forward, so the landed commit is the gated commit"
+        );
+        for unit in ["alpha", "beta"] {
+            assert!(
+                post_merge(unit).meta.contains_key(META_CACHE_HIT),
+                "{unit}'s post-merge gate replays its pre-merge green over the same tree"
+            );
+        }
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "each unit's tree is gated once; no post-merge gate re-runs the command: {:?}",
+            runner.calls()
+        );
+    }
+
+    /// A [`CacheDriver`] whose implementer, from attempt 1 on, first COMMITS a detour edit to
+    /// `work.rs` and then writes the attempt's content back - so the attempt's tree is
+    /// byte-identical to attempt 0's while its commit history is not.
+    struct DetourDriver(CacheDriver);
+    impl AgentDriver for DetourDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id.contains("/implementer#") && attempt_of(&opts.id) >= 1 {
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "detour\n").unwrap();
+                run_git(&opts.dir, &["add", "-A"]);
+                run_git(&opts.dir, &["commit", "-q", "-m", "detour"]);
+            }
+            self.0.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// A gate verdict is replayed only when every input the gate reads is unchanged, and a
+    /// gate may read commit history (red-before-green walks it; the content gates diff from
+    /// the run-branch ref): GIVEN attempt 1 reproduces attempt 0's tree through a different
+    /// history, WHEN its gate runs, THEN the digests differ and the gate runs again.
+    #[test]
+    fn an_identical_tree_reached_through_different_history_is_not_replayed() {
+        let repo = temp_git_project_with_commit();
+        let cfg = review_stage_cfg("g");
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = DetourDriver(CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        });
+        let deps = Deps {
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, "s", 0);
+        let v1 = gate_verdict_event(&events, "s", 1);
+        assert_ne!(
+            v0.meta.get(META_INPUT_DIGEST),
+            v1.meta.get(META_INPUT_DIGEST),
+            "a different history is a different gate input, so the digest differs"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 re-ran over its different history rather than replay attempt 0's green"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "the gate ran on both attempts: {:?}",
+            runner.calls()
         );
     }
 
@@ -38092,115 +38071,6 @@ mod tests {
     }
 
     #[test]
-    fn staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files() {
-        // spec 12, unit 2 (the marking authority, in isolation): when a unit integrates
-        // touching a file set, EXACTLY the OTHER units whose grounded blast radius intersects
-        // those files are stale. Four-unit fixture proving each exclusion: `up` integrates
-        // touching `shared.rs`; `near` grounds ONTO `shared.rs` (stale); `far` grounds
-        // elsewhere (stands); a `plan` PRODUCER grounds onto `shared.rs` too yet is excluded
-        // (it emits a DAG, not a gate verdict to invalidate); and `up` never stales itself.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        for (name, coverage) in [("up", "up"), ("near", "near"), ("far", "far")] {
-            stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    coverage: coverage.into(),
-                    ..Default::default()
-                },
-            );
-        }
-        stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                coverage: "plan".into(),
-                produces: "units".into(),
-                ..Default::default()
-            },
-        );
-        let grounder = StubGrounder {
-            by_query: HashMap::from([
-                ("up".to_string(), vec!["shared.rs".to_string()]),
-                (
-                    "near".to_string(),
-                    vec!["shared.rs".to_string(), "near.rs".to_string()],
-                ),
-                ("far".to_string(), vec!["far.rs".to_string()]),
-                ("plan".to_string(), vec!["shared.rs".to_string()]),
-            ]),
-        };
-        let touched = vec!["shared.rs".to_string()];
-        assert_eq!(
-            stale_downstream_units(&stages, Some(&grounder), "up", &touched),
-            vec!["near".to_string()],
-            "only `near` is stale: its radius intersects shared.rs; `up` never stales itself, \
-             `far` is disjoint, and the `plan` producer has no gate verdict to invalidate"
-        );
-        // No grounder => no computable radius => nothing staled (best-effort, exactly like
-        // `grounded_seed` returns an empty seed when no grounder is configured).
-        assert!(
-            stale_downstream_units(&stages, None, "up", &touched).is_empty(),
-            "with no grounder there is no blast radius to intersect, so nothing is staled"
-        );
-    }
-
-    #[test]
-    fn staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit(
-    ) {
-        // spec 17 unit 3 (3a): stale_downstream_units must ground on the SAFE-superset view, not the
-        // precise (name-level) view. A downstream unit whose PRECISE radius misses a reference that
-        // is visible only to grep (a macro body / re-export / reflection string) must STILL be marked
-        // stale when the integrating unit touches that grep-only file - otherwise its cached green
-        // gate verdicts are reused and it integrates against changed code (the fail-open the safe
-        // view exists to close). With symbols INACTIVE (safe == precise) the behavior is unchanged.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        for name in ["up", "hidden"] {
-            stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    coverage: name.into(),
-                    ..Default::default()
-                },
-            );
-        }
-        // `hidden`'s PRECISE view is only hidden.rs; its SAFE view adds macros.rs - a reference
-        // visible ONLY to grep, exactly the symbols grounder's uncapped structural-union-grep radius.
-        let structural = StructuralStubGrounder {
-            by_query: HashMap::from([(
-                "hidden".to_string(),
-                BlastRadius {
-                    precise: vec!["hidden.rs".to_string()],
-                    safe: vec!["hidden.rs".to_string(), "macros.rs".to_string()],
-                    serialize: false,
-                },
-            )]),
-            stamp: "idxhash/ts-tags-v1".to_string(),
-        };
-        let touched = vec!["macros.rs".to_string()];
-        assert_eq!(
-            stale_downstream_units(&stages, Some(&structural), "up", &touched),
-            vec!["hidden".to_string()],
-            "the grep-only reference macros.rs lives in `hidden`'s SAFE view but not its precise \
-             view; grounding staleness on the safe superset marks `hidden` stale, closing the \
-             cached-green fail-open a precise-only intersection would leave open"
-        );
-
-        // Symbols INACTIVE: a grounder that inherits the DEFAULT blast_radius returns safe == precise
-        // == ground. `hidden` grounds ONLY to hidden.rs there, so touching the grep-only macros.rs
-        // stales nothing - the shipped default is byte-for-byte unchanged.
-        let plain = StubGrounder {
-            by_query: HashMap::from([("hidden".to_string(), vec!["hidden.rs".to_string()])]),
-        };
-        assert!(
-            stale_downstream_units(&stages, Some(&plain), "up", &touched).is_empty(),
-            "with symbols inactive safe == precise, so a grep-only file outside the precise radius \
-             stales nothing - the default path is unchanged"
-        );
-    }
-
-    #[test]
     fn rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts(
     ) {
         // spec 17 unit 3 (3b): dag_unit_blast_radii must feed rule-6 conflict detection the
@@ -38300,208 +38170,6 @@ mod tests {
             blast_radius_conflicts(&plain_radii).is_empty(),
             "with symbols inactive safe == precise; the two disjoint units share no file and raise \
              no rule-6 conflict: {plain_radii:?}"
-        );
-    }
-
-    #[test]
-    fn a_resume_reseeds_the_stale_set_from_the_prior_unitintegrated_marks() {
-        // spec 12, unit 2 (replay determinism): a stepwise resume recovers the STALE set
-        // purely from the log - every unit named in a prior UnitIntegrated META_STALE mark,
-        // comma-joined, empty segments ignored - so a stale unit keeps stopping-to-hit across
-        // the process boundary. A mark on a NON-UnitIntegrated event is ignored (only the
-        // integration event carries the invalidation).
-        let events = vec![
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"alpha"}"#.to_vec())
-                .with_meta(META_STALE, "beta,delta"),
-            // A second integration adds another stale unit and tolerates a trailing empty.
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"beta"}"#.to_vec())
-                .with_meta(META_STALE, "epsilon,"),
-            // An integration that staled nobody carries no mark.
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"gamma"}"#.to_vec()),
-            // A stray mark on some OTHER event type must never seed the set.
-            Event::new(ledger::TYPE_UNIT_STATUS, br#"{"id":"zeta"}"#.to_vec())
-                .with_meta(META_STALE, "zeta"),
-        ];
-        let seeded = stale_units_from_log(&events);
-        let mut got: Vec<String> = seeded.into_iter().collect();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                "beta".to_string(),
-                "delta".to_string(),
-                "epsilon".to_string()
-            ],
-            "the stale set is exactly the units named across the UnitIntegrated marks"
-        );
-    }
-
-    /// Drives the staleness end-to-end fixture. `alpha` (upstream) writes `shared.rs` (whose
-    /// content carries `beta`'s grounding keyword) and its adjudicator approves immediately,
-    /// so it integrates first. `beta`/`gamma` (downstream, needing alpha) each write their
-    /// OWN file with STABLE content and reject attempt 0 then approve attempt 1, so each
-    /// re-gates an IDENTICAL tree - a content cache-hit unless staleness refuses it.
-    struct StaleDriver;
-    impl AgentDriver for StaleDriver {
-        fn spawn(
-            &self,
-            _a: &AgentDef,
-            _prompt: &str,
-            opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            let unit = opts.id.split('/').next().unwrap_or_default();
-            let attempt = attempt_of(&opts.id);
-            if opts.id.contains("/implementer#") {
-                if !opts.dir.is_empty() {
-                    let (file, content) = match unit {
-                        // alpha's touched file, carrying beta's grounding keyword `widget`.
-                        "alpha" => ("shared.rs", "// widget helper\n"),
-                        // beta/gamma each write their OWN file with fixed content, so their
-                        // attempt-0 and attempt-1 trees are byte-identical (a hit candidate).
-                        "beta" => ("beta_work.rs", "fn beta() {}\n"),
-                        _ => ("gamma_work.rs", "fn gamma() {}\n"),
-                    };
-                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
-                }
-                return Ok(AgentResult::default());
-            }
-            if opts.id.contains("/adjudicator#") {
-                // alpha integrates on attempt 0; beta/gamma reject once then approve, so each
-                // reaches an attempt-1 re-gate over its identical tree.
-                let approve_at = if unit == "alpha" { 0 } else { 1 };
-                let out = if attempt >= approve_at {
-                    r#"{"verdict":"approve"}"#
-                } else {
-                    r#"{"verdict":"reject","issues":[]}"#
-                };
-                return Ok(AgentResult {
-                    output: out.into(),
-                    resolved_model: String::new(),
-                });
-            }
-            Ok(AgentResult {
-                output: "reviewed the diff".into(),
-                resolved_model: String::new(),
-            })
-        }
-    }
-
-    #[test]
-    fn integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest() {
-        // spec 12, unit 2 (end-to-end, three-unit dependency fixture): integrating `alpha`
-        // (touching `shared.rs`) marks EXACTLY the downstream units whose blast radius
-        // intersects `shared.rs` stale - `beta` grounds onto it, `gamma` does not. The stale
-        // unit's cached verdicts STOP HITTING: `beta` re-gates its identical attempt-1 tree
-        // for real instead of taking the content cache-hit its attempt-0 green would answer,
-        // while the unaffected `gamma` still hits and its green STANDS.
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        // `gamma` grounds onto a file present from the base (a grep grounder searches file
-        // CONTENT for the coverage word); `beta` grounds onto shared.rs, which alpha creates.
-        std::fs::write(repo.path().join("gamma_only.rs"), "// gizmo lives here\n").unwrap();
-        for args in [&["add", "-A"][..], &["commit", "-q", "-m", "fixture"][..]] {
-            run_git(&repo_path, args);
-        }
-        let grep = crate::grounder::Grep {
-            root: repo_path.clone(),
-        };
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        // alpha upstream (its coverage grounds onto no touched file, so it stales nobody by
-        // its own name); beta grounds onto shared.rs (`widget`); gamma onto gamma_only.rs
-        // (`gizmo`). beta/gamma depend on alpha so they run only AFTER it integrated + marked.
-        let mk = |name: &str, coverage: &str, needs: Vec<String>| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            coverage: coverage.into(),
-            gates: vec!["g".into()],
-            on_pass: "merge".into(),
-            needs,
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow
-            .stages
-            .insert("alpha".into(), mk("alpha", "alpha", vec![]));
-        cfg.workflow
-            .stages
-            .insert("beta".into(), mk("beta", "widget", vec!["alpha".into()]));
-        cfg.workflow
-            .stages
-            .insert("gamma".into(), mk("gamma", "gizmo", vec!["alpha".into()]));
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = StaleDriver;
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
-        };
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        for name in ["alpha", "beta", "gamma"] {
-            assert_eq!(
-                rs.units[name].status,
-                ledger::Status::Integrated,
-                "{name} must integrate"
-            );
-        }
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // The `META_STALE` mark on a unit's UnitIntegrated event, if any.
-        let staled_by = |unit: &str| -> Option<String> {
-            events
-                .iter()
-                .find(|e| {
-                    e.type_ == ledger::TYPE_UNIT_INTEGRATED
-                        && serde_json::from_slice::<Value>(&e.data)
-                            .ok()
-                            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-                            .as_deref()
-                            == Some(unit)
-                })
-                .and_then(|e| e.meta.get(META_STALE).cloned())
-        };
-        // (1) MARKING: alpha's integration stales EXACTLY beta - never gamma (disjoint
-        // radius) and never itself; beta/gamma touch no downstream radius, so they stale none.
-        assert_eq!(
-            staled_by("alpha").as_deref(),
-            Some("beta"),
-            "alpha's integration stales exactly beta, whose blast radius intersects shared.rs"
-        );
-        assert!(
-            staled_by("beta").is_none() && staled_by("gamma").is_none(),
-            "beta and gamma touch no downstream blast radius, so their integrations stale nobody"
-        );
-
-        // (2) CACHE STOPS HITTING vs GREEN STANDS: both re-gate an identical attempt-1 tree,
-        // but the stale beta re-runs (no cache-hit) while the unaffected gamma hits.
-        assert!(
-            !gate_verdict_event(&events, "beta", 1)
-                .meta
-                .contains_key(META_CACHE_HIT),
-            "beta is stale, so its attempt-1 gate RE-RAN rather than reuse its attempt-0 green"
-        );
-        assert!(
-            gate_verdict_event(&events, "gamma", 1)
-                .meta
-                .contains_key(META_CACHE_HIT),
-            "gamma is unaffected, so its identical attempt-1 tree still cache-hits - green stands"
         );
     }
 

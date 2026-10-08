@@ -500,11 +500,6 @@
     "reason": "Two `AgentDriver::spawn` doubles scripted for different scenarios (a conductor unit test versus the post-merge gate error-cleanup periphery), each returning its own canned output."
   },
   {
-    "id": "dup-ae7ef878296c",
-    "disposition": "not-a-duplicate",
-    "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
-  },
-  {
     "id": "dup-b91a09b322bf",
     "disposition": "not-a-duplicate",
     "reason": "Two different workflows built from the already-shared config fixtures: `critique_cfg` wires an adversary into the plan-critique gate while `two_episode_cfg` runs it with no adversary and a different agent roster."
@@ -965,11 +960,6 @@
     "reason": "Two port methods of the counting store double, each recording its own `CountedRead` variant before forwarding its own inner call; the shared work (recording, landing an interleaved write) is already the one `record`/`land_interleaved` pair both call."
   },
   {
-    "id": "dup-649d686bdf2a",
-    "disposition": "not-a-duplicate",
-    "reason": "Three one-line queries of three different sets, each behind its own owner's lock: the conductor's stale-unit set, and the replay-key set's own insert and membership test; they share only the `lock().unwrap()` idiom."
-  },
-  {
     "id": "dup-340eefdbe122",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, a KurrentDB group stream name, spawn-store subject, audit join, the closed-unit report line a `reset --runs` periphery case expects, the spec-critique prompt joining its fixed sections to the spec text, the no-critic line a run-start refusal periphery case expects, the halt a spec-defect stop's tests expect) over different inputs."
@@ -1033,5 +1023,15 @@
     "id": "dup-8fb3e9b78321",
     "disposition": "not-a-duplicate",
     "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
+  },
+  {
+    "id": "dup-62c48a13d591",
+    "disposition": "not-a-duplicate",
+    "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
+  },
+  {
+    "id": "dup-5c13daf57f07",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay-key set's insert and membership test: two different operations on one set behind its owner's lock; they share only the `lock().unwrap()` idiom."
   }
 ]
