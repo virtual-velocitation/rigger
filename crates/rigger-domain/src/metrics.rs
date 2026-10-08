@@ -331,6 +331,12 @@ pub struct Metrics {
     /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) surfaces so it is
     /// visible in production.
     pub parallelism_retention: Option<f64>,
+    /// The grounded units [`parallelism_retention`](Metrics::parallelism_retention) measured over
+    /// (each unit's latest recorded radius), so a reading states its own denominator.
+    pub grounded_units: u64,
+    /// How many of those [`grounded_units`](Metrics::grounded_units) have an EMPTY radius - a
+    /// criterion naming no code, which runs alone and so lowers the retention by construction.
+    pub empty_radii: u64,
     /// Per-agent wall-clock duration aggregates (spec 61, SPAWN TIMING), keyed by the spawn's
     /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME
     /// per-agent breakdown the review-tier cost fold uses, but covering EVERY recorded spawn
@@ -986,12 +992,15 @@ pub fn project(events: &[Event]) -> Metrics {
             _ => {}
         }
     }
-    // Runtime parallelism-retention (spec 16 unit 3): partition every unit's latest safe radius
-    // the way `partition_wave` will and measure the share that stays co-schedulable. Absent when
+    // Runtime parallelism-retention (spec 16 unit 3): partition every unit's latest safe radius by
+    // the same `radii_conflict` rule `run_wave` admits by and measure the share that stays
+    // co-schedulable, with the count of empty radii that explains a low reading. Absent when
     // no `BlastRadiusComputed` was recorded (the non-symbols default), so a run with no structural
     // grounding reports no retention rather than a spurious full-parallelism reading.
     let radii: Vec<Vec<String>> = blast_radii.into_values().collect();
     metrics.parallelism_retention = parallelism_retention_of(&radii);
+    metrics.grounded_units = radii.len() as u64;
+    metrics.empty_radii = radii.iter().filter(|r| r.is_empty()).count() as u64;
 
     // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its result by
     // (run window, spawn id), bucketed per spawn ROLE. Two cases fall through to `unpaired_spawns`
@@ -1619,6 +1628,12 @@ mod tests {
         ]);
         assert_eq!(all_empty.parallelism_retention, Some(0.0));
         assert!(all_empty.parallelism_retention_warns());
+        assert_eq!(
+            (all_empty.grounded_units, all_empty.empty_radii),
+            (2, 2),
+            "both grounded units are counted, both as empty radii"
+        );
+        assert_eq!((healthy.grounded_units, healthy.empty_radii), (2, 0));
 
         // No `BlastRadiusComputed` events (the non-symbols default): absent metric, never warns.
         let none = project(&[verdict("g", true)]);
@@ -1804,6 +1819,8 @@ mod tests {
             review_quality: ReviewQuality::default(),
             // No BlastRadiusComputed events in this slice, so the retention metric is absent.
             parallelism_retention: None,
+            grounded_units: 0,
+            empty_radii: 0,
             // No SpawnRequested/SpawnResult events in this slice, so the spec-61 spawn-timing
             // fold is empty too - the new fields never disturb the existing ones.
             spawn_timing: BTreeMap::new(),
