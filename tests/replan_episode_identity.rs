@@ -239,6 +239,7 @@ impl AgentDriver for ReplanDriver {
             return Ok(AgentResult {
                 output: "proposed the DAG".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if a.id == self.adjudicator {
@@ -261,12 +262,14 @@ impl AgentDriver for ReplanDriver {
             return Ok(AgentResult {
                 output: format!("{{\"verdict\":\"{verdict}\"}}"),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         // The worker (or any other reviewer) does trivial, benign work.
         Ok(AgentResult {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -585,6 +588,7 @@ impl AgentDriver for RefineWithSiblingDriver {
             return Ok(AgentResult {
                 output: "proposed the DAG".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if a.id == self.adjudicator {
@@ -604,11 +608,13 @@ impl AgentDriver for RefineWithSiblingDriver {
             return Ok(AgentResult {
                 output: format!("{{\"verdict\":\"{verdict}\"}}"),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         Ok(AgentResult {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -806,11 +812,13 @@ impl AgentDriver for SinglePlannerDriver {
             return Ok(AgentResult {
                 output: "proposed the DAG".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         Ok(AgentResult {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -925,6 +933,7 @@ impl AgentDriver for TrivialDriver {
         Ok(AgentResult {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

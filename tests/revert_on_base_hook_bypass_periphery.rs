@@ -102,11 +102,13 @@ impl AgentDriver for CompDriver {
             return Ok(AgentResult {
                 output: out.into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         Ok(AgentResult {
             output: "reviewed the diff".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

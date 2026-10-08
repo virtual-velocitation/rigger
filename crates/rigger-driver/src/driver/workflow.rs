@@ -138,6 +138,7 @@ impl Driver {
                 Ok(AgentResult {
                     output,
                     resolved_model,
+                    ..Default::default()
                 })
             } else {
                 Err(Error(err))

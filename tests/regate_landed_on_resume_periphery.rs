@@ -12,14 +12,14 @@
 //! fast path for ONE shape: a single `run()` call against a store HAND-SEEDED with the exact
 //! four events a real prior window would have left (`UnitStarted`, `verified`, `reviewed`,
 //! `integrate-landed` carrying the new `pre_merge` evidence field) - proving that IF the log
-//! holds exactly that shape, the resumed call resolves `commit`/`pre_merge` from it, runs the
-//! post-merge gate for real, and reports `UnitIntegrated` with the real landed sha.
+//! holds exactly that shape, the resumed call resolves `commit`/`pre_merge` from it, re-gates
+//! the landed tree, and reports `UnitIntegrated` with the real landed sha.
 //!
 //! WHAT THIS FILE OWNS - two gaps the hand-seeded, inside-out coverage above is structurally
 //! blind to (`sdet-u103c3-boundary-accounting`):
 //!
 //! GAP 1 (event type / serialized form - round-trip), `a_crash_right_after_landing_before_the_
-//! postmerge_regate_still_gates_for_real_on_resume`. A hand-typed event proves the READ side
+//! postmerge_regate_still_regates_on_resume`. A hand-typed event proves the READ side
 //! parses a shape the author BELIEVES the write side produces; it cannot prove the two agree.
 //! This drives a REAL two-call crash-then-resume (mirroring
 //! `tests/integrate_conflict_merge_periphery.rs`'s own established GAP 6/9/10 technique,
@@ -29,8 +29,11 @@
 //! the test author's own hand-built JSON - then a simulated crash refuses the very next append
 //! (the post-merge gate's own verdict), before it can complete. Call 2 resumes fresh against the
 //! SAME store+repo and must re-derive the real landed sha and pre_merge purely from that durable
-//! row, run the post-merge gate for real, and reach `UnitIntegrated` with the actual merged sha
-//! - never re-spawning the unit's implementer/lens/judge lifecycle at all.
+//! row, re-gate the landed commit, and reach `UnitIntegrated` with the actual merged sha - never
+//! re-spawning the unit's implementer/lens/judge lifecycle at all. The single unit lands as a
+//! fast-forward, so the landed commit IS the commit call 1's pre-merge gate proved green: the
+//! resumed post-merge verdict is a cache-hit replay of that green, which call 2 only knows from
+//! the content cache it reseeds from the log - the crash-resume pin for that reseed.
 //!
 //! GAP 2 (event type / serialized form - back-compat, the OTHER half of the same probe hit),
 //! `a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior`. Every
@@ -139,14 +142,19 @@ impl EventStore for FailAfterContaining<'_> {
     crate::delegate_event_store_reads!();
 }
 
-/// Whether `events` carries a real, non-cached-hit-or-otherwise `GateVerdict` for the
-/// POST-MERGE re-gate specifically. The post-merge replay key
+/// The `GateVerdict` `events` records for the POST-MERGE re-gate specifically, whether the gate
+/// ran or replayed a prior green as a cache-hit. The post-merge replay key
 /// (`src/conductor.rs::postmerge_gate_verdict_key`, private to that module) is
 /// `{unit}/postmerge-gate:{gate}#{attempt}` per its own doc comment - reproduced here by
 /// literal format string rather than imported, exactly as `unit_branch` is above.
-fn has_postmerge_gate_verdict(events: &[Event], unit: &str, attempt: u32, gate: &str) -> bool {
+fn postmerge_gate_verdict<'a>(
+    events: &'a [Event],
+    unit: &str,
+    attempt: u32,
+    gate: &str,
+) -> Option<&'a Event> {
     let key = format!("{unit}/postmerge-gate:{gate}#{attempt}");
-    events.iter().any(|e| {
+    events.iter().find(|e| {
         e.type_ == contextgraph::TYPE_GATE_VERDICT && e.meta.get("replay_key") == Some(&key)
     })
 }
@@ -161,11 +169,11 @@ fn base_cfg(repo_path: &str) -> Config {
 
 // ============================================================================================
 // GAP 1: a real two-call crash-then-resume proves the PRODUCTION write path actually puts
-// `pre_merge` on the wire and the resumed read path actually re-gates the real merge for real.
+// `pre_merge` on the wire and the resumed read path actually re-gates the real merge.
 // ============================================================================================
 
 #[test]
-fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_on_resume() {
+fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resume() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = base_cfg(&repo_path);
@@ -214,7 +222,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
          simulates; events: {events_after_call_1:?}"
     );
     assert!(
-        !has_postmerge_gate_verdict(&events_after_call_1, "unit-a", 0, "g"),
+        postmerge_gate_verdict(&events_after_call_1, "unit-a", 0, "g").is_none(),
         "the post-merge re-gate must NOT have completed in call 1 - that is the exact crash \
          window this fixture simulates; events: {events_after_call_1:?}"
     );
@@ -247,12 +255,19 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
         "row 4's after-record must never be re-recorded by the resumed call - it was already \
          completed once, by call 1, before the crash; events: {events_after_call_2:?}"
     );
+    let resumed =
+        postmerge_gate_verdict(&events_after_call_2, "unit-a", 0, "g").unwrap_or_else(|| {
+            panic!(
+                "THE defect this criterion fixes: a real merge whose post-merge re-gate never \
+                 completed before a crash must still re-gate on resume, never take the true \
+                 no-op short circuit that used to skip straight to UnitIntegrated; \
+                 events: {events_after_call_2:?}"
+            )
+        });
     assert!(
-        has_postmerge_gate_verdict(&events_after_call_2, "unit-a", 0, "g"),
-        "THE defect this criterion fixes: a real merge whose post-merge re-gate never \
-         completed before a crash must still run it for real on resume, never take the true \
-         no-op short circuit that used to skip straight to UnitIntegrated; \
-         events: {events_after_call_2:?}"
+        resumed.meta.contains_key("cache_hit_of"),
+        "the fast-forward landed the very commit call 1 gated green, so the resumed post-merge \
+         gate replays that green from the cache call 2 reseeded from the log: {resumed:?}"
     );
     let integrated = events_after_call_2
         .iter()
@@ -382,7 +397,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
 
     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     assert!(
-        !has_postmerge_gate_verdict(&events, "unit-a", 0, "g"),
+        postmerge_gate_verdict(&events, "unit-a", 0, "g").is_none(),
         "a legacy row this fold cannot resolve `pre_merge` from must take the SAME true no-op \
          short circuit a pre-fix binary always took for this shape - it must never guess a \
          tree to re-gate; events: {events:?}"

@@ -157,13 +157,13 @@ pub const META_SPAWN: &str = "spawn";
 pub use crate::metrics::META_WORKTREE_SHA;
 
 /// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
-/// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
-/// and the git tree-SHA of its inputs (the whole committed tree by default). Every inline
+/// address of the gate run, [`input_digest`]`(command, commit-sha)` over the gate command
+/// and the HEAD commit the gate ran on (its tree AND its history). Every inline
 /// [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) a unit's worktree gate records carries
-/// it, so a later gate whose command + tree digest matches a prior GREEN verdict is
+/// it, so a later gate whose command + commit digest matches a prior GREEN verdict is
 /// answered as a logged cache-hit instead of re-running the command. It is audit metadata
 /// on an event that already exists - no new event type (spec 12's Global constraints) - so
-/// folds and projections ignore it. Empty (and so omitted) when there is no tree to address
+/// folds and projections ignore it. Empty (and so omitted) when there is no commit to address
 /// (a repo-less / worktree-less gate run), which simply disables content-addressing there.
 pub const META_INPUT_DIGEST: &str = "input_digest";
 
@@ -174,19 +174,6 @@ pub const META_INPUT_DIGEST: &str = "input_digest";
 /// from the hit to the exact green it reused. Present ONLY on cache-hit verdicts; a
 /// freshly-run gate's verdict omits it.
 pub const META_CACHE_HIT: &str = "cache_hit_of";
-
-/// The metadata key a `UnitIntegrated` event carries to mark the DOWNSTREAM units its
-/// integration rendered STALE (spec 12, unit 2): a comma-separated list of the unit ids
-/// whose grounded blast radius intersects this integration's touched files. A stale
-/// unit's cached gate verdicts stop hitting - its next gate re-runs against the changed
-/// world instead of reusing a green earned before this integration (see
-/// [`RunCtx::is_stale`] and the run_gates hit-site). The staleness ride is metadata on an
-/// event that ALREADY exists - no new event type (spec 12's Global constraints) - and it
-/// is self-provenanced: the mark names exactly which downstream units were invalidated,
-/// carried on the integrating unit's own integration event (its position + id are the
-/// citation). Present ONLY when at least one downstream unit was staled; an integration
-/// that touches no downstream blast radius omits it.
-pub const META_STALE: &str = "staled_units";
 
 /// The metadata key naming the integrating commit(s) a COMPENSATION reverted (spec 12,
 /// unit 4): a comma-separated list of the reverted commit shas, stamped on the `UnitFailed`
@@ -317,6 +304,30 @@ const STATUS_REVIEW_TIER: &str = "review-tier";
 /// variant, so `Status::parse` returns `None` and both the ledger and metrics folds
 /// ignore it - the mark exists purely as log-derived ground truth for this one read.
 const STATUS_REVIEW_ROUND_START: &str = "review-round-start";
+
+/// The `UnitStatus` token of a SPAWN SESSION mark: spawn [`META_SPAWN`] of the unit, at the
+/// mark's `attempt` and in its `dir`, ran as the Claude Code session [`META_SESSION_ID`] names (continuing
+/// [`META_RESUMED_FROM`] when it was resumed). A later attempt or review round of the same
+/// role on the same unit reads it back ([`recorded_session`]) and continues that session
+/// instead of starting a cold one, so the record is log-carried: a driver relaunched by
+/// adoption continues the same sessions. Like [`STATUS_REVIEW_ROUND_START`] it is deliberately
+/// NOT a [`ledger::Status`] variant, so the ledger and metrics folds ignore it.
+const STATUS_SPAWN_SESSION: &str = "spawn-session";
+
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the spawn's session id under.
+const META_SESSION_ID: &str = "session_id";
+
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn was ASKED to
+/// continue under ([`SpawnOpts::resumed_from`]); absent on a spawn asked for a fresh session.
+/// Beside [`META_RESUMED_FROM`] it records a host's fallback in the log: a requested session
+/// with no continued one is a resume the host could not honour (its transcript was gone), so
+/// the spawn ran fresh.
+const META_RESUME_REQUESTED: &str = "resume_requested";
+
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
+/// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
+/// it was asked to resume is gone.
+const META_RESUMED_FROM: &str = "resumed_from";
 
 /// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
 /// `(unit, attempt)` coordinate [`RunCtx::review_unit`] entered under - `attempt` is
@@ -456,8 +467,8 @@ fn gate_intersects_radius(inputs: &[String], blast_radius: &[String]) -> bool {
 
 /// The producing UNIT of a gate-verdict replay key (`{unit}/gate:{gate}#{attempt}`), used
 /// when seeding the content-address cache from prior GREEN verdicts so the cache value
-/// carries which unit earned the green (the coordinate a downstream staleness pass keys
-/// off). A deferred key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
+/// carries which unit earned the green (provenance the cache-hit evidence cites). A deferred
+/// key (`deferred/gate:{gate}`) yields `"deferred"`; a key with no
 /// `/gate:` marker yields `None`. Pure string parse - the single place the key's unit
 /// segment is recovered.
 ///
@@ -484,33 +495,115 @@ fn gate_key_attempt(key: &str) -> Option<u32> {
 }
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
-/// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
-/// [`worktree::HEAD_TREE`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
-/// trees are always distinct addresses - the tree is what determines the gate outcome, so
-/// it must never collide - while the command is folded to a compact FNV-1a hash (the same
-/// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
-/// identical hash across processes, machines, and builds, unlike `DefaultHasher`). So the
-/// address is a pure function of `(command, tree bytes)`: replay-deterministic, and a gate
-/// re-run over an unchanged tree with the same command reproduces the SAME digest (a hit),
-/// while any change to either side changes it (a miss). Empty `tree_sha` (no worktree tree
-/// to address) yields an empty digest, which the caller reads as "addressing disabled here".
-fn input_digest(command: &str, tree_sha: &str) -> String {
-    if tree_sha.is_empty() {
+/// `command` and the `commit_sha` it ran on. A verdict may be replayed only when every input
+/// the gate reads is unchanged, and a gate reads more than the tree: red-before-green walks the
+/// unit's commit history and the content gates diff from the run-branch ref. The HEAD commit
+/// addresses the tree AND that history, so the same commit (the integrate door's re-check, a
+/// fast-forward landing's post-merge gates) replays, while an identical tree reached through
+/// different commits re-runs. The verbatim commit sha is kept so two different commits never
+/// collide, while the command is folded to a compact FNV-1a hash (the same fixed-seed stable
+/// hash the rest of the crate uses for content oracles: identical bytes -> identical hash
+/// across processes, machines, and builds, unlike `DefaultHasher`), so the address is
+/// replay-deterministic. Empty `commit_sha` (no worktree to address) yields an empty digest,
+/// which the caller reads as "addressing disabled here".
+fn input_digest(command: &str, commit_sha: &str) -> String {
+    if commit_sha.is_empty() {
         return String::new();
     }
-    // The collision-sensitive input (the tree) rides verbatim, so the 64-bit hash covers only
+    // The collision-sensitive input (the commit) rides verbatim, so the 64-bit hash covers only
     // the short, config-authored command string.
     let hash = fnv1a_64(command.as_bytes());
-    format!("{hash:016x}:{tree_sha}")
+    format!("{hash:016x}:{commit_sha}")
+}
+
+/// The commit a gate digest addresses - the `commit_sha` [`input_digest`] folded in after the
+/// command hash - or `None` for an empty or malformed digest. The one parse of the address, so
+/// a reader asking "which gates ran on this commit" ([`gate_evidence_block`]) never re-spells
+/// the digest's layout.
+fn digest_address(digest: &str) -> Option<&str> {
+    digest.split_once(':').map(|(_, commit)| commit)
 }
 
 /// The payload of a `GateVerdict` event, for seeding the gate-verdict replay cache and
-/// for the ratchet's evidence. `evidence` defaults so a legacy verdict without it decodes.
+/// for the ratchet's evidence. `gate` and `evidence` default so a legacy verdict without
+/// them decodes.
 #[derive(Deserialize)]
 struct GateVerdictData {
+    #[serde(default)]
+    gate: String,
     pass: bool,
     #[serde(default)]
     evidence: String,
+}
+
+/// `unit`'s own gate-RUN verdicts in log order, each as its event, its replay key and its
+/// decoded payload: every [`GateVerdict`](contextgraph::TYPE_GATE_VERDICT) whose replay key
+/// [`unit_of_gate_key`] resolves to `unit`. A skip, a post-merge re-gate and a deferred phase
+/// gate key under other infixes, so none of them is mistaken for the unit's own gate run. The
+/// one selection behind [`recorded_gate_outcome`] and [`gate_evidence_block`].
+fn unit_gate_runs<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+) -> impl Iterator<Item = (&'a Event, &'a str, GateVerdictData)> + 'a {
+    events.iter().filter_map(move |e| {
+        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
+            return None;
+        }
+        let key = e.meta.get(META_REPLAY_KEY)?;
+        if unit_of_gate_key(key) != Some(unit) {
+            return None;
+        }
+        let data = serde_json::from_slice::<GateVerdictData>(&e.data).ok()?;
+        Some((e, key.as_str(), data))
+    })
+}
+
+/// THE GATES GRADE, THE REVIEWERS JUDGE THE RESIDUE: the block every review tier's prompt
+/// carries naming what the deterministic gates already proved on the exact commit it judges -
+/// `commit`, the [`digest_address`] of each gate's [`META_INPUT_DIGEST`], the same
+/// [`worktree::head_sha_of`] `run_gates_at` addresses its gates by - so no reviewer spends its
+/// round re-running an instrument the log shows green on that commit. One line per gate, in the
+/// order the gates ran, carrying its verdict, its input digest and its recorded evidence lines;
+/// a gate recorded more than once on this commit (an infra rerun, a cache hit) shows its latest
+/// verdict. Empty - and so claiming nothing - when there is no commit (a worktree-less review)
+/// or no gate of `unit` ran on it.
+fn gate_evidence_block(events: &[Event], unit: &str, commit: &str) -> String {
+    if commit.is_empty() {
+        return String::new();
+    }
+    let mut rows: Vec<(String, bool, String, String)> = Vec::new();
+    for (e, _, v) in unit_gate_runs(events, unit) {
+        let Some(digest) = e.meta.get(META_INPUT_DIGEST) else {
+            continue;
+        };
+        if digest_address(digest) != Some(commit) {
+            continue;
+        }
+        let row = (v.gate, v.pass, digest.clone(), v.evidence);
+        match rows.iter_mut().find(|r| r.0 == row.0) {
+            Some(slot) => *slot = row,
+            None => rows.push(row),
+        }
+    }
+    if rows.is_empty() {
+        return String::new();
+    }
+    let mut b = format!(
+        "\n\nGATE EVIDENCE for the commit under review (commit {commit}, which `git rev-parse \
+         HEAD` prints in the unit's worktree): every gate below already ran on exactly this \
+         commit. Never re-run a gate shown PASS here, by hand or through a verify helper: the \
+         gate is the instrument that proves it, and your judgment covers what no gate sees. \
+         Reproduce only a specific suspicion - one named test, a reversion probe, a single-crate \
+         `cargo test -p <crate> <test>` - in your own scratch worktree, never the whole battery.\n"
+    );
+    for (gate, pass, digest, evidence) in rows {
+        let verdict = if pass { "PASS" } else { "FAIL" };
+        b.push_str(&format!("- {gate}: {verdict} (input digest {digest})\n"));
+        for line in evidence.lines() {
+            b.push_str(&format!("    {line}\n"));
+        }
+    }
+    b
 }
 
 /// The CURRENT gate outcome for `unit` as RECORDED in the event stream: `Some(true)` if the
@@ -553,25 +646,14 @@ pub fn recorded_gate_outcome(events: &[Event], unit: &str) -> Option<bool> {
         (u32, u32),
         std::collections::BTreeMap<&str, bool>,
     > = std::collections::BTreeMap::new();
-    for e in events {
-        if e.type_ != contextgraph::TYPE_GATE_VERDICT {
-            continue;
-        }
-        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
-            continue;
-        };
-        if unit_of_gate_key(key) != Some(unit) {
-            continue;
-        }
+    for (_, key, v) in unit_gate_runs(events, unit) {
         let Some(attempt) = gate_key_attempt(key) else {
             continue;
         };
-        if let Ok(v) = serde_json::from_slice::<GateVerdictData>(&e.data) {
-            by_attempt
-                .entry((attempt, spawn::retry_of(key)))
-                .or_default()
-                .insert(key.as_str(), v.pass);
-        }
+        by_attempt
+            .entry((attempt, spawn::retry_of(key)))
+            .or_default()
+            .insert(key, v.pass);
     }
     // The latest gate run's outcome is the AND across its gates: any failing gate => `Some(false)`.
     let (_, latest) = by_attempt.iter().next_back()?;
@@ -675,14 +757,10 @@ enum GateSelection<'a> {
 }
 
 /// The result of integrating a unit ([`RunCtx::integrate_and_emit`]): the merge commit
-/// that landed (empty for a read-only / no-change unit), and the DOWNSTREAM units this
-/// integration marked STALE (spec 12, unit 2) - those whose blast radius intersects the
-/// unit's touched files. The caller stamps `staled` onto the `UnitIntegrated` event as
-/// [`META_STALE`] so the invalidation is recorded with provenance and re-seeded on resume.
+/// that landed (empty for a read-only / no-change unit).
 #[derive(Default)]
 struct Integration {
     commit: String,
-    staled: Vec<String>,
     /// The post-merge re-gate went RED (spec 12, unit 5): the merge was ROLLED BACK (nothing
     /// landed, no `UnitIntegrated`) and this carries the merge-break gate evidence, so the
     /// caller falls to remediation exactly like a pre-merge gate failure. `None` on a clean
@@ -1949,7 +2027,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .collect();
     // Content-address cache (spec 12, unit 1): seed `input_digest -> (position, unit)` from
     // the prior log's GREEN gate verdicts (those carrying a META_INPUT_DIGEST), so a fresh
-    // gate whose command + tree-sha digest matches is answered as a logged cache-hit citing
+    // gate whose command + commit-sha digest matches is answered as a logged cache-hit citing
     // that position. prior_events is ascending by position, and we insert only-if-absent, so
     // the EARLIEST green for a digest is the cited source (a later cache-hit re-emit under
     // the same digest is a no-op). Failures are excluded here (a red must re-prove), and the
@@ -1979,13 +2057,6 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             .entry(digest.clone())
             .or_insert((e.position, unit));
     }
-    // Staleness set (spec 12, unit 2): seed the units a prior UnitIntegrated marked STALE
-    // (its META_STALE names the downstream units its integration invalidated), so a
-    // stepwise resume re-refuses their cached gate hits exactly as the process that marked
-    // them would - the invalidation is replay-deterministic over the log, not lost with the
-    // marking process. Extended live below each time a unit integrates this process.
-    let stale_units = stale_units_from_log(prior_events);
-
     // Compensation replay state (spec 12, unit 4): the integrating commits a PRIOR step
     // already reverted (so a resume never re-reverts them - the reverse gear is
     // replay-deterministic over the log) and the contradiction fed back to each re-entered
@@ -2097,7 +2168,6 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
-        stale_units: Mutex::new(stale_units),
         compensations: Mutex::new(pending_compensations),
         compensation_feedback: Mutex::new(compensation_feedback),
         compensation_attempts: Mutex::new(HashMap::new()),
@@ -3004,27 +3074,13 @@ struct RunCtx<'a> {
     /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
     /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
     /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
-    /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
+    /// run_gates hit-site so a gate whose `(command, commit-sha)` digest matches a prior green
     /// is answered as a logged cache-hit citing that `position` instead of re-running the
     /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
     /// green for a digest wins (insert-if-absent in ascending position), so a cache-hit
     /// re-emit under the same digest cites the original green, never a chain of hits. The
     /// stored `unit` is the green's earner, carried as provenance in the cache-hit evidence.
-    /// Unit 2's staleness pass gates the hit at this SAME seam but keys off the REQUESTING
-    /// unit ([`stale_units`](RunCtx::stale_units) / [`is_stale`](RunCtx::is_stale)), not the
-    /// stored earner: it is the asker whose verdicts must stop hitting.
     green_digests: Mutex<HashMap<String, (u64, String)>>,
-    /// The units whose cached gate verdicts are STALE (spec 12, unit 2): each was marked by
-    /// a downstream staleness pass because an integrated unit touched files intersecting its
-    /// blast radius. Seeded ONCE at run start from the prior log's `UnitIntegrated`
-    /// [`META_STALE`] marks (so staleness survives a stepwise resume, replay-deterministic
-    /// over the log) and extended live each time a unit integrates. The run_gates content-
-    /// cache hit-site consults it via [`is_stale`](RunCtx::is_stale): a stale unit's gate is
-    /// never cache-answered - it re-runs against the changed world - while an unaffected
-    /// unit's green still hits. An integrated unit is skipped by the run loop, so a stale
-    /// mark on one is harmless; a still-pending stale unit re-verifies its gates until it
-    /// lands (re-running a gate is never wrong, only the cache benefit is withheld).
-    stale_units: Mutex<HashSet<String>>,
     /// The queued post-integration compensations (spec 12, unit 4): each is an
     /// already-integrated unit a later unit's review named as the defect source. A review
     /// site (inside a possibly-concurrent wave) PUSHES here; the single-threaded run loop
@@ -3142,7 +3198,6 @@ impl<'a> RunCtx<'a> {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -3368,15 +3423,6 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// Whether `unit`'s cached gate verdicts are STALE (spec 12, unit 2): a downstream
-    /// staleness pass invalidated them because an integrated unit touched files in its
-    /// blast radius. The run_gates content-cache hit-site checks this before honoring a
-    /// hit, so a stale unit re-runs its gate against the changed world instead of reusing a
-    /// green earned before the integration.
-    fn is_stale(&self, unit: &str) -> bool {
-        self.stale_units.lock().unwrap().contains(unit)
-    }
-
     /// The HIGH-WATER attempt `unit` RE-ENTERS its lifecycle at (spec 12, unit 4): the highest
     /// attempt at which the unit has ANY recorded evidence, reconciled by MAX across every live
     /// source so it equals what a resume would fold from the log even for a unit whose WHOLE
@@ -3455,28 +3501,6 @@ impl RunCtx<'_> {
             .filter(|k| unit_of_gate_key(k) == Some(unit))
             .filter_map(|k| gate_key_attempt(k))
             .max()
-    }
-
-    /// Mark every DOWNSTREAM unit a just-integrated `unit`'s `touched` files render stale
-    /// (spec 12, unit 2), returning the marked ids for the `UnitIntegrated` provenance
-    /// mark. The set is decided by [`stale_downstream_units`] (the single staleness
-    /// authority) and inserted LIVE into [`stale_units`](RunCtx::stale_units) so a later
-    /// gate for one of them in THIS process stops hitting the cache immediately; the caller
-    /// records the same ids as [`META_STALE`] so a resume re-seeds the identical set.
-    fn mark_stale_downstream(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        unit: &str,
-        touched: &[String],
-    ) -> Vec<String> {
-        let staled = stale_downstream_units(stages, self.deps.grounder, unit, touched);
-        if !staled.is_empty() {
-            let mut set = self.stale_units.lock().unwrap();
-            for u in &staled {
-                set.insert(u.clone());
-            }
-        }
-        staled
     }
 
     /// Drain the queued post-integration COMPENSATIONS (spec 12, unit 4), single-threaded
@@ -4178,7 +4202,7 @@ impl RunCtx<'_> {
                         let name = name.clone();
                         let st = stages[&name].clone();
                         s.spawn(move || {
-                            let r = self.start_and_run_stage(stages, &name, &st);
+                            let r = self.start_and_run_stage(&name, &st);
                             (name, r)
                         })
                     })
@@ -4190,12 +4214,7 @@ impl RunCtx<'_> {
         results
     }
 
-    fn start_and_run_stage(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        name: &str,
-        st: &Stage,
-    ) -> Result<bool, Error> {
+    fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
         // UnitStarted carries the assigned agent, its dependencies, and the unit's
         // DETERMINISTIC branch, so the graph can project ASSIGNED_TO (unit->agent) and
         // BLOCKS (need->unit), and the ledger records the durable checkpoint branch
@@ -4242,10 +4261,10 @@ impl RunCtx<'_> {
             // status events below (spec 10 unit 4).
             &[(META_MODEL_ALIAS, &self.agent_model(&st.agent, 0))],
         )?;
-        self.run_stage(stages, st)
+        self.run_stage(st)
     }
 
-    fn run_stage(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+    fn run_stage(&self, st: &Stage) -> Result<bool, Error> {
         // Async manual-gate queue (§4.3): a stage whose effective autonomy is Manual
         // pauses - its gate is awaiting a human, so emit ManualReview and leave the
         // unit pending (Ok(false), NOT escalated). Independent units in the same wave
@@ -4277,7 +4296,7 @@ impl RunCtx<'_> {
         // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
         // below, byte-for-byte unchanged (speculation defaults off).
         if self.speculates(st) {
-            return self.run_speculation(stages, st);
+            return self.run_speculation(st);
         }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
@@ -4301,7 +4320,7 @@ impl RunCtx<'_> {
         // a later conductor process - the mirror image of the review-worktree defect this
         // criterion exists to close.
         let any_parked = std::sync::atomic::AtomicBool::new(false);
-        let result = self.run_single_stage(stages, st, wt.as_ref(), &dir, phase, &any_parked);
+        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked);
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -4478,6 +4497,14 @@ impl RunCtx<'_> {
         reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
+        // The unit cache this spawn builds into ([`Self::spawn_env`]), from its role alone: the
+        // sdet-author builds the unit's own tree, so it keeps the unit's cache, warm for the
+        // gates that run right after it; every review tier builds into the unit's review cache.
+        let cache = if role == ROLE_SDET_AUTHOR {
+            crate::worktree::UNIT_CACHE_PREFIX
+        } else {
+            crate::worktree::UNIT_REVIEW_CACHE_PREFIX
+        };
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown {role} {agent_id:?}",
@@ -4509,20 +4536,80 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
-            // The ONE build-environment authority (spec 65) PLUS this spawn's own
-            // per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): a reviewer
-            // verifying inside the unit's worktree gets the same wrapper/cache/
-            // incremental vars a gate build and the implementer got, AND the same
-            // per-unit cache a gate build for this `dir` gets, so its own `cargo`
-            // invocations share both.
-            env: Self::spawn_env(&build_env, dir),
+            // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
+            // CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
+            // incremental vars a gate build and the implementer got, and the `cache` sibling
+            // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
+            // review cache for a review tier - so a reviewer's reproduction never builds into
+            // the cache the unit's gates use.
+            env: Self::spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
-            // The existing blocking drivers (cli/workflow) ignore these; spec 104's host
+            // The existing blocking drivers (cli/workflow) ignore these two; spec 104's host
             // is not wired in here yet.
             settings_json: String::new(),
             launch: 0,
+            // A fresh session; `continue_prior_session` points a later round's spawn at the
+            // session to continue.
             resumed_from: String::new(),
+            resume_task: String::new(),
         })
+    }
+
+    /// Point `opts` at the session `role`'s latest spawn on the same unit at an earlier attempt
+    /// ran as ([`recorded_session`], read from the log), so the spawn continues it with
+    /// `resume_task` - what changed since that session's last turn - instead of starting cold.
+    /// `opts` is returned unchanged (a fresh spawn on its full prompt) when there is nothing to
+    /// send (`resume_task` empty: no failure block, no round delta) or no earlier spawn of the
+    /// role recorded a session (a first attempt, or a driver that runs none). A log that cannot
+    /// be read is a fault the caller propagates, never a reason to start cold.
+    fn continue_prior_session(
+        &self,
+        mut opts: SpawnOpts,
+        role: &str,
+        resume_task: Option<String>,
+    ) -> Result<SpawnOpts, Error> {
+        let Some(task) = resume_task.filter(|t| !t.trim().is_empty()) else {
+            return Ok(opts);
+        };
+        let events = self.read_current_run()?;
+        if let Some(prior) = recorded_session(&events, &opts.unit, role, opts.attempt, &opts.dir) {
+            opts.resumed_from = prior;
+            opts.resume_task = task;
+        }
+        Ok(opts)
+    }
+
+    /// Record the session spawn `opts` ran as on a [`STATUS_SPAWN_SESSION`] mark keyed by its
+    /// spawn id, with the session it was asked to continue and the one it did continue, so a
+    /// later attempt reads it back from the log and the log tells a fallback (asked, but none
+    /// continued: the session was gone, so it ran fresh) from an ordinary fresh spawn. A result
+    /// naming no session records nothing. A fallback is also said on the operator's log.
+    fn record_session(&self, opts: &SpawnOpts, result: &AgentResult) -> Result<(), Error> {
+        if result.session_id.is_empty() {
+            return Ok(());
+        }
+        if !opts.resumed_from.is_empty() && result.resumed_from.is_empty() {
+            (self.deps.log)(&format!(
+                "spawn {}: session {} to resume is gone; it ran as a fresh session {}",
+                opts.id, opts.resumed_from, result.session_id
+            ));
+        }
+        self.emit_keyed_meta(
+            &format!("{}/session", opts.id),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": opts.unit,
+                "status": STATUS_SPAWN_SESSION,
+                "attempt": opts.attempt,
+                "dir": opts.dir,
+            }),
+            &[
+                (META_SPAWN, &opts.id),
+                (META_SESSION_ID, &result.session_id),
+                (META_RESUME_REQUESTED, &opts.resumed_from),
+                (META_RESUMED_FROM, &result.resumed_from),
+            ],
+        )
     }
 
     /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6, round 3,
@@ -4763,7 +4850,11 @@ impl RunCtx<'_> {
             })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
-        // their findings; it tries to prove them wrong and emits its own findings.
+        // their findings; it tries to prove them wrong and emits its own findings. It waits
+        // for every lens to FINISH, never for the first findings to appear: it weighs each
+        // lens's final position (a lens with no finding reads as "clean" only once it has
+        // ended - until then it may still be about to raise one), and the lens tier's join is
+        // where a lens's park or error surfaces before any later tier spends a spawn.
         if !adversary.is_empty() {
             // Same guard-on-crash discipline as tier 1 above: residue the (already
             // completed) lens tier committed must not outlive an adversary crash either.
@@ -5116,6 +5207,10 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         dir: &str,
         attempt: u32,
+        // The gates the previous attempt failed (its `PriorFailure` gate evidence, the same the
+        // implementer is handed): what a later attempt's resumed session is told changed when
+        // no review round sent the unit back. Empty on a first attempt.
+        gate_evidence: &[String],
     ) -> Result<(), Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
@@ -5153,32 +5248,49 @@ impl RunCtx<'_> {
         // The doc-only rule is guidance, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
         let delta = self.round_delta(wt, &st.name, attempt);
-        if delta.is_some_and(|(_, paths)| is_documentation_only(&paths)) {
+        let doc_only = delta
+            .as_ref()
+            .is_some_and(|(_, paths)| is_documentation_only(paths));
+        if doc_only {
             sdet_prompt.push_str("\n\n");
             sdet_prompt.push_str(DOC_ONLY_ROUND);
         }
+        // A later attempt continues the sdet-author's own session, sent what sent the unit back
+        // - the review round's delta, the gates the last attempt failed, or both - to bring the
+        // periphery tests in line with (and the doc-only rule when it applies).
+        let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
+        if doc_only {
+            resume_task.push_str(DOC_ONLY_ROUND);
+        }
+        let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
+        let opts = match self.reviewer_spawn_opts(
+            &sdet_id,
+            ROLE_SDET_AUTHOR,
+            ROLE_SDET_AUTHOR,
+            dir,
+            attempt,
+            false,
+            st,
+            // The sdet-author writes periphery tests - it is not a review tier judging
+            // another agent's output, so it carries no roster (spec 67, criterion 4).
+            &[],
+        ) {
+            // A log that cannot be read is a fault, propagated - never a cold start.
+            Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
+            // An opts-guard error takes the crash disposition below: the unit proceeds to
+            // the commit.
+            Err(_) => return Ok(()),
+        };
         match self
-            .reviewer_spawn_opts(
-                &sdet_id,
-                ROLE_SDET_AUTHOR,
-                ROLE_SDET_AUTHOR,
-                dir,
-                attempt,
-                false,
-                st,
-                // The sdet-author writes periphery tests - it is not a review tier judging
-                // another agent's output, so it carries no roster (spec 67, criterion 4).
-                &[],
-            )
-            .and_then(|opts| {
-                self.deps
-                    .driver
-                    .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
-            }) {
+            .deps
+            .driver
+            .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
+        {
             // A normal result: its authored files are already in the worktree, so the caller
-            // falls through to the commit that sweeps them in.
-            Ok(_) => Ok(()),
+            // falls through to the commit that sweeps them in. The session it ran as is
+            // recorded for its next attempt to continue.
+            Ok(result) => self.record_session(&opts, &result),
             // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
             // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
             // and a later step replays the result.
@@ -5274,7 +5386,6 @@ impl RunCtx<'_> {
     /// this function itself propagates (see `run_stage`'s doc comment at its call site).
     fn run_single_stage(
         &self,
-        stages: &BTreeMap<String, Stage>,
         st: &Stage,
         wt: Option<&Worktree>,
         dir: &str,
@@ -5442,7 +5553,7 @@ impl RunCtx<'_> {
             // explicit adjudicator approve (`review_unit` / the fan-out review stage) -
             // so this resumed merge carries a real approval.
             let integration =
-                self.integrate_and_emit(stages, wt, st, attempts, IntegrationApproval::approved())?;
+                self.integrate_and_emit(wt, st, attempts, IntegrationApproval::approved())?;
             if let Some(evidence) = integration.blocked {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
@@ -5476,10 +5587,9 @@ impl RunCtx<'_> {
                 )?;
                 return Ok(false);
             }
-            self.emit_meta(
+            self.emit(
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
-                &[(META_STALE, &integration.staled.join(","))],
             )?;
             return Ok(true);
         }
@@ -5637,47 +5747,54 @@ impl RunCtx<'_> {
                 } else {
                     Ok(())
                 };
-                match isolation_check.and_then(|()| {
-                    self.deps.driver.spawn(
-                        agent_def,
-                        &prompt,
-                        &SpawnOpts {
-                            system_prompt: self.build_system_prompt(agent_def),
-                            dir: dir.to_string(),
-                            isolation: wt.is_some(),
-                            parallel: false,
-                            blast_radius: blast_radius.clone(),
-                            id: implementer_id.clone(),
-                            unit: st.name.clone(),
-                            stage: st.name.clone(),
-                            // The live work-line: the unit's criterion, so the thin driver
-                            // narrates the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                            title: st.coverage.trim().to_string(),
-                            // The cascade rung the driver resolves for this attempt (spec 10
-                            // unit 4) - the same `attempts` the alias stamp above uses.
-                            attempt: attempts,
-                            run_id: self.run_id.clone(),
-                            // The ONE build-environment authority (spec 65) PLUS this
-                            // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
-                            // BUILD LOCATION): the implementer's own `cargo build`/`cargo
-                            // test` invocations get the same wrapper/cache/incremental
-                            // vars a gate build gets, AND land in the same per-unit
-                            // cache a gate build for this `dir` gets, instead of
-                            // embedding a `target/` dir inside the worktree itself.
-                            env: Self::spawn_env(&build_env, dir),
-                            // An implementer is never a review tier: no roster to render
-                            // (spec 67, criterion 4).
-                            reviews: Vec::new(),
-                            // The existing blocking drivers (cli/workflow) ignore these;
-                            // spec 104's host is not wired in here yet.
-                            settings_json: String::new(),
-                            launch: 0,
-                            resumed_from: String::new(),
-                        },
-                        &emit,
-                    )
-                }) {
+                // A RE-ATTEMPT CONTINUES THE IMPLEMENTER'S SESSION: a later attempt resumes the
+                // session its earlier attempt ran as, sent the prior-failure block alone - the
+                // session already holds the criterion and the slice.
+                let opts = self.continue_prior_session(
+                    SpawnOpts {
+                        system_prompt: self.build_system_prompt(agent_def),
+                        dir: dir.to_string(),
+                        isolation: wt.is_some(),
+                        parallel: false,
+                        blast_radius: blast_radius.clone(),
+                        id: implementer_id.clone(),
+                        unit: st.name.clone(),
+                        stage: st.name.clone(),
+                        // The live work-line: the unit's criterion, so the thin driver
+                        // narrates the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                        title: st.coverage.trim().to_string(),
+                        // The cascade rung the driver resolves for this attempt (spec 10
+                        // unit 4) - the same `attempts` the alias stamp above uses.
+                        attempt: attempts,
+                        run_id: self.run_id.clone(),
+                        // The ONE build-environment authority (spec 65) PLUS this
+                        // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
+                        // BUILD LOCATION): the implementer's own `cargo build`/`cargo
+                        // test` invocations get the same wrapper/cache/incremental
+                        // vars a gate build gets, AND land in the same per-unit
+                        // cache a gate build for this `dir` gets, instead of
+                        // embedding a `target/` dir inside the worktree itself.
+                        env: Self::spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
+                        // An implementer is never a review tier: no roster to render
+                        // (spec 67, criterion 4).
+                        reviews: Vec::new(),
+                        // The existing blocking drivers (cli/workflow) ignore these two;
+                        // spec 104's host is not wired in here yet.
+                        settings_json: String::new(),
+                        launch: 0,
+                        // Set by `continue_prior_session` below when there is a session
+                        // to continue.
+                        resumed_from: String::new(),
+                        resume_task: String::new(),
+                    },
+                    ROLE_IMPLEMENTER,
+                    Some(prior.block(&st.name, attempts)),
+                )?;
+                match isolation_check
+                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
+                {
                     Ok(result) => {
+                        self.record_session(&opts, &result)?;
                         // The resolved model the worker reported via `--meta` (spec 05 line
                         // 52): captured here so the green status - and the verified status
                         // below, for the same spawn - both carry it. Empty on a live
@@ -5824,7 +5941,7 @@ impl RunCtx<'_> {
                     // crash disposition are the next unit's - so only the replay-safe parked arm
                     // acts here: `?` propagates it, holding the unit with no commit until a later
                     // step replays the sdet and its periphery tests land in the committed tree.
-                    self.spawn_sdet_author(st, wt, dir, attempts)?;
+                    self.spawn_sdet_author(st, wt, dir, attempts, &prior.gate_evidence)?;
                     // Commit the implementer's worktree BEFORE running the gates (§3.2),
                     // so the gate measures EXACTLY the committed artifact that the
                     // subsequent integrate merges - never a dirty worktree. A unit could
@@ -5844,8 +5961,8 @@ impl RunCtx<'_> {
                     }
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
-                    // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
-                    // staleness passes use), skipping and logging the rest. A remediation iteration
+                    // blast radius (its `grounded_seed`, the SAME radius the spawn uses),
+                    // skipping and logging the rest. A remediation iteration
                     // then re-verifies only what its change could have touched; the exhaustive suite
                     // is asserted once at the integrate door below.
                     let gate_outcome = self.run_gates_at(
@@ -5997,7 +6114,6 @@ impl RunCtx<'_> {
                                 // reversing it re-opens the bug where unit-2's approved-on-
                                 // attempt-6 review was recorded as UnitFailed/UnitEscalated.
                                 let integration = self.integrate_and_emit(
-                                    stages,
                                     wt,
                                     st,
                                     attempts,
@@ -6005,10 +6121,9 @@ impl RunCtx<'_> {
                                 )?;
                                 match integration.blocked {
                                     None => {
-                                        self.emit_meta(
+                                        self.emit(
                                             ledger::TYPE_UNIT_INTEGRATED,
                                             json!({"id": st.name, "commit": integration.commit}),
-                                            &[(META_STALE, &integration.staled.join(","))],
                                         )?;
                                         return Ok(true);
                                     }
@@ -6196,7 +6311,7 @@ impl RunCtx<'_> {
     /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
     /// if none wins, the unit escalates (its K candidates were its attempts) rather than
     /// re-fanning-out forever.
-    fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
+    fn run_speculation(&self, st: &Stage) -> Result<bool, Error> {
         let width = self.effective_speculation_width(st);
         let group = speculation_group_id(&st.name);
         // The PRECISE seed seeds every lane's spawn + the blast-radius-narrowed gate loop. The
@@ -6281,7 +6396,7 @@ impl RunCtx<'_> {
                         // every speculation candidate's own `cargo` invocations share the
                         // same wrapper cache AND land in its own lane's per-unit cache,
                         // never a `target/` dir embedded in its own lane worktree.
-                        env: Self::spawn_env(&build_env, &dir),
+                        env: Self::spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // A speculation candidate is an implementer lane, never a review
                         // tier: no roster to render (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -6290,6 +6405,7 @@ impl RunCtx<'_> {
                         settings_json: String::new(),
                         launch: 0,
                         resumed_from: String::new(),
+                        resume_task: String::new(),
                     },
                     &emit,
                 )
@@ -6312,7 +6428,7 @@ impl RunCtx<'_> {
                     // this step and a later step replays the sdet and commits the candidate
                     // WITH its periphery. The lane dir persists across the park (dropping `wt`
                     // does not remove it - `Worktree` has no `Drop`), so the worker finds it.
-                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane) {
+                    if let Err(e) = self.spawn_sdet_author(st, Some(&wt), &dir, lane, &[]) {
                         debug_assert!(is_parked(&e), "spawn_sdet_author only errors on a park");
                         any_parked = true;
                         continue;
@@ -6464,7 +6580,6 @@ impl RunCtx<'_> {
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
-                stages,
                 Some(&candidates[i].wt),
                 st,
                 lane,
@@ -6514,7 +6629,6 @@ impl RunCtx<'_> {
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
                 &[
-                    (META_STALE, &integration.staled.join(",")),
                     (META_SPEC_GROUP, &group),
                     (
                         META_SPEC_WINNER,
@@ -7137,7 +7251,10 @@ impl RunCtx<'_> {
         // substantive result is discarded here; the shared `run_reviewer` loop only needs
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
-        let prompt = self.build_review_prompt(st, &lens_role(agent_id), round)?;
+        let prompt = self.build_review_prompt(st, dir, &lens_role(agent_id), round)?;
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "lens",
@@ -7151,6 +7268,7 @@ impl RunCtx<'_> {
             // empty stdout is degenerate only when it also emitted no ReviewFinding.
             ReviewerOutput::Findings,
             &prompt,
+            resume.as_deref(),
             wt,
             // A lens judges the diff directly, not another tier's output - it carries no
             // review roster (spec 67, criterion 4; that's the adversary/adjudicator's job).
@@ -7210,6 +7328,10 @@ impl RunCtx<'_> {
         parallel: bool,
         output: ReviewerOutput,
         prompt: &str,
+        // What a later review round sends this role's resumed session in place of `prompt`
+        // ([`RunCtx::review_resume_task`]), or `None` when the caller has no round to
+        // continue a session over (a first round, or a review that is not a unit's).
+        resume_task: Option<&str>,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4): the unit
         // worktree this tier's spawn runs in, or `None` when the caller has none to
         // offer - a review-only throwaway worktree (the standalone-review-stage and
@@ -7230,6 +7352,7 @@ impl RunCtx<'_> {
         // a stage's first run); each later id is a `~retry{n}` respawn. At most
         // `1 + REVIEWER_RESPAWN_BOUND` spawns per round.
         let window = review_retry_window(ordinal);
+        let first_retry = *window.start();
         let last_retry = *window.end();
         // Whether a gating result of this round already came back with no verdict line: the
         // first re-drives the review, a second halts (one bounded re-drive, never a loop).
@@ -7238,6 +7361,14 @@ impl RunCtx<'_> {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            // A later round's first spawn of this role continues the session the role's last
+            // round ran as; a respawn within the round (a degenerate or verdict-less result)
+            // starts fresh rather than continuing the session that produced it.
+            let opts = if retry == first_retry {
+                self.continue_prior_session(opts, role, resume_task.map(str::to_string))?
+            } else {
+                opts
+            };
             if !self.reserve_spawn(&id) {
                 return Err(spawn_halt(
                     SpawnHalt::BudgetRefused,
@@ -7282,7 +7413,10 @@ impl RunCtx<'_> {
                 self.emit_meta(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
             let result = match self.deps.driver.spawn(agent_def, prompt, &opts, &emit) {
-                Ok(result) => result,
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    result
+                }
                 Err(e) => {
                     // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
                     // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
@@ -7555,7 +7689,10 @@ impl RunCtx<'_> {
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
-        let prompt = self.build_review_prompt(st, ROLE_ADVERSARY, round)?;
+        let prompt = self.build_review_prompt(st, dir, ROLE_ADVERSARY, round)?;
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "adversary",
@@ -7569,6 +7706,7 @@ impl RunCtx<'_> {
             // so an empty stdout is degenerate only when it emitted no ReviewFinding.
             ReviewerOutput::Findings,
             &prompt,
+            resume.as_deref(),
             wt,
             &review_roster(lenses),
         )?;
@@ -7620,9 +7758,12 @@ impl RunCtx<'_> {
         // `review_protocol` (spec 103, criterion 6), appended directly here.
         let prompt = format!(
             "{}{REVIEWER_DISCIPLINE}{REQUIRED_PROTOCOL}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -7641,6 +7782,7 @@ impl RunCtx<'_> {
                 ReviewerOutput::Verdict
             },
             &prompt,
+            resume.as_deref(),
             wt,
             &adjudicator_roster(lenses, adversary_id),
         )?;
@@ -7886,7 +8028,7 @@ impl RunCtx<'_> {
                     // every other call site (spec 77 c1); the planner's own `dir` is
                     // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                     // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                    env: Self::spawn_env(&build_env, ""),
+                    env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
                     // The planner/re-planner is never a review tier: no roster to render
                     // (spec 67, criterion 4).
                     reviews: Vec::new(),
@@ -7895,6 +8037,7 @@ impl RunCtx<'_> {
                     settings_json: String::new(),
                     launch: 0,
                     resumed_from: String::new(),
+                    resume_task: String::new(),
                 },
                 &emit,
             )
@@ -8087,6 +8230,7 @@ impl RunCtx<'_> {
                     ReviewerOutput::Findings,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
+                    None,
                     // The DAG-level critique names no lens tier of its own (spec 67, c4): an
                     // empty roster here is the honest one, never a fabricated lens.
                     &[],
@@ -8107,6 +8251,7 @@ impl RunCtx<'_> {
                     false,
                     ReviewerOutput::Verdict,
                     &prompt,
+                    None,
                     None,
                     // No lens tier at the DAG level, so the shared helper's roster reduces to
                     // just the adversary token when one ran (spec 67, c4) - never fabricated.
@@ -8302,10 +8447,17 @@ impl RunCtx<'_> {
     /// [`run_single_stage`](Self::run_single_stage), each lane in
     /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
     /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
-    fn spawn_env(build_env: &gate::BuildEnv, dir: &str) -> Vec<(String, String)> {
+    ///
+    /// `cache` names WHICH of the unit's caches the spawn builds into: the unit's own
+    /// [`worktree::UNIT_CACHE_PREFIX`] sibling for every spawn that builds the unit's tree (the
+    /// implementer, the sdet-author, the planner), or the unit's
+    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`] sibling for a review tier, whose reproductions run
+    /// in scratch worktrees at whatever sha they probe and must never swap a binary in the cache
+    /// the unit's gates use.
+    fn spawn_env(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        if let Some(cache) = crate::worktree::unit_cache_sibling(dir) {
-            vars.push(("CARGO_TARGET_DIR".to_string(), cache));
+        if let Some(target) = crate::worktree::unit_sibling(dir, cache) {
+            vars.push(("CARGO_TARGET_DIR".to_string(), target));
         }
         vars
     }
@@ -8498,13 +8650,12 @@ impl RunCtx<'_> {
         // The machine-wide build budget (spec 65): resolved once per call, alongside
         // `build_env`, and threaded to every gate this attempt runs.
         let budget = self.build_budget();
-        // The content address of this attempt's gate inputs (spec 12, unit 1): the git
-        // tree-SHA of the committed worktree (the whole tree by default - unit 3 narrows it
-        // to a gate's `inputs:`). Computed ONCE - every gate this attempt reads the same
-        // committed tree, and each gate folds its own command over it in `input_digest`.
-        // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
-        // simply disables content-addressing for this attempt's gates.
-        let tree_sha = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
+        // The content address of this attempt's gate inputs (spec 12, unit 1): the HEAD commit
+        // of the worktree, which fixes both the tree and the history a gate may read. Computed
+        // ONCE - every gate this attempt reads the same commit, and each gate folds its own
+        // command over it in `input_digest`. Empty when there is no worktree (a repo-less /
+        // `isolation: none` run), which simply disables content-addressing for these gates.
+        let commit_sha = crate::worktree::head_sha_of(dir);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -8558,20 +8709,19 @@ impl RunCtx<'_> {
             }
             // Content-addressed cache-hit (spec 12, unit 1): this gate has not run at THIS
             // (unit, attempt, gate) coordinate, but a prior GREEN verdict may already have
-            // proven the SAME command over the SAME tree. If so, answer the gate as a
+            // proven the SAME command over the SAME commit. If so, answer the gate as a
             // logged cache-hit citing that green's position - the command is not run and the
-            // ratchet does not move, exactly like an exact-key replay - so an unchanged tree
+            // ratchet does not move, exactly like an exact-key replay - so an unchanged commit
             // re-verifies near-free. Failures never enter the cache, so a red is never
-            // cache-answered (it must always re-prove). An empty digest (no worktree tree)
+            // cache-answered (it must always re-prove). An empty digest (no worktree)
             // disables the hit and the gate runs fresh below.
             //
-            // Staleness (spec 12, unit 2): a unit a downstream staleness pass marked stale
-            // (an integrated unit touched files in its blast radius) does NOT take the hit -
-            // its cached verdicts stop hitting, so its gate re-runs against the changed world
-            // instead of reusing a green earned before that integration. Unaffected units
-            // are not stale, so their greens still stand and hit here.
-            let digest = input_digest(&gc.run, &tree_sha);
-            if !digest.is_empty() && !self.is_stale(&st.name) {
+            // The digest alone decides: it addresses the HEAD commit, so a landing or a new
+            // commit that changed anything this gate reads has already changed the digest, and
+            // the very commit already proven green (the integrate door's re-check, or a fast-forward
+            // landing whose landed commit IS the gated commit) replays here.
+            let digest = input_digest(&gc.run, &commit_sha);
+            if !digest.is_empty() {
                 if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
                     let evidence = format!(
                         "cache-hit: gate {gid:?} was proven green at log position {pos} \
@@ -9266,11 +9416,6 @@ impl RunCtx<'_> {
     /// run branch - see that file's own header for the fixture-by-fixture mapping.
     fn integrate_and_emit(
         &self,
-        // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
-        // to find those whose blast radius this integration's touched files intersect. It is
-        // the run loop's live `stages` (baseline + planner-proposed included), threaded down
-        // so staleness measures against every current unit, not just the authored config.
-        stages: &BTreeMap<String, Stage>,
         wt: Option<&Worktree>,
         // The unit being integrated: its name and agent drive the FILE_TOUCHED records, and its
         // gate library drives the post-merge re-gate (spec 12, unit 5), which re-runs the full
@@ -9439,8 +9584,7 @@ impl RunCtx<'_> {
         // is cheap and correct regardless, since that call re-reads the run branch's CURRENT
         // tip fresh every time - a sibling that landed meanwhile is picked up automatically,
         // never stale. Once this loop finally lands a clean merge, `lock` stays held
-        // (unchanged from before this fix) through the post-merge gate suite and staleness
-        // marking below.
+        // (unchanged from before this fix) through the post-merge gate suite below.
         let mut lock = self.integrate_mu.lock().unwrap();
         // The gate scratch root a PASSING post-merge re-gate was handed (spec 113, THE GATE
         // SCRATCH ROOT HAS ONE LIFECYCLE): the `rigger-gate-<slug>` sibling of
@@ -9791,10 +9935,9 @@ impl RunCtx<'_> {
             postmerge_reclaim = Some((self.postmerge_unit_dir(&st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
-        // NOW - once the tree the run branch carries is the verified one - reindex, record the
-        // artifact graph edges, and propagate staleness. A blocked integration does none of
-        // these, so a rolled-back merge leaves no phantom FILE_TOUCHED / staleness for a unit
-        // whose work never landed.
+        // NOW - once the tree the run branch carries is the verified one - reindex and record the
+        // artifact graph edges. A blocked integration does neither, so a rolled-back merge leaves
+        // no phantom FILE_TOUCHED for a unit whose work never landed.
         //
         // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
         // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
@@ -9832,13 +9975,6 @@ impl RunCtx<'_> {
                 json!({"path": f, "by": &st.agent}),
             )?;
         }
-        // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
-        // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
-        // them stale, so its next gate stops reusing a green earned before this change. The
-        // marked ids ride back on the `UnitIntegrated` event (META_STALE) for provenance +
-        // resume seeding. Computed under the integrate lock so a concurrent integration's
-        // staleness view is serialized with the merge it observes.
-        let staled = self.mark_stale_downstream(stages, &st.name, &landed);
         // Released before the reclaim so a sibling landing waiting on the lock never waits on
         // a reap. Only the gate scratch root goes here: the unit's `cargo-target-<slug>` cache
         // and store-fence sibling stay for its worktree's removal, so a straggler lens still
@@ -9849,7 +9985,6 @@ impl RunCtx<'_> {
         }
         Ok(Integration {
             commit,
-            staled,
             blocked: None,
         })
     }
@@ -10630,11 +10765,12 @@ impl RunCtx<'_> {
                 title: format!("resolve integrate conflict: {}", st.name),
                 attempt,
                 run_id: self.run_id.clone(),
-                env: Self::spawn_env(&build_env, &wt.dir),
+                env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
                 launch: 0,
                 resumed_from: String::new(),
+                resume_task: String::new(),
             },
             &emit,
         )?;
@@ -10723,11 +10859,10 @@ impl RunCtx<'_> {
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
     /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
     /// `.safe`-superset view is what every SAFETY consumer keys on: `partition_wave` and
-    /// `route_review_tier` (spec 16 unit 3), plus cross-wave staleness (`stale_downstream_units`)
-    /// and rule-6 conflict detection (`dag_unit_blast_radii`) (spec 17 unit 3, 3a/3b) - over-inclusion
-    /// is the safe error (a missed reference could co-schedule two conflicting units, route a
-    /// wide/high-risk change to the light panel, or leave a stale downstream unit reusing its
-    /// cached-green gate verdicts against changed code); `.serialize` marks a hub radius
+    /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
+    /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
+    /// missed reference could co-schedule two conflicting units or route a wide/high-risk
+    /// change to the light panel); `.serialize` marks a hub radius
     /// for its OWN batch. The `.safe` view and `.serialize` verdict are the `BlastRadiusComputed`
     /// audit's payload; the audit's `precise` is instead the actual prompt SEED
     /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
@@ -10789,11 +10924,11 @@ impl RunCtx<'_> {
     /// the precise view (spec 16 unit 3). It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
     /// loop selects on - so the side-car filters peer decisions against exactly the files the agent
-    /// was grounded on. The SAFETY consumers do NOT read this precise seed: cross-wave staleness and
-    /// rule-6 conflict detection key off the safe-superset view (spec 17 unit 3, 3a/3b), alongside
-    /// partitioning and tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
+    /// was grounded on. The SAFETY consumers do NOT read this precise seed: rule-6 conflict
+    /// detection keys off the safe-superset view (spec 17 unit 3, 3b), alongside partitioning and
+    /// tier routing. Kept on the cheap `ground` path (NOT the uncapped safe walk)
     /// because it is called per-unit and per-reviewer; unit 3's safe-superset view rides only the
-    /// partition / tier / audit / staleness / rule-6-conflict consumers via
+    /// partition / tier / audit / rule-6-conflict consumers via
     /// [`grounded_blast_radius`](Self::grounded_blast_radius). Empty when no grounder is configured
     /// (best-effort but real, not always empty).
     fn grounded_seed(&self, st: &Stage) -> Vec<String> {
@@ -10874,7 +11009,8 @@ impl RunCtx<'_> {
 
     /// Build a REVIEW agent's prompt: the grounded base prompt (which already
     /// surfaces, via `graph_context`, the decisions, lessons, AND findings other
-    /// reviewers raised about the unit's files) plus the [`review_protocol`] telling this
+    /// reviewers raised about the unit's files) with the gate evidence of the tree in `dir`
+    /// ([`Self::review_base_prompt`]), plus the [`review_protocol`] telling this
     /// reviewer to emit each finding it raises as a ReviewFinding attributed to `actor`
     /// (its ROLE token). This is how the three tiers communicate THROUGH the graph: a lens
     /// emits findings, the adversary and adjudicator (which ground after it) read them back
@@ -10885,14 +11021,42 @@ impl RunCtx<'_> {
     fn build_review_prompt(
         &self,
         st: &Stage,
+        dir: &str,
         actor: &str,
         round: Option<&ReviewRound>,
     ) -> Result<String, Error> {
         Ok(format!(
             "{}{}{}",
-            self.build_prompt(st)?,
+            self.review_base_prompt(st, dir)?,
             review_protocol(actor),
             round.map(ReviewRound::block).unwrap_or_default()
+        ))
+    }
+
+    /// The base every review tier's prompt opens with - the lenses and the adversary through
+    /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
+    /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the commit the reviewer
+    /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
+    /// digests are ([`Self::run_gates_at`]) - read from this run's log.
+    fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        Ok(format!(
+            "{}{}",
+            self.build_prompt(st)?,
+            self.review_gate_evidence(st, dir)?
+        ))
+    }
+
+    /// The [`gate_evidence_block`] of the commit a review tier judges in `dir` - its HEAD,
+    /// addressed by the same [`worktree::head_sha_of`] the gates' digests are
+    /// ([`Self::run_gates_at`]) - read from this run's log. The one source of the block for a
+    /// fresh review prompt ([`Self::review_base_prompt`]) and a resumed one
+    /// ([`Self::review_resume_task`]).
+    fn review_gate_evidence(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        let commit = crate::worktree::head_sha_of(dir);
+        Ok(gate_evidence_block(
+            &self.read_current_run()?,
+            &st.name,
+            &commit,
         ))
     }
 
@@ -10944,14 +11108,39 @@ impl RunCtx<'_> {
         Ok(b)
     }
 
+    /// The unified graph two hops around `seed` - the ONE seeded traversal every grounding
+    /// render reads - or `None` with no graph, an empty seed, or a failed read.
+    fn seeded_subgraph(&self, seed: &[String]) -> Option<Graph> {
+        match self.deps.graph {
+            Some(g) if !seed.is_empty() => g.subgraph(seed, 2).ok(),
+            _ => None,
+        }
+    }
+
+    /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
+    /// the unit's files (this round's earlier tiers' among them, which the session has not
+    /// seen), the gate evidence of the commit this round judges in `dir` (the session saw only
+    /// an earlier round's), and the round's block - its delta and REQUIRED list. The session
+    /// already holds the criterion, the grounding and its review protocol.
+    fn review_resume_task(
+        &self,
+        st: &Stage,
+        dir: &str,
+        round: &ReviewRound,
+    ) -> Result<String, Error> {
+        let seed = self.grounded_seed(st);
+        let mut b = String::new();
+        if let Some(g) = self.seeded_subgraph(&seed) {
+            write_capped_findings(&mut b, &g, &seed);
+        }
+        b.push_str(&self.review_gate_evidence(st, dir)?);
+        b.push_str(&round.block());
+        Ok(b)
+    }
+
     fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
-        let graph = match self.deps.graph {
-            Some(g) if !seed.is_empty() => g,
-            _ => return String::new(),
-        };
-        let g = match graph.subgraph(seed, 2) {
-            Ok(g) => g,
-            Err(_) => return String::new(),
+        let Some(g) = self.seeded_subgraph(seed) else {
+            return String::new();
         };
         let mut b = String::new();
         // Spec 29c criterion 1: the CODE NEIGHBORHOOD the run's 29a extraction folded around the
@@ -12361,14 +12550,17 @@ pub fn review_protocol(actor: &str) -> String {
 /// REVIEWED (spec 103, criterion 6): its first sentences spell out in prose what [`RunCtx::
 /// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
 /// implementer and edits the unit's own worktree leaves exactly the residue that guard
-/// exists to catch, name in a lesson, and restore. A REVIEW NEVER MUTATES: its last sentence
+/// exists to catch, name in a lesson, and restore. THE GATES GRADE, A REVIEW JUDGES THE
+/// RESIDUE: no tier re-runs the battery or a gate its [`gate_evidence_block`] shows green, and a
+/// reproduction builds into the unit's review cache ([`RunCtx::spawn_env`]). A REVIEW NEVER
+/// MUTATES: its last sentence
 /// keeps mutation sweeps out of every review, since the gate that sweeps owns mutation testing
 /// and a reviewer's sweep only repeats it at review cost. Shared by [`review_protocol`] (the lens
 /// and adversary tiers, which also record findings through it) and [`RunCtx::
 /// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
 /// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
 /// wording rather than three hand-copied near-duplicates.
-const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
+const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review: the gates are the instrument that grades the work, and a review judges what they cannot see. To reproduce a specific suspicion - one named test, a reversion probe, a single-crate `cargo test -p <crate> <test>` - create your own throwaway scratch worktree and run it there, building into the CARGO_TARGET_DIR your spawn carries: the unit's review cache, never the cache the unit's gates use. Leave the unit's worktree exactly as you found it. Never run a mutation sweep, directly or through a verify helper: mutation testing belongs to the gate that sweeps, never to a review.";
 
 /// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
 /// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
@@ -13601,6 +13793,35 @@ fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -
         .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
 }
 
+/// The session `role`'s latest spawn on `unit` at an attempt before `attempt` ran as, read
+/// from its [`STATUS_SPAWN_SESSION`] mark; `None` when no such spawn recorded one. Only a
+/// spawn that ran in `dir` counts: a session is the persona's memory of one worktree, so one
+/// that ran elsewhere (a speculation lane's worktree, a worktree since reclaimed) is never
+/// continued here - Claude Code would resume it from any cwd, so the check is this one.
+fn recorded_session(
+    events: &[Event],
+    unit: &str,
+    role: &str,
+    attempt: u32,
+    dir: &str,
+) -> Option<String> {
+    unit_status_marks(events, unit, &[STATUS_SPAWN_SESSION])
+        .filter(|(_, stamped, e)| {
+            *stamped < u64::from(attempt)
+                && serde_json::from_slice::<Value>(&e.data)
+                    .is_ok_and(|v| v.get("dir").and_then(Value::as_str) == Some(dir))
+                && e.meta
+                    .get(META_SPAWN)
+                    .is_some_and(|id| crate::spawn::spawn_role(id) == role)
+        })
+        // The latest attempt wins, and within it the LAST mark in log order (`max_by_key`
+        // keeps the last of equal keys): a `~retry{n}` respawn's mark follows the round's
+        // first spawn's, and the respawn - not the degenerate or verdict-less spawn before it -
+        // produced the output the round was judged on, so its session is the one to continue.
+        .max_by_key(|(_, stamped, _)| *stamped)
+        .and_then(|(_, _, e)| e.meta.get(META_SESSION_ID).cloned())
+}
+
 /// The base of `unit`'s ROUND DELTA at `attempt` (see [`RunCtx::round_delta`]): the
 /// round-start sha of its latest review round at an EARLIER attempt - the round whose
 /// verdict sent the unit back to build again. `None` when no review round judged the unit
@@ -13620,6 +13841,36 @@ fn is_documentation_only(paths: &[String]) -> bool {
         && paths
             .iter()
             .all(|p| p.ends_with(".md") || p.starts_with("docs/"))
+}
+
+/// The task a RESUMED sdet-author is sent on a later attempt, naming what sent the unit back:
+/// the review round's `delta` (the round-start `base` it was judged at and the paths changed
+/// since), and the `gate_evidence` of the gates the previous attempt failed. Empty when neither
+/// names anything - a first attempt - so the spawn stays fresh. Its session already holds the
+/// criterion and the tests it authored.
+fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[String]) -> String {
+    let mut causes: Vec<String> = Vec::new();
+    if let Some((base, paths)) = delta {
+        let changed = if paths.is_empty() {
+            "nothing".to_string()
+        } else {
+            paths.join(", ")
+        };
+        causes.push(format!(
+            "review sent this unit back at {base} - `git diff {base}..HEAD` since changed {changed}"
+        ));
+    }
+    for ev in gate_evidence {
+        causes.push(format!("the previous attempt failed these gates: {ev}"));
+    }
+    if causes.is_empty() {
+        return String::new();
+    }
+    format!(
+        "LATER ATTEMPT: the implementer has revised this unit since {}. Bring the periphery tests \
+         in line with that change.\n",
+        causes.join("; and ")
+    )
 }
 
 /// The rule the sdet-author's prompt carries on a round whose delta changed documentation
@@ -13843,86 +14094,6 @@ fn implement_slice(st: &Stage) -> GroundingSlice {
     } else {
         GroundingSlice::Implement
     }
-}
-
-/// Seed the STALE-units set from the prior log (spec 12, unit 2): every unit named in a
-/// `UnitIntegrated` event's [`META_STALE`] mark. A stepwise resume recovers the identical
-/// invalidation the marking process held, so a stale unit's cached gate verdicts keep
-/// stopping-to-hit across the process boundary. Pure over the ordered log (a comma-joined
-/// list per mark, empty segments ignored), so it is replay-deterministic.
-fn stale_units_from_log(prior_events: &[Event]) -> HashSet<String> {
-    let mut stale = HashSet::new();
-    for e in prior_events
-        .iter()
-        .filter(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
-    {
-        if let Some(list) = e.meta.get(META_STALE) {
-            for u in list.split(',').filter(|s| !s.is_empty()) {
-                stale.insert(u.to_string());
-            }
-        }
-    }
-    stale
-}
-
-/// The DOWNSTREAM units a just-integrated unit's `touched` files render STALE (spec 12,
-/// unit 2): every OTHER unit whose grounded blast radius intersects the integrating
-/// unit's touched file set. This is the SINGLE authority that decides staleness - it is
-/// consulted once, at the integrate seam, and both the recorded `META_STALE` mark and the
-/// live [`RunCtx::stale_units`] invalidation read its result, so a unit is judged stale
-/// in exactly one place.
-///
-/// A unit's blast radius is the files the grounder surfaces for its grounding query (its
-/// `coverage`, else its name), taken as the SAFE-superset (`structural union grep`, uncapped) view
-/// via [`Grounder::blast_radius`] `.safe` - NOT the precise seed (spec 17 unit 3, 3a). Cross-wave
-/// staleness is a SAFETY consumer: a reference visible only to grep (a macro body, a re-export, a
-/// reflection string) must STILL mark a downstream unit stale, or its cached green gate verdicts
-/// are reused and it integrates against changed code - the exact fail-open the safe view exists to
-/// close. This is the same safe superset `partition_wave` partitions on, so staleness is measured
-/// against the radius the unit is partitioned by. The integrating unit never stales itself, and
-/// PRODUCER (planner) stages are skipped: they emit a DAG, not code, so they have no gate verdict to
-/// invalidate. With no grounder no radius is computable, so nothing is staled (the empty fail-safe,
-/// best-effort but real). The result is sorted + deduped so the mark is stable across runs (replay
-/// determinism). On the symbols-INACTIVE default path the grounder's `.safe` equals its `ground`
-/// radius, so this is byte-for-byte the pre-change precise intersection.
-fn stale_downstream_units(
-    stages: &BTreeMap<String, Stage>,
-    grounder: Option<&dyn Grounder>,
-    integrating_unit: &str,
-    touched: &[String],
-) -> Vec<String> {
-    let grounder = match grounder {
-        Some(g) => g,
-        None => return Vec::new(),
-    };
-    let touched: HashSet<&str> = touched.iter().map(String::as_str).collect();
-    if touched.is_empty() {
-        return Vec::new();
-    }
-    let mut stale: Vec<String> = Vec::new();
-    for (name, st) in stages {
-        if name == integrating_unit || is_producer(st) {
-            continue;
-        }
-        // A non-producer unit grounds on its criterion (`coverage`), falling back to its
-        // name - the SAME query `RunCtx::ground_query`/`grounded_seed` use for a unit.
-        let query = if st.coverage.is_empty() {
-            name.as_str()
-        } else {
-            st.coverage.as_str()
-        };
-        let intersects = grounder
-            .blast_radius(query, GROUNDED_SEED_K)
-            .safe
-            .iter()
-            .any(|f| touched.contains(f.as_str()));
-        if intersects {
-            stale.push(name.clone());
-        }
-    }
-    stale.sort();
-    stale.dedup();
-    stale
 }
 
 /// NO UNGATED FAN-OUT UNIT (spec 103, criterion 2): a conductor invariant, checked
@@ -15717,6 +15888,11 @@ mod tests {
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
+        /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
+        /// `(env, wave)`: the `CARGO_TARGET_DIR` its environment carried, and the
+        /// `cargo_target_dir` the workflow driver's wave item names for its parked request
+        /// (empty when either names none) - the two drivers' views of one build location.
+        targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
         /// before returning success - simulating a REVIEWER's own side effect
         /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
@@ -15750,6 +15926,18 @@ mod tests {
         /// Absent when the agent never ran, its file was never landed, or `opts.dir`
         /// was empty.
         read_results: Mutex<HashMap<String, String>>,
+        /// Whether every spawn runs as a resumable session, the way the cli host's do: its
+        /// result names the session it ran as - the one [`SpawnOpts::resumed_from`] asked it
+        /// to continue, or `sess-<spawn id>` for a fresh one - so the conductor records it and
+        /// a later attempt continues it. Off, a spawn reports no session (the workflow and
+        /// replay drivers' shape) and every spawn stays fresh.
+        sessions: bool,
+        /// With [`sessions`](Self::sessions): every requested resume finds its session gone,
+        /// so the spawn answers as a fresh `sess-<spawn id>` session that continued nothing -
+        /// the fallback a session host takes when the transcript to resume no longer exists.
+        sessions_gone: bool,
+        /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
+        resumes: Mutex<Vec<(String, String, String)>>,
     }
     impl Stub {
         /// A stub whose every spawn answers `output`, otherwise [`Stub::new`].
@@ -15783,17 +15971,36 @@ mod tests {
                 reviews_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
+                targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
+                sessions: false,
+                sessions_gone: false,
+                resumes: Mutex::new(Vec::new()),
             }
+        }
+
+        /// The `(resumed_from, resume_task)` the spawn `id` was launched with, if it ran.
+        fn resume_of(&self, id: &str) -> Option<(String, String)> {
+            self.resumes
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(spawn, _, _)| spawn == id)
+                .map(|(_, from, task)| (from.clone(), task.clone()))
         }
 
         /// Every prompt the named agent was spawned with, in spawn order.
         fn prompts_for(&self, agent_id: &str) -> Vec<String> {
             cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
+        }
+
+        /// Where each spawn of the named agent builds, `(env, wave)`, in spawn order.
+        fn targets_for(&self, agent_id: &str) -> Vec<(String, String)> {
+            cached(&self.targets_by_agent, agent_id).unwrap_or_default()
         }
 
         /// Every working dir (cwd) the named agent was spawned with, in spawn order.
@@ -15887,6 +16094,26 @@ mod tests {
                 .push(prompt.to_string());
             self.call_order.lock().unwrap().push(a.id.clone());
             self.spawn_ids.lock().unwrap().push(opts.id.clone());
+            self.resumes.lock().unwrap().push((
+                opts.id.clone(),
+                opts.resumed_from.clone(),
+                opts.resume_task.clone(),
+            ));
+            self.targets_by_agent
+                .lock()
+                .unwrap()
+                .entry(a.id.clone())
+                .or_default()
+                .push((
+                    opts.env
+                        .iter()
+                        .find(|(name, _)| name == "CARGO_TARGET_DIR")
+                        .map(|(_, dir)| dir.clone())
+                        .unwrap_or_default(),
+                    crate::spawn::WaveItem::from(&spawn_request(a, prompt, opts))
+                        .cargo_target_dir
+                        .unwrap_or_default(),
+                ));
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
             // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
             // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
@@ -15992,6 +16219,12 @@ mod tests {
                 .or_else(|| self.output_by_agent.get(&a.id))
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
+            let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
+                (false, _) => (String::new(), String::new()),
+                (true, true) => (format!("sess-{}", opts.id), String::new()),
+                (true, false) if self.sessions_gone => (format!("sess-{}", opts.id), String::new()),
+                (true, false) => (opts.resumed_from.clone(), opts.resumed_from.clone()),
+            };
             Ok(AgentResult {
                 output,
                 resolved_model: self
@@ -15999,6 +16232,8 @@ mod tests {
                     .get(&a.id)
                     .cloned()
                     .unwrap_or_default(),
+                session_id,
+                resumed_from,
             })
         }
     }
@@ -19068,7 +19303,7 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "lens", None).unwrap();
+        let review = ctx.build_review_prompt(&unit, "", "lens", None).unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -24834,7 +25069,6 @@ mod tests {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -27360,11 +27594,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -28982,6 +29218,392 @@ mod tests {
         );
     }
 
+    /// The [`run_review_rounds`] driver with every spawn a resumable session
+    /// ([`Stub::sessions`]): each adjudicator spawn named in `verdicts` answers its verdict.
+    fn session_stub(verdicts: &[(String, &str)]) -> Stub {
+        Stub {
+            sessions: true,
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: verdicts
+                .iter()
+                .map(|(id, verdict)| (id.clone(), verdict.to_string()))
+                .collect(),
+            write_files_by_spawn_id: (0..4)
+                .map(|attempt| {
+                    let file = match attempt {
+                        0 => "feature.rs".to_string(),
+                        n => format!("fix{n}.rs"),
+                    };
+                    (spawn_id("implement", ROLE_IMPLEMENTER, attempt), vec![file])
+                })
+                .collect(),
+            ..Stub::new()
+        }
+    }
+
+    /// The `per_unit_panel_cfg` unit with the sdet-author configured and a criterion, so every
+    /// role of the panel has a session to continue and a criterion its session holds.
+    fn session_cfg() -> Config {
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        cfg.workflow.stages.get_mut("implement").unwrap().coverage =
+            "the unit's acceptance criterion".into();
+        cfg
+    }
+
+    /// [`run_review_rounds`] over [`session_stub`] and [`session_cfg`].
+    fn run_session_rounds(verdicts: &[(String, &str)]) -> (RunState, Vec<Event>, Stub) {
+        let repo = temp_git_project_with_commit();
+        let driver = session_stub(verdicts);
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        (rs, events, driver)
+    }
+
+    /// A driver RELAUNCHED by adoption continues the same sessions: the round-1 implementer
+    /// parks (the step ends with it unanswered), and the next process - a new driver that saw
+    /// none of round 0's spawns return - resumes the session round 0's implementer ran as,
+    /// read from the log.
+    #[test]
+    fn a_relaunched_driver_continues_the_session_the_log_recorded() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let verdicts = [
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ];
+        let st = Store::open(":memory:").unwrap();
+        let first = Stub {
+            park_spawn_ids: [spawn_id("implement", ROLE_IMPLEMENTER, 1)]
+                .into_iter()
+                .collect(),
+            ..session_stub(&verdicts)
+        };
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &first, Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            first
+                .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+                .map(|(from, _)| from),
+            Some(format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "premise: the parked spawn was asked to continue round 0's session"
+        );
+
+        let relaunched = session_stub(&verdicts);
+        let rs = run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path,
+                ..stub_deps(&st, &relaunched, Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert_eq!(
+            relaunched
+                .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+                .map(|(from, _)| from),
+            Some(format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "the relaunched driver continues the session the log recorded"
+        );
+    }
+
+    /// A RE-ATTEMPT CONTINUES EACH ROLE'S SESSION: every spawn of the first round starts fresh,
+    /// and after the reject every role's spawn on the next round resumes the session its
+    /// round-0 spawn ran as, sent only what changed - the implementer the prior-failure block
+    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's delta
+    /// and REQUIRED list - never the criterion it already holds.
+    #[test]
+    fn a_later_round_resumes_each_roles_session_with_what_changed_alone() {
+        let (rs, _, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let item = "- feature.rs: close the unscoped read";
+        for role in [
+            ROLE_IMPLEMENTER,
+            ROLE_SDET_AUTHOR,
+            "lens:lens",
+            ROLE_ADVERSARY,
+            ROLE_ADJUDICATOR,
+        ] {
+            let first = spawn_id("implement", role, 0);
+            let (from, _) = driver.resume_of(&first).expect("round 0 spawns every role");
+            assert_eq!(from, "", "{first} starts a fresh session");
+            let (from, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every role");
+            assert_eq!(
+                from,
+                format!("sess-{first}"),
+                "{role}'s round-1 spawn continues its round-0 session"
+            );
+            assert!(
+                task.contains("fix1.rs") || task.contains(item),
+                "{role} is sent what changed:\n{task}"
+            );
+            assert!(
+                !task.contains("UNIT: implement"),
+                "{role}'s resumed session already holds its criterion:\n{task}"
+            );
+        }
+        let (_, implementer) = driver
+            .resume_of(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+            .unwrap();
+        assert!(
+            implementer.contains(item) && implementer.contains("do not start over"),
+            "the implementer is sent its prior-failure block:\n{implementer}"
+        );
+    }
+
+    /// A RESUMED review tier judges a new commit too: its later-round task carries the gate
+    /// evidence of the commit that round judges - never the earlier round's, which is all its
+    /// continued session has seen - so a resumed reviewer never re-runs a gate the log shows
+    /// green on the new commit.
+    #[test]
+    fn a_resumed_review_tier_is_sent_the_gate_evidence_of_the_commit_it_now_judges() {
+        let (rs, events, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let (earlier, now) = (ok_gate_digest(&events, 0), ok_gate_digest(&events, 1));
+        for role in ["lens:lens", ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            let (from, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every review tier");
+            assert!(!from.is_empty(), "premise: {role}'s round-1 spawn resumes");
+            let commit = digest_address(&now).unwrap();
+            assert!(
+                task.contains(&format!(
+                    "GATE EVIDENCE for the commit under review (commit {commit},"
+                )) && task.contains(&format!("- ok: PASS (input digest {now})")),
+                "{role} is sent the gate evidence of the commit it now judges:\n{task}"
+            );
+            assert!(
+                !task.contains(earlier.as_str()),
+                "{role} is never sent the earlier round's evidence:\n{task}"
+            );
+        }
+    }
+
+    /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
+    /// gate before any review round, and its second attempt's sdet-author continues the session
+    /// its first ran as, sent the failed attempt's gate evidence as what changed.
+    #[test]
+    fn a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence() {
+        let repo = temp_git_project_with_commit();
+        let driver = session_stub(&[(adjudicator_at(1, 0), r#"{"verdict":"approve"}"#)]);
+        let flaky = FlakyGate {
+            fail_first: 1,
+            runs: AtomicU32::new(0),
+            evidence: "FAIL\nGATE_EVIDENCE_red_test".into(),
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            gates: &flaky,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let first = spawn_id("implement", ROLE_SDET_AUTHOR, 0);
+        let (from, task) = driver
+            .resume_of(&spawn_id("implement", ROLE_SDET_AUTHOR, 1))
+            .expect("the second attempt spawns the sdet-author");
+        assert_eq!(
+            from,
+            format!("sess-{first}"),
+            "the second attempt's sdet-author continues its first session"
+        );
+        assert!(
+            task.contains("LATER ATTEMPT") && task.contains("GATE_EVIDENCE_red_test"),
+            "it is sent the failed attempt's gate evidence:\n{task}"
+        );
+    }
+
+    /// A resume the host could not honour is LOG-CARRIED: when the session to continue is gone
+    /// and the spawn falls back to a fresh one, its mark records the session it was asked to
+    /// continue and none it continued, so the log tells the fallback from an ordinary fresh
+    /// spawn.
+    #[test]
+    fn a_fallen_back_resume_is_recorded_as_requested_but_not_continued() {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            sessions_gone: true,
+            ..session_stub(&[
+                (adjudicator_at(0, 0), REJECT_FEATURE),
+                (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+            ])
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&session_cfg(), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let second = spawn_id("implement", ROLE_IMPLEMENTER, 1);
+        let mark = events
+            .iter()
+            .find(|e| {
+                e.meta.get(META_SPAWN) == Some(&second)
+                    && serde_json::from_slice::<Value>(&e.data)
+                        .is_ok_and(|v| v["status"] == STATUS_SPAWN_SESSION)
+            })
+            .expect("the fallen-back spawn records its session");
+        assert_eq!(
+            mark.meta.get(META_RESUME_REQUESTED),
+            Some(&format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "the mark records the session the spawn was asked to continue"
+        );
+        assert_eq!(
+            mark.meta.get(META_RESUMED_FROM),
+            None,
+            "and that it continued none"
+        );
+        assert_eq!(
+            mark.meta.get(META_SESSION_ID),
+            Some(&format!("sess-{second}"))
+        );
+    }
+
+    /// A RESPAWN WINS: when a round's first spawn of a role came back degenerate and its
+    /// `~retry{n}` respawn produced the round's real output, the next round continues the
+    /// respawn's session - the latest mark at the round's attempt, in log order - since that is
+    /// the session holding the work the round was judged on.
+    #[test]
+    fn a_later_round_continues_the_respawn_that_produced_the_rounds_output() {
+        let (_, _, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), ""),
+            (adjudicator_at(0, 1), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(
+            driver
+                .resume_of(&adjudicator_at(0, 1))
+                .map(|(from, _)| from),
+            Some(String::new()),
+            "premise: the respawn within round 0 started fresh"
+        );
+        assert_eq!(
+            driver
+                .resume_of(&adjudicator_at(1, 0))
+                .map(|(from, _)| from),
+            Some(format!("sess-{}", adjudicator_at(0, 1))),
+            "round 1 continues the respawn's session, not the degenerate first spawn's"
+        );
+    }
+
+    /// The session a spawn ran as is LOG-CARRIED: each spawn's session is recorded on a
+    /// `spawn-session` mark keyed by its spawn id, which the ledger fold ignores, so a driver
+    /// relaunched by adoption reads the session to continue from the log, never from the
+    /// process that saw the spawn return.
+    #[test]
+    fn each_spawns_session_is_recorded_in_the_log_and_read_back_from_it() {
+        let (_, events, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        // Every role of the unit runs in the unit's own worktree.
+        let dir = driver.dirs_for("worker")[0].clone();
+        for role in [
+            ROLE_IMPLEMENTER,
+            ROLE_SDET_AUTHOR,
+            "lens:lens",
+            ROLE_ADVERSARY,
+            ROLE_ADJUDICATOR,
+        ] {
+            assert_eq!(
+                recorded_session(&events, "implement", role, 1, &dir),
+                Some(format!("sess-{}", spawn_id("implement", role, 0))),
+                "{role}'s round-0 session is read back from the log"
+            );
+            assert_eq!(
+                recorded_session(&events, "implement", role, 0, &dir),
+                None,
+                "no spawn of {role} precedes round 0"
+            );
+            assert_eq!(
+                recorded_session(
+                    &events,
+                    "implement",
+                    role,
+                    1,
+                    "/elsewhere/rigger-wt-implement"
+                ),
+                None,
+                "a session that ran in another directory (a speculation lane's worktree, a \
+                 reclaimed one) is never continued from this one"
+            );
+        }
+        let resumed: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.meta.get(META_SPAWN).map(String::as_str)
+                    == Some(&spawn_id("implement", ROLE_IMPLEMENTER, 1))
+            })
+            .filter_map(|e| e.meta.get(META_RESUMED_FROM).cloned())
+            .collect();
+        assert_eq!(
+            resumed,
+            [format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )],
+            "the round-1 implementer's mark records the session it continued"
+        );
+    }
+
+    /// A driver whose spawns report no session (the workflow and replay drivers) leaves every
+    /// spawn fresh with its full prompt: no mark is recorded and nothing is resumed.
+    #[test]
+    fn a_driver_reporting_no_session_keeps_every_spawn_fresh() {
+        let (_, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert!(
+            driver
+                .resumes
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, from, task)| from.is_empty() && task.is_empty()),
+            "no spawn resumes"
+        );
+        assert!(
+            status_mark_keys(&events, STATUS_SPAWN_SESSION).is_empty(),
+            "no spawn reported a session to record"
+        );
+    }
+
     /// A later round's reject must name the items it requires fixed: one that names none is
     /// no verdict the next round can be held to, so it is degenerate - the adjudicator is
     /// respawned under its retry id and the unit is charged nothing for it.
@@ -29701,6 +30323,7 @@ mod tests {
             Ok(AgentResult {
                 output,
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -31439,7 +32062,6 @@ mod tests {
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
-            stale_units: Mutex::new(HashSet::new()),
             compensations: Mutex::new(Vec::new()),
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
@@ -31867,7 +32489,11 @@ mod tests {
         // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
         let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
 
-        let with_worktree = RunCtx::spawn_env(&wrapper_vars, "/scratch/rigger-wt-unit-a");
+        let with_worktree = RunCtx::spawn_env(
+            &wrapper_vars,
+            "/scratch/rigger-wt-unit-a",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-a")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert!(
@@ -31883,7 +32509,7 @@ mod tests {
         );
 
         for dir in ["", "/scratch/rigger-review-stage-0"] {
-            let got = RunCtx::spawn_env(&wrapper_vars, dir);
+            let got = RunCtx::spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
             assert_eq!(
                 got,
                 wrapper_vars.vars().to_vec(),
@@ -31892,9 +32518,27 @@ mod tests {
             );
         }
 
+        // A review tier names the unit's review cache: the same worktree derives the
+        // `review-target-<slug>` sibling instead, never the unit's own cache.
+        assert_eq!(
+            RunCtx::spawn_env(
+                &gate::BuildEnv::default(),
+                "/scratch/rigger-wt-unit-a",
+                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
+            ),
+            vec![(
+                "CARGO_TARGET_DIR".to_string(),
+                "/scratch/review-target-unit-a".to_string()
+            )],
+        );
+
         // No wrapper configured: a real unit worktree dir still gets its
         // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
-        let off = RunCtx::spawn_env(&gate::BuildEnv::default(), "/scratch/rigger-wt-unit-b");
+        let off = RunCtx::spawn_env(
+            &gate::BuildEnv::default(),
+            "/scratch/rigger-wt-unit-b",
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let want_off_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-b")
             .expect("a rigger-wt- dir must derive a cache sibling");
         assert_eq!(
@@ -36021,6 +36665,204 @@ mod tests {
         );
     }
 
+    /// The input digest of the `ok` gate's verdict the `implement` unit recorded at `attempt`.
+    fn ok_gate_digest(events: &[Event], attempt: u32) -> String {
+        let key = gate_key(GateKey::Verdict, "implement", attempt, 0, "ok");
+        events
+            .iter()
+            .find(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&key)
+            })
+            .and_then(|e| e.meta.get(META_INPUT_DIGEST).cloned())
+            .unwrap_or_else(|| panic!("no digested verdict under {key}"))
+    }
+
+    /// The gates are the instrument; the reviewers judge the residue. Every review tier's prompt
+    /// carries the evidence `run_gates_at` recorded for the exact commit it judges - each gate's
+    /// id, its verdict, its input digest and its evidence lines - so no reviewer re-runs a gate
+    /// the evidence shows green. A later round judges a new commit, so it carries that commit's
+    /// evidence and never the earlier round's.
+    #[test]
+    fn every_review_tier_prompt_carries_the_gate_evidence_of_the_commit_it_judges() {
+        let (rs, events, driver) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let digests = [ok_gate_digest(&events, 0), ok_gate_digest(&events, 1)];
+        assert_ne!(
+            digests[0], digests[1],
+            "each round judges a different commit"
+        );
+        for agent_id in ["lens", "adversary", "adj"] {
+            let prompts = driver.prompts_for(agent_id);
+            assert_eq!(prompts.len(), 2, "{agent_id} reviews both rounds");
+            for (round, prompt) in prompts.iter().enumerate() {
+                let (digest, other) = (&digests[round], &digests[1 - round]);
+                let commit = digest_address(digest).unwrap();
+                let block = format!(
+                    "GATE EVIDENCE for the commit under review (commit {commit}, which `git \
+                     rev-parse HEAD` prints in the unit's worktree): every gate below already \
+                     ran on exactly this commit. Never re-run a gate shown PASS here, by \
+                     hand or through a verify helper: the gate is the instrument that proves \
+                     it, and your judgment covers what no gate sees. Reproduce only a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - in your own scratch worktree, never the whole \
+                     battery.\n- ok: PASS (input digest {digest})\n    PASS\n"
+                );
+                assert!(
+                    prompt.contains(&block),
+                    "{agent_id} round {round} must carry its commit's gate evidence:\n{prompt}"
+                );
+                assert!(
+                    !prompt.contains(other.as_str()),
+                    "{agent_id} round {round} must not carry another round's evidence:\n{prompt}"
+                );
+            }
+        }
+    }
+
+    /// A verdict-carrying GateVerdict for `unit`'s `gate` at `attempt`, digested over `commit`.
+    fn digested_verdict(unit: &str, gate: &str, attempt: u32, pass: bool, commit: &str) -> Event {
+        Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": gate, "pass": pass, "evidence": format!("{gate}-{attempt}\nline two")
+            }))
+            .unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Verdict, unit, attempt, 0, gate),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest(gate, commit))
+    }
+
+    /// A gate digest's address is the commit `input_digest` folded into it, recovered exactly:
+    /// the part after the command hash, never a suffix match, and nothing for an empty or
+    /// malformed digest.
+    #[test]
+    fn a_digest_address_is_the_commit_its_gate_ran_on() {
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "C1")),
+            Some("C1")
+        );
+        assert_eq!(
+            digest_address(&input_digest("cargo test", "abc123")),
+            Some("abc123")
+        );
+        assert_eq!(digest_address(&input_digest("cargo test", "")), None);
+        assert_eq!(digest_address("no-separator"), None);
+    }
+
+    /// The gate evidence block names, for the one commit under review, each gate of the unit in
+    /// the order it ran with its latest verdict on that commit, its digest and every evidence
+    /// line - and nothing recorded for another unit, another commit (one whose sha merely ends
+    /// with this one's included), a skip or a post-merge re-gate. No commit, or no gate run on
+    /// it, claims nothing.
+    #[test]
+    fn the_gate_evidence_block_lists_only_the_units_gates_on_the_commit_under_review() {
+        let skip = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "skipped", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::Skip, "u", 1, 0, "skipped"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("skipped", "T1"));
+        let postmerge = Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({"gate": "pm", "pass": true})).unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::PostMergeVerdict, "u", 1, 0, "pm"),
+        )
+        .with_meta(META_INPUT_DIGEST, input_digest("pm", "T1"));
+        let events = vec![
+            digested_verdict("u", "fmt", 0, true, "T0"),
+            digested_verdict("u", "test", 1, false, "T1"),
+            digested_verdict("u", "fmt", 1, true, "T1"),
+            digested_verdict("other", "lint", 1, true, "T1"),
+            digested_verdict("u", "lint", 1, true, "XT1"),
+            skip,
+            postmerge,
+            digested_verdict("u", "test", 2, true, "T1"),
+        ];
+        let block = gate_evidence_block(&events, "u", "T1");
+        let rows = block.split_once("battery.\n").unwrap().1;
+        assert_eq!(
+            rows,
+            format!(
+                "- test: PASS (input digest {})\n    test-2\n    line two\n\
+                 - fmt: PASS (input digest {})\n    fmt-1\n    line two\n",
+                input_digest("test", "T1"),
+                input_digest("fmt", "T1"),
+            )
+        );
+        assert!(block.starts_with("\n\nGATE EVIDENCE for the commit under review (commit T1,"));
+        let failing = gate_evidence_block(&events[..2], "u", "T1");
+        assert!(
+            failing.ends_with(&format!(
+                "- test: FAIL (input digest {})\n    test-1\n    line two\n",
+                input_digest("test", "T1")
+            )),
+            "{failing}"
+        );
+        assert_eq!(gate_evidence_block(&events, "u", ""), "");
+        assert_eq!(gate_evidence_block(&events, "u", "T9"), "");
+        assert_eq!(gate_evidence_block(&events, "nobody", "T1"), "");
+    }
+
+    /// A reviewer's own cargo runs never build into the unit's cache, under either driver: the
+    /// lenses, the adversary and the adjudicator each get the unit's review cache - in their
+    /// spawn environment and in the workflow wave item their parked request becomes - so a reproduction in a reviewer's
+    /// scratch worktree can never swap a binary the unit's gates or another tier's test is
+    /// using. The implementer and the sdet-author build the unit's own tree and keep its cache.
+    #[test]
+    fn a_reviewer_builds_into_the_units_review_cache_never_the_units_own() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = per_unit_panel_cfg(None);
+        cfg.agents
+            .insert(ROLE_SDET_AUTHOR.into(), agent(ROLE_SDET_AUTHOR));
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            write_file: Some("feature.rs".into()),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_cache = format!("{scratch}/cargo-target-implement");
+        let review_cache = format!("{scratch}/review-target-implement");
+        for (agent_id, want) in [
+            ("worker", &unit_cache),
+            (ROLE_SDET_AUTHOR, &unit_cache),
+            ("lens", &review_cache),
+            ("adversary", &review_cache),
+            ("adj", &review_cache),
+        ] {
+            assert_eq!(
+                driver.targets_for(agent_id),
+                vec![(want.clone(), want.clone())],
+                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                 workflow driver's wave"
+            );
+        }
+    }
+
     /// The prompts one approving review round hands its three tiers, `(lens, adversary,
     /// adjudicator)`: a single `review` stage with one lens, run in isolation on a stub that
     /// approves.
@@ -36080,11 +36922,13 @@ mod tests {
         );
     }
 
-    /// Mutation testing belongs to the gate that sweeps, never to a review: every review tier -
-    /// lens, adversary and adjudicator - is told never to run a mutation sweep, itself or
-    /// through a verify helper.
+    /// The gates grade the work, a review judges the residue: every review tier - lens,
+    /// adversary and adjudicator - is told never to re-run the battery or a gate already green on
+    /// its tree, to reproduce only a specific suspicion in its own scratch worktree building into
+    /// the unit's review cache, and never to run a mutation sweep, itself or through a verify
+    /// helper, since mutation testing belongs to the gate that sweeps.
     #[test]
-    fn every_reviewer_prompt_forbids_a_mutation_sweep() {
+    fn every_reviewer_prompt_leaves_the_gates_and_the_mutation_sweep_to_the_gates() {
         let (lens, adversary, adjudicator) = review_tier_prompts();
         for (tier, prompt) in [
             ("lens", lens),
@@ -36097,6 +36941,18 @@ mod tests {
                      testing belongs to the gate that sweeps, never to a review."
                 ),
                 "the {tier} must be told never to run a mutation sweep; prompt was:\n{prompt}"
+            );
+            assert!(
+                prompt.contains(
+                    "Never re-run the gate battery, or any gate the gate evidence shows green on \
+                     the tree under review: the gates are the instrument that grades the work, \
+                     and a review judges what they cannot see. To reproduce a specific \
+                     suspicion - one named test, a reversion probe, a single-crate `cargo test \
+                     -p <crate> <test>` - create your own throwaway scratch worktree and run it \
+                     there, building into the CARGO_TARGET_DIR your spawn carries: the unit's \
+                     review cache, never the cache the unit's gates use."
+                ),
+                "the {tier} must leave the battery to the gates; prompt was:\n{prompt}"
             );
         }
     }
@@ -37141,6 +37997,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // A lens (or any other reviewer): its stdout is not a verdict, but must be
@@ -37148,6 +38005,7 @@ mod tests {
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -37250,7 +38108,7 @@ mod tests {
 
     #[test]
     fn a_matching_input_digest_answers_a_gate_as_a_logged_cache_hit_citing_the_prior_green() {
-        // spec 12, unit 1 (HIT): a gate whose (command, tree-sha) input digest matches a
+        // spec 12, unit 1 (HIT): a gate whose (command, commit-sha) input digest matches a
         // prior GREEN verdict is answered as a LOGGED cache-hit citing that green's position
         // - the command is NOT re-run. The unit gates GREEN on attempt 0, its review
         // REJECTS, and on attempt 1 the implementer reproduces the IDENTICAL tree. Attempt
@@ -37278,6 +38136,166 @@ mod tests {
         assert!(
             verdict_passed(&v1),
             "a cache-hit is recorded as a passing verdict"
+        );
+    }
+
+    /// A FAST-FORWARD LANDING REPLAYS ITS GATES: GIVEN `beta` needs `alpha`, `alpha`'s landing
+    /// touches a file in `beta`'s blast radius, and `beta` lands as a fast-forward, WHEN `beta`'s
+    /// post-merge gate runs on the commit its pre-merge gate already proved green, THEN the
+    /// post-merge gate is a logged cache-hit, never a second run of the command. The digest is the
+    /// HEAD commit, so an upstream landing that changed what `beta` gates would already have
+    /// changed the digest.
+    #[test]
+    fn a_fast_forward_landing_whose_commit_was_gated_replays_its_post_merge_gates() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("aw".into(), agent("aw"));
+        cfg.agents.insert("bw".into(), agent("bw"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let mk = |name: &str, worker: &str, coverage: &str, needs: Vec<String>| Stage {
+            name: name.into(),
+            agent: worker.into(),
+            coverage: coverage.into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs,
+            ..Default::default()
+        };
+        cfg.workflow
+            .stages
+            .insert("alpha".into(), mk("alpha", "aw", "alpha", vec![]));
+        cfg.workflow.stages.insert(
+            "beta".into(),
+            mk("beta", "bw", "widget", vec!["alpha".into()]),
+        );
+        // alpha's file carries beta's grounding word, so alpha's landing reaches beta's radius.
+        let driver = Stub {
+            commits_by_agent: HashMap::from([
+                (
+                    "aw".to_string(),
+                    vec![("shared.rs".to_string(), "// widget helper\n".to_string())],
+                ),
+                (
+                    "bw".to_string(),
+                    vec![("beta_work.rs".to_string(), "fn beta() {}\n".to_string())],
+                ),
+            ]),
+            ..Stub::new()
+        };
+        let grep = crate::grounder::Grep {
+            root: repo_path.clone(),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grep),
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        for name in ["alpha", "beta"] {
+            assert_eq!(rs.units[name].status, ledger::Status::Integrated);
+        }
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let post_merge = |unit: &str| {
+            let key = gate_key(GateKey::PostMergeVerdict, unit, 0, 0, "g");
+            events
+                .iter()
+                .find(|e| {
+                    e.type_ == contextgraph::TYPE_GATE_VERDICT
+                        && e.meta.get(META_REPLAY_KEY) == Some(&key)
+                })
+                .unwrap_or_else(|| panic!("no post-merge verdict recorded for {key}"))
+        };
+        let beta_post = post_merge("beta");
+        assert_eq!(
+            beta_post.meta.get(META_INPUT_DIGEST),
+            gate_verdict_event(&events, "beta", 0)
+                .meta
+                .get(META_INPUT_DIGEST),
+            "premise: beta landed as a fast-forward, so the landed commit is the gated commit"
+        );
+        for unit in ["alpha", "beta"] {
+            assert!(
+                post_merge(unit).meta.contains_key(META_CACHE_HIT),
+                "{unit}'s post-merge gate replays its pre-merge green over the same tree"
+            );
+        }
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "each unit's tree is gated once; no post-merge gate re-runs the command: {:?}",
+            runner.calls()
+        );
+    }
+
+    /// A [`CacheDriver`] whose implementer, from attempt 1 on, first COMMITS a detour edit to
+    /// `work.rs` and then writes the attempt's content back - so the attempt's tree is
+    /// byte-identical to attempt 0's while its commit history is not.
+    struct DetourDriver(CacheDriver);
+    impl AgentDriver for DetourDriver {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id.contains("/implementer#") && attempt_of(&opts.id) >= 1 {
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "detour\n").unwrap();
+                run_git(&opts.dir, &["add", "-A"]);
+                run_git(&opts.dir, &["commit", "-q", "-m", "detour"]);
+            }
+            self.0.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// A gate verdict is replayed only when every input the gate reads is unchanged, and a
+    /// gate may read commit history (red-before-green walks it; the content gates diff from
+    /// the run-branch ref): GIVEN attempt 1 reproduces attempt 0's tree through a different
+    /// history, WHEN its gate runs, THEN the digests differ and the gate runs again.
+    #[test]
+    fn an_identical_tree_reached_through_different_history_is_not_replayed() {
+        let repo = temp_git_project_with_commit();
+        let cfg = review_stage_cfg("g");
+        let store = Store::open(":memory:").unwrap();
+        let runner = RecordingRunner::new(&[]);
+        let driver = DetourDriver(CacheDriver {
+            contents: vec!["same\n".into()],
+            approve_at: 1,
+        });
+        let deps = Deps {
+            gates: &runner,
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let v0 = gate_verdict_event(&events, "s", 0);
+        let v1 = gate_verdict_event(&events, "s", 1);
+        assert_ne!(
+            v0.meta.get(META_INPUT_DIGEST),
+            v1.meta.get(META_INPUT_DIGEST),
+            "a different history is a different gate input, so the digest differs"
+        );
+        assert!(
+            !v1.meta.contains_key(META_CACHE_HIT),
+            "attempt 1 re-ran over its different history rather than replay attempt 0's green"
+        );
+        assert_eq!(
+            runner.calls().iter().filter(|c| c.as_str() == "g").count(),
+            2,
+            "the gate ran on both attempts: {:?}",
+            runner.calls()
         );
     }
 
@@ -38111,115 +39129,6 @@ mod tests {
     }
 
     #[test]
-    fn staleness_flags_only_downstream_units_whose_radius_intersects_the_touched_files() {
-        // spec 12, unit 2 (the marking authority, in isolation): when a unit integrates
-        // touching a file set, EXACTLY the OTHER units whose grounded blast radius intersects
-        // those files are stale. Four-unit fixture proving each exclusion: `up` integrates
-        // touching `shared.rs`; `near` grounds ONTO `shared.rs` (stale); `far` grounds
-        // elsewhere (stands); a `plan` PRODUCER grounds onto `shared.rs` too yet is excluded
-        // (it emits a DAG, not a gate verdict to invalidate); and `up` never stales itself.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        for (name, coverage) in [("up", "up"), ("near", "near"), ("far", "far")] {
-            stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    coverage: coverage.into(),
-                    ..Default::default()
-                },
-            );
-        }
-        stages.insert(
-            "plan".into(),
-            Stage {
-                name: "plan".into(),
-                coverage: "plan".into(),
-                produces: "units".into(),
-                ..Default::default()
-            },
-        );
-        let grounder = StubGrounder {
-            by_query: HashMap::from([
-                ("up".to_string(), vec!["shared.rs".to_string()]),
-                (
-                    "near".to_string(),
-                    vec!["shared.rs".to_string(), "near.rs".to_string()],
-                ),
-                ("far".to_string(), vec!["far.rs".to_string()]),
-                ("plan".to_string(), vec!["shared.rs".to_string()]),
-            ]),
-        };
-        let touched = vec!["shared.rs".to_string()];
-        assert_eq!(
-            stale_downstream_units(&stages, Some(&grounder), "up", &touched),
-            vec!["near".to_string()],
-            "only `near` is stale: its radius intersects shared.rs; `up` never stales itself, \
-             `far` is disjoint, and the `plan` producer has no gate verdict to invalidate"
-        );
-        // No grounder => no computable radius => nothing staled (best-effort, exactly like
-        // `grounded_seed` returns an empty seed when no grounder is configured).
-        assert!(
-            stale_downstream_units(&stages, None, "up", &touched).is_empty(),
-            "with no grounder there is no blast radius to intersect, so nothing is staled"
-        );
-    }
-
-    #[test]
-    fn staleness_grounds_on_the_safe_superset_so_a_grep_only_reference_still_stales_a_downstream_unit(
-    ) {
-        // spec 17 unit 3 (3a): stale_downstream_units must ground on the SAFE-superset view, not the
-        // precise (name-level) view. A downstream unit whose PRECISE radius misses a reference that
-        // is visible only to grep (a macro body / re-export / reflection string) must STILL be marked
-        // stale when the integrating unit touches that grep-only file - otherwise its cached green
-        // gate verdicts are reused and it integrates against changed code (the fail-open the safe
-        // view exists to close). With symbols INACTIVE (safe == precise) the behavior is unchanged.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        for name in ["up", "hidden"] {
-            stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    coverage: name.into(),
-                    ..Default::default()
-                },
-            );
-        }
-        // `hidden`'s PRECISE view is only hidden.rs; its SAFE view adds macros.rs - a reference
-        // visible ONLY to grep, exactly the symbols grounder's uncapped structural-union-grep radius.
-        let structural = StructuralStubGrounder {
-            by_query: HashMap::from([(
-                "hidden".to_string(),
-                BlastRadius {
-                    precise: vec!["hidden.rs".to_string()],
-                    safe: vec!["hidden.rs".to_string(), "macros.rs".to_string()],
-                    serialize: false,
-                },
-            )]),
-            stamp: "idxhash/ts-tags-v1".to_string(),
-        };
-        let touched = vec!["macros.rs".to_string()];
-        assert_eq!(
-            stale_downstream_units(&stages, Some(&structural), "up", &touched),
-            vec!["hidden".to_string()],
-            "the grep-only reference macros.rs lives in `hidden`'s SAFE view but not its precise \
-             view; grounding staleness on the safe superset marks `hidden` stale, closing the \
-             cached-green fail-open a precise-only intersection would leave open"
-        );
-
-        // Symbols INACTIVE: a grounder that inherits the DEFAULT blast_radius returns safe == precise
-        // == ground. `hidden` grounds ONLY to hidden.rs there, so touching the grep-only macros.rs
-        // stales nothing - the shipped default is byte-for-byte unchanged.
-        let plain = StubGrounder {
-            by_query: HashMap::from([("hidden".to_string(), vec!["hidden.rs".to_string()])]),
-        };
-        assert!(
-            stale_downstream_units(&stages, Some(&plain), "up", &touched).is_empty(),
-            "with symbols inactive safe == precise, so a grep-only file outside the precise radius \
-             stales nothing - the default path is unchanged"
-        );
-    }
-
-    #[test]
     fn rule6_conflict_detection_grounds_on_the_safe_superset_so_a_grep_only_shared_reference_conflicts(
     ) {
         // spec 17 unit 3 (3b): dag_unit_blast_radii must feed rule-6 conflict detection the
@@ -38319,208 +39228,6 @@ mod tests {
             blast_radius_conflicts(&plain_radii).is_empty(),
             "with symbols inactive safe == precise; the two disjoint units share no file and raise \
              no rule-6 conflict: {plain_radii:?}"
-        );
-    }
-
-    #[test]
-    fn a_resume_reseeds_the_stale_set_from_the_prior_unitintegrated_marks() {
-        // spec 12, unit 2 (replay determinism): a stepwise resume recovers the STALE set
-        // purely from the log - every unit named in a prior UnitIntegrated META_STALE mark,
-        // comma-joined, empty segments ignored - so a stale unit keeps stopping-to-hit across
-        // the process boundary. A mark on a NON-UnitIntegrated event is ignored (only the
-        // integration event carries the invalidation).
-        let events = vec![
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"alpha"}"#.to_vec())
-                .with_meta(META_STALE, "beta,delta"),
-            // A second integration adds another stale unit and tolerates a trailing empty.
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"beta"}"#.to_vec())
-                .with_meta(META_STALE, "epsilon,"),
-            // An integration that staled nobody carries no mark.
-            Event::new(ledger::TYPE_UNIT_INTEGRATED, br#"{"id":"gamma"}"#.to_vec()),
-            // A stray mark on some OTHER event type must never seed the set.
-            Event::new(ledger::TYPE_UNIT_STATUS, br#"{"id":"zeta"}"#.to_vec())
-                .with_meta(META_STALE, "zeta"),
-        ];
-        let seeded = stale_units_from_log(&events);
-        let mut got: Vec<String> = seeded.into_iter().collect();
-        got.sort();
-        assert_eq!(
-            got,
-            vec![
-                "beta".to_string(),
-                "delta".to_string(),
-                "epsilon".to_string()
-            ],
-            "the stale set is exactly the units named across the UnitIntegrated marks"
-        );
-    }
-
-    /// Drives the staleness end-to-end fixture. `alpha` (upstream) writes `shared.rs` (whose
-    /// content carries `beta`'s grounding keyword) and its adjudicator approves immediately,
-    /// so it integrates first. `beta`/`gamma` (downstream, needing alpha) each write their
-    /// OWN file with STABLE content and reject attempt 0 then approve attempt 1, so each
-    /// re-gates an IDENTICAL tree - a content cache-hit unless staleness refuses it.
-    struct StaleDriver;
-    impl AgentDriver for StaleDriver {
-        fn spawn(
-            &self,
-            _a: &AgentDef,
-            _prompt: &str,
-            opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            let unit = opts.id.split('/').next().unwrap_or_default();
-            let attempt = attempt_of(&opts.id);
-            if opts.id.contains("/implementer#") {
-                if !opts.dir.is_empty() {
-                    let (file, content) = match unit {
-                        // alpha's touched file, carrying beta's grounding keyword `widget`.
-                        "alpha" => ("shared.rs", "// widget helper\n"),
-                        // beta/gamma each write their OWN file with fixed content, so their
-                        // attempt-0 and attempt-1 trees are byte-identical (a hit candidate).
-                        "beta" => ("beta_work.rs", "fn beta() {}\n"),
-                        _ => ("gamma_work.rs", "fn gamma() {}\n"),
-                    };
-                    std::fs::write(Path::new(&opts.dir).join(file), content).unwrap();
-                }
-                return Ok(AgentResult::default());
-            }
-            if opts.id.contains("/adjudicator#") {
-                // alpha integrates on attempt 0; beta/gamma reject once then approve, so each
-                // reaches an attempt-1 re-gate over its identical tree.
-                let approve_at = if unit == "alpha" { 0 } else { 1 };
-                let out = if attempt >= approve_at {
-                    r#"{"verdict":"approve"}"#
-                } else {
-                    r#"{"verdict":"reject","issues":[]}"#
-                };
-                return Ok(AgentResult {
-                    output: out.into(),
-                    resolved_model: String::new(),
-                });
-            }
-            Ok(AgentResult {
-                output: "reviewed the diff".into(),
-                resolved_model: String::new(),
-            })
-        }
-    }
-
-    #[test]
-    fn integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest() {
-        // spec 12, unit 2 (end-to-end, three-unit dependency fixture): integrating `alpha`
-        // (touching `shared.rs`) marks EXACTLY the downstream units whose blast radius
-        // intersects `shared.rs` stale - `beta` grounds onto it, `gamma` does not. The stale
-        // unit's cached verdicts STOP HITTING: `beta` re-gates its identical attempt-1 tree
-        // for real instead of taking the content cache-hit its attempt-0 green would answer,
-        // while the unaffected `gamma` still hits and its green STANDS.
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        // `gamma` grounds onto a file present from the base (a grep grounder searches file
-        // CONTENT for the coverage word); `beta` grounds onto shared.rs, which alpha creates.
-        std::fs::write(repo.path().join("gamma_only.rs"), "// gizmo lives here\n").unwrap();
-        for args in [&["add", "-A"][..], &["commit", "-q", "-m", "fixture"][..]] {
-            run_git(&repo_path, args);
-        }
-        let grep = crate::grounder::Grep {
-            root: repo_path.clone(),
-        };
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        // alpha upstream (its coverage grounds onto no touched file, so it stales nobody by
-        // its own name); beta grounds onto shared.rs (`widget`); gamma onto gamma_only.rs
-        // (`gizmo`). beta/gamma depend on alpha so they run only AFTER it integrated + marked.
-        let mk = |name: &str, coverage: &str, needs: Vec<String>| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            coverage: coverage.into(),
-            gates: vec!["g".into()],
-            on_pass: "merge".into(),
-            needs,
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow
-            .stages
-            .insert("alpha".into(), mk("alpha", "alpha", vec![]));
-        cfg.workflow
-            .stages
-            .insert("beta".into(), mk("beta", "widget", vec!["alpha".into()]));
-        cfg.workflow
-            .stages
-            .insert("gamma".into(), mk("gamma", "gizmo", vec!["alpha".into()]));
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = StaleDriver;
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: Some(&grep),
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
-        };
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        for name in ["alpha", "beta", "gamma"] {
-            assert_eq!(
-                rs.units[name].status,
-                ledger::Status::Integrated,
-                "{name} must integrate"
-            );
-        }
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // The `META_STALE` mark on a unit's UnitIntegrated event, if any.
-        let staled_by = |unit: &str| -> Option<String> {
-            events
-                .iter()
-                .find(|e| {
-                    e.type_ == ledger::TYPE_UNIT_INTEGRATED
-                        && serde_json::from_slice::<Value>(&e.data)
-                            .ok()
-                            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-                            .as_deref()
-                            == Some(unit)
-                })
-                .and_then(|e| e.meta.get(META_STALE).cloned())
-        };
-        // (1) MARKING: alpha's integration stales EXACTLY beta - never gamma (disjoint
-        // radius) and never itself; beta/gamma touch no downstream radius, so they stale none.
-        assert_eq!(
-            staled_by("alpha").as_deref(),
-            Some("beta"),
-            "alpha's integration stales exactly beta, whose blast radius intersects shared.rs"
-        );
-        assert!(
-            staled_by("beta").is_none() && staled_by("gamma").is_none(),
-            "beta and gamma touch no downstream blast radius, so their integrations stale nobody"
-        );
-
-        // (2) CACHE STOPS HITTING vs GREEN STANDS: both re-gate an identical attempt-1 tree,
-        // but the stale beta re-runs (no cache-hit) while the unaffected gamma hits.
-        assert!(
-            !gate_verdict_event(&events, "beta", 1)
-                .meta
-                .contains_key(META_CACHE_HIT),
-            "beta is stale, so its attempt-1 gate RE-RAN rather than reuse its attempt-0 green"
-        );
-        assert!(
-            gate_verdict_event(&events, "gamma", 1)
-                .meta
-                .contains_key(META_CACHE_HIT),
-            "gamma is unaffected, so its identical attempt-1 tree still cache-hits - green stands"
         );
     }
 
@@ -38944,11 +39651,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39398,11 +40107,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39552,11 +40263,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: out.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -39616,11 +40329,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -40020,11 +40735,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -40244,11 +40961,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -40394,11 +41113,13 @@ mod tests {
                 return Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             Ok(AgentResult {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -41088,6 +41809,7 @@ mod tests {
                 Ok(AgentResult {
                     output: r#"{"verdict":"approve"}"#.into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 })
             }
         }
@@ -43252,6 +43974,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: "proposed the DAG".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             if a.id == self.adjudicator {
@@ -43276,12 +43999,14 @@ mod tests {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // The adversary (or any other reviewer) emits nothing and returns benignly.
             Ok(AgentResult {
                 output: format!("{} reviewed the DAG", a.id),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }
@@ -45027,6 +45752,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: "proposed the DAG".into(),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             // Every reviewer (and any leaked implementer) parks: the gate never renders a

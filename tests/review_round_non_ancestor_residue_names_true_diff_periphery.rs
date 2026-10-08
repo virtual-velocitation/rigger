@@ -95,6 +95,7 @@ impl AgentDriver for NonAncestorAmendDriver {
             return Ok(AgentResult {
                 output: r#"{"verdict":"approve"}"#.into(),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         Ok(AgentResult::default())

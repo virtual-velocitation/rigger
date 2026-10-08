@@ -601,6 +601,7 @@ fn canary_opts(
         settings_json: String::new(),
         launch: 0,
         resumed_from: String::new(),
+        resume_task: String::new(),
     }
 }
 
@@ -784,6 +785,7 @@ mod tests {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: self.resolved_model.clone(),
+                    ..Default::default()
                 });
             }
             let anchor = crate::test_support::anchor_of(prompt);
@@ -802,6 +804,7 @@ mod tests {
             Ok(AgentResult {
                 output: "reviewed".into(),
                 resolved_model: self.resolved_model.clone(),
+                ..Default::default()
             })
         }
     }
@@ -983,6 +986,7 @@ mod tests {
             Ok(AgentResult {
                 output: "{\"verdict\":\"approve\"}".into(),
                 resolved_model: String::new(),
+                ..Default::default()
             })
         }
     }

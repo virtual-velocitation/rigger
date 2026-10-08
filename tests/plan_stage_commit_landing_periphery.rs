@@ -324,6 +324,7 @@ impl AgentDriver for PlanAmendDriver {
                     self.compensate_target
                 ),
                 resolved_model: String::new(),
+                ..Default::default()
             });
         }
         if a.id == self.planner
@@ -369,6 +370,7 @@ impl AgentDriver for PlanAmendDriver {
         Ok(AgentResult {
             output: format!("{} ok", a.id),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
