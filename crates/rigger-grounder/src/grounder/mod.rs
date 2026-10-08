@@ -213,8 +213,10 @@ pub struct Grep {
 impl Grep {
     /// The lines holding `term` as a WHOLE identifier - no `[A-Za-z0-9_]` character directly
     /// before or after it - case-insensitively, up to `k` hits: `gc` matches `run gc now`, never
-    /// `logcat`. The blast radius text-searches a criterion's spans this way, so a short span
-    /// never reaches every file that merely contains its letters.
+    /// `logcat`. A term ending in `_` names a family by its prefix (`TYPE_`), so it needs the left
+    /// boundary only and matches `TYPE_RUN_STARTED`. The blast radius text-searches a criterion's
+    /// unresolved names this way, so a short name never reaches every file that merely contains
+    /// its letters.
     pub fn ground_identifier(&self, term: &str, k: usize) -> Vec<Ref> {
         self.search(term, k, true)
     }
@@ -250,15 +252,17 @@ impl Grounder for Grep {
 }
 
 /// Whether `line` (lowercased) holds `needle` (lowercased) - anywhere, or when `bounded` only
-/// where no `[A-Za-z0-9_]` character stands directly before or after it.
+/// where no `[A-Za-z0-9_]` character stands directly before it nor, unless `needle` ends in `_`
+/// (a prefix), directly after it.
 fn line_matches(line: &str, needle: &str, bounded: bool) -> bool {
     if !bounded {
         return line.contains(needle);
     }
     let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let prefix = needle.ends_with('_');
     line.match_indices(needle).any(|(i, _)| {
         !line[..i].chars().next_back().is_some_and(word)
-            && !line[i + needle.len()..].chars().next().is_some_and(word)
+            && (prefix || !line[i + needle.len()..].chars().next().is_some_and(word))
     })
 }
 
