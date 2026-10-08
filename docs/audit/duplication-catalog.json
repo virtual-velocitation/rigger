@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-02c9a18c9704",
+    "id": "dup-3aea0a957ad0",
     "classification": "semantic",
     "sites": [
       {
@@ -3101,6 +3101,16 @@
         "content_hash": "3fb4b4655dac6074"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "\"gw/.rigger/workflow.yml\"",
+        "content_hash": "89bcb25e03467378"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\"gw/.rigger/workflow.yml\"",
+        "content_hash": "89bcb25e03467378"
+      },
+      {
         "file": "tests/common/cli.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
@@ -4117,7 +4127,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 596 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

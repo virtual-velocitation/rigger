@@ -2035,6 +2035,13 @@ enum SampleVerdict {
 /// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
 const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
     (
+        "crates/rigger-grounder/src/ingest.rs",
+        "answered",
+        SampleVerdict::Closed(
+            "its view of a sink answer's batch is `wire_owned`; the root sink suite's `Handed::answer` re-rolled that view as its own `typed` and now calls `wire_owned` too",
+        ),
+    ),
+    (
         "crates/rigger-domain/src/canary.rs",
         "from_event",
         SampleVerdict::NoDuplicate,

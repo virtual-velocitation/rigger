@@ -20777,15 +20777,10 @@ mod tests {
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
             arm_read_fault, generation_ingested, git_answer, git_hash_object,
-            planted_extraction_tree, walked_handoffs, write_file, DOCUMENT_BODY, DOCUMENT_PATH,
-            SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY,
-            WORKFLOW_PATH,
+            planted_extraction_tree, walked_handoffs, write_file, Handed, DOCUMENT_BODY,
+            DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
+            WORKFLOW_BODY, WORKFLOW_PATH,
         };
-
-        /// `batch` as the run sink takes it.
-        fn as_keyed(batch: &[(String, Event)]) -> Vec<(String, &Event)> {
-            batch.iter().map(|(key, ev)| (key.clone(), ev)).collect()
-        }
 
         /// The hash function as a run is handed it.
         type Hash<'a> = &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync);
@@ -20885,53 +20880,17 @@ mod tests {
                 .collect()
         }
 
-        /// One batch a walk handed its sink, owned, with its flag.
-        struct Handed {
-            keyed: Vec<(String, Event)>,
-            excluded: bool,
-        }
-
         impl Handed {
-            /// The generation the walk keyed the batch under.
-            fn generation(&self) -> String {
-                let (_, generation) = crate::ingest::derived_key_parts(&self.keyed[0].0)
-                    .expect("a walk keys every batch under its identity and generation");
-                generation.to_string()
-            }
-
             /// Hand the batch to the run's sink, answering the emit's failure as its text.
             fn emit(&self, ctx: &RunCtx) -> Result<(), String> {
-                ctx.emit_keyed_batch(&as_keyed(&self.keyed), self.excluded)
+                ctx.emit_keyed_batch(&self.as_keyed(), self.excluded)
                     .map_err(|e| e.0)
             }
         }
 
-        /// The batch of `identity` among those `walk` hands its sink.
-        fn handed_by(
-            walk: impl FnOnce(&mut dyn crate::ingest::BatchSink),
-            identity: &str,
-        ) -> Handed {
-            let mut found = None;
-            walk(&mut |keyed: &[(String, &Event)], excluded: bool| {
-                let named = keyed
-                    .first()
-                    .and_then(|(key, _)| crate::ingest::derived_key_parts(key));
-                if named.map(|(of, _)| of) == Some(identity) {
-                    found = Some(Handed {
-                        keyed: keyed
-                            .iter()
-                            .map(|(key, ev)| (key.clone(), (*ev).clone()))
-                            .collect(),
-                        excluded,
-                    });
-                }
-            });
-            found.unwrap_or_else(|| panic!("the walk hands a batch for {identity}"))
-        }
-
         /// The batch the whole-tree walk of `root` hands for `identity`.
         fn walked(root: &str, identity: &str) -> Handed {
-            handed_by(
+            Handed::by(
                 |sink| {
                     crate::ingest::ingest_project_batched(root, sink);
                 },
@@ -20941,7 +20900,7 @@ mod tests {
 
         /// The batch an integration reindex of `root` naming `file` hands for `identity`.
         fn reindexed(root: &str, file: &str, identity: &str) -> Handed {
-            handed_by(
+            Handed::by(
                 |sink| {
                     crate::ingest::ingest_files_batched(root, &[file.to_string()], sink);
                 },

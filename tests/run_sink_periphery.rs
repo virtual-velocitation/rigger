@@ -30,9 +30,9 @@ use std::sync::Mutex;
 use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, entry_records, generation_ingested, git_commit_all, git_hash_object,
-    live_edges, minted_events, temp_git_project_with_commit, walked_entry_events, write_text,
-    NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY,
-    TEST_MODULE_PATH,
+    live_edges, minted_events, temp_git_project_with_commit, walked_entry_events, wire_owned,
+    write_text, Handed, NoopDriver, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH,
+    TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{Config, Stage};
@@ -431,50 +431,25 @@ fn a_revert_a_b_a_across_three_runs_records_three_entries_with_their_blobs_and_l
     assert_eq!(files.entry_positions(), positions);
 }
 
-/// A batch's events, each as its type and payload.
-type Typed = Vec<(String, Vec<u8>)>;
+/// A batch's events as a test compares them: each its type and payload text.
+type Typed = Vec<(String, String)>;
 
-/// One batch a walk handed its sink, owned, with its flag.
-struct Handed {
-    keyed: Vec<(String, Event)>,
-    excluded: bool,
+/// The batch an integration reindex of `root` naming the source file hands for its code
+/// identity.
+fn reindexed(root: &Path) -> Handed {
+    Handed::by(
+        |sink| {
+            ingest_files_batched(root.to_str().unwrap(), &[SOURCE_PATH.to_string()], sink);
+        },
+        SOURCE,
+    )
 }
 
 impl Handed {
-    /// The batch an integration reindex of `root` naming the source file hands for its code
-    /// identity.
-    fn reindexed(root: &Path) -> Self {
-        let mut found = None;
-        ingest_files_batched(
-            root.to_str().unwrap(),
-            &[SOURCE_PATH.to_string()],
-            |keyed: &[(String, &Event)], excluded: bool| {
-                let identity = keyed
-                    .first()
-                    .and_then(|(key, _)| derived_key_parts(key))
-                    .map(|(identity, _)| identity);
-                if identity == Some(SOURCE) {
-                    found = Some(Handed {
-                        keyed: keyed
-                            .iter()
-                            .map(|(key, event)| (key.clone(), (*event).clone()))
-                            .collect(),
-                        excluded,
-                    });
-                }
-            },
-        );
-        found.expect("the reindex hands the source file's code batch")
-    }
-
-    /// The generation the walk keyed the batch under.
-    fn generation(&self) -> String {
-        derived_key_parts(&self.keyed[0].0).unwrap().1.to_string()
-    }
-
     /// The batch's events, each as its type and payload.
     fn events(&self) -> Typed {
-        typed(self.keyed.iter().map(|(_, event)| event))
+        let events: Vec<Event> = self.keyed.iter().map(|(_, event)| event.clone()).collect();
+        wire_owned(&events)
     }
 
     /// What the public sink answer records for this batch over `files` under `hash`: the entry
@@ -486,29 +461,17 @@ impl Handed {
         hash: &rigger::ingest::HashBlob,
     ) -> Result<Option<(GenerationIngested, Typed)>, String> {
         let (store, graph) = (files.store(), files.graph());
-        let keyed: Vec<(String, &Event)> = self
-            .keyed
-            .iter()
-            .map(|(key, event)| (key.clone(), event))
-            .collect();
         entry_of_batch(
             root,
-            &keyed,
+            &self.as_keyed(),
             self.excluded,
             |identity| latest_generation(&store, STREAM, identity),
             &graph,
             hash,
         )
-        .map(|recorded| recorded.map(|of| (of.entry, typed(of.batch.iter()))))
+        .map(|recorded| recorded.map(|of| (of.entry, wire_owned(&of.batch))))
         .map_err(|failure: EntryFailure| failure.to_string())
     }
-}
-
-/// Each of `events` as its type and payload.
-fn typed<'e>(events: impl Iterator<Item = &'e Event>) -> Typed {
-    events
-        .map(|event| (event.type_.clone(), event.data.clone()))
-        .collect()
 }
 
 /// A hash function that fails the test when asked.
@@ -533,7 +496,7 @@ fn the_public_sink_answer_records_through_the_constructor_and_the_ledger_form_un
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    let handed = Handed::reindexed(root);
+    let handed = reindexed(root);
     let generation = handed.generation();
     let hash = |bytes: &[u8]| rigger::worktree::hash_blob(root, bytes);
     let sides = || {
@@ -607,7 +570,7 @@ fn the_public_sink_answer_records_through_the_constructor_and_the_ledger_form_un
 #[test]
 fn the_public_sink_answer_for_a_deleted_file_and_one_out_of_scope_names_no_blob_and_asks_no_hash() {
     let deleted = committed_tree();
-    let with_bytes = Handed::reindexed(deleted.path()).generation();
+    let with_bytes = reindexed(deleted.path()).generation();
     std::fs::remove_file(deleted.path().join(SOURCE_PATH)).unwrap();
     let ignored = committed_tree();
     write_text(ignored.path(), ".gitignore", "src/lib.rs\n");
@@ -619,7 +582,7 @@ fn the_public_sink_answer_for_a_deleted_file_and_one_out_of_scope_names_no_blob_
     );
 
     let answers = [deleted.path(), ignored.path()].map(|root| {
-        let handed = Handed::reindexed(root);
+        let handed = reindexed(root);
         let answered = handed.answer(root, &Files::new(), &unasked);
         (answered, handed.generation(), handed.events())
     });
@@ -652,7 +615,7 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
     let tree = committed_tree();
     let root = tree.path();
     let files = Files::new();
-    let handed = Handed::reindexed(root);
+    let handed = reindexed(root);
     let rekeyed = |key: &str| Handed {
         keyed: vec![(key.to_string(), handed.keyed[0].1.clone())],
         excluded: false,
@@ -704,7 +667,7 @@ fn the_public_sink_answer_fails_naming_a_key_with_no_identity_and_a_hash_that_ca
 fn the_public_sink_answer_fails_naming_a_read_that_fails_for_a_reason_other_than_absence() {
     let tree = committed_tree();
     let root = tree.path();
-    let handed = Handed::reindexed(root);
+    let handed = reindexed(root);
     let file = root.join(SOURCE_PATH);
     if !arm_read_fault(&file) {
         return;
