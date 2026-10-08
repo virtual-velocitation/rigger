@@ -11110,7 +11110,8 @@ impl RunCtx<'_> {
     }
 
     /// The unified graph two hops around `seed` - the ONE seeded traversal every grounding
-    /// render reads - or `None` with no graph, an empty seed, or a failed read.
+    /// render reads - or `None` with no graph, an empty seed, or a failed read. Its depth is the
+    /// prompt render's own, independent of the blast radius's [`BLAST_RADIUS_GRAPH_DEPTH`].
     fn seeded_subgraph(&self, seed: &[String]) -> Option<Graph> {
         match self.deps.graph {
             Some(g) if !seed.is_empty() => g.subgraph(seed, 2).ok(),
@@ -13156,7 +13157,8 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
     );
 }
 
-/// How many hops the graph arm of a blast radius expands the named code's files (addendum 2.4).
+/// How many hops the graph arm of a blast radius expands the named code's files (addendum 2.4);
+/// independent of the prompt render's depth in `seeded_subgraph`.
 const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 
 /// The CONFIDENCE-TIER blast radius (spec 29c criterion 2, addendum 6.2): TWO filters over the ONE
