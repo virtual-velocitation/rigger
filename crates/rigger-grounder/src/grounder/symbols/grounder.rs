@@ -120,24 +120,23 @@ fn query_terms(query: &str) -> Vec<&str> {
 }
 
 /// What a criterion NAMES AS CODE, which is all its blast radius grounds on (never its prose):
-/// the symbol `names` matched structurally, the file `paths` it names, and the `phrases` its
-/// spans read as. A criterion that names no code has none of the three.
+/// the symbols it `names` and the file `paths` it names. A criterion that names no code has
+/// neither, and a span that is not a name of code (a multi-word phrase such as a command line, a
+/// directory fragment) contributes nothing.
 #[derive(Debug, Default, PartialEq)]
 struct CodeTerms {
-    names: Vec<String>,
+    names: Vec<Named>,
     paths: Vec<String>,
-    phrases: Vec<Phrase>,
 }
 
-/// One span as text, and what the index can resolve it to: the symbol it names, or the file it
-/// names (`path`). A phrase the index resolves is grounded structurally and never text-searched;
-/// any other phrase (a multi-word span, a string-literal event name, an unindexed name) is the
-/// text search's to find.
+/// A symbol a criterion names: the `text` as written (`a::b`, `store.open`) and the `name` the
+/// index matches (its last `::` or `.` segment). A name the index defines is grounded
+/// structurally; one it does not (a string-literal event name, a constant prefix, a name nothing
+/// defines yet) falls back to a whole-identifier text search for `text`.
 #[derive(Debug, PartialEq)]
-struct Phrase {
+struct Named {
     text: String,
-    name: Option<String>,
-    path: bool,
+    name: String,
 }
 
 /// Files the text search never matches: spec files no unit edits, and the simplification audit
@@ -158,11 +157,11 @@ const FILE_EXTENSIONS: &[&str] = &[
 /// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
 /// token that is identifier-shaped ([`identifier_shaped`]) contributes; a plain prose word never
 /// does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
-/// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it names
-/// a file (contains `/` or ends in a file extension), else a symbol named by its last `::` or `.`
-/// segment, and is also searched for as text. A span left with SEVERAL pieces (`rigger validate`)
-/// is searched for as ONE phrase, and only its identifier-shaped pieces are matched structurally,
-/// so a word like `rigger` inside a command never widens the radius on its own.
+/// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it looks
+/// like one (contains `/`, starts with `.`, or ends in a file extension), else a symbol when it is
+/// an identifier or a `::`/`.` path of identifiers; anything else names no code. A span left
+/// with SEVERAL pieces (`rigger validate`, a command line) is prose about the code, not a name of
+/// it, so it contributes nothing.
 fn code_terms(query: &str) -> CodeTerms {
     let mut terms = CodeTerms::default();
     for (i, part) in query.split('`').enumerate() {
@@ -183,7 +182,7 @@ fn code_terms(query: &str) -> CodeTerms {
 
 impl CodeTerms {
     fn is_empty(&self) -> bool {
-        self.names.is_empty() && self.paths.is_empty() && self.phrases.is_empty()
+        self.names.is_empty() && self.paths.is_empty()
     }
 
     fn add_span(&mut self, span: &str) {
@@ -193,16 +192,8 @@ impl CodeTerms {
             .map(clean_piece)
             .filter(|p| meaningful(p) && !KEYWORDS.contains(p))
             .collect();
-        match pieces.as_slice() {
-            [] => {}
-            [one] => self.add_piece(one),
-            many => {
-                for piece in many.iter().filter(|p| identifier_shaped(p)) {
-                    push_new(&mut self.names, last_segment(piece));
-                }
-                let phrase = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
-                self.push_phrase(clean_piece(&phrase), None, false);
-            }
+        if let [one] = pieces.as_slice() {
+            self.add_piece(one);
         }
     }
 
@@ -212,25 +203,15 @@ impl CodeTerms {
         }
         if is_path(piece) {
             push_new(&mut self.paths, piece);
-            self.push_phrase(piece, None, true);
         } else if piece
             .split("::")
             .flat_map(|s| s.split('.'))
             .all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+            && !self.names.iter().any(|n| n.text == piece)
         {
-            push_new(&mut self.names, last_segment(piece));
-            self.push_phrase(piece, Some(last_segment(piece)), false);
-        } else {
-            self.push_phrase(piece, None, false);
-        }
-    }
-
-    fn push_phrase(&mut self, text: &str, name: Option<&str>, path: bool) {
-        if !self.phrases.iter().any(|p| p.text == text) {
-            self.phrases.push(Phrase {
-                text: text.to_string(),
-                name: name.map(str::to_string),
-                path,
+            self.names.push(Named {
+                text: piece.to_string(),
+                name: last_segment(piece).to_string(),
             });
         }
     }
@@ -247,9 +228,11 @@ fn meaningful(piece: &str) -> bool {
     piece.chars().count() >= 2 && piece.chars().any(char::is_alphanumeric)
 }
 
-/// A term names a file when it has a `/` or ends in a known file extension.
+/// A term reads as a file path when it has a `/`, starts with `.` (`.gitignore`) or ends in a
+/// known file extension. It grounds only when the tree holds that file.
 fn is_path(term: &str) -> bool {
     term.contains('/')
+        || term.starts_with('.')
         || term
             .rsplit_once('.')
             .is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTENSIONS.contains(&ext))
@@ -576,22 +559,20 @@ impl Grounder for Symbols {
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
     /// 1) - the `symbols` override of the grep-only trait default.
     ///
-    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: the symbols,
-    /// files and phrases of its code spans and identifier-shaped tokens), never its prose words -
-    /// a prose word that happens to be a symbol name would pull that symbol's whole neighborhood
-    /// in, and a multi-word span is one phrase, so a word inside a command never widens it alone:
+    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: the symbols
+    /// and the files of its code spans and identifier-shaped tokens), never its prose words - a
+    /// prose word that happens to be a symbol name would pull that symbol's whole neighborhood
+    /// in - and never a multi-word span, which is prose about the code rather than a name of it:
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
-    ///   queried symbols (and any file a path-like term names) ranked ABOVE the files that
-    ///   REFERENCE them - capped at `k`. It is what seeds
-    ///   an agent's prompt, so it favors precision.
-    /// - `safe` (the safety contract) is the UNION of the structural view and grep, UNCAPPED. It
-    ///   runs BOTH engines - the structural graph AND the EXISTING [`Grep`] grounder over the same
-    ///   root, once per phrase - so it is never narrower than the grep radius of what the criterion
-    ///   names (5.5.9). Name-level linking MISSES
-    ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
-    ///   a symbol); the grep union recovers them, so the partitioning consumer can never
-    ///   under-partition.
+    ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
+    ///   files that REFERENCE them - capped at `k`. It is what seeds an agent's prompt, so it
+    ///   favors precision.
+    /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
+    ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the index
+    ///   does NOT define - the fallback for references a name index never sees (a string-literal
+    ///   event name, a constant prefix, a name nothing defines yet), outside spec files and the
+    ///   regenerated audit. A defined name and a path are never text-searched.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
     ///   every file that defines or references it is in the view, never truncated, so the
     ///   partitioning consumer's overlap test keeps the unit apart from exactly the units that
@@ -607,8 +588,8 @@ impl Grounder for Symbols {
     /// character (ASCII or multibyte) or all punctuation - returns empty views (the empty-radius
     /// fail-safe the scheduler runs alone and unit 3 routes to the full panel) WITHOUT running a
     /// whole-repo grep, never a partial or a panic. A query WITH code terms that simply matches
-    /// nothing is ALSO empty, but that case does run the uncapped grep per phrase - it just comes
-    /// back empty.
+    /// nothing is ALSO empty, but that case does run the uncapped search per unresolved name - it
+    /// just comes back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
@@ -621,12 +602,12 @@ impl Grounder for Symbols {
         if terms.is_empty() {
             return BlastRadius::default();
         }
-        let names: Vec<&str> = terms.names.iter().map(String::as_str).collect();
+        let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
         // computed under ONE read lock over the index.
-        // The names the index DEFINES and the path terms naming an indexed file: a phrase that
-        // resolves to either is grounded by the structural view alone.
+        // The names the index DEFINES: a name that resolves is grounded by the structural view
+        // alone, and only an unresolved one falls back to the text search.
         let mut defined: HashSet<&str> = HashSet::new();
         let mut found_paths: HashSet<&str> = HashSet::new();
         let structural: Vec<String> = {
@@ -657,6 +638,17 @@ impl Grounder for Symbols {
                     referencers.push(path.as_str());
                 }
             }
+            // A named path the index does not parse (`.gitignore`) still grounds on its own file
+            // when the tree holds it; a path the tree does not hold grounds nothing.
+            let root = std::path::Path::new(&self.root);
+            let unindexed: Vec<&str> = terms
+                .paths
+                .iter()
+                .map(String::as_str)
+                .filter(|t| !found_paths.contains(t) && !t.split('/').any(|c| c == ".."))
+                .filter(|t| root.join(t).is_file())
+                .collect();
+            definers.extend(unindexed);
             // Ranked: every definer file first, then each referencer that is not also a definer.
             let mut ranked: Vec<String> = Vec::new();
             for f in &definers {
@@ -671,10 +663,10 @@ impl Grounder for Symbols {
         };
 
         // The SAFE view: the FULL (untruncated) structural set UNIONed with an UNCAPPED text search
-        // for each phrase the index does NOT resolve - the fallback for the references a name
-        // index misses (a string-literal event name, a constant prefix, an unindexed name). A
-        // phrase the index resolves is grounded structurally alone: text-searching it would put
-        // every file mentioning a common type name in the radius. The search matches whole
+        // for each name the index does NOT define - the fallback for the references a name index
+        // misses (a string-literal event name, a constant prefix, a name nothing defines yet). A
+        // name the index resolves is grounded structurally alone: text-searching it would put
+        // every file mentioning a common type name in the radius. A path is never text-searched. The search matches whole
         // identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone happens BEFORE `precise`
         // is capped, so the safe view is never bounded by `k`; do not reorder the truncation
         // above it. A `seen` set keeps the dedup O(lines) rather than O(lines * files): the search
@@ -691,11 +683,11 @@ impl Grounder for Symbols {
         // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
         // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
         let mut grep_tail: Vec<String> = Vec::new();
-        let unresolved = terms.phrases.iter().filter(|p| {
-            !(p.name.as_deref().is_some_and(|n| defined.contains(n))
-                || (p.path && found_paths.contains(p.text.as_str())))
-        });
-        for r in unresolved.flat_map(|p| grep.ground_identifier(&p.text, usize::MAX)) {
+        let unresolved = terms
+            .names
+            .iter()
+            .filter(|n| !defined.contains(n.name.as_str()));
+        for r in unresolved.flat_map(|n| grep.ground_identifier(&n.text, usize::MAX)) {
             if TEXT_SEARCH_SKIPS
                 .iter()
                 .any(|skip| r.file.starts_with(skip))
@@ -1098,29 +1090,16 @@ mod tests {
         );
     }
 
-    /// A span of several words (`rigger validate`) is searched for as ONE phrase: the radius is the
-    /// files holding the phrase, never every file holding one of its words, and a plain word inside
-    /// it (`rigger`, `validate`) matches no symbol. A span naming only language keywords names no
-    /// code at all.
+    /// A span naming only language keywords (`&mut self`, `pub fn`) names no code at all.
     #[test]
-    fn blast_radius_searches_a_multi_word_span_as_one_phrase_and_never_grounds_on_keywords() {
+    fn blast_radius_never_grounds_on_language_keywords() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("verb.rs"), "// run rigger validate first\n").unwrap();
-        std::fs::write(dir.path().join("word.rs"), "// rigger is everywhere\n").unwrap();
         std::fs::write(
             dir.path().join("check.rs"),
             "pub fn validate(&mut self) {}\n",
         )
         .unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
-
-        let br = g.blast_radius("`rigger validate` refuses a drifted spec", 8);
-        assert_eq!(
-            br.safe,
-            vec!["verb.rs".to_string()],
-            "a multi-word span grounds on its phrase hits alone; got {br:?}"
-        );
-
         let keywords = g.blast_radius("the method takes `&mut self` and is `pub fn`", 8);
         assert_eq!(
             keywords,
