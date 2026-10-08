@@ -7248,7 +7248,9 @@ impl RunCtx<'_> {
         // it to be non-degenerate (Gap 18) before the review proceeds. The lens attributes
         // each finding to its ROLE token so the courier path carries attribution too.
         let prompt = self.build_review_prompt(st, dir, &lens_role(agent_id), round)?;
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "lens",
@@ -7684,7 +7686,9 @@ impl RunCtx<'_> {
         // only needs it non-degenerate (Gap 18) before the adjudicator grounds. It
         // attributes each finding to ROLE_ADVERSARY so the courier path carries attribution.
         let prompt = self.build_review_prompt(st, dir, ROLE_ADVERSARY, round)?;
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         self.run_reviewer(
             st,
             "adversary",
@@ -7753,7 +7757,9 @@ impl RunCtx<'_> {
             self.review_base_prompt(st, dir)?,
             round.map(ReviewRound::block).unwrap_or_default()
         );
-        let resume = round.map(|r| self.review_resume_task(st, r));
+        let resume = round
+            .map(|r| self.review_resume_task(st, dir, r))
+            .transpose()?;
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -11029,9 +11035,25 @@ impl RunCtx<'_> {
     /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
     /// digests are ([`Self::run_gates_at`]) - read from this run's log.
     fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+        Ok(format!(
+            "{}{}",
+            self.build_prompt(st)?,
+            self.review_gate_evidence(st, dir)?
+        ))
+    }
+
+    /// The [`gate_evidence_block`] of the commit a review tier judges in `dir` - its HEAD,
+    /// addressed by the same [`worktree::head_sha_of`] the gates' digests are
+    /// ([`Self::run_gates_at`]) - read from this run's log. The one source of the block for a
+    /// fresh review prompt ([`Self::review_base_prompt`]) and a resumed one
+    /// ([`Self::review_resume_task`]).
+    fn review_gate_evidence(&self, st: &Stage, dir: &str) -> Result<String, Error> {
         let commit = crate::worktree::head_sha_of(dir);
-        let evidence = gate_evidence_block(&self.read_current_run()?, &st.name, &commit);
-        Ok(format!("{}{evidence}", self.build_prompt(st)?))
+        Ok(gate_evidence_block(
+            &self.read_current_run()?,
+            &st.name,
+            &commit,
+        ))
     }
 
     /// Build a stage's prompt. Sections, in order: the first-class prior-failure block
@@ -11093,16 +11115,23 @@ impl RunCtx<'_> {
 
     /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
     /// the unit's files (this round's earlier tiers' among them, which the session has not
-    /// seen) and the round's block - its delta and REQUIRED list. The session already holds
-    /// the criterion, the grounding and its review protocol.
-    fn review_resume_task(&self, st: &Stage, round: &ReviewRound) -> String {
+    /// seen), the gate evidence of the commit this round judges in `dir` (the session saw only
+    /// an earlier round's), and the round's block - its delta and REQUIRED list. The session
+    /// already holds the criterion, the grounding and its review protocol.
+    fn review_resume_task(
+        &self,
+        st: &Stage,
+        dir: &str,
+        round: &ReviewRound,
+    ) -> Result<String, Error> {
         let seed = self.grounded_seed(st);
         let mut b = String::new();
         if let Some(g) = self.seeded_subgraph(&seed) {
             write_capped_findings(&mut b, &g, &seed);
         }
+        b.push_str(&self.review_gate_evidence(st, dir)?);
         b.push_str(&round.block());
-        b
+        Ok(b)
     }
 
     fn graph_context(&self, seed: &[String], slice: GroundingSlice) -> String {
