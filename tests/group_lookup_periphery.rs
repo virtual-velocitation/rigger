@@ -741,18 +741,8 @@ mod ingest_sinks {
     /// The generation `root`'s own `graph.db` holds for each of `batches`' identities, in order,
     /// read through the project identity the binary opens that file under.
     fn held(root: &Path, batches: &[Batch]) -> Vec<Option<String>> {
-        let graph = project_graph(root);
         let identities: Vec<&str> = batches.iter().map(|(i, _, _)| i.as_str()).collect();
-        common::fixtures::held_generations(&graph, &identities)
-    }
-
-    /// `root`'s own `graph.db`, opened under the project identity the binary opens it under.
-    fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
-        rigger::contextgraph::sqlite::Projector::open(
-            common::cli::rigger_file(root, "graph.db").to_str().unwrap(),
-            &common::cli::run_stream_identity(root),
-        )
-        .unwrap()
+        common::fixtures::held_generations(&common::cli::open_graph(root), &identities)
     }
 
     /// The `graph build` line's N counts the entry the graph folds and not the re-recordings
@@ -786,7 +776,7 @@ mod ingest_sinks {
             common::fixtures::seed_pre_ledger_rows_without_a_group(
                 root,
                 store,
-                &project_graph(root),
+                &common::cli::open_graph(root),
             );
         });
         assert_eq!(
