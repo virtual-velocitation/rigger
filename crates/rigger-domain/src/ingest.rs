@@ -168,6 +168,29 @@ pub fn batch_is_latest_recorded(
     Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
 }
 
+/// The graph's side of [`batch_is_current`] (spec 107): what `graph.db` answers for an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphSide<'a> {
+    /// The graph owes its rebuild, so its answer is not asked.
+    Owed,
+    /// The identity's current generation in the graph, none when it holds none.
+    Holds(Option<&'a str>),
+}
+
+/// Whether a batch is CURRENT (spec 107): a pure predicate over the log's latest generation of
+/// the batch's identity (`logged`), the graph's side (`graph`) and the batch's own `generation`,
+/// true only when both sides hold that generation. A graph that owes its rebuild is answered
+/// from the log side alone. A batch that is current records no ledger entry; this alone decides
+/// the ledger write.
+pub fn batch_is_current(logged: Option<&str>, graph: GraphSide, generation: &str) -> bool {
+    let holds = |side: Option<&str>| side == Some(generation);
+    holds(logged)
+        && match graph {
+            GraphSide::Owed => true,
+            GraphSide::Holds(current) => holds(current),
+        }
+}
+
 /// WHERE A WALK HANDS ITS BATCHES (spec 101): a sink taking one file's WHOLE keyed batch at a
 /// time, with the batch's flag (spec 107) - whether the walk excluded the batch's identity as an
 /// out-of-line test module's. Every walk entry takes one, and [`sink_walked_batches`] hands one

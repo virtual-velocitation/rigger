@@ -24,8 +24,8 @@ use common::cli::{
     run_rigger_envs, run_stream_identity, temp_project, with_run_store,
 };
 use common::fixtures::{
-    entry_event, events_of, folds, generation_ingested, walked_generation, write_text,
-    DOCUMENT_PATH, SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
+    events_of, folds, generation_ingested, walked_generation, write_text, DOCUMENT_PATH,
+    SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink, Rebuilt};
 use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
@@ -225,11 +225,10 @@ fn append_unfolded(cwd: &Path, event: Event) -> u64 {
 
 /// The ledger entry of `recording`, as its recording process appends it.
 fn entry_of(recording: &Recording) -> Event {
-    entry_event(
-        &recording.named,
-        recording.batch.as_ref().map_or(1, Vec::len),
-    )
-    .with_valid_from(UNIX_EPOCH + Duration::from_secs(recording.secs))
+    recording
+        .named
+        .event(recording.batch.as_ref().map_or(1, Vec::len))
+        .with_valid_from(UNIX_EPOCH + Duration::from_secs(recording.secs))
 }
 
 /// Append the entry of each of `recordings` to `cwd`'s run stream, in order, and answer the

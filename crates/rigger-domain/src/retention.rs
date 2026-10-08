@@ -8,7 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ingest::DERIVED_INDEX_TYPES;
+use crate::eventstore::{Event, META_GROUP};
+use crate::ingest::{DERIVED_INDEX_TYPES, META_REPLAY_KEY};
 
 /// The ledger entry of perception: one file generation an ingest extracted. The log keeps this
 /// entry in place of the generation's derived batch, which the tree re-derives.
@@ -42,6 +43,21 @@ impl GenerationIngested {
     /// The `<prefix>/<file>` identity whose generation the entry records.
     pub fn identity(&self) -> String {
         format!("{}/{}", self.prefix, self.file)
+    }
+
+    /// THE ONE CONSTRUCTOR of a ledger entry's event: this entry as a
+    /// [`TYPE_GENERATION_INGESTED`] event recording the generation of a batch of `n` events, its
+    /// payload the five fields, its group the identity and its replay key
+    /// `<identity>@<generation>#<n>`. Position and valid-time are the store's to set.
+    pub fn event(&self, n: usize) -> Event {
+        let identity = self.identity();
+        let payload = serde_json::to_vec(self).expect("an entry is four strings and a flag");
+        Event::new(TYPE_GENERATION_INGESTED, payload)
+            .with_meta(
+                META_REPLAY_KEY,
+                format!("{identity}@{}#{n}", self.generation),
+            )
+            .with_meta(META_GROUP, identity)
     }
 
     /// The `(prefix, file)` a `<prefix>/<file>` identity names ([`Self::identity`]), cut at its

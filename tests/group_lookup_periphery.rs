@@ -702,10 +702,7 @@ mod ingest_sinks {
         let (stale, _, stale_events) = of(STALE);
         let (followed, followed_generation, followed_events) = of(FOLLOWED);
         let entry = |file: &str, generation: &str, n: usize| {
-            common::fixtures::entry_event(
-                &common::fixtures::generation_ingested("gc", file, generation, "b10b", false),
-                n,
-            )
+            common::fixtures::generation_ingested("gc", file, generation, "b10b", false).event(n)
         };
         with_run_store(root, |store| {
             store

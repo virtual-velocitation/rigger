@@ -31,7 +31,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{nanos, read_run_events, rigger_file, run_rigger, temp_store_project};
 use common::fixtures::{
-    decision_json, def_json, entry_event, event_of, generation_ingested, live_edges, live_node_ids,
+    decision_json, def_json, event_of, generation_ingested, live_edges, live_node_ids,
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -78,13 +78,9 @@ fn named(file: &str, generation: &str, blob: &str, excluded: bool) -> Generation
     generation_ingested("gc", file, generation, blob, excluded)
 }
 
-/// The builder's entry of `gc/<file>` at `generation`, at position `pos`, valid from `secs`.
+/// The constructor's entry of `gc/<file>` at `generation`, at position `pos`, valid from `secs`.
 fn entry(file: &str, generation: &str, pos: u64, secs: u64) -> Event {
-    at(
-        entry_event(&named(file, generation, "", false), 1),
-        pos,
-        secs,
-    )
+    at(named(file, generation, "", false).event(1), pos, secs)
 }
 
 /// One unkeyed definition of `name` in `file`, as a batch event.
@@ -518,9 +514,9 @@ fn an_entrys_payload_is_five_fields_on_the_log_and_reads_back_as_written() {
         Ok(raw_named())
     );
     assert_eq!(raw_named().identity(), "gc/src/a.rs");
-    // The builder's event carries those bytes.
+    // The constructor's event carries those bytes.
     assert_eq!(
-        String::from_utf8(entry_event(&raw_named(), 1).data).unwrap(),
+        String::from_utf8(raw_named().event(1).data).unwrap(),
         RAW_PAYLOAD
     );
 }

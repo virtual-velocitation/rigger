@@ -594,7 +594,10 @@ impl Fold {
         Self::settle(graph().and_then(|g| g.apply_batch(events, FoldAccess(()))))
     }
 
-    fn settle(folded: Result<(), Error>) -> Self {
+    /// The outcome of a fold that answered `folded`: folded, or not folded for the error's reason.
+    /// The ledger form of the folding store settles [`Projection::apply_generation`]'s answer
+    /// through it, as [`Fold::of`] and [`Fold::of_batch`] settle theirs.
+    pub fn settle(folded: Result<(), Error>) -> Self {
         match folded {
             Ok(()) => Fold::Folded,
             Err(e) => Fold::NotFolded(e.to_string()),

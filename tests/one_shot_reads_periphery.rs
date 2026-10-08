@@ -27,9 +27,9 @@ use std::process::Stdio;
 
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
-    entry_event, ev, generation_ingested, run_started, seed_one_shot_fixture,
-    seed_one_shot_progress, types_of, CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore,
-    ONE_SHOT_DERIVED_TYPES, ONE_SHOT_PERCEPTION_TYPES,
+    ev, generation_ingested, run_started, seed_one_shot_fixture, seed_one_shot_progress, types_of,
+    CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
+    ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
 use rigger::driver::workflow::Driver;
@@ -1045,10 +1045,7 @@ fn watch_leaves_a_disorder_before_the_run_boundary_to_validate() {
 /// A real ledger entry of `gc/src/a.rs` at `generation`, as the log carries one: its payload, its
 /// identity as the group and its replay key.
 fn ledger_entry(generation: &str) -> Event {
-    entry_event(
-        &generation_ingested("gc", "src/a.rs", generation, "b1", false),
-        2,
-    )
+    generation_ingested("gc", "src/a.rs", generation, "b1", false).event(2)
 }
 
 /// A run stream holding perception on both sides of its boundary: a decision and a ledger entry,

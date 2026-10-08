@@ -234,7 +234,7 @@ mod seed_tests {
     use crate::eventstore::Event;
     use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::ingest::META_REPLAY_KEY;
-    use crate::test_support::{entry_event, generation_ingested};
+    use crate::test_support::generation_ingested;
 
     /// READERS SKIP PERCEPTION, the seeded key set: of a run's keyed events, a lifecycle event's
     /// key is seeded, and neither a ledger entry's nor any derived event's is, whatever its
@@ -243,7 +243,7 @@ mod seed_tests {
     fn the_seed_holds_each_lifecycle_key_and_no_perception_key() {
         let keyed =
             |type_: &str, key: &str| Event::new(type_, vec![]).with_meta(META_REPLAY_KEY, key);
-        let entry = entry_event(&generation_ingested("gc", "src/a.rs", "h1", "b1", false), 2);
+        let entry = generation_ingested("gc", "src/a.rs", "h1", "b1", false).event(2);
         assert_eq!(
             entry.meta.get(META_REPLAY_KEY).map(String::as_str),
             Some("gc/src/a.rs@h1#2")

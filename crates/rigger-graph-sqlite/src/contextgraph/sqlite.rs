@@ -11636,11 +11636,11 @@ mod tests {
         /// Spec 107, THE ENTRY AND ITS BATCH FOLD AS ONE: a `GenerationIngested` ledger entry
         /// folds only through `Projection::apply_generation`, with the batch its `batch` function
         /// answers, at the entry's position and valid-time and under the entry's identity and
-        /// generation. Every entry is hand-built by the test-side builder and no sink is involved.
+        /// generation. Every entry is built by the one constructor and no sink is involved.
         mod ledger_entries {
             use super::*;
             use crate::contextgraph::{wired, EntryFold, Fold};
-            use crate::test_support::{entry_event, event_of};
+            use crate::test_support::event_of;
             use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
             use std::cell::Cell;
 
@@ -11662,8 +11662,9 @@ mod tests {
                     blob: String::new(),
                     excluded: false,
                 };
-                let mut e =
-                    entry_event(&named, 1).with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                let mut e = named
+                    .event(1)
+                    .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
                 e.position = pos;
                 e
             }
@@ -11768,7 +11769,7 @@ mod tests {
                     blob: "b10b".to_string(),
                     excluded: true,
                 };
-                let e = entry_event(&named, 3);
+                let e = named.event(3);
                 assert_eq!(e.type_, TYPE_GENERATION_INGESTED);
                 assert_eq!(
                     e.meta

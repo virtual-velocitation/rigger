@@ -1193,7 +1193,7 @@ mod resolve_entry_tests {
         SOURCE_PATH, TEST_MODULE_PATH, WORKFLOW_PATH,
     };
     use crate::host_fixtures::write_file;
-    use crate::test_support::{entry_event, events_of, generation_ingested, wire_owned};
+    use crate::test_support::{events_of, generation_ingested, wire_owned};
     use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     use std::path::Path;
 
@@ -1223,10 +1223,7 @@ mod resolve_entry_tests {
     /// The ledger entry of `<prefix>/<file>` at `generation`, extracted from `blob` under the
     /// walk's flag `excluded`.
     fn entry(prefix: &str, file: &str, generation: &str, blob: &str, excluded: bool) -> Event {
-        entry_event(
-            &generation_ingested(prefix, file, generation, blob, excluded),
-            1,
-        )
+        generation_ingested(prefix, file, generation, blob, excluded).event(1)
     }
 
     /// Resolve `entry` under `root` against a blob source holding `held` - `(object id, bytes)`
