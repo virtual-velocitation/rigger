@@ -313,6 +313,13 @@ const STATUS_SPAWN_SESSION: &str = "spawn-session";
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the spawn's session id under.
 const META_SESSION_ID: &str = "session_id";
 
+/// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn was ASKED to
+/// continue under ([`SpawnOpts::resumed_from`]); absent on a spawn asked for a fresh session.
+/// Beside [`META_RESUMED_FROM`] it records a host's fallback in the log: a requested session
+/// with no continued one is a resume the host could not honour (its transcript was gone), so
+/// the spawn ran fresh.
+const META_RESUME_REQUESTED: &str = "resume_requested";
+
 /// The metadata key a [`STATUS_SPAWN_SESSION`] mark carries the session the spawn CONTINUED
 /// under; absent on a fresh spawn, including the fresh fallback a host takes when the session
 /// it was asked to resume is gone.
@@ -4471,30 +4478,30 @@ impl RunCtx<'_> {
     /// `resume_task` - what changed since that session's last turn - instead of starting cold.
     /// `opts` is returned unchanged (a fresh spawn on its full prompt) when there is nothing to
     /// send (`resume_task` empty: no failure block, no round delta) or no earlier spawn of the
-    /// role recorded a session (a first attempt, or a driver that runs none).
+    /// role recorded a session (a first attempt, or a driver that runs none). A log that cannot
+    /// be read is a fault the caller propagates, never a reason to start cold.
     fn continue_prior_session(
         &self,
         mut opts: SpawnOpts,
         role: &str,
         resume_task: Option<String>,
-    ) -> SpawnOpts {
+    ) -> Result<SpawnOpts, Error> {
         let Some(task) = resume_task.filter(|t| !t.trim().is_empty()) else {
-            return opts;
+            return Ok(opts);
         };
-        let prior = self.read_current_run().ok().and_then(|events| {
-            recorded_session(&events, &opts.unit, role, opts.attempt, &opts.dir)
-        });
-        if let Some(prior) = prior {
+        let events = self.read_current_run()?;
+        if let Some(prior) = recorded_session(&events, &opts.unit, role, opts.attempt, &opts.dir) {
             opts.resumed_from = prior;
             opts.resume_task = task;
         }
-        opts
+        Ok(opts)
     }
 
     /// Record the session spawn `opts` ran as on a [`STATUS_SPAWN_SESSION`] mark keyed by its
-    /// spawn id, with the session it continued, so a later attempt reads it back from the log.
-    /// A result naming no session records nothing. A resume the host could not honour (the
-    /// session was gone, so it ran fresh) is also said on the run log.
+    /// spawn id, with the session it was asked to continue and the one it did continue, so a
+    /// later attempt reads it back from the log and the log tells a fallback (asked, but none
+    /// continued: the session was gone, so it ran fresh) from an ordinary fresh spawn. A result
+    /// naming no session records nothing. A fallback is also said on the operator's log.
     fn record_session(&self, opts: &SpawnOpts, result: &AgentResult) -> Result<(), Error> {
         if result.session_id.is_empty() {
             return Ok(());
@@ -4517,6 +4524,7 @@ impl RunCtx<'_> {
             &[
                 (META_SPAWN, &opts.id),
                 (META_SESSION_ID, &result.session_id),
+                (META_RESUME_REQUESTED, &opts.resumed_from),
                 (META_RESUMED_FROM, &result.resumed_from),
             ],
         )
@@ -5170,30 +5178,33 @@ impl RunCtx<'_> {
         }
         let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| self.emit_with_actor(ROLE_SDET_AUTHOR, t, v);
+        let opts = match self.reviewer_spawn_opts(
+            &sdet_id,
+            ROLE_SDET_AUTHOR,
+            ROLE_SDET_AUTHOR,
+            dir,
+            attempt,
+            false,
+            st,
+            // The sdet-author writes periphery tests - it is not a review tier judging
+            // another agent's output, so it carries no roster (spec 67, criterion 4).
+            &[],
+        ) {
+            // A log that cannot be read is a fault, propagated - never a cold start.
+            Ok(opts) => self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task)?,
+            // An opts-guard error takes the crash disposition below: the unit proceeds to
+            // the commit.
+            Err(_) => return Ok(()),
+        };
         match self
-            .reviewer_spawn_opts(
-                &sdet_id,
-                ROLE_SDET_AUTHOR,
-                ROLE_SDET_AUTHOR,
-                dir,
-                attempt,
-                false,
-                st,
-                // The sdet-author writes periphery tests - it is not a review tier judging
-                // another agent's output, so it carries no roster (spec 67, criterion 4).
-                &[],
-            )
-            .map(|opts| self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task))
-            .and_then(|opts| {
-                self.deps
-                    .driver
-                    .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
-                    .map(|result| (opts, result))
-            }) {
+            .deps
+            .driver
+            .spawn(sdet_def, &sdet_prompt, &opts, &sdet_emit)
+        {
             // A normal result: its authored files are already in the worktree, so the caller
             // falls through to the commit that sweeps them in. The session it ran as is
             // recorded for its next attempt to continue.
-            Ok((opts, result)) => self.record_session(&opts, &result),
+            Ok(result) => self.record_session(&opts, &result),
             // A PARKED spawn (the stepwise/replay driver reached an unrecorded frontier):
             // surface the park so the caller unwinds cleanly - no UnitFailed, no remediation -
             // and a later step replays the result.
@@ -5692,7 +5703,7 @@ impl RunCtx<'_> {
                     },
                     ROLE_IMPLEMENTER,
                     Some(prior.block(&st.name, attempts)),
-                );
+                )?;
                 match isolation_check
                     .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
                 {
@@ -7266,7 +7277,7 @@ impl RunCtx<'_> {
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
             let opts = if retry == first_retry {
-                self.continue_prior_session(opts, role, resume_task.map(str::to_string))
+                self.continue_prior_session(opts, role, resume_task.map(str::to_string))?
             } else {
                 opts
             };
@@ -13665,6 +13676,10 @@ fn recorded_session(
                     .get(META_SPAWN)
                     .is_some_and(|id| crate::spawn::spawn_role(id) == role)
         })
+        // The latest attempt wins, and within it the LAST mark in log order (`max_by_key`
+        // keeps the last of equal keys): a `~retry{n}` respawn's mark follows the round's
+        // first spawn's, and the respawn - not the degenerate or verdict-less spawn before it -
+        // produced the output the round was judged on, so its session is the one to continue.
         .max_by_key(|(_, stamped, _)| *stamped)
         .and_then(|(_, _, e)| e.meta.get(META_SESSION_ID).cloned())
 }
@@ -15759,6 +15774,10 @@ mod tests {
         /// a later attempt continues it. Off, a spawn reports no session (the workflow and
         /// replay drivers' shape) and every spawn stays fresh.
         sessions: bool,
+        /// With [`sessions`](Self::sessions): every requested resume finds its session gone,
+        /// so the spawn answers as a fresh `sess-<spawn id>` session that continued nothing -
+        /// the fallback a session host takes when the transcript to resume no longer exists.
+        sessions_gone: bool,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
     }
@@ -15800,6 +15819,7 @@ mod tests {
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
                 sessions: false,
+                sessions_gone: false,
                 resumes: Mutex::new(Vec::new()),
             }
         }
@@ -16023,6 +16043,7 @@ mod tests {
             let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
                 (false, _) => (String::new(), String::new()),
                 (true, true) => (format!("sess-{}", opts.id), String::new()),
+                (true, false) if self.sessions_gone => (format!("sess-{}", opts.id), String::new()),
                 (true, false) => (opts.resumed_from.clone(), opts.resumed_from.clone()),
             };
             Ok(AgentResult {
@@ -29209,6 +29230,84 @@ mod tests {
         assert!(
             task.contains("LATER ATTEMPT") && task.contains("GATE_EVIDENCE_red_test"),
             "it is sent the failed attempt's gate evidence:\n{task}"
+        );
+    }
+
+    /// A resume the host could not honour is LOG-CARRIED: when the session to continue is gone
+    /// and the spawn falls back to a fresh one, its mark records the session it was asked to
+    /// continue and none it continued, so the log tells the fallback from an ordinary fresh
+    /// spawn.
+    #[test]
+    fn a_fallen_back_resume_is_recorded_as_requested_but_not_continued() {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            sessions_gone: true,
+            ..session_stub(&[
+                (adjudicator_at(0, 0), REJECT_FEATURE),
+                (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+            ])
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        run_isolated(&session_cfg(), &deps).unwrap();
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let second = spawn_id("implement", ROLE_IMPLEMENTER, 1);
+        let mark = events
+            .iter()
+            .find(|e| {
+                e.meta.get(META_SPAWN) == Some(&second)
+                    && serde_json::from_slice::<Value>(&e.data)
+                        .is_ok_and(|v| v["status"] == STATUS_SPAWN_SESSION)
+            })
+            .expect("the fallen-back spawn records its session");
+        assert_eq!(
+            mark.meta.get(META_RESUME_REQUESTED),
+            Some(&format!(
+                "sess-{}",
+                spawn_id("implement", ROLE_IMPLEMENTER, 0)
+            )),
+            "the mark records the session the spawn was asked to continue"
+        );
+        assert_eq!(
+            mark.meta.get(META_RESUMED_FROM),
+            None,
+            "and that it continued none"
+        );
+        assert_eq!(
+            mark.meta.get(META_SESSION_ID),
+            Some(&format!("sess-{second}"))
+        );
+    }
+
+    /// A RESPAWN WINS: when a round's first spawn of a role came back degenerate and its
+    /// `~retry{n}` respawn produced the round's real output, the next round continues the
+    /// respawn's session - the latest mark at the round's attempt, in log order - since that is
+    /// the session holding the work the round was judged on.
+    #[test]
+    fn a_later_round_continues_the_respawn_that_produced_the_rounds_output() {
+        let (_, _, driver) = run_session_rounds(&[
+            (adjudicator_at(0, 0), ""),
+            (adjudicator_at(0, 1), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]);
+        assert_eq!(
+            driver
+                .resume_of(&adjudicator_at(0, 1))
+                .map(|(from, _)| from),
+            Some(String::new()),
+            "premise: the respawn within round 0 started fresh"
+        );
+        assert_eq!(
+            driver
+                .resume_of(&adjudicator_at(1, 0))
+                .map(|(from, _)| from),
+            Some(format!("sess-{}", adjudicator_at(0, 1))),
+            "round 1 continues the respawn's session, not the degenerate first spawn's"
         );
     }
 
