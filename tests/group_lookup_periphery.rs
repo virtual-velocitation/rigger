@@ -652,6 +652,195 @@ mod ingest_sinks {
             "the step answers every batch from the build's stamp and appends nothing"
         );
     }
+
+    const SPARED: &str = "src/spared.rs";
+    const STALE: &str = "src/stale.rs";
+    const FOLLOWED: &str = "src/followed.rs";
+
+    /// A generation no walk of the tree answers.
+    const OLD: &str = "0ld";
+
+    /// Drive two ingest sinks, `rigger <first>` then `rigger <second>`, over a project whose log
+    /// holds hand-built ledger entries and no walked batch:
+    ///
+    /// - `src/spared.rs`: an entry at the tree's current generation, its only recording;
+    /// - `src/stale.rs`: an entry at a generation the tree no longer holds, its only recording;
+    /// - `src/followed.rs`: an entry at the current generation FOLLOWED by a derived row of an old
+    ///   one, so its latest recording is a derived row.
+    ///
+    /// Asserts, of the first sink: it appends every walked batch but the spared file's, whole,
+    /// grouped and in walk order - the entry at the current generation answers the sink's check, the
+    /// stale entry does not, and the identity whose latest recording is a derived row is answered by
+    /// that row as before. Then the group lookup answers every walked identity at its current
+    /// generation, the spared one still from its entry; and the second sink - another process -
+    /// appends no derived event. Returns both sinks' stdout and the count of events the first
+    /// appended, for each sink's own report line.
+    fn an_entry_at_the_current_generation_spares_its_batch(
+        first: &[&str],
+        second: &[&str],
+    ) -> (String, String, usize) {
+        let dir = ingestable_project();
+        let root = dir.path();
+        tree(
+            root,
+            &[
+                (FOLLOWED, "pub fn followed() {}\n"),
+                (SPARED, "pub fn spared() {}\n"),
+                (STALE, "pub fn stale() {}\n"),
+            ],
+        );
+        let now = walk(root);
+        let of = |file: &str| {
+            let identity = format!("gc/{file}");
+            let (_, generation, keys) = now
+                .iter()
+                .find(|(id, _, _)| *id == identity)
+                .unwrap_or_else(|| panic!("the walk emits {identity}"));
+            (identity, generation.clone(), keys.len())
+        };
+        let (spared, spared_generation, spared_events) = of(SPARED);
+        let (stale, _, stale_events) = of(STALE);
+        let (followed, followed_generation, followed_events) = of(FOLLOWED);
+        let entry = |file: &str, generation: &str, n: usize| {
+            common::fixtures::entry_event(
+                &common::fixtures::generation_ingested("gc", file, generation, "b10b", false),
+                n,
+            )
+        };
+        with_run_store(root, |store| {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        entry(SPARED, &spared_generation, spared_events),
+                        entry(STALE, OLD, stale_events),
+                        entry(FOLLOWED, &followed_generation, followed_events),
+                        keyed_derived_event(
+                            Event::new(
+                                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                                b"{}".to_vec(),
+                            ),
+                            &format!("{followed}@{OLD}#0"),
+                        ),
+                    ],
+                )
+                .unwrap();
+        });
+        let planted: Vec<Option<String>> = now
+            .iter()
+            .map(|(identity, generation, _)| {
+                if *identity == spared {
+                    Some(generation.clone())
+                } else if *identity == stale || *identity == followed {
+                    Some(OLD.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            answered(root, &now),
+            planted,
+            "before any sink runs, the lookup answers the spared entry's generation, the stale \
+             entry's, the derived row that follows an entry, and no other identity"
+        );
+        let others: Vec<String> = now
+            .iter()
+            .filter(|(identity, _, _)| *identity != spared)
+            .flat_map(|(_, _, keys)| keys.clone())
+            .collect();
+        assert_eq!(
+            others.len() + spared_events,
+            now.iter().map(|(_, _, keys)| keys.len()).sum::<usize>(),
+            "sanity: the walk emits the spared file's batch alongside the others"
+        );
+        assert_ne!(spared_events, 0, "sanity: the spared batch holds events");
+
+        let before = read_run_events(root).len();
+        let (first_out, err, ok) = run_rigger(root, first);
+        assert!(
+            ok,
+            "rigger {first:?} must succeed; stdout: {first_out}; stderr: {err}"
+        );
+        let appended = derived_since(root, before);
+        assert_eq!(
+            meta_of(&appended, META_REPLAY_KEY),
+            others,
+            "the sink appends every batch but the one an entry records at its current generation"
+        );
+        assert_eq!(meta_of(&appended, META_GROUP), identities_of(&others));
+        assert_eq!(
+            answered(root, &now),
+            now.iter()
+                .map(|(_, g, _)| Some(g.clone()))
+                .collect::<Vec<_>>(),
+            "after the sink every walked identity answers its current generation"
+        );
+        let head = with_run_store(root, |store| {
+            store
+                .latest_in_group(rigger::conductor::STREAM, &spared)
+                .unwrap()
+                .map(|head| head.type_)
+        });
+        assert_eq!(
+            head.as_deref(),
+            Some(rigger::retention::TYPE_GENERATION_INGESTED),
+            "the spared identity's latest recording is still its entry"
+        );
+
+        let settled = read_run_events(root).len();
+        let (second_out, err, ok) = run_rigger(root, second);
+        assert!(
+            ok,
+            "rigger {second:?} must succeed; stdout: {second_out}; stderr: {err}"
+        );
+        assert_eq!(
+            meta_of(&derived_since(root, settled), META_REPLAY_KEY),
+            Vec::<String>::new(),
+            "the other sink answers every batch as recorded, the spared one by its entry"
+        );
+        (first_out, second_out, others.len())
+    }
+
+    /// GIVEN a log holding a ledger entry of one file at the tree's current generation, a stale
+    /// entry of another, and a third file whose entry a derived row of an old generation follows,
+    /// WHEN `rigger step` ingests the tree,
+    /// THEN the step parks its stage and appends every batch but the first file's, and a
+    /// `rigger graph build` after it appends nothing and reports nothing ingested.
+    #[test]
+    fn a_step_spares_the_batch_a_ledger_entry_records_at_its_current_generation() {
+        let (step_out, build_out, _) =
+            an_entry_at_the_current_generation_spares_its_batch(&["step"], &["graph", "build"]);
+        assert!(
+            step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
+            "the step parks its stage; stdout: {step_out}"
+        );
+        assert!(
+            build_out.starts_with("graph build: ingested 0 code-ingest event(s) into "),
+            "the build after it reports nothing ingested; stdout: {build_out}"
+        );
+    }
+
+    /// GIVEN the same log,
+    /// WHEN `rigger graph build` ingests the tree,
+    /// THEN the build appends every batch but the first file's and reports exactly that count, and a
+    /// `rigger step` after it parks its stage and appends nothing.
+    #[test]
+    fn a_graph_build_spares_the_batch_a_ledger_entry_records_at_its_current_generation() {
+        let (build_out, step_out, appended) =
+            an_entry_at_the_current_generation_spares_its_batch(&["graph", "build"], &["step"]);
+        assert!(
+            build_out.starts_with(&format!(
+                "graph build: ingested {appended} code-ingest event(s) into "
+            )),
+            "the build reports every event but the spared batch's; stdout: {build_out}"
+        );
+        assert!(
+            step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
+            "the step after it parks its stage; stdout: {step_out}"
+        );
+    }
 }
 
 /// CONTRACT at the product's store composition, in both feature lanes: two projects share one
