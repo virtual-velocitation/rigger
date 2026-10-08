@@ -125,7 +125,7 @@ fn keys_for(events: &[rigger::eventstore::Event], file: &str) -> Vec<String> {
 #[cfg(feature = "symbols")]
 fn minted_keys(root: &std::path::Path) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
         for (key, _) in batch {
             out.insert(key.clone());
         }

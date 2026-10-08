@@ -178,7 +178,7 @@ fn the_named_walk_hands_the_batches_the_whole_walk_hands_for_the_files_it_is_nam
     let names = |path: &str| files.iter().any(|file| file == path);
 
     let mut named: Vec<(String, Event)> = Vec::new();
-    rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &files, |batch| {
+    rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &files, |batch, _| {
         for (key, event) in batch {
             named.push((key.clone(), (*event).clone()));
         }

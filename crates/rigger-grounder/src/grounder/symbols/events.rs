@@ -48,14 +48,15 @@ fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
 /// falls back to a fresh [`build_index`](crate::grounder::symbols::build_index) otherwise. Each
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
-/// single file's. Returns `(file, events)` per file in the index's sorted path order; EVERY file -
+/// single file's. Returns `(file, events, excluded)` per file in the index's sorted path order,
+/// `excluded` the flag [`project_batches_paced`] answers; EVERY file -
 /// an out-of-line test-module target ([`for_extraction`]-hollowed) included, round 5 - contributes
 /// a batch, and that batch is NEVER empty ([`extract_events`] itself never returns empty, spec 86
 /// criterion 3: it stamps its own boundary-only sentinel when nothing real survives, so a file
 /// whose structural set is empty still contributes at least one boundary event). The caller keys
 /// each batch on its content, so an unchanged file is not re-ingested and a changed one
 /// re-extracts.
-pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
+pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>, bool)> {
     project_batches_paced(root, crate::parallel::default_workers()).0
 }
 
@@ -69,18 +70,21 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// [`extract_events`] authority (never a second parallel copy), which never returns empty (spec 86
 /// criterion 3), so every file's own batch is never empty. Each file is lowered by [`lower_file`],
 /// the one composition [`file_batches`] lowers a named file by, over the index and the exclusions
-/// [`walk_exclusions`](crate::ingest::walk_exclusions) answers. Returns
-/// `(batches, workers_engaged)`.
-pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
+/// [`walk_exclusions`](crate::ingest::walk_exclusions) answers, and answered beside its batch
+/// with its flag (spec 107): whether those exclusions name the file's `gc` identity, the one
+/// answer its lowering takes too. Returns `(batches, workers_engaged)`, each batch
+/// `(file, events, excluded)`.
+pub fn project_batches_paced(
+    root: &str,
+    workers: usize,
+) -> (Vec<(String, Vec<Event>, bool)>, usize) {
     let (idx, excluded) = crate::ingest::walk_exclusions(root);
     let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
-        (
-            path.clone(),
-            lower_file(path, fs, names_code_identity(&excluded, path)),
-        )
+        let excluded = names_code_identity(&excluded, path);
+        (path.clone(), lower_file(path, fs, excluded), excluded)
     })
 }
 
@@ -90,25 +94,28 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 /// (Design/Constraints Walk) rather than the project's total file count. Reuses the SAME index and
 /// exclusions ([`walk_exclusions`](crate::ingest::walk_exclusions)) and the SAME [`lower_file`] as
 /// `project_batches_paced` - never a second lowering path - so a named file's scoped batch is
-/// byte-identical to what a full walk would produce for it. Returns `(file, events)` pairs in the
-/// SAME order `files` was given, one pair per named file (never fewer): a file the index holds no
+/// byte-identical to what a full walk would produce for it. Returns `(file, events, excluded)`
+/// triples in the SAME order `files` was given, one per named file (never fewer), `excluded` the
+/// batch's flag (spec 107), whether the exclusions name the file's `gc` identity, answered for
+/// every named file by that one question: a file the index holds no
 /// entry for (deleted since the index was last built, or never source) still contributes exactly
 /// [`empty_structural_boundary_event`]'s single-event batch - the SAME boundary sentinel a file that
 /// "extracts to nothing" stamps (spec 86 criterion 3) - so its prior structural edges retire through
 /// the existing supersession rather than dangling forever, mirroring `extract_events`'s own "never
 /// returns empty" contract for the whole-project walk.
-pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>)> {
+pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>, bool)> {
     let (idx, excluded) = crate::ingest::walk_exclusions(root);
     files
         .iter()
         .map(|file| {
+            let excluded = names_code_identity(&excluded, file);
             let events = match idx.files().get(file) {
-                Some(fs) => lower_file(file, fs, names_code_identity(&excluded, file)),
+                Some(fs) => lower_file(file, fs, excluded),
                 // Absent from the index: deleted or unreadable since the index was last freshened
                 // (or never source at all).
                 None => unparsed_batch(file),
             };
-            (file.clone(), events)
+            (file.clone(), events, excluded)
         })
         .collect()
 }
@@ -806,7 +813,7 @@ mod tests {
     fn project_events(root: &str) -> Vec<crate::eventstore::Event> {
         super::project_batches(root)
             .into_iter()
-            .flat_map(|(_, batch)| batch)
+            .flat_map(|(_, batch, _)| batch)
             .collect()
     }
 
@@ -1662,7 +1669,10 @@ fn an_integration_test() {
 
         let batches = super::file_batches(root, &["a.rs".to_string()]);
         assert_eq!(
-            batches.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
+            batches
+                .iter()
+                .map(|(f, _, _)| f.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.rs"],
             "only the named file gets a batch, never an untouched sibling; got {batches:?}"
         );
@@ -1828,8 +1838,8 @@ mod tests {
 
         let walked = super::project_batches_paced(root, 1).0;
         let named = super::file_batches(root, &files);
-        let paths = |batches: &[(String, Vec<crate::eventstore::Event>)]| -> Vec<String> {
-            batches.iter().map(|(file, _)| file.clone()).collect()
+        let paths = |batches: &[(String, Vec<crate::eventstore::Event>, bool)]| -> Vec<String> {
+            batches.iter().map(|(file, _, _)| file.clone()).collect()
         };
         assert_eq!(paths(&walked), files.to_vec());
         assert_eq!(paths(&named), files.to_vec());

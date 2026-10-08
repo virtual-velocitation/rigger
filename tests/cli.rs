@@ -2322,7 +2322,7 @@ fn ingest_project_emits_deterministic_content_keys() {
 
     let collect_keys = || {
         let mut keys: BTreeSet<String> = BTreeSet::new();
-        rigger::ingest::ingest_project_batched(root_str, |batch| {
+        rigger::ingest::ingest_project_batched(root_str, |batch, _| {
             for (key, _ev) in batch {
                 keys.insert(key.to_string());
             }
@@ -2421,7 +2421,7 @@ fn ingest_project_scopes_the_walk_to_the_project_across_both_halves() {
     // collect the FILE each emitted content key names, split by half.
     let mut gc_files: BTreeSet<String> = BTreeSet::new();
     let mut gd_files: BTreeSet<String> = BTreeSet::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
         for (key, _ev) in batch {
             let (prefix, rest) = key
                 .split_once('/')
@@ -2490,7 +2490,7 @@ fn ingest_project_is_a_noop_in_the_light_lane() {
     .unwrap();
 
     let mut emits = 0usize;
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
         for (_key, _ev) in batch {
             emits += 1;
         }

@@ -11298,7 +11298,7 @@ impl RunCtx<'_> {
             |sink| {
                 crate::ingest::ingest_project_batched(&root, sink);
             },
-            |keyed| self.emit_keyed_batch(keyed),
+            |keyed, _excluded| self.emit_keyed_batch(keyed),
         )
     }
 
@@ -11332,7 +11332,7 @@ impl RunCtx<'_> {
             |sink| {
                 crate::ingest::ingest_files_batched(&root, files, sink);
             },
-            |keyed| self.emit_keyed_batch(keyed),
+            |keyed, _excluded| self.emit_keyed_batch(keyed),
         )
     }
 
@@ -20928,7 +20928,7 @@ mod tests {
         .unwrap();
         let root = dir.path().to_str().unwrap().to_string();
         let mut walked = Vec::new();
-        crate::ingest::ingest_project_batched(&root, |keyed| {
+        crate::ingest::ingest_project_batched(&root, |keyed, _| {
             walked.extend(keyed.iter().map(|(key, _)| key.clone()));
         });
         (dir, root, walked)
@@ -21855,7 +21855,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut seen: HashSet<String> = HashSet::new();
-        crate::ingest::ingest_project_batched(root, |keyed| {
+        crate::ingest::ingest_project_batched(root, |keyed, _| {
             let survivors: Vec<Event> = keyed
                 .iter()
                 .filter(|(key, _)| seen.insert(key.clone()))
@@ -35485,7 +35485,7 @@ mod tests {
         // What the walk of the tree as it stands emits: each batch's identity and keys, in order.
         let walk = || -> Vec<(String, Vec<String>)> {
             let mut batches = Vec::new();
-            crate::ingest::ingest_project_batched(&root_str, |keyed| {
+            crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
                 let identity = crate::ingest::derived_key_parts(&keyed[0].0).unwrap().0;
                 batches.push((
                     identity.to_string(),
@@ -35648,7 +35648,7 @@ mod tests {
         std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n").unwrap();
         git_commit_all(root, "tree");
         let mut walked: Vec<Vec<String>> = Vec::new();
-        crate::ingest::ingest_project_batched(&root_str, |keyed| {
+        crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
             walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
         });
         assert_eq!(

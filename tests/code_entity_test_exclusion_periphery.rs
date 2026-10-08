@@ -1193,7 +1193,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
     std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
 
     let batches = project_batches(root.path().to_str().unwrap());
-    let files: BTreeSet<&str> = batches.iter().map(|(f, _)| f.as_str()).collect();
+    let files: BTreeSet<&str> = batches.iter().map(|(f, _, _)| f.as_str()).collect();
     assert!(
         files.contains("lib.rs"),
         "the declaring file still contributes its own batch; files: {files:?}"
@@ -1208,8 +1208,8 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
     // anything the excluded file defines ever reaches the graph.
     let contract_batch = batches
         .iter()
-        .find(|(f, _)| f == "contract.rs")
-        .map(|(_, evs)| evs)
+        .find(|(f, _, _)| f == "contract.rs")
+        .map(|(_, evs, _)| evs)
         .unwrap_or_else(|| {
             panic!(
                 "project_batches (the entry point a live run actually drives, spec 29c) must \
@@ -1225,7 +1225,7 @@ fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_
          and no named EdgeInferred; got {contract_batch:?}"
     );
 
-    let g = fold_events(batches.into_iter().flat_map(|(_, events)| events))
+    let g = fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
         .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
         .unwrap();
     assert!(

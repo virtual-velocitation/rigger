@@ -391,7 +391,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c49e5ffeb01d",
+    "id": "dup-139ea399afcc",
     "classification": "semantic",
     "sites": [
       {
@@ -412,7 +412,7 @@
       {
         "file": "crates/rigger-domain/src/ingest.rs",
         "name": "a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error",
-        "content_hash": "bdcec90893345b11"
+        "content_hash": "759be2b81949a05f"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6640,7 +6640,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6fdd86ee972f",
+    "id": "dup-f2eee0c78cd6",
     "classification": "semantic",
     "sites": [
       {
@@ -6651,7 +6651,7 @@
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
         "name": "project_batches",
-        "content_hash": "4499ea2368cf4384"
+        "content_hash": "e9558b4adcb26bb2"
       },
       {
         "file": "crates/rigger-grounder/src/grounder/workflowdef.rs",
@@ -6850,7 +6850,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-03666ae1d685",
+    "id": "dup-3eb93069b8f0",
     "classification": "semantic",
     "sites": [
       {
@@ -6861,7 +6861,7 @@
       {
         "file": "tests/common/mod.rs",
         "name": "project_events",
-        "content_hash": "5c45ecde7e8f2b77"
+        "content_hash": "0a7a17497eb4a0e1"
       }
     ],
     "proposed_home": "one shared `project_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own",

@@ -1549,7 +1549,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "de8e27240a6881bd"
+    "content_hash": "39cb296b41163b16"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -1565,7 +1565,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "4bbd894e8444b7d6"
+    "content_hash": "adef51ff7eaf1a2b"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3429,7 +3429,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "63fc81cee8a747a2"
+    "content_hash": "f8d47e1e5a82fb71"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3557,7 +3557,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2b8f5e5861e16cae"
+    "content_hash": "3c615c9e4a790d91"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5877,7 +5877,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "66dad286b54b0811"
+    "content_hash": "923c6fff4ecf2390"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5885,7 +5885,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3dea107c337a33ef"
+    "content_hash": "3e2fd951ebd22d34"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

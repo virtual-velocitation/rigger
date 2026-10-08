@@ -415,7 +415,7 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
         project_batches_paced(root, 2)
             .0
             .into_iter()
-            .flat_map(|(_, evs)| evs)
+            .flat_map(|(_, evs, _)| evs)
             .collect()
     });
 }

@@ -61,7 +61,7 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
     .unwrap();
 
     let batches = project_batches(dir.path().to_str().unwrap());
-    let files: Vec<String> = batches.iter().map(|(f, _)| f.clone()).collect();
+    let files: Vec<String> = batches.iter().map(|(f, _, _)| f.clone()).collect();
     assert_eq!(
         files,
         vec!["src/blank.rs", "src/real.rs"],
@@ -70,7 +70,7 @@ fn code_project_batches_stamps_a_boundary_for_a_symbol_less_file_too_and_a_barre
     );
     let blank_events = &batches
         .iter()
-        .find(|(f, _)| f == "src/blank.rs")
+        .find(|(f, _, _)| f == "src/blank.rs")
         .expect("src/blank.rs has a batch")
         .1;
     assert_eq!(

@@ -413,7 +413,8 @@ fn ingest_project_batched_hands_whole_file_batches() {
 
     // Drive the BATCHED public entry: one inner Vec per on_batch call (i.e. per file).
     let mut batches: Vec<Vec<Triple>> = Vec::new();
-    let bstats = rigger::ingest::ingest_project_batched(root, |keyed| batches.push(triples(keyed)));
+    let bstats =
+        rigger::ingest::ingest_project_batched(root, |keyed, _| batches.push(triples(keyed)));
 
     assert!(
         !batches.is_empty(),
@@ -471,7 +472,7 @@ fn ingest_project_batched_hands_whole_file_batches() {
     // Batching is width-INVARIANT: the paced entry at width 1 hands the identical batches (parse
     // width changes only the code half's parallelism, criterion 1, never the per-file batching).
     let mut serial_batches: Vec<Vec<Triple>> = Vec::new();
-    rigger::ingest::ingest_project_batched_paced(root, 1, |keyed| {
+    rigger::ingest::ingest_project_batched_paced(root, 1, |keyed, _| {
         serial_batches.push(triples(keyed))
     });
     assert_eq!(
@@ -491,7 +492,7 @@ fn light_lane_ingest_project_batched_hands_no_batches() {
     let mut calls = 0usize;
     rigger::ingest::ingest_project_batched(
         dir.path().to_str().unwrap(),
-        |_batch: &[(String, &rigger::eventstore::Event)]| calls += 1,
+        |_batch: &[(String, &rigger::eventstore::Event)], _excluded: bool| calls += 1,
     );
     assert_eq!(
         calls, 0,

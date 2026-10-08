@@ -562,7 +562,7 @@ fn ingest_tree(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
         },
-        |keyed| {
+        |keyed, _excluded| {
             if rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed)? {
                 return Ok(());
             }
@@ -1008,7 +1008,7 @@ mod tests {
             std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
             let root = tree.path().to_str().unwrap();
             let mut walked: Vec<Vec<String>> = Vec::new();
-            rigger::ingest::ingest_project_batched(root, |keyed| {
+            rigger::ingest::ingest_project_batched(root, |keyed, _| {
                 walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
             });
             assert_eq!(

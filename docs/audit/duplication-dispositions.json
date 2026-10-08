@@ -360,7 +360,7 @@
     "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
   },
   {
-    "id": "dup-6fdd86ee972f",
+    "id": "dup-f2eee0c78cd6",
     "disposition": "not-a-duplicate",
     "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
   },
@@ -415,7 +415,7 @@
     "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
   },
   {
-    "id": "dup-03666ae1d685",
+    "id": "dup-3eb93069b8f0",
     "disposition": "not-a-duplicate",
     "reason": "`workflowdef::project_events` lowers `.rigger/workflow.yml` into definition events, while the test fixture flattens the symbols ingest's per-file batches for a whole project: different sources and different events."
   },

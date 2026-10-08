@@ -415,15 +415,19 @@ fn seed_graph_generation(root: &Path, file: &str) {
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
-    rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &[file.to_string()], |keyed| {
-        for (key, ev) in keyed {
-            events.push(
-                (*ev)
-                    .clone()
-                    .with_meta(rigger::ingest::META_REPLAY_KEY, key.as_str()),
-            );
-        }
-    });
+    rigger::ingest::ingest_files_batched(
+        root.to_str().unwrap(),
+        &[file.to_string()],
+        |keyed, _| {
+            for (key, ev) in keyed {
+                events.push(
+                    (*ev)
+                        .clone()
+                        .with_meta(rigger::ingest::META_REPLAY_KEY, key.as_str()),
+                );
+            }
+        },
+    );
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .unwrap();

@@ -58,7 +58,7 @@ fn real_graph() -> Graph {
     // event before folding - exactly what a real store append does - so this in-memory projection
     // folds its whole real batch, not a near-empty one.
     let mut next_position: u64 = 1;
-    for (_, events) in &batches {
+    for (_, events, _) in &batches {
         let mut stamped = events.clone();
         for e in &mut stamped {
             e.position = next_position;

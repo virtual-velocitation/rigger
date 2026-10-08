@@ -1170,7 +1170,7 @@ fn project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_inges
 
     let batches = project_batches(dir.path().to_str().unwrap());
     // One batch per file that extracts to something, keyed by its file, in sorted path order.
-    let files: Vec<&str> = batches.iter().map(|(f, _)| f.as_str()).collect();
+    let files: Vec<&str> = batches.iter().map(|(f, _, _)| f.as_str()).collect();
     assert_eq!(
         files,
         vec!["src/a.rs", "src/b.rs"],
@@ -1179,7 +1179,7 @@ fn project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_inges
     // Each file's batch is non-empty and its FIRST event carries the `fresh` re-extraction boundary
     // (29a's supersede head), exactly as a live run's ingest emits - so a re-ingest supersedes that
     // file's prior edges rather than accreting duplicates.
-    for (file, events) in &batches {
+    for (file, events, _) in &batches {
         assert!(!events.is_empty(), "{file}'s batch carries events");
         let head: serde_json::Value = serde_json::from_slice(&events[0].data).unwrap();
         assert_eq!(
@@ -1191,7 +1191,7 @@ fn project_batches_lowers_a_whole_tree_into_per_file_code_batches_the_fold_inges
     // Folding every batch yields the tree's REAL code-entity nodes - the graph a run would populate.
     let p = Projector::open(":memory:", "test").unwrap();
     let mut pos = 0u64;
-    for (_, events) in &batches {
+    for (_, events, _) in &batches {
         for e in events {
             pos += 1;
             let mut ev = e.clone();

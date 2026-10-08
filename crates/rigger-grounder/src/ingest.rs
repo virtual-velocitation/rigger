@@ -255,7 +255,8 @@ pub struct IngestStats {
     pub workers_engaged: usize,
 }
 
-/// Walk the project tree at `root` and hand `on_batch` each file's WHOLE keyed batch of the
+/// Walk the project tree at `root` and hand `on_batch` each file's WHOLE keyed batch, with its
+/// flag (spec 107), of the
 /// extraction events the code (spec 29a), design (spec 29b), and workflow-definition (spec 92
 /// criterion 2) passes emit: the file's events, each paired with its deterministic content key
 /// `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd` for design, `gw` for the workflow
@@ -267,7 +268,9 @@ pub struct IngestStats {
 /// file reverted to content it held earlier re-emits its whole batch even though every one of its
 /// keys is already in the log. This function owns only the walk and the keying; the sink decides
 /// what a key MEANS (append-and-fold, or skip a replay), so the mutation authority stays with the
-/// caller. A sink appends the file's batch in ONE store append and folds it in ONE graph
+/// caller. The flag beside a batch says whether the walk excluded its identity as an out-of-line
+/// test module's: set for the `gc` batch of a file [`walk_exclusions`] names and clear for every
+/// other batch, so a sink never computes it or loads an index. A sink appends the file's batch in ONE store append and folds it in ONE graph
 /// transaction (via [`FoldingStore::append_and_fold`]) - the batched-fold cadence spec 49 needs, since the
 /// measured cold-build throughput was transaction-cadence bound.
 ///
@@ -305,7 +308,9 @@ pub fn ingest_project_batched_paced(
 
 /// The walk behind [`ingest_project_batched_paced`]: parse/lower the project at `root` and hand
 /// each file's WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first,
-/// then the design half, then the workflow-definition half), each batch in `#i` order.
+/// then the design half, then the workflow-definition half), each batch in `#i` order. A code
+/// batch is handed with the flag the code half answers beside it, a design or
+/// workflow-definition batch with the flag clear.
 #[cfg(feature = "symbols")]
 fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> IngestStats {
     let mut batches_emitted = 0usize;
@@ -314,14 +319,14 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
     // what the grounder already built - not a second whole-tree parse.
     let (code_batches, workers_engaged) =
         crate::grounder::symbols::events::project_batches_paced(root, workers);
-    for (file, batch) in &code_batches {
-        key_batch("gc", file, batch, &mut on_batch);
+    for (file, batch, excluded) in &code_batches {
+        key_batch("gc", file, batch, *excluded, &mut on_batch);
         batches_emitted += 1;
     }
     // The design half (spec 29b): the project's design docs and inline source rationale, serial.
     let design_batches = crate::grounder::design::events::project_batches(root);
     for (file, batch) in &design_batches {
-        key_batch("gd", file, batch, &mut on_batch);
+        key_batch("gd", file, batch, false, &mut on_batch);
         batches_emitted += 1;
     }
     // The workflow-DEFINITION half (spec 92 criterion 2): `.rigger/workflow.yml`'s stages, gates
@@ -332,7 +337,7 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
     // `workflowdef::project_batches`'s own doc), so this loop runs at most once.
     let workflowdef_batches = crate::grounder::workflowdef::project_batches(root);
     for (file, batch) in &workflowdef_batches {
-        key_batch("gw", file, batch, &mut on_batch);
+        key_batch("gw", file, batch, false, &mut on_batch);
         batches_emitted += 1;
     }
     IngestStats {
@@ -353,7 +358,9 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
 ///
 /// Both halves: the code (`gc/`) batch of every named file, then the design-intent (`gd/`, spec
 /// 29b) batch of every named file the walk scope admits that carries design intent - so a doc an
-/// integration edits or regenerates reaches the graph as its code does.
+/// integration edits or regenerates reaches the graph as its code does. Each code batch is handed
+/// with the flag the code half answers beside it, each design batch with the flag clear, as the
+/// whole-project walk hands them.
 #[cfg(feature = "symbols")]
 pub fn ingest_files_batched(
     root: &str,
@@ -363,11 +370,13 @@ pub fn ingest_files_batched(
     let code_batches = crate::grounder::symbols::events::file_batches(root, files);
     let design_batches = crate::grounder::design::events::named_batches(root, files);
     let mut batches_emitted = 0usize;
-    for (prefix, batches) in [("gc", &code_batches), ("gd", &design_batches)] {
-        for (file, batch) in batches {
-            key_batch(prefix, file, batch, &mut on_batch);
-            batches_emitted += 1;
-        }
+    for (file, batch, excluded) in &code_batches {
+        key_batch("gc", file, batch, *excluded, &mut on_batch);
+        batches_emitted += 1;
+    }
+    for (file, batch) in &design_batches {
+        key_batch("gd", file, batch, false, &mut on_batch);
+        batches_emitted += 1;
     }
     IngestStats {
         batches_emitted,
@@ -410,7 +419,7 @@ pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<Str
             let generation = format!("{identity}@");
             let mut current_keys: Vec<String> = Vec::new();
             let scoped = std::slice::from_ref(*file);
-            let _ = ingest_files_batched(root, scoped, |keyed| {
+            let _ = ingest_files_batched(root, scoped, |keyed, _excluded| {
                 current_keys.extend(
                     keyed
                         .iter()
@@ -669,17 +678,24 @@ pub fn resolve_entry(
 }
 
 /// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
-/// `on_batch` at once. `hash` is the batch's generation ([`batch_generation`]), so every event of
-/// a file shares one `<hash>`.
+/// `on_batch` at once, with `excluded`, the batch's flag, as the walk answered it. `hash` is the
+/// batch's generation ([`batch_generation`]), so every event of a file shares one `<hash>`, and
+/// the flag changes no key.
 #[cfg(feature = "symbols")]
-fn key_batch(prefix: &str, file: &str, batch: &[Event], on_batch: &mut impl BatchSink) {
+fn key_batch(
+    prefix: &str,
+    file: &str,
+    batch: &[Event],
+    excluded: bool,
+    on_batch: &mut impl BatchSink,
+) {
     let hash = batch_generation(batch);
     let keyed: Vec<(String, &Event)> = batch
         .iter()
         .enumerate()
         .map(|(i, ev)| (format!("{prefix}/{file}@{hash}#{i}"), ev))
         .collect();
-    on_batch(&keyed);
+    on_batch(&keyed, excluded);
 }
 
 /// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that hands the
@@ -697,7 +713,7 @@ mod tests {
     /// sees, in emit order - the observable the byte-identical contract is defined over.
     fn walk(root: &str, workers: usize) -> (Vec<(String, String, Vec<u8>)>, IngestStats) {
         let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-        let stats = ingest_project_batched_paced(root, workers, |batch| {
+        let stats = ingest_project_batched_paced(root, workers, |batch, _| {
             for (key, ev) in batch {
                 seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
             }
@@ -860,7 +876,7 @@ mod tests {
         // Ingest at width 1 (scope is width-independent) and collect the FILE each emitted content
         // key names (`<prefix>/<file>@<hash>#<i>`).
         let mut files: BTreeSet<String> = BTreeSet::new();
-        ingest_project_batched_paced(root.to_str().unwrap(), 1, |batch| {
+        ingest_project_batched_paced(root.to_str().unwrap(), 1, |batch, _| {
             for (key, _ev) in batch {
                 if let Some((_, rest)) = key.split_once('/') {
                     if let Some(file) = rest.split('@').next() {
@@ -1069,38 +1085,40 @@ mod tests {
         ];
         let generation = super::batch_generation(&batch);
         for excluded in [true, false] {
-            let mut handed: Vec<(Vec<(String, String, Vec<u8>)>, bool)> = Vec::new();
+            let mut keyed_events: Vec<(String, String, Vec<u8>)> = Vec::new();
+            let mut flags: Vec<bool> = Vec::new();
             super::key_batch(
                 "gc",
                 "src/a.rs",
                 &batch,
                 excluded,
                 &mut |keyed: &[(String, &Event)], flag: bool| {
-                    let keyed = keyed
-                        .iter()
-                        .map(|(key, event)| (key.clone(), event.type_.clone(), event.data.clone()))
-                        .collect();
-                    handed.push((keyed, flag));
+                    for (key, event) in keyed {
+                        keyed_events.push((key.clone(), event.type_.clone(), event.data.clone()));
+                    }
+                    flags.push(flag);
                 },
             );
             assert_eq!(
-                handed,
-                vec![(
-                    vec![
-                        (
-                            format!("gc/src/a.rs@{generation}#0"),
-                            "CodeEntityExtracted".to_string(),
-                            b"{\"name\":\"a\"}".to_vec()
-                        ),
-                        (
-                            format!("gc/src/a.rs@{generation}#1"),
-                            "EdgeInferred".to_string(),
-                            b"{\"name\":\"b\"}".to_vec()
-                        ),
-                    ],
-                    excluded
-                )],
-                "key_batch handed the flag {excluded}"
+                keyed_events,
+                vec![
+                    (
+                        format!("gc/src/a.rs@{generation}#0"),
+                        "CodeEntityExtracted".to_string(),
+                        b"{\"name\":\"a\"}".to_vec()
+                    ),
+                    (
+                        format!("gc/src/a.rs@{generation}#1"),
+                        "EdgeInferred".to_string(),
+                        b"{\"name\":\"b\"}".to_vec()
+                    ),
+                ],
+                "key_batch keyed the batch under the flag {excluded}"
+            );
+            assert_eq!(
+                flags,
+                vec![excluded],
+                "key_batch handed the whole batch once, with the flag {excluded}"
             );
         }
     }
@@ -1115,7 +1133,7 @@ mod tests {
         let mut generations: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
         let mut expected_keys: Vec<String> = Vec::new();
-        ingest_project_batched_paced(dir.path().to_str().unwrap(), 1, |batch| {
+        ingest_project_batched_paced(dir.path().to_str().unwrap(), 1, |batch, _| {
             let events: Vec<crate::eventstore::Event> =
                 batch.iter().map(|(_, event)| (*event).clone()).collect();
             let generation = super::batch_generation(&events);
@@ -1526,7 +1544,7 @@ mod scoped_reindex_tests {
     fn record_current_generation(root: &str, files: &[String]) -> Vec<Event> {
         let mut prior: Vec<Event> = Vec::new();
         let mut pos = 1u64;
-        ingest_files_batched(root, files, |keyed| {
+        ingest_files_batched(root, files, |keyed, _| {
             for (key, ev) in keyed {
                 let mut e = (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str());
                 e.position = pos;
@@ -1541,7 +1559,7 @@ mod scoped_reindex_tests {
     /// [`stale_recordings`] cuts each stale recording from.
     fn derived_template(root: &str, file: &str) -> Event {
         let mut template: Option<Event> = None;
-        ingest_files_batched(root, &[file.to_string()], |keyed| {
+        ingest_files_batched(root, &[file.to_string()], |keyed, _| {
             if template.is_none() {
                 template = keyed.first().map(|(_, ev)| (*ev).clone());
             }
@@ -1575,7 +1593,7 @@ mod scoped_reindex_tests {
         let root = dir.path().to_str().unwrap();
 
         let mut seen_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let stats = ingest_files_batched(root, &["a.rs".to_string()], |keyed| {
+        let stats = ingest_files_batched(root, &["a.rs".to_string()], |keyed, _| {
             for (key, _) in keyed {
                 seen_files.insert(key.clone());
             }
@@ -1608,14 +1626,14 @@ mod scoped_reindex_tests {
         std::fs::write(dir.path().join(".rigger/persona.md"), doc).unwrap();
         let root = dir.path().to_str().unwrap();
         let mut walked: Vec<String> = Vec::new();
-        ingest_project_batched_paced(root, 1, |keyed| {
+        ingest_project_batched_paced(root, 1, |keyed, _| {
             walked.extend(keyed.iter().map(|(k, _)| k.clone()))
         });
         let mut named: Vec<String> = Vec::new();
         ingest_files_batched(
             root,
             &["docs/architecture.md".into(), ".rigger/persona.md".into()],
-            |keyed| named.extend(keyed.iter().map(|(k, _)| k.clone())),
+            |keyed, _| named.extend(keyed.iter().map(|(k, _)| k.clone())),
         );
         let design = |keys: &[String], prefix: &str| -> Vec<String> {
             keys.iter()
@@ -1659,7 +1677,7 @@ mod scoped_reindex_tests {
         // stamped with real replay keys exactly as `RunCtx::emit_keyed_batch` would.
         let mut prior: Vec<Event> = Vec::new();
         let mut pos = 1u64;
-        ingest_files_batched(root, &files, |keyed| {
+        ingest_files_batched(root, &files, |keyed, _| {
             for (key, ev) in keyed {
                 let mut e = (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str());
                 e.position = pos;
