@@ -3346,10 +3346,11 @@ impl RunCtx<'_> {
     /// generation once its append succeeds; a failed append leaves it on the looked-up answer.
     /// The graph's side is read on every batch and never remembered, so a long-lived run records
     /// again an identity a rebuild of `graph.db` left behind the next time a walk hands its
-    /// batch. An entry another process records stales the memo: over a graph that does not owe
-    /// its rebuild that costs at most one re-recording, and over a graph that owes its rebuild
-    /// the sink answers from the memo alone, so such an entry can leave a later generation
-    /// unrecorded by this process.
+    /// batch. An entry another process records stales the memo. That costs at most one
+    /// re-recording where the graph's side differs from the generation the stale memo holds.
+    /// Where the graph holds that generation (a rebuild from the tree can leave it so), or owes
+    /// its rebuild and is not asked, a batch at that generation records nothing, so an entry
+    /// another process recorded can leave a later generation unrecorded by this process.
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the

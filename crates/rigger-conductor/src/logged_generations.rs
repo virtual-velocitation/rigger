@@ -6,11 +6,11 @@
 //! outlives the process. Only the log side is remembered - the graph's side is read on every
 //! batch, which is what lets a long-lived run restore an identity a rebuild left behind.
 //!
-//! An entry another process records stales the memo. Over a graph that does not owe its rebuild
-//! that costs at most one re-recording: the entry this process then records sets the memo to
-//! its own generation. Over a graph that owes its rebuild the sink answers from the memo alone, so
-//! a batch at the generation the stale memo holds records nothing: an entry another process
-//! recorded can leave a later generation unrecorded by this process.
+//! An entry another process records stales the memo. That costs at most one re-recording where
+//! the graph's side differs from the generation the stale memo holds. Where the graph holds that
+//! generation (a rebuild from the tree can leave it so), or owes its rebuild and is not asked, a
+//! batch at that generation records nothing, so an entry another process recorded can leave a
+//! later generation unrecorded by this process.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
