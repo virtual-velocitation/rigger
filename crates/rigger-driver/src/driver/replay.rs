@@ -226,6 +226,7 @@ impl AgentDriver for ReplayDriver<'_> {
             return Ok(AgentResult {
                 output: res.output,
                 resolved_model,
+                ..Default::default()
             });
         }
 

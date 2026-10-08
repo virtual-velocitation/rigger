@@ -74,6 +74,7 @@ impl AgentDriver for UnattributedDriver {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             "lens" => {
@@ -109,6 +110,7 @@ impl AgentDriver for UnattributedDriver {
         Ok(AgentResult {
             output: "reviewed".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

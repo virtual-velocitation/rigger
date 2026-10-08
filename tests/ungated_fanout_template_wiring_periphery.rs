@@ -182,6 +182,7 @@ impl AgentDriver for UnmatchedProposalWorker {
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

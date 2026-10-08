@@ -66,6 +66,7 @@ impl AgentDriver for CapturingDriver {
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -105,6 +106,7 @@ impl AgentDriver for SeamDriver {
         Ok(AgentResult {
             output: String::new(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
@@ -159,6 +161,7 @@ impl AgentDriver for ReviewDriver {
         Ok(AgentResult {
             output,
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }

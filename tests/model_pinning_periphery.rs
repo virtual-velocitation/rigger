@@ -54,6 +54,7 @@ impl AgentDriver for EchoModelDriver {
         Ok(AgentResult {
             output: "{\"verdict\":\"approve\"}".to_string(),
             resolved_model: a.model.clone(),
+            ..Default::default()
         })
     }
 }

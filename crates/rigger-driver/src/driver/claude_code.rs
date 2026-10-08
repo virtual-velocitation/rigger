@@ -30,7 +30,7 @@ use crate::config::AgentDef;
 use crate::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path};
 use crate::driver::{
     allowed_tools_args, bin_or_path_default, harness_env, spawn_config_args, system_prompt_file,
-    SystemPromptFile,
+    LaunchSession, SystemPromptFile,
 };
 use crate::eventstore::EventStore;
 use crate::hooks;
@@ -153,6 +153,12 @@ impl Driver<'_> {
     /// is written the launch never returns `Err` with an unaccounted-for child still
     /// running behind it: a failure writing the first message ends the child through its
     /// own handle (`kill()` + `wait()`) before the error propagates.
+    ///
+    /// A spawn naming a session to continue ([`SpawnOpts::resumed_from`]) is launched as a
+    /// resume of it and sent [`SpawnOpts::resume_task`]; the record carries that session as
+    /// both its id and its `resumed_from`. Unlike the cli host, this host does not yet fall
+    /// back to a fresh launch when the session to resume is gone: that launch ends with no
+    /// result, classified like any other.
     pub fn launch(
         &self,
         agent: &AgentDef,
@@ -160,7 +166,10 @@ impl Driver<'_> {
         opts: &SpawnOpts,
         store: &dyn EventStore,
     ) -> Result<Launch, Error> {
-        let session_id = uuid::Uuid::new_v4().to_string();
+        // The session this launch runs as: the one `opts` resumes, or a freshly minted one -
+        // the ONE session authority the cli host shares ([`LaunchSession`]).
+        let session = LaunchSession::of(opts);
+        let session_id = session.id.clone();
         // The persona travels as a file in the spawn's scratch, never as an argv string (see
         // [`SystemPromptFile`]); the spawn's terminus reclaims that scratch.
         let persona = system_prompt_file(
@@ -171,7 +180,7 @@ impl Driver<'_> {
             agent,
             &persona,
             opts,
-            &session_id,
+            &session,
             bin_or_path_default(&self.rigger_bin, "rigger"),
         )?;
 
@@ -186,11 +195,7 @@ impl Driver<'_> {
                 spawn: opts.id.clone(),
                 launch: opts.launch,
                 session_id: session_id.clone(),
-                resumed_from: if opts.resumed_from.is_empty() {
-                    None
-                } else {
-                    Some(opts.resumed_from.clone())
-                },
+                resumed_from: session.resumed.then(|| session.id.clone()),
                 started,
                 ended: None,
                 class: None,
@@ -225,7 +230,7 @@ impl Driver<'_> {
         let write_result = child
             .stdin
             .as_mut()
-            .map(|stdin| writeln!(stdin, "{}", first_user_message(task)));
+            .map(|stdin| writeln!(stdin, "{}", first_user_message(session.task(task, opts))));
         if let Some(Err(e)) = write_result {
             // The durable `SpawnLaunched` record above already claims this launch
             // happened - a write failure here must not also leak the OS process behind
@@ -550,9 +555,14 @@ impl Driver<'_> {
                 (Some("result"), _) if result.is_none() => {
                     let res = spawn_result_from(&v, opts, &resolved_model);
                     spawn_store::record_result_if_absent(self.run_store, &res)?;
+                    // The session this launch ran as rides back for the conductor to record;
+                    // this host honours every requested resume (it takes no fallback), so a
+                    // resumed launch continued exactly the session its spawn named.
                     result = Some(AgentResult {
                         output: res.output,
                         resolved_model: resolved_model.clone(),
+                        session_id: session_id.clone(),
+                        resumed_from: opts.resumed_from.clone(),
                     });
                     // "the host closes the input after the first `result`" - dropping the
                     // handle closes the pipe; a session that would otherwise wait on more
@@ -1200,7 +1210,8 @@ fn first_user_message(task: &str) -> String {
 /// Neither prompt is an argv string, since Linux caps one argument at `MAX_ARG_STRLEN` (131072
 /// bytes): the task is the first stream-json message on stdin and the persona reaches the
 /// session through the file `persona` holds (`--system-prompt-file`), omitted for an empty
-/// persona.
+/// persona. The launch runs as `session`: `--session-id` for a fresh one, `--resume` to
+/// continue the one the spawn names ([`LaunchSession`], shared with the cli host).
 ///
 /// `--json-schema` (verdict personas, §4.5) is deliberately out of this criterion's scope
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
@@ -1212,7 +1223,7 @@ pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
     opts: &SpawnOpts,
-    session_id: &str,
+    session: &LaunchSession,
     rigger_bin: &str,
 ) -> Result<Vec<String>, Error> {
     let mut args = vec![
@@ -1222,9 +1233,8 @@ pub fn build_args(
         "--input-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
-        "--session-id".to_string(),
-        session_id.to_string(),
     ];
+    args.extend(session.args());
     args.extend(persona.args());
     let model = agent.model_for_attempt(opts.attempt);
     if !model.is_empty() {
@@ -1269,7 +1279,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let persona =
             system_prompt_file(&o.system_prompt, Some(scratch.path().to_path_buf())).unwrap();
-        let args = build_args(&a, &persona, &o, "sess-123", "rigger").unwrap();
+        let args = build_args(&a, &persona, &o, &fresh_session("sess-123"), "rigger").unwrap();
 
         assert_eq!(args[0], "-p");
         // No positional prompt: the task is the first stream-json message on stdin.
@@ -1513,7 +1523,14 @@ mod tests {
     fn build_args_mcp_config_names_the_spawn_bound_server() {
         let a = AgentDef::default();
         let o = opts("u7-launch/implementer#2");
-        let args = build_args(&a, &SystemPromptFile::default(), &o, "sess", "rigger").unwrap();
+        let args = build_args(
+            &a,
+            &SystemPromptFile::default(),
+            &o,
+            &fresh_session("sess"),
+            "rigger",
+        )
+        .unwrap();
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         assert_eq!(cfg["mcpServers"]["rigger"]["command"], "rigger");
@@ -1533,7 +1550,7 @@ mod tests {
             &a,
             &SystemPromptFile::default(),
             &o,
-            "sess",
+            &fresh_session("sess"),
             "/custom/path/rigger",
         )
         .unwrap();
@@ -1552,7 +1569,7 @@ mod tests {
         let mut bare = o;
         bare.system_prompt = String::new();
         let persona = system_prompt_file(&bare.system_prompt, None).unwrap();
-        let args = build_args(&a, &persona, &bare, "sess", "rigger").unwrap();
+        let args = build_args(&a, &persona, &bare, &fresh_session("sess"), "rigger").unwrap();
         assert!(!args.iter().any(|x| x == "--system-prompt-file"));
         assert!(!args.iter().any(|x| x == "--model"));
         assert!(!args.iter().any(|x| x == "--fallback-model"));
@@ -1564,6 +1581,14 @@ mod tests {
         assert!(args.iter().any(|x| x == "--agents"));
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert!(args.iter().any(|x| x == "--session-id"));
+    }
+
+    /// A fresh launch session under the fixed `id`, so an argv test compares exact values.
+    fn fresh_session(id: &str) -> LaunchSession {
+        LaunchSession {
+            id: id.to_string(),
+            resumed: false,
+        }
     }
 
     // ---- launch(): real subprocess via the checked-in fixture ----
@@ -1843,11 +1868,55 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_asked_to_resume_continues_the_recorded_session_with_the_resume_task() {
+        // Both session hosts share the one session authority (`LaunchSession`): a launch whose
+        // spawn names a session to continue resumes it - `--resume`, never a second minted
+        // `--session-id` - records that it did, and sends only the resume task, since the
+        // session already holds the rest.
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let mut o = opts("u/implementer#1");
+        o.resumed_from = "sess-prior".to_string();
+        o.resume_task = "fix exactly these".to_string();
+
+        let mut launch = driver
+            .launch(&AgentDef::default(), "the full task", &o, &store)
+            .unwrap();
+        let lines = read_fixture_lines(&mut launch.child);
+
+        assert_eq!(launch.session_id, "sess-prior");
+        let flag = |name: &str| {
+            launch
+                .args
+                .iter()
+                .position(|x| x == name)
+                .map(|i| launch.args[i + 1].clone())
+        };
+        assert_eq!(flag("--resume").as_deref(), Some("sess-prior"));
+        assert_eq!(flag("--session-id"), None, "{:?}", launch.args);
+        let recorded = crate::progress::read_run(&store, &o.run_id).unwrap();
+        let sl: SpawnLaunched = serde_json::from_slice(&recorded[0].data).unwrap();
+        assert_eq!(sl.session_id, "sess-prior");
+        assert_eq!(sl.resumed_from.as_deref(), Some("sess-prior"));
+        let stdin_line = lines
+            .iter()
+            .find(|l| l.starts_with("STDIN="))
+            .expect("fixture echoed the first stdin line");
+        let v: serde_json::Value =
+            serde_json::from_str(stdin_line.trim_start_matches("STDIN=")).unwrap();
+        assert_eq!(v["message"]["content"], "fix exactly these");
+    }
+
+    #[test]
     fn a_launch_relaunches_at_a_new_ordinal_with_no_resumed_from_this_spec() {
         // CONSTRAINTS WALK: "Relaunch - a new session id and the next launch ordinal."
-        // Every launch spec 104 itself performs is fresh (resume is spec 105's), so two
-        // successive launches for the same spawn get two DIFFERENT session ids even when
-        // the caller advances only `launch`.
+        // A launch whose spawn names no session to continue is fresh, so two successive
+        // launches for the same spawn get two DIFFERENT session ids even when the caller
+        // advances only `launch`.
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),

@@ -68,6 +68,7 @@ pub fn critical_verdict(prompt: &str) -> AgentResult {
     AgentResult {
         output: format!("{{\"verdict\":\"{verdict}\"}}"),
         resolved_model: String::new(),
+        ..Default::default()
     }
 }
 
@@ -89,6 +90,7 @@ pub fn emit_review_finding(
     Ok(AgentResult {
         output: "reviewed".into(),
         resolved_model: String::new(),
+        ..Default::default()
     })
 }
 

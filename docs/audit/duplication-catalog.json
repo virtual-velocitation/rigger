@@ -381,7 +381,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-057996e51fcc",
+    "id": "dup-c49e5ffeb01d",
     "classification": "semantic",
     "sites": [
       {
@@ -437,7 +437,7 @@
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
         "name": "run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors",
-        "content_hash": "5cdbef81b464bcbf"
+        "content_hash": "a99c4bb84b057505"
       },
       {
         "file": "tests/cli.rs",
@@ -4128,28 +4128,28 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-62c48a13d591",
+    "id": "dup-15a59608df13",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "f52ad61fe5d70f20"
+        "content_hash": "62ba6b68dc55f4b2"
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "de3dd55067b6cbe2"
+        "content_hash": "7f439618ee10a4bc"
       },
       {
         "file": "crates/rigger-conductor/src/conductor.rs",
         "name": "spawn",
-        "content_hash": "c4297e15ac6531d7"
+        "content_hash": "c556c5d435d68f61"
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
         "name": "spawn",
-        "content_hash": "2ef656073e58083a"
+        "content_hash": "3259b120a49f8cd4"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: crates/rigger-conductor/src/conductor.rs, tests/revert_on_base_hook_bypass_periphery.rs)",
@@ -5787,6 +5787,44 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-d082d63b45dc",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "build_args_mcp_config_names_the_spawn_bound_server",
+        "content_hash": "4857044a0c9a679a"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/claude_code.rs",
+        "name": "build_args_mcp_config_uses_the_configured_rigger_bin",
+        "content_hash": "41ee7147d8c1cab8"
+      }
+    ],
+    "proposed_home": "claude_code::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-bada7e276fc1",
+    "classification": "semantic",
+    "sites": [
+      {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "of",
+        "content_hash": "f1e9321ba1f00b94"
+      },
+      {
+        "file": "crates/rigger-driver/src/driver/mod.rs",
+        "name": "fresh",
+        "content_hash": "525018472881488b"
+      }
+    ],
+    "proposed_home": "mod::launch_session - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field",
+    "note": "mandatory sweep: parallel constructor functions - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-282069e7109f",
     "classification": "near",
     "sites": [
@@ -7419,18 +7457,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-58e746ca5c35",
+    "id": "dup-14d812231784",
     "classification": "near",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
         "name": "spawn",
-        "content_hash": "2d8882025182ff5a"
+        "content_hash": "894dbdb8a6636f0c"
       },
       {
         "file": "tests/canary_unattributed_rejects_periphery.rs",
         "name": "spawn",
-        "content_hash": "c1af79f145292ac8"
+        "content_hash": "5c97b230812bcf5a"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/canary_false_positives_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)",
@@ -8723,18 +8761,18 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-6adbc1efd3a6",
+    "id": "dup-a199914ac1c3",
     "classification": "near",
     "sites": [
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
         "name": "spawn",
-        "content_hash": "e542ecac2f88a1fb"
+        "content_hash": "0a263e765fb6f320"
       },
       {
         "file": "tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs",
         "name": "spawn",
-        "content_hash": "a87cde1ccc7a566e"
+        "content_hash": "58d8bc0de157f6df"
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/review_round_lenses_only_log_derived_resume_periphery.rs, tests/review_round_non_ancestor_residue_names_true_diff_periphery.rs)",

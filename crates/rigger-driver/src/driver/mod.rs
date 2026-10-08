@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::agent::Error;
+use crate::agent::{Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
 
@@ -93,6 +93,90 @@ fn json_arg(composed: Result<Vec<u8>, hooks::Error>, what: &str) -> Result<Strin
 /// its ten-minute default and `0` waiting without one).
 pub(crate) fn harness_env() -> [(&'static str, &'static str); 1] {
     [("CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS", "0")]
+}
+
+/// What `claude -p --resume <id>` prints on stderr, exiting non-zero before any turn runs, when
+/// no transcript of session `<id>` exists. This is Claude Code's own wording, matched as text
+/// because the refusal carries no structured code: pinned against Claude Code 2.1.290 by the
+/// 2026-10-07 probe (`claude -p --resume <unknown uuid> < /dev/null` printed `No conversation
+/// found with session ID: <id>`, empty stdout, exit 1), whose literal output the cli host's
+/// `a_missing_session_is_read_from_claude_codes_own_refusal` test replays. A later Claude Code
+/// that rewords it turns the fallback off - the resume then fails as an agent error - so
+/// re-probe on an upgrade. A session host that asked for a resume and reads this falls back to
+/// a fresh launch with the full task.
+pub(crate) const MISSING_SESSION: &str = "No conversation found with session ID";
+
+/// The Claude Code session one launch runs as - the ONE session authority both process hosts
+/// share. A launch continues the session [`SpawnOpts::resumed_from`] names (`--resume <id>`),
+/// or starts a fresh one under an id the host mints (`--session-id <uuid>`), so the host knows
+/// the id without reading it back from the session's output. Probed on Claude Code 2.1.290: a
+/// resumed session keeps its id, so [`id`](Self::id) is the session either way; `--session-id`
+/// and `--resume` together are refused without `--fork-session`, so a launch passes exactly one.
+///
+/// A resume carries the rest of the argv unchanged. The session snapshots its system prompt on
+/// its first request and reuses that record on a resume, so the persona file passed again is
+/// read only once the conversation is compacted; but the tools it may use
+/// (`--allowed-tools`), its permission mode and its MCP servers are per-launch, never part of
+/// the session - a resume that omitted them ran with none of them - so they are passed again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchSession {
+    /// The session id this launch runs as.
+    pub id: String,
+    /// Whether the launch continues `id` rather than starting it.
+    pub resumed: bool,
+}
+
+impl LaunchSession {
+    /// The session `opts` asks for: the one it resumes, or a freshly minted one.
+    pub fn of(opts: &SpawnOpts) -> LaunchSession {
+        if opts.resumed_from.is_empty() {
+            LaunchSession::fresh()
+        } else {
+            LaunchSession {
+                id: opts.resumed_from.clone(),
+                resumed: true,
+            }
+        }
+    }
+
+    /// A fresh session under a newly minted id.
+    pub fn fresh() -> LaunchSession {
+        LaunchSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            resumed: false,
+        }
+    }
+
+    /// The session flag pair this launch passes: `--resume <id>` or `--session-id <id>`.
+    pub fn args(&self) -> [String; 2] {
+        let flag = if self.resumed {
+            "--resume"
+        } else {
+            "--session-id"
+        };
+        [flag.to_string(), self.id.clone()]
+    }
+
+    /// The task this launch sends: [`SpawnOpts::resume_task`] when it resumes (the session
+    /// already holds the rest), the full `prompt` when it starts fresh.
+    pub fn task<'a>(&self, prompt: &'a str, opts: &'a SpawnOpts) -> &'a str {
+        if self.resumed {
+            &opts.resume_task
+        } else {
+            prompt
+        }
+    }
+
+    /// The session the launch continued, as the spawn's result records it
+    /// ([`AgentResult::resumed_from`](crate::agent::AgentResult::resumed_from)): `id` on a
+    /// resume, empty on a fresh launch.
+    pub fn resumed_from(&self) -> String {
+        if self.resumed {
+            self.id.clone()
+        } else {
+            String::new()
+        }
+    }
 }
 
 /// The file a spawn's system prompt (its persona) is written to, inside the spawn's scratch.

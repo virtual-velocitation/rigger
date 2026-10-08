@@ -625,11 +625,6 @@
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
   },
   {
-    "id": "dup-58e746ca5c35",
-    "disposition": "not-a-duplicate",
-    "reason": "The two canary suites' `spawn` doubles script different reviewer verdicts for their own scenarios (false-positive controls versus an unattributed correct reject)."
-  },
-  {
     "id": "dup-d887cb6f63f7",
     "disposition": "not-a-duplicate",
     "reason": "Two canary scoring tests with different seeded items and different expected counts."
@@ -703,11 +698,6 @@
     "id": "dup-cb850da85ff9",
     "disposition": "not-a-duplicate",
     "reason": "`rows` and `raw_rows` read different column sets into different row types."
-  },
-  {
-    "id": "dup-6adbc1efd3a6",
-    "disposition": "not-a-duplicate",
-    "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
   },
   {
     "id": "dup-adfce3b42b86",
@@ -1025,13 +1015,33 @@
     "reason": "Each test pins a different `rigger validate` advisory (the ungated fan-out template warning versus the retired-code-entity warning) over a different fixture edit; the shared shape is already the one shared helper `validate_after_init` each calls."
   },
   {
-    "id": "dup-62c48a13d591",
+    "id": "dup-5c13daf57f07",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay-key set's insert and membership test: two different operations on one set behind its owner's lock; they share only the `lock().unwrap()` idiom."
+  },
+  {
+    "id": "dup-15a59608df13",
     "disposition": "not-a-duplicate",
     "reason": "`AgentDriver::spawn` test doubles that each script a different scenario's worktree writes and verdicts; the trait signature is what makes them look alike."
   },
   {
-    "id": "dup-5c13daf57f07",
+    "id": "dup-14d812231784",
     "disposition": "not-a-duplicate",
-    "reason": "The replay-key set's insert and membership test: two different operations on one set behind its owner's lock; they share only the `lock().unwrap()` idiom."
+    "reason": "The two canary suites' `spawn` doubles script different reviewer verdicts for their own scenarios (false-positive controls versus an unattributed correct reject)."
+  },
+  {
+    "id": "dup-a199914ac1c3",
+    "disposition": "not-a-duplicate",
+    "reason": "Two `spawn` doubles scripting different review-round scenarios (log-derived resume versus non-ancestor residue)."
+  },
+  {
+    "id": "dup-d082d63b45dc",
+    "disposition": "not-a-duplicate",
+    "reason": "Two argv tests of different facts about the spawn-bound MCP server (the server is bound to the spawn's id versus it runs the configured rigger binary); they share only the build-and-parse preamble."
+  },
+  {
+    "id": "dup-bada7e276fc1",
+    "disposition": "not-a-duplicate",
+    "reason": "`LaunchSession::of` already delegates its fresh case to `LaunchSession::fresh`; the remaining arm builds the resumed session, a different value."
   }
 ]

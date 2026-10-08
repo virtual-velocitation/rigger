@@ -73,6 +73,7 @@ impl AgentDriver for VolumeDriver {
                 return Ok(AgentResult {
                     output: format!("{{\"verdict\":\"{verdict}\"}}"),
                     resolved_model: String::new(),
+                    ..Default::default()
                 });
             }
             "lens-a" => {
@@ -102,6 +103,7 @@ impl AgentDriver for VolumeDriver {
         Ok(AgentResult {
             output: "reviewed".into(),
             resolved_model: String::new(),
+            ..Default::default()
         })
     }
 }
