@@ -17,6 +17,11 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// Each event's type, in the order given.
+pub fn types_of(events: &[Event]) -> Vec<&str> {
+    events.iter().map(|e| e.type_.as_str()).collect()
+}
+
 /// How many of `events` are of type `type_`.
 pub fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
@@ -207,6 +212,80 @@ impl EventStore for SilentStore {
     }
 }
 
+/// The port methods a double REFUSES, each panicking with `$why` and what the caller tried -
+/// expanded inside that double's `impl EventStore` block, naming the methods it does not answer.
+macro_rules! refuse_event_store_calls {
+    ($why:literal: $($method:ident),+ $(,)?) => {
+        $(refuse_event_store_calls!(@ $why $method);)+
+    };
+    (@ $why:literal append) => {
+        fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+            panic!(concat!($why, ": nothing appends"))
+        }
+    };
+    (@ $why:literal read_stream) => {
+        fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads the stream"))
+        }
+    };
+    (@ $why:literal read_all) => {
+        fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads the log"))
+        }
+    };
+    (@ $why:literal subscribe_all) => {
+        fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+            panic!(concat!($why, ": nothing subscribes"))
+        }
+    };
+    (@ $why:literal subscribe_stream) => {
+        fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+            panic!(concat!($why, ": nothing subscribes"))
+        }
+    };
+    (@ $why:literal last_position) => {
+        fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+            panic!(concat!($why, ": nothing looks up a boundary"))
+        }
+    };
+    (@ $why:literal read_stream_typed) => {
+        fn read_stream_typed(
+            &self,
+            _: &str,
+            _: Revision,
+            _: TypeSelection,
+        ) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads by type"))
+        }
+    };
+    (@ $why:literal read_stream_positions) => {
+        fn read_stream_positions(
+            &self,
+            _: &str,
+            _: usize,
+            _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+        ) -> Result<(), Error> {
+            panic!(concat!($why, ": nothing reads positions"))
+        }
+    };
+    (@ $why:literal read_stream_batched) => {
+        fn read_stream_batched(
+            &self,
+            _: &str,
+            _: Revision,
+            _: usize,
+            _: &mut EventBatchSink,
+        ) -> Result<(), Error> {
+            panic!(concat!($why, ": nothing reads the stream in batches"))
+        }
+    };
+    (@ $why:literal latest_in_group) => {
+        fn latest_in_group(&self, _: &str, _: &str) -> Result<Option<GroupHead>, Error> {
+            panic!(concat!($why, ": nothing looks up a group"))
+        }
+    };
+}
+
 /// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
 /// with one fixed answer - a newest member, no member, or a backend error - and records each
 /// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
@@ -233,49 +312,18 @@ impl GroupLookupOnly {
 }
 
 impl EventStore for GroupLookupOnly {
-    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
-        panic!("only the group lookup is reachable: nothing appends")
-    }
-    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads the stream")
-    }
-    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads the log")
-    }
-    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
-        panic!("only the group lookup is reachable: nothing subscribes")
-    }
-    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
-        panic!("only the group lookup is reachable: nothing subscribes")
-    }
-    fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
-        panic!("only the group lookup is reachable: nothing looks up a boundary")
-    }
-    fn read_stream_typed(
-        &self,
-        _: &str,
-        _: Revision,
-        _: TypeSelection,
-    ) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads by type")
-    }
-    fn read_stream_positions(
-        &self,
-        _: &str,
-        _: usize,
-        _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        panic!("only the group lookup is reachable: nothing reads positions")
-    }
-    fn read_stream_batched(
-        &self,
-        _: &str,
-        _: Revision,
-        _: usize,
-        _: &mut EventBatchSink,
-    ) -> Result<(), Error> {
-        panic!("only the group lookup is reachable: nothing reads the stream in batches")
-    }
+    refuse_event_store_calls!(
+        "only the group lookup is reachable":
+        append,
+        read_stream,
+        read_all,
+        subscribe_all,
+        subscribe_stream,
+        last_position,
+        read_stream_typed,
+        read_stream_positions,
+        read_stream_batched,
+    );
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.asked
             .lock()
@@ -286,9 +334,10 @@ impl EventStore for GroupLookupOnly {
 }
 
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
-/// reach: its events are stamped with 1-based positions and per-stream revisions in the order
-/// given, and only the boundary lookup and the typed read answer, as the port words them. Every
-/// other method panics, and another stream holds nothing.
+/// reach: its events are stamped in the order given as the sqlite store stamps an append to an
+/// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup
+/// and the typed read answer, as the port words them. Every other method panics, and another
+/// stream holds nothing.
 pub struct HandBuiltLog {
     stream: String,
     events: Vec<Event>,
@@ -300,7 +349,7 @@ impl HandBuiltLog {
         for (i, e) in events.iter_mut().enumerate() {
             e.stream = stream.to_string();
             e.position = (i + 1) as u64;
-            e.revision = (i + 1) as Revision;
+            e.revision = i as Revision;
         }
         HandBuiltLog {
             stream: stream.to_string(),
@@ -319,21 +368,17 @@ impl HandBuiltLog {
 }
 
 impl EventStore for HandBuiltLog {
-    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
-        panic!("a hand-built log is read-only: nothing appends")
-    }
-    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
-        panic!("a hand-built log answers by type: nothing reads the whole stream")
-    }
-    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
-        panic!("a hand-built log answers by type: nothing reads the log")
-    }
-    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
-        panic!("a hand-built log is read once: nothing subscribes")
-    }
-    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
-        panic!("a hand-built log is read once: nothing subscribes")
-    }
+    refuse_event_store_calls!(
+        "only the boundary lookup and the typed read are reachable":
+        append,
+        read_stream,
+        read_all,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
         Ok(self
             .of(stream)
@@ -358,26 +403,6 @@ impl EventStore for HandBuiltLog {
             })
             .cloned()
             .collect())
-    }
-    fn read_stream_positions(
-        &self,
-        _: &str,
-        _: usize,
-        _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        panic!("a hand-built log answers by type: nothing reads positions")
-    }
-    fn read_stream_batched(
-        &self,
-        _: &str,
-        _: Revision,
-        _: usize,
-        _: &mut EventBatchSink,
-    ) -> Result<(), Error> {
-        panic!("a hand-built log answers by type: nothing reads the stream in batches")
-    }
-    fn latest_in_group(&self, _: &str, _: &str) -> Result<Option<GroupHead>, Error> {
-        panic!("a hand-built log answers by type: nothing looks up a group")
     }
 }
 

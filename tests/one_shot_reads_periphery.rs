@@ -28,7 +28,7 @@ use std::process::Stdio;
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
     entry_event, ev, generation_ingested, run_started, seed_one_shot_fixture,
-    seed_one_shot_progress, CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore,
+    seed_one_shot_progress, types_of, CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore,
     ONE_SHOT_DERIVED_TYPES, ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
@@ -41,11 +41,6 @@ use serde_json::{json, Value};
 
 /// The carried-over types, spelled out: a run read hands back every one of them from every run.
 const CARRY_OVER: [&str; 3] = ["DecisionMade", "LessonLearned", "ReviewFinding"];
-
-/// Each event's type, in the order the read handed them back.
-fn types(events: &[Event]) -> Vec<&str> {
-    events.iter().map(|e| e.type_.as_str()).collect()
-}
 
 /// The `id` field of each event's JSON payload, in order (empty when it has none).
 fn payload_ids(events: &[Event]) -> Vec<String> {
@@ -102,7 +97,7 @@ fn a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read
     assert_eq!(above.reads(), fixture.read(STREAM));
     assert_eq!(above.materialized(), fixture.cost());
     assert_eq!(
-        types(&events),
+        types_of(&events),
         [
             "DecisionMade",
             "LessonLearned",
@@ -817,7 +812,7 @@ fn a_current_run_read_through_a_shared_events_file_names_only_its_own_projects_r
         run_id, "",
         "no run started names no run, never a neighbor's"
     );
-    assert_eq!(types(&events), ["UnitStarted", "DecisionMade"]);
+    assert_eq!(types_of(&events), ["UnitStarted", "DecisionMade"]);
     assert_eq!(payload_ids(&events), ["u0", "d-0"]);
     assert_eq!(
         counted.reads(),
@@ -843,7 +838,7 @@ fn a_current_run_read_through_a_shared_events_file_names_only_its_own_projects_r
     let (events, run_id) = rigger::run::read::read_current_run(&counted, STREAM).unwrap();
     assert_eq!(run_id, "run-c");
     assert_eq!(
-        types(&events),
+        types_of(&events),
         [
             "RunStarted",
             "RunNote",
@@ -1234,7 +1229,7 @@ fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_
     );
     let whole = rigger::run::read::read_run(&started, STREAM).unwrap();
     assert_eq!(
-        types(&whole),
+        types_of(&whole),
         ["DecisionMade", "RunStarted", "RunNote", "DecisionMade"]
     );
     assert_eq!(payload_ids(&whole), ["d-0", "", "", "d-1"]);

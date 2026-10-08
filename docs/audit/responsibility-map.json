@@ -493,7 +493,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "609a6fb4a968eeaa"
+    "content_hash": "95919cb4d742f15e"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -541,7 +541,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cba846123f24ce65"
+    "content_hash": "73e893f17ef96e54"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -4069,7 +4069,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "09b17fb3228b6a12"
+    "content_hash": "5ddcd656b8c282e7"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -5381,7 +5381,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "274454201a9d898c"
+    "content_hash": "b6becbe9b03dc585"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",

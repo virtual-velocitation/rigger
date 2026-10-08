@@ -955,9 +955,9 @@
     "reason": "The folding store forwards two different port methods (the boundary lookup and the group lookup) to the store it wraps; each is a one-line delegation the port's signature makes look alike."
   },
   {
-    "id": "dup-2423568cdaba",
+    "id": "dup-033af83f765c",
     "disposition": "not-a-duplicate",
-    "reason": "Three port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the group-lookup-only double panics on any other read, the append-only port double refuses every read; the port method's signature is what makes them look alike."
+    "reason": "Two port doubles' positions reads, each answering its own double's contract - the silent double reads nothing, the append-only port double refuses every read; the port method's signature is what makes them look alike."
   },
   {
     "id": "dup-cb25e49f6e22",

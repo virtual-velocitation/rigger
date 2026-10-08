@@ -8156,18 +8156,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-2423568cdaba",
+    "id": "dup-033af83f765c",
     "classification": "near",
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
         "name": "read_stream_positions",
         "content_hash": "bc8216f4bd60487b"
-      },
-      {
-        "file": "tests/common/fixtures/events.rs",
-        "name": "read_stream_positions",
-        "content_hash": "ec5e1dbfb7f41d30"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",

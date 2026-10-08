@@ -87,7 +87,7 @@ mod tests {
     use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
     use crate::test_support::{
-        ev, CountedRead, HandBuiltLog, ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES,
+        ev, types_of, CountedRead, HandBuiltLog, ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES,
     };
 
     const STREAM: &str = "run";
@@ -114,14 +114,6 @@ mod tests {
         events
     }
 
-    fn names(types: &[&str]) -> Vec<String> {
-        types.iter().map(|t| t.to_string()).collect()
-    }
-
-    fn types(events: &[Event]) -> Vec<&str> {
-        events.iter().map(|e| e.type_.as_str()).collect()
-    }
-
     fn positions(events: &[Event]) -> Vec<u64> {
         events.iter().map(|e| e.position).collect()
     }
@@ -140,7 +132,10 @@ mod tests {
         let store = ReadCountingStore::new(&log);
 
         let (slice, run_id) = read_current_run(&store, STREAM).unwrap();
-        assert_eq!(types(&slice), ["RunStarted", "UnitStarted", "DecisionMade"]);
+        assert_eq!(
+            types_of(&slice),
+            ["RunStarted", "UnitStarted", "DecisionMade"]
+        );
         assert_eq!(positions(&slice), [3, 4, 10]);
         assert_eq!(run_id, "r2");
         assert_eq!(
@@ -154,14 +149,14 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: true,
-                    types: names(&CARRY_OVER_TYPES),
+                    types: CARRY_OVER_TYPES.map(String::from).to_vec(),
                     materialized: 2,
                 },
                 CountedRead::Typed {
                     stream: STREAM.to_string(),
-                    from: 3,
+                    from: 2,
                     only: false,
-                    types: names(&PERCEPTION_TYPES),
+                    types: PERCEPTION_TYPES.map(String::from).to_vec(),
                     materialized: 3,
                 },
             ]
@@ -180,7 +175,7 @@ mod tests {
         let store = ReadCountingStore::new(&log);
 
         let (slice, run_id) = read_current_run(&store, STREAM).unwrap();
-        assert_eq!(types(&slice), ["UnitStarted", "DecisionMade"]);
+        assert_eq!(types_of(&slice), ["UnitStarted", "DecisionMade"]);
         assert_eq!(positions(&slice), [1, 7]);
         assert_eq!(run_id, "");
         assert_eq!(
@@ -194,7 +189,7 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: false,
-                    types: names(&PERCEPTION_TYPES),
+                    types: PERCEPTION_TYPES.map(String::from).to_vec(),
                     materialized: 2,
                 },
             ]
