@@ -15838,9 +15838,11 @@ mod tests {
         /// The order agents were spawned in, by id - used to assert the lenses ->
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
-        /// The `CARGO_TARGET_DIR` each spawn of an agent carried (empty when it carried none),
-        /// in spawn order, keyed by agent id - where that agent's own cargo runs build.
-        targets_by_agent: Mutex<HashMap<String, Vec<String>>>,
+        /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
+        /// `(env, wave)`: the `CARGO_TARGET_DIR` its environment carried, and the
+        /// `cargo_target_dir` the workflow driver's wave item names for its parked request
+        /// (empty when either names none) - the two drivers' views of one build location.
+        targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
         /// before returning success - simulating a REVIEWER's own side effect
         /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
@@ -15946,8 +15948,8 @@ mod tests {
             cached(&self.prompts_by_agent, agent_id).unwrap_or_default()
         }
 
-        /// The `CARGO_TARGET_DIR` each spawn of the named agent carried, in spawn order.
-        fn targets_for(&self, agent_id: &str) -> Vec<String> {
+        /// Where each spawn of the named agent builds, `(env, wave)`, in spawn order.
+        fn targets_for(&self, agent_id: &str) -> Vec<(String, String)> {
             cached(&self.targets_by_agent, agent_id).unwrap_or_default()
         }
 
@@ -16052,13 +16054,16 @@ mod tests {
                 .unwrap()
                 .entry(a.id.clone())
                 .or_default()
-                .push(
+                .push((
                     opts.env
                         .iter()
                         .find(|(name, _)| name == "CARGO_TARGET_DIR")
                         .map(|(_, dir)| dir.clone())
                         .unwrap_or_default(),
-                );
+                    crate::spawn::WaveItem::from(&spawn_request(a, prompt, opts))
+                        .cargo_target_dir
+                        .unwrap_or_default(),
+                ));
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
             // runs, so it reflects whether the CALLER (`run_reviewer`'s ensure-on-park
             // re-assert) already restored a dir a PRIOR tier's own spawn deleted.
@@ -36708,8 +36713,9 @@ mod tests {
         assert_eq!(gate_evidence_block(&events, "nobody", "T1"), "");
     }
 
-    /// A reviewer's own cargo runs never build into the unit's cache: the lenses, the adversary
-    /// and the adjudicator each get the unit's review cache, so a reproduction in a reviewer's
+    /// A reviewer's own cargo runs never build into the unit's cache, under either driver: the
+    /// lenses, the adversary and the adjudicator each get the unit's review cache - in their
+    /// spawn environment and in the workflow wave item their parked request becomes - so a reproduction in a reviewer's
     /// scratch worktree can never swap a binary the unit's gates or another tier's test is
     /// using. The implementer and the sdet-author build the unit's own tree and keep its cache.
     #[test]
@@ -36747,8 +36753,9 @@ mod tests {
         ] {
             assert_eq!(
                 driver.targets_for(agent_id),
-                vec![want.clone()],
-                "{agent_id} builds into {want}"
+                vec![(want.clone(), want.clone())],
+                "{agent_id} builds into {want} under both the cli driver's environment and the \
+                 workflow driver's wave"
             );
         }
     }
