@@ -4003,7 +4003,7 @@ impl RunCtx<'_> {
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
         let width = self.cfg.workflow.defaults.max_parallel_units as usize;
-        let radii = self.wave_radii(stages, ready)?;
+        let radii = self.wave_radii(stages, ready, in_flight)?;
         let mut waiting: Vec<String> = ready.to_vec();
         let mut running: HashSet<String> = HashSet::new();
         let mut admitted_any = false;
@@ -4151,19 +4151,23 @@ impl RunCtx<'_> {
         }
     }
 
-    /// Each ready stage's SAFE-SUPERSET radius (spec 16 unit 3) for the wave's co-scheduling
-    /// rule, or `None` when the rule does not apply - no grounder, or no ready stage requests
-    /// `partition: by-blast-radius` - so every stage is free to pair. The radius is the RECORDED
+    /// The SAFE-SUPERSET radius (spec 16 unit 3) of each ready stage AND each unit already in
+    /// flight - one parked in an earlier wave still runs off-process, so a ready unit is compared
+    /// with it too - for the wave's co-scheduling rule, or `None` when the rule does not apply - no
+    /// grounder, or no ready stage requests `partition: by-blast-radius` - so every stage is free
+    /// to pair. The radius is the RECORDED
     /// one: the unit's latest `BlastRadiusComputed` in this run, the same radius the retention
     /// metric reads and a crash-resumed driver re-reads, so the live decision and the log agree.
     /// A unit with no recorded radius yet has its [`grounded_blast_radius`](Self::grounded_blast_radius)
     /// computed and recorded at attempt 0 here - the record its first attempt would otherwise
     /// make - and read back the same way. A grounder that records nothing (no structural index)
-    /// has the computed radius used as is.
+    /// has the computed radius used as is. A unit in flight that is neither recorded nor a stage
+    /// of this workflow gets the empty radius, which conflicts with every unit (fail-safe).
     fn wave_radii(
         &self,
         stages: &BTreeMap<String, Stage>,
         ready: &[String],
+        in_flight: &HashSet<String>,
     ) -> Result<Option<HashMap<String, Vec<String>>>, Error> {
         if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
             return Ok(None);
@@ -4174,15 +4178,18 @@ impl RunCtx<'_> {
             .filter_map(crate::metrics::recorded_radius)
             .collect();
         let mut radii = HashMap::new();
-        for name in ready {
-            let safe = match recorded.remove(name) {
-                Some(safe) => safe,
-                None => {
-                    let st = &stages[name];
+        for name in ready.iter().chain(in_flight) {
+            if radii.contains_key(name) {
+                continue;
+            }
+            let safe = match (recorded.remove(name), stages.get(name)) {
+                (Some(safe), _) => safe,
+                (None, Some(st)) => {
                     let radius = self.grounded_blast_radius(st);
                     self.record_blast_radius(st, 0, &self.grounded_seed(st), &radius)?;
                     radius.safe
                 }
+                (None, None) => Vec::new(),
             };
             radii.insert(name.clone(), safe);
         }
@@ -14049,8 +14056,9 @@ pub use crate::metrics::radii_conflict;
 /// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
 /// (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
 /// under `width` (`0` = unbounded) AND, when `radii` is present, its radius conflicts with no
-/// unit in flight. Only the in-flight units this wave grounded are compared; an in-flight unit
-/// that already holds its slot is admitted without the check, since it started under it.
+/// unit in flight - every one, including a unit parked in an earlier wave, and one with no
+/// radius counts as conflicting. An in-flight unit that already holds its slot is admitted
+/// without the check, since it started under it.
 fn admissible(
     name: &str,
     width: usize,
@@ -14068,10 +14076,11 @@ fn admissible(
         return false;
     }
     radii.is_none_or(|radii| {
-        in_flight
-            .iter()
-            .filter_map(|other| radii.get(other))
-            .all(|other| !radii_conflict(&radii[name], other))
+        in_flight.iter().all(|other| {
+            radii
+                .get(other)
+                .is_some_and(|other| !radii_conflict(&radii[name], other))
+        })
     })
 }
 
