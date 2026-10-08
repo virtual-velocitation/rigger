@@ -119,31 +119,146 @@ fn query_terms(query: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The query terms a criterion's BLAST RADIUS grounds on: the code it names, never its prose.
-/// Each whitespace-separated piece of a code span (backticked text) is a term, and so is every
-/// bare token that is identifier-shaped - it contains `_` or `::`, or is camelCase / CamelCase.
-/// A span like `a::b` or `path/file.rs` stays ONE term. A plain prose word is never a term, so a
-/// criterion that names no code has none. A term needs two characters, one alphanumeric.
-fn code_terms(query: &str) -> Vec<String> {
-    let mut terms: Vec<String> = Vec::new();
+/// What a criterion NAMES AS CODE, which is all its blast radius grounds on (never its prose):
+/// the symbol `names` matched structurally, the file `paths` it names, and the literal `phrases`
+/// searched for in the text. A criterion that names no code has none of the three.
+#[derive(Debug, Default, PartialEq)]
+struct CodeTerms {
+    names: Vec<String>,
+    paths: Vec<String>,
+    phrases: Vec<String>,
+}
+
+/// Language keywords a code span may carry (`pub fn`, `&mut self`) that name no code of the
+/// project, so they are never terms.
+const KEYWORDS: &[&str] = &["fn", "pub", "mut", "self", "let", "use", "mod", "impl"];
+
+/// The file extensions that make a dotted term a PATH (`ingest.rs`) rather than a member access
+/// (`store.open`).
+const FILE_EXTENSIONS: &[&str] = &[
+    "rs", "md", "toml", "yml", "yaml", "json", "sh", "py", "ts", "js", "txt", "lock", "html", "css",
+];
+
+/// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
+/// token that is identifier-shaped ([`identifier_shaped`]) contributes; a plain prose word never
+/// does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
+/// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it names
+/// a file (contains `/` or ends in a file extension), else a symbol named by its last `::` or `.`
+/// segment, and is also searched for as text. A span left with SEVERAL pieces (`rigger validate`)
+/// is searched for as ONE phrase, and only its identifier-shaped pieces are matched structurally,
+/// so a word like `rigger` inside a command never widens the radius on its own.
+fn code_terms(query: &str) -> CodeTerms {
+    let mut terms = CodeTerms::default();
     for (i, part) in query.split('`').enumerate() {
-        let in_span = i % 2 == 1;
+        if i % 2 == 1 {
+            terms.add_span(part);
+            continue;
+        }
         for word in part.split_whitespace() {
-            let term = if in_span {
-                word.trim_end_matches("()")
-                    .trim_matches(|c: char| matches!(c, ',' | ';' | '.' | '(' | ')' | '&' | '*'))
-            } else {
-                word.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_'))
-            };
-            let keep = term.chars().count() >= 2
-                && term.chars().any(char::is_alphanumeric)
-                && (in_span || identifier_shaped(term));
-            if keep && !terms.iter().any(|t| t == term) {
-                terms.push(term.to_string());
+            let stripped = strip_groups(word);
+            let piece = clean_piece(&stripped);
+            if identifier_shaped(piece) {
+                terms.add_piece(piece);
             }
         }
     }
     terms
+}
+
+impl CodeTerms {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.paths.is_empty() && self.phrases.is_empty()
+    }
+
+    fn add_span(&mut self, span: &str) {
+        let stripped = strip_groups(span);
+        let pieces: Vec<&str> = stripped
+            .split_whitespace()
+            .map(clean_piece)
+            .filter(|p| meaningful(p) && !KEYWORDS.contains(p))
+            .collect();
+        match pieces.as_slice() {
+            [] => {}
+            [one] => self.add_piece(one),
+            many => {
+                for piece in many.iter().filter(|p| identifier_shaped(p)) {
+                    push_new(&mut self.names, last_segment(piece));
+                }
+                let phrase = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+                push_new(&mut self.phrases, clean_piece(&phrase));
+            }
+        }
+    }
+
+    fn add_piece(&mut self, piece: &str) {
+        if !meaningful(piece) || KEYWORDS.contains(&piece) {
+            return;
+        }
+        if is_path(piece) {
+            push_new(&mut self.paths, piece);
+        } else if piece
+            .split("::")
+            .flat_map(|s| s.split('.'))
+            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        {
+            push_new(&mut self.names, last_segment(piece));
+        }
+        push_new(&mut self.phrases, piece);
+    }
+}
+
+fn push_new(terms: &mut Vec<String>, term: &str) {
+    if !terms.iter().any(|t| t == term) {
+        terms.push(term.to_string());
+    }
+}
+
+/// Two characters, one of them alphanumeric.
+fn meaningful(piece: &str) -> bool {
+    piece.chars().count() >= 2 && piece.chars().any(char::is_alphanumeric)
+}
+
+/// A term names a file when it has a `/` or ends in a known file extension.
+fn is_path(term: &str) -> bool {
+    term.contains('/')
+        || term
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTENSIONS.contains(&ext))
+}
+
+/// The symbol a path-shaped name ends in: `grounder::tree_bytes` -> `tree_bytes`, `a.b` -> `b`.
+fn last_segment(term: &str) -> &str {
+    let tail = term.rsplit("::").next().unwrap_or(term);
+    tail.rsplit('.').next().unwrap_or(tail)
+}
+
+/// `text` with every bracketed `<...>` and `(...)` group removed (nesting included), so
+/// `a::b<T>` reads `a::b` and `foo(x)` reads `foo`. An unmatched closer is kept.
+fn strip_groups(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A piece without its surrounding punctuation or a trailing `:`, `!`, `?` or `.`; a leading `.`
+/// stays, so `.rigger/workflow.yml` keeps its name.
+fn clean_piece(piece: &str) -> &str {
+    piece
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | ';' | ':' | '!' | '?' | '&' | '*' | '"' | '\'' | '(' | ')' | '[' | ']'
+            )
+        })
+        .trim_end_matches('.')
 }
 
 /// Whether a bare prose token reads as code: it contains `_` or `::`, or mixes case with an
@@ -432,9 +547,10 @@ impl Grounder for Symbols {
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
     /// 1) - the `symbols` override of the grep-only trait default.
     ///
-    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: its code
-    /// spans and identifier-shaped tokens), never its prose words - a prose word that happens to
-    /// be a symbol name would pull that symbol's whole neighborhood in:
+    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: the symbols,
+    /// files and phrases of its code spans and identifier-shaped tokens), never its prose words -
+    /// a prose word that happens to be a symbol name would pull that symbol's whole neighborhood
+    /// in, and a multi-word span is one phrase, so a word inside a command never widens it alone:
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file a path-like term names) ranked ABOVE the files that
@@ -442,7 +558,7 @@ impl Grounder for Symbols {
     ///   an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the UNION of the structural view and grep, UNCAPPED. It
     ///   runs BOTH engines - the structural graph AND the EXISTING [`Grep`] grounder over the same
-    ///   root, once per term - so it is never narrower than the grep radius of what the criterion
+    ///   root, once per phrase - so it is never narrower than the grep radius of what the criterion
     ///   names (5.5.9). Name-level linking MISSES
     ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
     ///   a symbol); the grep union recovers them, so the partitioning consumer can never
@@ -462,7 +578,7 @@ impl Grounder for Symbols {
     /// character (ASCII or multibyte) or all punctuation - returns empty views (the empty-radius
     /// fail-safe the scheduler runs alone and unit 3 routes to the full panel) WITHOUT running a
     /// whole-repo grep, never a partial or a panic. A query WITH code terms that simply matches
-    /// nothing is ALSO empty, but that case does run the uncapped grep per term - it just comes
+    /// nothing is ALSO empty, but that case does run the uncapped grep per phrase - it just comes
     /// back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
@@ -476,6 +592,7 @@ impl Grounder for Symbols {
         if terms.is_empty() {
             return BlastRadius::default();
         }
+        let names: Vec<&str> = terms.names.iter().map(String::as_str).collect();
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
         // computed under ONE read lock over the index.
@@ -483,20 +600,12 @@ impl Grounder for Symbols {
             let idx = self.idx.lock().unwrap();
             // Iterate `files()` directly to KEEP each hit's owning file.
             // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
-            // A path-like term (`dir/file.rs`) names a FILE, which counts as a definer; any other
-            // term names a symbol by its last `::` segment (`grounder::tree_bytes` -> `tree_bytes`).
-            let (paths, names): (Vec<&str>, Vec<&str>) = terms
-                .iter()
-                .map(String::as_str)
-                .partition(|t| t.contains('/') || t.contains('.'));
-            let names: Vec<&str> = names
-                .iter()
-                .map(|t| t.rsplit("::").next().unwrap_or(t))
-                .collect();
+            // A file the criterion names counts as a definer; a symbol it names matches by name.
             let mut definers: Vec<&str> = Vec::new();
             let mut referencers: Vec<&str> = Vec::new();
             for (path, fs) in idx.files() {
-                let named = paths
+                let named = terms
+                    .paths
                     .iter()
                     .any(|t| path == t || path.ends_with(&format!("/{t}")));
                 if named || fs.defs.iter().any(|d| names.contains(&d.name.as_str())) {
@@ -520,7 +629,7 @@ impl Grounder for Symbols {
         };
 
         // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
-        // grep for each term over the same root - the honest "both engines" cost (5.5.9). This clone happens
+        // grep for each phrase over the same root - the honest "both engines" cost (5.5.9). This clone happens
         // BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not reorder the
         // truncation above it or the uncapped-superset contract breaks. `usize::MAX` makes grep
         // collect every matching file, not a top-`k` slice. A `seen` set keeps the dedup O(lines)
@@ -538,7 +647,11 @@ impl Grounder for Symbols {
         // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
         // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
         let mut grep_tail: Vec<String> = Vec::new();
-        for r in terms.iter().flat_map(|t| grep.ground(t, usize::MAX)) {
+        for r in terms
+            .phrases
+            .iter()
+            .flat_map(|t| grep.ground(t, usize::MAX))
+        {
             if seen.insert(r.file.clone()) {
                 grep_tail.push(r.file);
             }
