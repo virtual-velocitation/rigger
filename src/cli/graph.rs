@@ -1030,7 +1030,6 @@ mod tests {
             SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
         };
         use rigger::contextgraph::Fold;
-        use rigger::eventstore::Error;
 
         /// What the run stream of `store` holds: its ledger entries, in log order, and how many
         /// events it holds in all. The two agree only when the stream holds no other event, and
@@ -1090,11 +1089,13 @@ mod tests {
         const LATER_LOSS: &str = "refused after the first";
 
         /// A graph double that reads as the minimal projection does - it owes no rebuild and holds
-        /// no generation - and loses every ledger fold: the first for [`FIRST_LOSS`] and each
-        /// later one for [`LATER_LOSS`], as a graph a failed fold left owing refuses what
-        /// follows. It counts the folds it was asked.
+        /// no generation - unless `unread` names why an identity's generation cannot be read,
+        /// and that loses every ledger fold: the first for [`FIRST_LOSS`] and each later one for
+        /// [`LATER_LOSS`], as a graph a failed fold left owing refuses what follows. It counts
+        /// the folds it was asked.
         #[derive(Default)]
         struct LosesEveryFold {
+            unread: Option<&'static str>,
             folds: std::sync::atomic::AtomicUsize,
         }
 
@@ -1114,7 +1115,10 @@ mod tests {
                 &self,
                 identity: &str,
             ) -> Result<Option<String>, contextgraph::Error> {
-                MinimalProjection.current_generation(identity)
+                match self.unread {
+                    Some(why) => Err(contextgraph::Error(why.to_string())),
+                    None => MinimalProjection.current_generation(identity),
+                }
             }
             fn apply_generation(
                 &self,
@@ -1383,7 +1387,9 @@ mod tests {
 
         /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS,
         /// naming the read that failed, rather than skipping the batch and reporting success - an
-        /// unanswered lookup is never read as "already recorded", the fail-unsafe direction.
+        /// unanswered lookup is never read as "already recorded", the fail-unsafe direction. The
+        /// failure is the sink's own text: it names the store's error once, where the store
+        /// failed, and carries no store prefix of its own.
         #[test]
         fn a_build_whose_recorded_generation_is_unreadable_fails_naming_that_read() {
             let tree = tempfile::tempdir().unwrap();
@@ -1394,19 +1400,44 @@ mod tests {
             )
             .unwrap();
             let store = GroupLookupOnly::new(Err("group index unreadable".into()));
-            match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
-                Err(Error::Backend(msg)) => assert_eq!(
-                    msg,
-                    "the log's latest generation of gc/src/lib.rs could not be read: \
-                     event store: group index unreadable"
-                ),
-                other => panic!("the lookup's failure is the build's, got {other:?}"),
-            }
+            let failure =
+                ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()).unwrap_err();
+            assert_eq!(
+                failure.to_string(),
+                "the log's latest generation of gc/src/lib.rs could not be read: \
+                 event store: group index unreadable"
+            );
             assert_eq!(
                 store.asked(),
                 [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
                 "the build asked the lookup for the one batch the walk emitted, and appended nothing"
             );
+        }
+
+        /// A FAILURE NO STORE MADE IS NOT SAID AS A STORE'S (SINK OUTCOMES row 2).
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph whose generation cannot be read,
+        /// WHEN the build's sink walks the tree,
+        /// THEN the build fails with the first batch's failure, which names the graph's read
+        /// and the graph's error and no event store, and it records nothing.
+        #[test]
+        fn a_build_whose_graph_cannot_be_read_fails_naming_the_graph_and_no_store() {
+            let tree = planted_extraction_tree(write_file);
+            let store = Store::open(":memory:").unwrap();
+            let graph = LosesEveryFold {
+                unread: Some("the generation could not be read"),
+                ..LosesEveryFold::default()
+            };
+
+            let failure = ingest_tree(&store, &graph, tree.path().to_str().unwrap()).unwrap_err();
+
+            assert_eq!(
+                failure.to_string(),
+                "graph.db's current generation of gc/src/checks.rs could not be read: \
+                 graph: the generation could not be read"
+            );
+            assert_eq!(recorded(&store), only(Vec::new()));
+            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 0);
         }
 
         /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
@@ -1427,13 +1458,12 @@ mod tests {
                 needle: "gc/src/a.rs",
             };
             let graph = Projector::open(":memory:", "test").unwrap();
-            match ingest_tree(&store, &graph, root) {
-                Err(Error::Backend(msg)) => assert_eq!(
-                    msg,
-                    "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
-                ),
-                other => panic!("the append's failure is the build's, got {other:?}"),
-            }
+            assert_eq!(
+                ingest_tree(&store, &graph, root).unwrap_err().to_string(),
+                "event store: simulated store failure appending an event whose metadata contains \
+                 \"gc/src/a.rs\"",
+                "the append's failure is the build's, said as the store's"
+            );
             assert_eq!(
                 recorded(&inner),
                 only(vec![entry_from_the_tree(

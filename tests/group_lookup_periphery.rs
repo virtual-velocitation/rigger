@@ -420,10 +420,10 @@ mod ingest_sinks {
             "a failed build reports no ingested count; stdout: {out}"
         );
         assert!(
-            err.contains(&format!(
-                "the log's latest generation of {broken} could not be read: event store: "
+            err.starts_with(&format!(
+                "rigger: the log's latest generation of {broken} could not be read: event store: "
             )) && err.contains("Invalid column type Blob"),
-            "the build names the read that failed and the store's error; stderr: {err}"
+            "the build names the read that failed, then the store's error, once; stderr: {err}"
         );
 
         // Restore the recording's type so the log reads back; the build has already run.
