@@ -1129,6 +1129,64 @@ mod tests {
         );
     }
 
+    /// A span naming a path the tree holds grounds on that file itself, indexed or not (a
+    /// `.gitignore` the symbol index never parses), and never on the files that mention the path.
+    #[test]
+    fn blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(
+            dir.path().join("notes.rs"),
+            "// see .gitignore for the build dir\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`.gitignore` lists the build dir", 8);
+        assert_eq!(
+            br.safe,
+            vec![".gitignore".to_string()],
+            "a held path grounds on its own file alone; got {br:?}"
+        );
+    }
+
+    /// A span of several words (`rigger validate`) is prose about the code, not a name of it, so
+    /// it grounds nothing - not on the files holding the phrase, nor on its words.
+    #[test]
+    fn blast_radius_a_multi_word_span_grounds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("verb.rs"), "// run rigger validate first\n").unwrap();
+        std::fs::write(dir.path().join("check.rs"), "fn validate() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`rigger validate` refuses a drifted spec", 8);
+        assert_eq!(
+            br,
+            BlastRadius::default(),
+            "a multi-word span names no code; got {br:?}"
+        );
+    }
+
+    /// A path the tree does not hold (`graph.db`, a runtime artifact) and a directory fragment
+    /// (`src/`) name no file of the tree, so they ground nothing - never the files mentioning them.
+    #[test]
+    fn blast_radius_a_path_the_tree_does_not_hold_grounds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/open.rs"),
+            "// opens graph.db under src/ here\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        for query in ["`graph.db` holds the graph", "code lives in `src/`"] {
+            let br = g.blast_radius(query, 8);
+            assert_eq!(
+                br,
+                BlastRadius::default(),
+                "{query} names no file the tree holds; got {br:?}"
+            );
+        }
+    }
+
     /// The text search matches a span only on identifier boundaries: `gc` matches where it stands
     /// as its own word, never inside `logcat`.
     #[test]
