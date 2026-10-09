@@ -326,6 +326,22 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
     })
 }
 
+/// `root`'s run stream as `(position, revision, type)`, oldest first.
+pub fn stream_shape(root: &Path) -> Vec<(u64, i64, String)> {
+    read_run_events(root)
+        .into_iter()
+        .map(|event| (event.position, event.revision, event.type_))
+        .collect()
+}
+
+/// `(position, type)` of every event on `root`'s run stream, oldest first.
+pub fn run_log(root: &Path) -> Vec<(u64, String)> {
+    read_run_events(root)
+        .into_iter()
+        .map(|e| (e.position, e.type_))
+        .collect()
+}
+
 /// The decoded payloads of the events of type `type_` in `root`'s namespaced run stream, oldest
 /// first.
 pub fn run_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {

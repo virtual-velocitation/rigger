@@ -32,6 +32,7 @@ use common::cli::read_run_events;
 use common::cli::refused_derived_reset;
 use common::cli::rigger_command;
 use common::cli::rigger_file;
+use common::cli::run_log;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
@@ -3076,14 +3077,6 @@ fn fresh_run_project() -> tempfile::TempDir {
     let body = stopping_at_the_grounder(REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW.body);
     std::fs::write(rigger_file(dir.path(), "workflow.yml"), body).unwrap();
     dir
-}
-
-/// `(position, type)` of every event on `root`'s run stream, oldest first.
-fn run_log(root: &Path) -> Vec<(u64, String)> {
-    read_run_events(root)
-        .into_iter()
-        .map(|e| (e.position, e.type_))
-        .collect()
 }
 
 /// Given a project, when the operator begins a new run with `args` (`rigger step --fresh`, or

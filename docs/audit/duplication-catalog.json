@@ -1127,7 +1127,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9326ce810768",
+    "id": "dup-eef15663e092",
     "classification": "semantic",
     "sites": [
       {
@@ -3767,18 +3767,13 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "44b595c2e872fec9"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\"the partition holding .rigger/ needs about the compacted size of the log free\"",
         "content_hash": "e24c26c0d9d4cbdb"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
-        "content_hash": "b14c3b2e76f8e879"
+        "content_hash": "54c2f825b098dcb4"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -4127,7 +4122,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 599 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6081,7 +6076,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d4e4dadae939",
+    "id": "dup-256058ec59c7",
     "classification": "semantic",
     "sites": [
       {
@@ -6342,12 +6337,7 @@
       {
         "file": "tests/reclaim_space_periphery.rs",
         "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
-      },
-      {
-        "file": "tests/reclaim_space_periphery.rs",
-        "name": "Connection::open",
-        "content_hash": "6ad0a4b6d2a9cca4"
+        "content_hash": "21e10304a9cde36f"
       },
       {
         "file": "tests/reclaim_space_periphery.rs",
@@ -6406,7 +6396,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 63 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -307,6 +307,17 @@ fn log_too_large_to_stage_in_the_page_cache(
     (store, db)
 }
 
+/// A second connection holding an open read transaction on the log at `db`: what a second
+/// process reading the log holds, and what declines a truncating checkpoint until it drops.
+fn reader_parked_on(db: &std::path::Path) -> rusqlite::Connection {
+    let reader = rusqlite::Connection::open(db).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
+        .expect("park a reader on the log");
+    reader
+}
+
 /// The whole process's engine pointed at one temporary directory for as long as this value
 /// lives. The setting is process-global, so it is cleared when the value drops, which a test
 /// that fails part way reaches as surely as one that passes.
@@ -434,11 +445,7 @@ fn the_rewritten_file_passes_through_the_write_ahead_log_beside_the_log() {
     // A READER PARKED ON THE LOG keeps the write-ahead log from being folded back, and lets go
     // the moment the rewrite has committed: a fresh connection then reads a file with no free
     // page. What the write-ahead log holds at that moment is what the rewrite put through it.
-    let reader = rusqlite::Connection::open(&db).unwrap();
-    reader.execute_batch("BEGIN").unwrap();
-    reader
-        .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
-        .expect("park a reader on the log");
+    let reader = reader_parked_on(&db);
     let (watched_db, watched_wal) = (db.clone(), wal.clone());
     let watcher = std::thread::spawn(move || {
         let give_up = Instant::now() + Duration::from_secs(20);
@@ -504,11 +511,7 @@ fn a_reader_parked_past_the_rewrite_leaves_the_reclamation_unmeasured_over_a_rew
     // second connection, which is what a second process reading the log holds. The rewrite
     // commits under it; the truncating checkpoint that would fold it into the file is declined
     // every time it is asked.
-    let reader = rusqlite::Connection::open(&db).unwrap();
-    reader.execute_batch("BEGIN").unwrap();
-    reader
-        .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
-        .expect("park a reader on the log");
+    let reader = reader_parked_on(&db);
 
     let reclaimed = store.reclaim_space(Some(before));
     drop(reader);

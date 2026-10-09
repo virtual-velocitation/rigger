@@ -14,6 +14,7 @@ use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::seed_derived_duplicates;
+use common::cli::stream_shape;
 use common::cli::temp_rigger_project;
 use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, SERVER_BACKED_DERIVED_REFUSAL};
 use rigger::retention::TYPE_GENERATION_INGESTED;
@@ -73,14 +74,7 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
     // the one batch's latest recording, the stream's last row, becomes its entry.
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
-        (
-            ok,
-            out,
-            read_run_events(root)
-                .into_iter()
-                .map(|event| (event.position, event.revision, event.type_))
-                .collect::<Vec<_>>(),
-        ),
+        (ok, out, stream_shape(root),),
         (
             true,
             migrated_lines(1, common::cli::DUP_ROUNDS, 0) + LOG_LEFT_AS_IT_STANDS_LINE,

@@ -153,9 +153,8 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     const WILDCARD_NEIGHBOUR: &str = "myXrepo";
     const NEIGHBOUR: &str = "other";
     const ROUNDS: u64 = 6;
-    let dir = temp_rigger_project();
+    let dir = project_pinned_to(TARGET);
     let root = dir.path();
-    std::fs::write(root.join(".rigger").join("project.id"), TARGET).expect("pin the identity");
     assert_eq!(run_stream_identity(root), TARGET);
     let db = rigger_file(root, "events.db");
     {
@@ -576,8 +575,13 @@ const DEAD_DECISION: &str = "d-dead-run";
 /// would take its identity from its own temp directory name, so two identically-seeded projects
 /// would write their events under two different stream names and could not be compared.
 fn pinned_project() -> tempfile::TempDir {
+    project_pinned_to(PINNED_ID)
+}
+
+/// A temp project whose identity is pinned to `id` in `.rigger/project.id`.
+fn project_pinned_to(id: &str) -> tempfile::TempDir {
     let dir = temp_rigger_project();
-    std::fs::write(dir.path().join(".rigger").join("project.id"), PINNED_ID)
+    std::fs::write(dir.path().join(".rigger").join("project.id"), id)
         .expect("pin the project identity");
     dir
 }

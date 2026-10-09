@@ -13,9 +13,8 @@
 mod common;
 
 use common::cli::{
-    applied_positions, emit, log_and_graph_files, migrated_lines, pre_ledger_batch,
-    read_run_events, rigger_file, run_rigger, temp_rigger_project, with_run_store,
-    LOG_LEFT_AS_IT_STANDS_LINE,
+    applied_positions, emit, log_and_graph_files, migrated_lines, pre_ledger_batch, rigger_file,
+    run_rigger, stream_shape, temp_rigger_project, with_run_store, LOG_LEFT_AS_IT_STANDS_LINE,
 };
 use common::repo::repo_text;
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED};
@@ -36,14 +35,6 @@ fn seed_a_two_event_batch(root: &Path) {
             )
             .expect("seed the batch");
     });
-}
-
-/// `root`'s run stream as `(position, revision, type)`, oldest first.
-fn stream_shape(root: &Path) -> Vec<(u64, i64, String)> {
-    read_run_events(root)
-        .into_iter()
-        .map(|event| (event.position, event.revision, event.type_))
-        .collect()
 }
 
 // ---------------------------------------------------------------------------------------

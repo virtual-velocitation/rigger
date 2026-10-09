@@ -27533,13 +27533,7 @@ fn validate_names_every_lagging_file_in_sorted_order_and_records_nothing() {
     run_rigger_ok(root, &["graph", "build"]);
     std::fs::write(root.join("b.rs"), "fn b_renamed() {}\n").unwrap();
     std::fs::write(root.join("a.rs"), "fn a_renamed() {}\n").unwrap();
-    let recorded = |root: &Path| {
-        read_run_events(root)
-            .into_iter()
-            .map(|event| (event.position, event.type_))
-            .collect::<Vec<_>>()
-    };
-    let before = recorded(root);
+    let before = common::cli::run_log(root);
 
     assert_eq!(
         [validate_index_lag(root), validate_index_lag(root)],
@@ -27549,7 +27543,7 @@ fn validate_names_every_lagging_file_in_sorted_order_and_records_nothing() {
         ]
     );
     assert_eq!(
-        recorded(root),
+        common::cli::run_log(root),
         before,
         "validate appends nothing to the log"
     );
