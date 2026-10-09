@@ -28300,27 +28300,14 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
     }
 }
 
-/// Given a store recorded before the ledger holding six derived events of three file identities
-/// (a superseded and a latest generation of one source file, a design batch of that same file, a
-/// second source file whose latest recording is already a ledger entry, and one event naming no
-/// identity), when the operator runs bare `rigger reset`, then its `--derived` line names those
-/// six events and three identities and the log stands as it stood; when `rigger reset --derived`
-/// then runs it sheds exactly those six events, the three identities holding none after it; and
-/// bare `rigger reset` then says no derived event is left to shed.
-#[test]
-fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
-    use common::cli::{
-        derived_menu_line_naming, derived_menu_lines, keyed, migrated_lines, pre_ledger_batch,
-        stream_shape, with_run_store, NOTHING_TO_SHED_MENU_LINE,
-    };
+/// Seed `root`'s run stream as a store recorded before the ledger left it, holding six derived
+/// events of three file identities: a superseded and a latest generation of one source file
+/// (`gc/src/a.rs`), a design batch of that same file (`gd/src/a.rs`), a second source file whose
+/// latest recording is already a ledger entry (`gc/src/b.rs`), and one event naming no identity.
+fn seed_six_derived_events_of_three_file_identities(root: &Path) {
+    use common::cli::{keyed, pre_ledger_batch, with_run_store};
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
     use rigger::eventstore::{Event, ExpectedRevision};
-
-    let dir = temp_project();
-    let root = dir.path();
-    common::cli::init_event_log(root);
-    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(settled, "premise: setup settles the project: {settle_err}");
 
     let entity = common::cli::code_entity;
     let concept = br#"{"kind":"gate","id":"gate:a","title":"a","doc":"src/a.rs"}"#.to_vec();
@@ -28339,6 +28326,27 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &seeded)
             .unwrap();
     });
+}
+
+/// Given a store recorded before the ledger holding six derived events of three file identities
+/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs bare `rigger
+/// reset`, then its `--derived` line names those
+/// six events and three identities and the log stands as it stood; when `rigger reset --derived`
+/// then runs it sheds exactly those six events, the three identities holding none after it; and
+/// bare `rigger reset` then says no derived event is left to shed.
+#[test]
+fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
+    use common::cli::{
+        derived_menu_line_naming, derived_menu_lines, migrated_lines, stream_shape,
+        NOTHING_TO_SHED_MENU_LINE,
+    };
+
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::init_event_log(root);
+    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(settled, "premise: setup settles the project: {settle_err}");
+    seed_six_derived_events_of_three_file_identities(root);
 
     // What the log holds of the derived index, read from its rows and never from the command:
     // how many derived events, and the file identities their replay keys name.
@@ -28392,5 +28400,52 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
         derived_menu_lines(&after),
         [NOTHING_TO_SHED_MENU_LINE],
         "the menu says none is left to shed"
+    );
+}
+
+/// Given a store recorded before the ledger holding six derived events of three file identities
+/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs `rigger
+/// validate`, then it exits 0 and warns once, on standard error, naming those six events and
+/// three identities left and `rigger reset --derived`, and the log stands as it stood; and once
+/// `rigger reset --derived` has migrated the store, `rigger validate` prints no such warning.
+#[test]
+fn validate_warns_of_the_derived_events_left_and_names_the_migration_until_it_has_run() {
+    use common::cli::{bloat_advisory_naming, bloat_lines, migrated_lines, stream_shape};
+
+    let dir = temp_project();
+    let root = dir.path();
+    let (_, init_err, inited) = run_rigger(root, &["init"]);
+    assert!(inited, "premise: init scaffolds the project: {init_err}");
+    seed_six_derived_events_of_three_file_identities(root);
+    let shape = stream_shape(root);
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "an advisory never fails validate: {err}");
+    assert_eq!(
+        bloat_lines(&err),
+        [bloat_advisory_naming(6, 3)],
+        "validate warns once, naming the six derived events and three file identities left"
+    );
+    assert_eq!(
+        bloat_lines(&out),
+        [""; 0],
+        "the advisory is standard error's alone"
+    );
+    assert_eq!(stream_shape(root), shape, "the advisory changes no row");
+
+    let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(shed_ok, "the derived reset runs: {shed_err}");
+    assert_eq!(
+        shed.get(..migrated_lines(2, 6, 1).len()),
+        Some(migrated_lines(2, 6, 1).as_str()),
+        "premise: the migration sheds the six events the advisory named"
+    );
+
+    let (_, after_err, after_ok) = run_rigger(root, &["validate"]);
+    assert!(after_ok, "validate exits 0 once migrated: {after_err}");
+    assert_eq!(
+        bloat_lines(&after_err),
+        [""; 0],
+        "a migrated store draws no warning"
     );
 }

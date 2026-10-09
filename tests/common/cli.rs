@@ -1068,6 +1068,21 @@ pub fn index_lag_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("fallen behind"))
 }
 
+/// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived
+/// events of `identities` file identities.
+pub fn bloat_advisory_naming(events: usize, identities: usize) -> String {
+    format!(
+        "warning: the event log still holds {events} derived events of {identities} file \
+         identities; run `rigger reset --derived` to migrate them into the ledger."
+    )
+}
+
+/// Every line naming `rigger reset --derived` among `stderr`, what `rigger validate` wrote there,
+/// in order: the log-bloat advisory, and nothing else of validate's.
+pub fn bloat_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("rigger reset --derived"))
+}
+
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
