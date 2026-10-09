@@ -471,10 +471,26 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
 /// store for a maintenance operation the port does not carry.
+///
+/// It refuses, in this order and before it changes anything (spec 107): a rebuild lock another
+/// holds ([`Projector::lock_rebuild`]), which it takes first and holds across the compaction; a
+/// rebuild left unfinished ([`Projector::rebuild_unfinished`]), naming `rigger setup`; and a
+/// standing `graph.db` that owes its rebuild.
 fn reset_derived(loc: &StoreLocation) -> Res {
+    // The rebuild lock first, before anything more is read, and held until this returns (spec
+    // 107): no rebuild starts under the compaction, and one already holding it refuses this at once.
+    let graph_db = loc.file("graph.db");
+    let held = Projector::lock_rebuild(&graph_db)?;
+    // A rebuild left unfinished is `rigger setup`'s to finish, before any graph file is opened.
+    if Projector::rebuild_unfinished(&held)? {
+        return Err(
+            "reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
+             finish it"
+                .into(),
+        );
+    }
     // A `graph.db` that owes its rebuild is refused here as every command that depends on the
     // fold refuses it (spec 101): the compaction runs once `rigger setup` has paid the rebuild.
-    let graph_db = loc.file("graph.db");
     if Path::new(&graph_db).exists() {
         open_graph(&graph_db, &loc.identity(), "reset --derived")?;
     }
@@ -883,7 +899,7 @@ fn live_driver_registrations(
 fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -> Res {
     // The private pruned copy a rebuild's stopped swap left is a graph file with no other reaper
     // but the next rebuild: removed first, whether or not the graph goes on to refuse the prune,
-    // and kept, naming the rebuild in progress, while a rebuild holds the rebuild lock (spec 101).
+    // and kept, naming the lock's holder, while another holds the rebuild lock (spec 101).
     let graph_db = loc.file("graph.db");
     let copy = contextgraph::sqlite::pruned_copy("graph.db");
     match Projector::forget_stale_copy(&graph_db)? {

@@ -900,9 +900,9 @@ const REBUILD_BATCH: usize = 10_000;
 ///
 /// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
 /// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
-/// and holds it until the rebuild is paid or found not owed: while another rebuild holds it this
-/// setup is refused at once with the one refusal text naming the rebuild in progress, whatever
-/// phase that rebuild is in, having opened no graph file and made none.
+/// and holds it until the rebuild is paid or found not owed: while another holds it - a rebuild,
+/// whatever phase it is in, or a `rigger reset` - this setup is refused at once with the one
+/// refusal text naming the lock, having opened no graph file and made none.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {

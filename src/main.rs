@@ -303,7 +303,7 @@ hung spawn (answered only by the step's liveness fault)\n                       
 keeps them open and is named with its remedy,\n                              \
 `rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
 the pruned copy a rebuild's stopped swap\n                              \
-left, unless a rebuild in progress holds graph.db.lock\n  \
+left, unless another `rigger setup` or `rigger reset` holds graph.db.lock\n  \
 rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
 generation of the derived index, at the latest event per\n                              \
 replay key, delete the superseded generations and\n                              \

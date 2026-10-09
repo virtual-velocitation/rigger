@@ -242,11 +242,13 @@ pub struct RebuildProgress {
     pub folded: usize,
 }
 
-/// Why a rebuild of `graph.db`, or `rigger reset` removing a stale pruned copy, is refused at once:
-/// another rebuild holds the rebuild lock ([`Projector::lock_rebuild`]). The one spelling of that
-/// refusal, which `rigger setup` exits on and `rigger reset --runs` reports.
+/// Why a command that needs the rebuild lock ([`Projector::lock_rebuild`]) is refused at once:
+/// another holds it - a `rigger setup` rebuilding `graph.db`, a `rigger reset --runs` removing a
+/// stale pruned copy, or a `rigger reset --derived` compacting the log. The one spelling of that
+/// refusal, true of every holder, which `rigger setup` and `rigger reset --derived` exit on and
+/// `rigger reset --runs` reports.
 pub const REBUILD_IN_PROGRESS: &str =
-    "a rebuild of graph.db is in progress (a `rigger setup` holds graph.db.lock)";
+    "graph.db.lock is held by another `rigger setup` or `rigger reset`";
 
 /// The exclusion a [`Projector::rebuild`] of one graph file holds, from before it opens or creates
 /// its shadow until its tail is folded and its cursor dropped (spec 101): the OS advisory lock on
@@ -381,9 +383,9 @@ impl Projector {
 
     /// Take the rebuild lock of the graph file at `path` (spec 101), never waiting: the OS advisory
     /// lock on the zero-byte `<path>.lock` beside it, created if absent and never removed. Refused at
-    /// once with the one text ([`REBUILD_IN_PROGRESS`]) while another holds it - whatever that
-    /// rebuild is doing, and whether or not it has written yet - touching nothing but the lock file
-    /// the holder made; any other failure names the lock file.
+    /// once with the one text ([`REBUILD_IN_PROGRESS`]) while another holds it - a rebuild, whatever
+    /// it is doing and whether or not it has written yet, or a `rigger reset` - touching nothing but
+    /// the lock file the holder made; any other failure names the lock file.
     pub fn lock_rebuild(path: &str) -> Result<RebuildLock, Error> {
         take_rebuild_lock(path)?.ok_or_else(|| Error(REBUILD_IN_PROGRESS.to_string()))
     }
@@ -497,6 +499,23 @@ impl Projector {
             passed_over,
             pruned,
         }))
+    }
+
+    /// Whether a rebuild of the graph file `held` names was left unfinished (spec 107): the file
+    /// stands and has beside it the shadow a [`Projector::rebuild`] resumes, or holds the cursor
+    /// whose tail it finishes. False when no graph file stands, whatever stands beside where it
+    /// would be, and answered then, as over a standing shadow, without opening anything - so asking
+    /// never makes a graph file. It takes the held rebuild lock, so no caller asks while a rebuild
+    /// could be moving either sign, and it writes nothing.
+    pub fn rebuild_unfinished(held: &RebuildLock) -> Result<bool, Error> {
+        let path = held.path();
+        if !Path::new(path).exists() {
+            return Ok(false);
+        }
+        if Path::new(&shadow_of(path)).exists() {
+            return Ok(true);
+        }
+        rebuild_tail_owed(&open_connection(path).map_err(be)?)
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
