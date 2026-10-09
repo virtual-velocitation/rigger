@@ -2087,24 +2087,25 @@ mandatory sweep: .rigger-path string literals - 600 site(s), collected mechanica
 - `crates/rigger-domain/src/docs.rs:854-854` `"rigger keeps three stores under `.rigger/`, and only one of them holds anything \
              durable:\n"`
 - `crates/rigger-domain/src/docs.rs:924-924` `"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
-             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
+             no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
+             batch whose generation moved, since the tree re-derives the batch itself. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n"`
-- `crates/rigger-domain/src/docs.rs:934-934` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
+- `crates/rigger-domain/src/docs.rs:935-935` `"Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
          truth that no rebuild can get back, and deleting only the graph is unnecessary work \
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n"`
-- `crates/rigger-domain/src/docs.rs:958-958` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
+- `crates/rigger-domain/src/docs.rs:959-959` `"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
              the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
              for an index that has drifted from files you just changed (a unit's own commit, a \
              rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
              store from the structural context graph, so it costs only the named files, never a \
              walk of the whole tree.\n"`
-- `crates/rigger-domain/src/docs.rs:1673-1673` `"the partition holding .rigger/ needs about the compacted size of the log \
+- `crates/rigger-domain/src/docs.rs:1674-1674` `"the partition holding .rigger/ needs about the compacted size of the log \
                      free"`
 - `crates/rigger-domain/src/instructions.rs:70-70` `"\nOperator (.rigger/instructions/*.md, filename order):\n"`
 - `crates/rigger-gates-shell/src/gate.rs:336-336` `".rigger-cache-probe-{}"`
@@ -3698,10 +3699,10 @@ Proposed home: `docs::support (consolidate these 4 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:916-944` `render_build_graph_skill`
-- `crates/rigger-domain/src/docs.rs:949-976` `render_reindex_skill`
-- `crates/rigger-domain/src/docs.rs:981-1019` `render_resume_a_run_skill`
-- `crates/rigger-domain/src/docs.rs:1148-1198` `render_restore_the_dash_skill`
+- `crates/rigger-domain/src/docs.rs:916-945` `render_build_graph_skill`
+- `crates/rigger-domain/src/docs.rs:950-977` `render_reindex_skill`
+- `crates/rigger-domain/src/docs.rs:982-1020` `render_resume_a_run_skill`
+- `crates/rigger-domain/src/docs.rs:1149-1199` `render_restore_the_dash_skill`
 
 #### `dup-3d5ea11431d3` (near, 2 sites)
 
@@ -3709,8 +3710,8 @@ Proposed home: `docs::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-domain/src/docs.rs:1026-1061` `render_handle_an_escalation_skill`
-- `crates/rigger-domain/src/docs.rs:1207-1256` `render_diagnose_churn_skill`
+- `crates/rigger-domain/src/docs.rs:1027-1062` `render_handle_an_escalation_skill`
+- `crates/rigger-domain/src/docs.rs:1208-1257` `render_diagnose_churn_skill`
 
 #### `dup-bb7aa56f67d8` (exact, 2 sites)
 

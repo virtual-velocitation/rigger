@@ -1262,7 +1262,7 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
-        "name": "\"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \\\n             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \\\n             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \\\n             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \\\n             it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \\\n             standalone build and a run can never fold the same file under two different keys.\\n\"",
+        "name": "\"`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \\\n             no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \\\n             batch whose generation moved, since the tree re-derives the batch itself. \\\n             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \\\n             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \\\n             it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \\\n             standalone build and a run can never fold the same file under two different keys.\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {

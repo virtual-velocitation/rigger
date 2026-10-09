@@ -922,7 +922,8 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
         &[],
         &[
             "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
-             no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. \
+             no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
+             batch whose generation moved, since the tree re-derives the batch itself. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
