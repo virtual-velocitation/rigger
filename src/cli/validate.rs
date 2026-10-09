@@ -508,14 +508,17 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
 /// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
 /// about, not merely nothing measured (the pure formatting stays separate from the gathering,
 /// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
-/// count) and the command the line points the operator at, `rigger reindex`.
+/// count) and the command the line points the operator at, `rigger graph build`: the verb that
+/// re-perceives the tree, recording each lagging file's ledger entry and folding it through the
+/// one function the integration reindex also calls ([`rigger::ingest::entry_of_batch`]).
+/// `rigger reindex` refreshes the symbols index alone, so it moves neither side compared.
 fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     if lagging.is_empty() {
         return None;
     }
     Some(format!(
         "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger reindex <file>...` to refresh it.",
+         ({}). Run `rigger graph build` to refresh it.",
         lagging.len(),
         lagging.join(", "),
     ))
