@@ -81,15 +81,22 @@ fn seed_duplicated_key(root: &Path, rounds: usize) {
 
 /// Seed one `CodeEntityExtracted` per entry of `keys`, in order, each carrying that replay key.
 fn seed_derived_keys(root: &Path, keys: &[&str]) {
+    seed_derived_events(root, &keys.iter().copied().map(Some).collect::<Vec<_>>());
+}
+
+/// Seed one `CodeEntityExtracted` per entry of `keys`, in order, each carrying that replay key
+/// or, for `None`, no replay key at all: a derived event naming no file identity.
+fn seed_derived_events(root: &Path, keys: &[Option<&str>]) {
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
     for &key in keys {
-        events.push(
-            Event::new(
-                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                b"{}".to_vec(),
-            )
-            .with_meta(rigger::ingest::META_REPLAY_KEY, key),
+        let event = Event::new(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            b"{}".to_vec(),
         );
+        events.push(match key {
+            Some(key) => event.with_meta(rigger::ingest::META_REPLAY_KEY, key),
+            None => event,
+        });
     }
     common::cli::with_run_store(root, |store| {
         store
@@ -325,6 +332,14 @@ rigger::test_cases! {
         3,
         3,
         "three recordings of three identities, a gc and a gd batch of one file being two",
+    );
+    /// A derived event is left whether or not it names a file identity: a log whose derived
+    /// events all carry no replay key holds two events of no identity, and is warned of.
+    validate_warns_of_log_bloat_on_a_log_whose_derived_events_all_name_no_identity: assert_validate_warns_of_log_bloat(
+        |root| seed_derived_events(root, &[None, None]),
+        2,
+        0,
+        "two derived events naming no identity are two derived events of no file identity",
     );
 }
 
