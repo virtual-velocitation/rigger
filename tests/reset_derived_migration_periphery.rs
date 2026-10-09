@@ -11,6 +11,8 @@
 //!   3. **The next writer.** A migration that deleted the tail of the run stream leaves a log the
 //!      next append lands on: above every position the log ever held, at the revision after the
 //!      highest the stream still holds, and folded into the graph.
+//!   4. **The shipped store-hygiene skill.** The committed skill an operator reads before a reset
+//!      describes `--derived` as the migration, word for word, wherever it names it.
 
 mod common;
 
@@ -19,6 +21,7 @@ use common::cli::{
     rigger_file, run_rigger, run_rigger_envs, temp_rigger_project, with_run_store,
     LOG_LEFT_AS_IT_STANDS_LINE,
 };
+use common::repo::repo_text;
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED};
 use rigger::eventstore::ExpectedRevision;
 use rigger::retention::TYPE_GENERATION_INGESTED;
@@ -203,5 +206,42 @@ fn the_append_after_a_migration_that_deleted_the_streams_tail_lands_above_it_and
             vec![3],
         ),
         "the next append lands above the deleted tail and is folded"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 4. The shipped store-hygiene skill
+// ---------------------------------------------------------------------------------------
+
+/// Given the committed `rigger-reset-store` skill, when an operator reads what it says of
+/// `rigger reset --derived`, then the two lines naming it are the migration's: what it rewrites
+/// and deletes, that every other event survives, the backend it runs on and its refusal of a
+/// live run; and that a hand-edit is no substitute for it. Read from the bytes on disk, the file
+/// an operator opens, with no render in the loop.
+#[test]
+fn the_committed_reset_store_skill_describes_the_derived_reset_as_the_migration() {
+    let shipped = repo_text("skills/rigger-reset-store/SKILL.md");
+    let naming_it: Vec<&str> = shipped
+        .lines()
+        .filter(|line| line.contains("rigger reset --derived"))
+        .collect();
+
+    assert_eq!(
+        naming_it,
+        [
+            "- `rigger reset --derived` migrates `events.db`, once: for each file it rewrites the \
+             first row of the file's latest derived batch into that generation's ledger entry, in \
+             place, deletes every other derived event, and vacuums so the file shrinks on disk. \
+             Every other event - every decision, finding, lesson, gate verdict, the whole run \
+             history - survives byte-for-byte. The migration runs on the embedded sqlite backend \
+             only, and it refuses (unless overridden with `--force-live`) while a run is live \
+             against the store.",
+            "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any tool \
+             outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
+             hand-deleted row can desync the graph from the log in ways `rigger reset \
+             --derived`'s own migration is specifically built to avoid. A store file that is \
+             genuinely corrupt is an incident to fix at its root, never a reason to reach for a \
+             database client.",
+        ]
     );
 }
