@@ -3694,33 +3694,33 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 516,
-        "end_line": 516
+        "start_line": 602,
+        "end_line": 602
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 658,
-        "end_line": 658
+        "start_line": 744,
+        "end_line": 744
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 935,
-        "end_line": 935
+        "start_line": 1021,
+        "end_line": 1021
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 935,
-        "end_line": 935
+        "start_line": 1021,
+        "end_line": 1021
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 950,
-        "end_line": 950
+        "start_line": 1036,
+        "end_line": 1036
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 993,
-        "end_line": 993
+        "start_line": 1079,
+        "end_line": 1079
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -5954,13 +5954,13 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 56,
-        "end_line": 56
+        "start_line": 57,
+        "end_line": 57
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 667,
-        "end_line": 667
+        "start_line": 753,
+        "end_line": 753
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",

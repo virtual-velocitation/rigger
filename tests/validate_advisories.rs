@@ -15,7 +15,7 @@
 //! a clean store draws neither and the exit status is unaffected either way, AND boundary-only
 //! properties neither advisory's own unit tests can see from inside their module: the LOG BLOAT
 //! advisory's sqlite-only boundary - a server-selected store must draw no warning from a local
-//! events.db sitting beside it, regardless of what that local file holds (§48, "one resolution
+//! events.db sitting beside it, regardless of what that local file holds ("one resolution
 //! authority": `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset
 //! --derived` itself) - and its COUNT, every derived event of the project's run stream however
 //! its key or type repeats, since `rigger reset --derived` sheds every one of them; plus the
@@ -679,5 +679,29 @@ fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_adviso
         !err.contains("declares no gates"),
         "a freshly-scaffolded `implement` template listing a gate must draw no \
          ungated-fan-out-template warning; stderr:\n{err}"
+    );
+}
+
+/// Given a project `rigger init` scaffolded that has no event log yet, when the operator runs
+/// `rigger validate`, then it exits 0, draws no bloat warning and creates no event log: the
+/// advisory reads a store that exists and never makes one in order to count it.
+#[test]
+fn validate_creates_no_event_log_in_order_to_count_its_derived_events() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err) = validate_after_init(root, |root| {
+        assert!(
+            !rigger_file(root, "events.db").exists(),
+            "premise: init leaves the project with no event log"
+        );
+    });
+    assert_eq!(
+        common::cli::bloat_lines(&err),
+        [""; 0],
+        "a project with no event log holds no derived event; stderr:\n{err}"
+    );
+    assert!(
+        !rigger_file(root, "events.db").exists(),
+        "validate must leave a project that has no event log without one"
     );
 }
