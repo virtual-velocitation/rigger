@@ -1150,6 +1150,7 @@ impl EventStore for Store {
         expected: ExpectedRevision,
         events: &[Event],
     ) -> Result<Appended, Error> {
+        super::refuse_derived(events)?;
         let mut guard = self.conn.lock().unwrap();
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
         // front so a second connection (a separate process - the death courier racing

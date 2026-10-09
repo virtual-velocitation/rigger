@@ -1868,9 +1868,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-conductor/src/conductor.rs:38755-38757` `build_cache_dirs`
 - `crates/rigger-conductor/src/conductor.rs:38879-38881` `calls`
 - `crates/rigger-domain/src/eventstore.rs:266-268` `last`
-- `crates/rigger-domain/src/eventstore.rs:588-590` `recv`
-- `crates/rigger-domain/src/eventstore.rs:598-600` `try_recv`
-- `crates/rigger-domain/src/eventstore.rs:603-605` `err`
+- `crates/rigger-domain/src/eventstore.rs:596-598` `recv`
+- `crates/rigger-domain/src/eventstore.rs:606-608` `try_recv`
+- `crates/rigger-domain/src/eventstore.rs:611-613` `err`
 - `tests/common/fixtures/events.rs:595-597` `reads`
 - `tests/common/real_driver_spy.rs:36-38` `outputs`
 
@@ -3265,7 +3265,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-console/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-console/src/console/map.rs:1265-1279` `module_of_never_returns_a_string_carrying_a_dot_or_a_slash`
-- `crates/rigger-store-sqlite/src/eventstore/mod.rs:264-277` `no_credential_fragment_ever_survives`
+- `crates/rigger-store-sqlite/src/eventstore/mod.rs:279-292` `no_credential_fragment_ever_survives`
 
 #### `dup-5449e35bae05` (near, 3 sites)
 
@@ -3275,7 +3275,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-console/src/console/map.rs:1952-1967` `budget_scales_the_step_by_zoom_rather_than_offsetting_it`
 - `crates/rigger-domain/src/spec.rs:2202-2230` `strip_inline_code_direct_exact_output_pins_the_one_span_per_kind_rule`
-- `crates/rigger-store-sqlite/src/eventstore/mod.rs:243-260` `a_delimiter_inside_the_userinfo_never_leaks_the_credential_head`
+- `crates/rigger-store-sqlite/src/eventstore/mod.rs:258-275` `a_delimiter_inside_the_userinfo_never_leaks_the_credential_head`
 
 #### `dup-30a334181642` (near, 2 sites)
 
@@ -4014,10 +4014,10 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5669-5669` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9827-9827` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10596-10596` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1542-1542` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2155-2155` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2177-2177` `Connection::open_with_flags`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2500-2500` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1543-1543` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2156-2156` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2178-2178` `Connection::open_with_flags`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2501-2501` `Connection::open`
 - `crates/rigger-store-sqlite/src/run_store.rs:419-419` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:5186-5186` `Connection::open`
@@ -4211,7 +4211,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:775-786` `kind_str`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:790-799` `lang_str`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1482-1487` `direction_sql`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1483-1488` `direction_sql`
 
 #### `dup-ff3bcd827c2f` (semantic, 3 sites)
 
@@ -5209,7 +5209,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8901 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8903 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4974-5015` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15023-15045` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

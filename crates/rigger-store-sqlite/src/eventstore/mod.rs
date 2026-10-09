@@ -52,6 +52,21 @@ fn in_batches<T>(
     }
 }
 
+/// THE STORE REFUSES A DERIVED APPEND (spec 107): the one refusal both adapters' `append` open
+/// with, before anything is written. A batch holding an event whose type
+/// [`crate::retention::class_of`] answers derived is refused whole, naming the first such type
+/// in batch order; any other batch, the empty one included, passes.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn refuse_derived(events: &[Event]) -> Result<(), Error> {
+    use crate::retention::{class_of, Class};
+    match events.iter().find(|e| class_of(&e.type_) == Class::Derived) {
+        Some(derived) => Err(Error::DerivedAppend {
+            type_: derived.type_.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
 /// The marker that replaces a redacted credential, so a scrubbed connection string reads as
 /// deliberately redacted (a human sees the credentials were removed) rather than silently
 /// mangled or merely absent.

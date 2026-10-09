@@ -564,18 +564,18 @@
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 588,
-        "end_line": 590
+        "start_line": 596,
+        "end_line": 598
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 598,
-        "end_line": 600
+        "start_line": 606,
+        "end_line": 608
       },
       {
         "file": "crates/rigger-domain/src/eventstore.rs",
-        "start_line": 603,
-        "end_line": 605
+        "start_line": 611,
+        "end_line": 613
       },
       {
         "file": "tests/common/fixtures/events.rs",
@@ -4354,8 +4354,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "start_line": 264,
-        "end_line": 277
+        "start_line": 279,
+        "end_line": 292
       }
     ]
   },
@@ -4374,8 +4374,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/mod.rs",
-        "start_line": 243,
-        "end_line": 260
+        "start_line": 258,
+        "end_line": 275
       }
     ]
   },
@@ -5739,23 +5739,23 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1542,
-        "end_line": 1542
+        "start_line": 1543,
+        "end_line": 1543
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2155,
-        "end_line": 2155
+        "start_line": 2156,
+        "end_line": 2156
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2177,
-        "end_line": 2177
+        "start_line": 2178,
+        "end_line": 2178
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2500,
-        "end_line": 2500
+        "start_line": 2501,
+        "end_line": 2501
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
@@ -6274,8 +6274,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1482,
-        "end_line": 1487
+        "start_line": 1483,
+        "end_line": 1488
       }
     ]
   },

@@ -101,6 +101,26 @@ pub const EPISODIC_TYPES: [&str; 16] = [
     crate::progress::TYPE_STOP_FAILURE,
 ];
 
+/// What the log does with an event of a type, as far as any caller branches on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    /// Perception the tree re-derives: a type of [`DERIVED_INDEX_TYPES`], which no store
+    /// accepts in an append.
+    Derived,
+    /// Every other type, kept live: knowledge, a run's episodes and a type no list names.
+    Kept,
+}
+
+/// The class of the event type `type_`: [`Class::Derived`] for a type of the derived list and
+/// [`Class::Kept`] for every other, so a type no list names is kept live and never refused.
+pub fn class_of(type_: &str) -> Class {
+    if crate::ingest::is_derived_index_type(type_) {
+        Class::Derived
+    } else {
+        Class::Kept
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
