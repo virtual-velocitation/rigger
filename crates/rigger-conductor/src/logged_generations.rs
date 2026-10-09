@@ -121,3 +121,103 @@ impl LoggedGenerations {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LoggedGenerations;
+    use crate::eventstore::{Event, Revision};
+    use std::cell::Cell;
+
+    /// A ledger entry the store placed at `position`, revision `revision`.
+    fn placed(position: u64, revision: Revision) -> Event {
+        let mut entry = Event::new("GenerationIngested", Vec::new());
+        entry.position = position;
+        entry.revision = revision;
+        entry
+    }
+
+    /// Ask `memo` for `gc/a.rs` with the ledger head answering `head`, counting the lookups in
+    /// `asked`; the lookup answers `h1`.
+    fn ask(
+        memo: &LoggedGenerations,
+        head: Result<Option<Revision>, ()>,
+        asked: &Cell<usize>,
+    ) -> Option<String> {
+        memo.latest(
+            "gc/a.rs",
+            || head,
+            || {
+                asked.set(asked.get() + 1);
+                Ok(Some("h1".to_string()))
+            },
+        )
+        .unwrap()
+    }
+
+    /// A head that stands answers from the memo; a head that moved, or one that cannot be read,
+    /// sends the identity to the lookup again, and an unread head remembers nothing.
+    #[test]
+    fn the_memo_answers_only_while_the_ledger_head_it_was_taken_at_stands() {
+        let memo = LoggedGenerations::default();
+        let asked = Cell::new(0);
+
+        let answers = [
+            ask(&memo, Ok(Some(3)), &asked),
+            ask(&memo, Ok(Some(3)), &asked),
+            ask(&memo, Ok(Some(4)), &asked),
+            ask(&memo, Err(()), &asked),
+            ask(&memo, Err(()), &asked),
+            ask(&memo, Ok(Some(4)), &asked),
+        ];
+
+        assert_eq!(
+            answers,
+            [
+                Some("h1".to_string()),
+                Some("h1".to_string()),
+                Some("h1".to_string()),
+                Some("h1".to_string()),
+                Some("h1".to_string()),
+                Some("h1".to_string())
+            ]
+        );
+        assert_eq!(
+            asked.get(),
+            4,
+            "asked at heads 3, 4, unread, unread; remembered at 3 and 4"
+        );
+    }
+
+    /// An entry this process appended is followed when the entries above the memo's head are it
+    /// alone, so the memo answers its generation at the entry's revision; another entry among
+    /// them, or a tail that cannot be read, empties the memo.
+    #[test]
+    fn the_memo_follows_its_own_entry_only_when_no_other_entry_was_appended() {
+        let followed = |above: Result<Vec<Event>, ()>, head_after: Revision| {
+            let memo = LoggedGenerations::default();
+            let asked = Cell::new(0);
+            ask(&memo, Ok(Some(3)), &asked);
+            memo.record("gc/a.rs", "h2", Some(40), |from| {
+                assert_eq!(
+                    from, 4,
+                    "the tail is read from the revision past the memo's head"
+                );
+                above
+            });
+            (ask(&memo, Ok(Some(head_after)), &asked), asked.get())
+        };
+
+        assert_eq!(
+            [
+                followed(Ok(vec![placed(40, 5)]), 5),
+                followed(Ok(vec![placed(39, 4), placed(40, 5)]), 5),
+                followed(Err(()), 5),
+            ],
+            [
+                (Some("h2".to_string()), 1),
+                (Some("h1".to_string()), 2),
+                (Some("h1".to_string()), 2),
+            ]
+        );
+    }
+}
