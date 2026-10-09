@@ -6645,3 +6645,78 @@ fn whole_graph(root: &Path) -> String {
     .unwrap();
     serde_json::to_string(&graph.whole().unwrap()).unwrap()
 }
+
+/// Given a `rigger setup` whose rebuild swapped its pruned graph in and stopped before it folded
+/// the tail - `graph.db` standing, holding the rebuild's cursor, no shadow beside it and no holder
+/// of the rebuild lock - over a log holding derived duplicates the derived reset would shed, when
+/// `rigger reset --derived` runs, then it is refused for the unfinished rebuild, naming `rigger
+/// setup`, printing nothing else and leaving the event log and every `graph.db` file byte for
+/// byte; a graph that owes its rebuild as well is refused in the same words, the unfinished
+/// rebuild being asked before the debt; and once `rigger setup` has finished the rebuild and
+/// dropped the cursor the same command sheds the duplicates.
+#[test]
+fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    closed_run_store(root);
+    common::cli::seed_derived_duplicates(root);
+    lose_graph(root);
+    let (stopped, stopped_ok) = stop_setup_past_its_prune(root, |root| {
+        std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
+    });
+    let graph_db = rigger_file(root, "graph.db");
+    let stands = || {
+        (
+            common::fixtures::dir_snapshot(&rigger_file(root, ""), "events.db"),
+            graph_files(root),
+        )
+    };
+    // The refused command: whether it succeeded, its stdout, its stderr, and whether the log and
+    // the graph files stand as it found them.
+    let refused = || {
+        let found = stands();
+        let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+        (ok, out, err, stands() == found)
+    };
+    let unfinished = || {
+        (
+            false,
+            String::new(),
+            "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger \
+             setup` to finish it\n"
+                .to_string(),
+            true,
+        )
+    };
+
+    let stopped_in_its_tail = (
+        stopped_ok,
+        holds_table(&graph_db, "rebuild_cursor"),
+        rigger_file(root, "graph.db.rebuild").exists(),
+    );
+    let in_its_tail = refused();
+    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    let owing_too = refused();
+    let (out, err, finished_ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let finished = (finished_ok, holds_table(&graph_db, "rebuild_cursor"));
+    let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
+    assert_eq!(
+        (
+            stopped_in_its_tail,
+            in_its_tail,
+            owing_too,
+            finished,
+            (shed_ok, shed.split(" redundant").next()),
+        ),
+        (
+            (false, true, false),
+            unfinished(),
+            unfinished(),
+            (true, false),
+            (true, Some("reset --derived: pruned 2")),
+        ),
+        "a graph file holding the rebuild's cursor refuses the derived reset, before its debt is \
+         asked, until setup has finished the rebuild; stopped setup stdout: {stopped}; finishing \
+         setup stdout: {out} stderr: {err}; reset stderr: {shed_err}"
+    );
+}
