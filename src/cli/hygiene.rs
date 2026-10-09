@@ -478,10 +478,12 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// standing `graph.db` that owes its rebuild.
 fn reset_derived(loc: &StoreLocation) -> Res {
     // The rebuild lock first, before anything more is read, and held until this returns (spec
-    // 107): no rebuild starts under the compaction, and one already holding it refuses this at once.
+    // 107): no rebuild starts under the compaction, and another already holding it - a `rigger
+    // setup` or a `rigger reset` - refuses this at once.
     let graph_db = loc.file("graph.db");
     let held = Projector::lock_rebuild(&graph_db)?;
-    // A rebuild left unfinished is `rigger setup`'s to finish, before any graph file is opened.
+    // A rebuild left unfinished is `rigger setup`'s to finish. The check opens no graph file that
+    // does not stand; with no shadow beside it, it opens a standing `graph.db` to read its cursor.
     if Projector::rebuild_unfinished(&held)? {
         return Err(
             "reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \

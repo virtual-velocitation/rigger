@@ -27625,24 +27625,12 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
     drop(common::cli::open_graph(root));
     let shadow = common::cli::rigger_file(root, "graph.db.rebuild");
     std::fs::write(&shadow, b"left by a rebuild that stopped").unwrap();
-    let stands = || {
-        (
-            common::fixtures::dir_snapshot(&common::cli::rigger_file(root, ""), "events.db"),
-            common::cli::graph_files(root),
-        )
-    };
-    // The refused command: whether it succeeded, its stdout, its stderr, and whether the log and
-    // the graph files stand as `found`.
-    let refused = |found: &(Vec<_>, Vec<_>)| {
-        let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-        (ok, out, err, stands() == *found)
-    };
 
     let holder = common::cli::hold_the_rebuild(root);
-    let found = stands();
-    let at_the_lock = refused(&found);
+    let found = common::cli::log_and_graph_files(root);
+    let at_the_lock = common::cli::refused_derived_reset(root, &found);
     drop(holder);
-    let unfinished = refused(&found);
+    let unfinished = common::cli::refused_derived_reset(root, &found);
     std::fs::remove_file(&shadow).unwrap();
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     let lock_free = common::cli::hold_the_rebuild(root);
@@ -27669,16 +27657,13 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             (
                 false,
                 String::new(),
-                "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`\n"
-                    .to_string(),
+                format!("{}\n", common::cli::REBUILD_LOCK_REFUSAL),
                 true
             ),
             (
                 false,
                 String::new(),
-                "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger \
-                 setup` to finish it\n"
-                    .to_string(),
+                format!("{}\n", common::cli::UNFINISHED_REBUILD_REFUSAL),
                 true
             ),
             (

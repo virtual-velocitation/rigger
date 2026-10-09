@@ -35,9 +35,11 @@ use common::cli::graph_files;
 use common::cli::graph_identity;
 use common::cli::hold_the_rebuild;
 use common::cli::keyed;
+use common::cli::log_and_graph_files;
 use common::cli::nanos;
 use common::cli::no_progress;
 use common::cli::read_run_events;
+use common::cli::refused_derived_reset;
 use common::cli::rigger_command;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
@@ -48,6 +50,7 @@ use common::cli::temp_store_project;
 use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
+use common::cli::{REBUILD_LOCK_REFUSAL, UNFINISHED_REBUILD_REFUSAL};
 use common::fixtures::cleanup;
 use common::fixtures::files_open_by;
 use common::fixtures::meta_replay_key;
@@ -6057,8 +6060,9 @@ fn a_log_that_never_started_a_run_is_rebuilt_and_reset_without_pruning_anything(
 
 /// Given a stale `graph.db.pruned` beside the graph, when `rigger reset --runs` runs while a
 /// rebuild holds `graph.db.lock` in its swap - its shadow open, its private copy beside it - then
-/// reset keeps the copy and names the rebuild in progress; once no rebuild holds the lock, `rigger
-/// reset --runs` removes the copy and says so, and never touches the shadow a rebuild resumes from.
+/// reset keeps the copy and names the lock, held by another `rigger setup` or `rigger reset`; once
+/// the lock is free, `rigger reset --runs` removes the copy and says so, and never touches the
+/// shadow a rebuild resumes from.
 #[test]
 fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock() {
     let dir = temp_store_project();
@@ -6099,8 +6103,8 @@ fn reset_runs_removes_a_stale_pruned_copy_unless_a_rebuild_holds_graph_db_lock()
             false,
             true,
         ),
-        "the copy is kept naming the rebuild in progress while it holds the lock, and removed once \
-         none does; held stderr: {held_err}; stdout: {out} stderr: {err}"
+        "the copy is kept naming the lock, held by another setup or reset, while it is held, and \
+         removed once it is free; held stderr: {held_err}; stdout: {out} stderr: {err}"
     );
 }
 
@@ -6129,11 +6133,11 @@ fn lines_naming(out: &str, needle: &str) -> Vec<String> {
 
 /// Given a rebuild in progress holding `graph.db.lock` - before its first write, in its fold, in its
 /// swap and in its tail - when a second `rigger setup` starts, then it is refused at once with the
-/// one refusal text naming the rebuild in progress, printing nothing else about `graph.db`, never
-/// opening the shadow and leaving every `graph.db` file exactly as it found it - no shadow, copy or
-/// mark it did not find; and once the rebuild lets go, the next `rigger setup` pays what it left
-/// and reaches the graph a cold rebuild of the same log yields, with no rebuild state, shadow or
-/// copy.
+/// one refusal text naming the lock, held by another setup or reset, printing nothing else about
+/// `graph.db`, never opening the shadow and leaving every `graph.db` file exactly as it found it -
+/// no shadow, copy or mark it did not find; and once the rebuild lets go, the next `rigger setup`
+/// pays what it left and reaches the graph a cold rebuild of the same log yields, with no rebuild
+/// state, shadow or copy.
 #[test]
 fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_touches_nothing() {
     use RebuildPhase::*;
@@ -6244,7 +6248,7 @@ fn a_second_setup_while_a_rebuild_holds_graph_db_lock_is_refused_at_once_and_tou
 /// runs, then the lock is free: that setup takes it, resumes the shadow from its last committed
 /// batch - its one progress line counts only the events past it - and reaches the graph a cold
 /// rebuild of the same log yields; while the process lived, a setup was refused naming the
-/// rebuild in progress.
+/// lock, held by another setup or reset.
 #[test]
 fn a_rebuild_whose_process_is_gone_leaves_no_lock_and_the_next_setup_resumes_its_shadow() {
     use rigger::contextgraph::sqlite::Projector;
@@ -6382,10 +6386,10 @@ fn graph_db_lock_stands_beside_graph_db_after_setup_and_no_reset_verb_removes_it
 
 /// Given history recorded before the project minted its durable identity, and a rebuild in
 /// progress holding `graph.db.lock`, when `rigger setup` runs, then it is refused before its
-/// identity migration, in the operator's words naming the rebuild in progress: it renames no
-/// stream and records no migration decision, prints nothing about `graph.db`, and leaves every
-/// `graph.db` file as it found them; once the rebuild lets go, the next `rigger setup` migrates
-/// the history and records the migration's decision on the minted stream.
+/// identity migration, in the operator's words naming the lock another setup or reset holds: it
+/// renames no stream and records no migration decision, prints nothing about `graph.db`, and
+/// leaves every `graph.db` file as it found them; once the rebuild lets go, the next `rigger
+/// setup` migrates the history and records the migration's decision on the minted stream.
 #[test]
 fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its_own_words() {
     let dir = temp_store_project();
@@ -6418,11 +6422,7 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
                 false,
                 Vec::<String>::new(),
                 0,
-                Some(
-                    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger \
-                     reset`"
-                        .to_string()
-                ),
+                Some(REBUILD_LOCK_REFUSAL.to_string()),
                 (vec!["d-legacy".to_string()], Vec::<String>::new()),
                 true,
             ),
@@ -6438,8 +6438,9 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
                 )
             ),
         ),
-        "the refused setup migrates nothing and names the rebuild in progress, and the next setup \
-         migrates; refused stdout: {out} stderr: {err}; next stdout: {paid} stderr: {paid_err}"
+        "the refused setup migrates nothing and names the lock another setup or reset holds, and \
+         the next setup migrates; refused stdout: {out} stderr: {err}; next stdout: {paid} \
+         stderr: {paid_err}"
     );
 }
 
@@ -6470,7 +6471,7 @@ fn ids_under(root: &Path, identity: &str) -> Vec<String> {
 /// beside the graph, it never tries the lock and prunes as ever; and with a stale
 /// `graph.db.pruned` beside it, `rigger reset --runs` fails naming the lock, and beside the graph
 /// stand only the lock's directory and the copy, byte for byte. `rigger --help` says the copy is
-/// kept while a rebuild in progress holds `graph.db.lock`.
+/// kept while another `rigger setup` or `rigger reset` holds `graph.db.lock`.
 #[test]
 fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_over_a_stale_copy() {
     let dir = temp_store_project();
@@ -6665,26 +6666,13 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
         std::fs::remove_file(rigger_file(root, "graph.db.rebuild")).unwrap();
     });
     let graph_db = rigger_file(root, "graph.db");
-    let stands = || {
-        (
-            common::fixtures::dir_snapshot(&rigger_file(root, ""), "events.db"),
-            graph_files(root),
-        )
-    };
-    // The refused command: whether it succeeded, its stdout, its stderr, and whether the log and
-    // the graph files stand as it found them.
-    let refused = || {
-        let found = stands();
-        let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-        (ok, out, err, stands() == found)
-    };
+    // The refused command, over the log and the graph files as it found them.
+    let refused = || refused_derived_reset(root, &log_and_graph_files(root));
     let unfinished = || {
         (
             false,
             String::new(),
-            "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger \
-             setup` to finish it\n"
-                .to_string(),
+            format!("{UNFINISHED_REBUILD_REFUSAL}\n"),
             true,
         )
     };

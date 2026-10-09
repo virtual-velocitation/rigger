@@ -440,6 +440,40 @@ pub fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     super::fixtures::dir_snapshot(&rigger_file(root, ""), "graph.db")
 }
 
+/// The event log's files and every `graph.db*` file under `.rigger/` of `root`, byte for byte: what
+/// a refused `rigger reset --derived` must leave as it found.
+pub type LogAndGraphFiles = (
+    Vec<(String, Option<Vec<u8>>)>,
+    Vec<(String, Option<Vec<u8>>)>,
+);
+
+/// The [`LogAndGraphFiles`] of `root` as they stand now.
+pub fn log_and_graph_files(root: &Path) -> LogAndGraphFiles {
+    (
+        super::fixtures::dir_snapshot(&rigger_file(root, ""), "events.db"),
+        graph_files(root),
+    )
+}
+
+/// `rigger reset --derived` run in `root`, as a test that expects it refused reads it: whether it
+/// succeeded, its stdout, its stderr, and whether the log and the graph files stand as `found`.
+pub fn refused_derived_reset(
+    root: &Path,
+    found: &LogAndGraphFiles,
+) -> (bool, String, String, bool) {
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    (ok, out, err, log_and_graph_files(root) == *found)
+}
+
+/// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
+pub const REBUILD_LOCK_REFUSAL: &str =
+    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";
+
+/// The line `rigger reset --derived` ends its stderr with over a rebuild left unfinished.
+pub const UNFINISHED_REBUILD_REFUSAL: &str =
+    "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
+     finish it";
+
 /// The rebuild lock of the `graph.db` of `root`, held as a `rigger setup` or a `rigger reset`
 /// holds `graph.db.lock`, until it is dropped.
 pub fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {

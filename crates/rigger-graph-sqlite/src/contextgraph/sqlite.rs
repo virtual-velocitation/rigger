@@ -251,12 +251,13 @@ pub const REBUILD_IN_PROGRESS: &str =
     "graph.db.lock is held by another `rigger setup` or `rigger reset`";
 
 /// The exclusion a [`Projector::rebuild`] of one graph file holds, from before it opens or creates
-/// its shadow until its tail is folded and its cursor dropped (spec 101): the OS advisory lock on
-/// the zero-byte `<path>.lock` beside the graph file - a file no rebuild removes, and one SQLite
-/// never opens, so no connection's own locks ride on it. Only its holder ever has a shadow open,
-/// so a shadow is removed only when no other connection holds it. The lock is released when this
-/// is dropped - explicitly, never by closing its descriptor alone ([`HeldLock`]) - and by the OS
-/// when its process ends however it ends, so an interrupted rebuild leaves no stale lock.
+/// its shadow until its tail is folded and its cursor dropped (spec 101), and that a `rigger reset`
+/// holds while it removes a stale pruned copy or compacts the log: the OS advisory lock on the
+/// zero-byte `<path>.lock` beside the graph file - a file no holder removes, and one SQLite never
+/// opens, so no connection's own locks ride on it. Only a rebuild holding it ever has a shadow
+/// open, so a shadow is removed only when no other connection holds it. The lock is released when
+/// this is dropped - explicitly, never by closing its descriptor alone ([`HeldLock`]) - and by the
+/// OS when its process ends however it ends, so an interrupted holder leaves no stale lock.
 #[derive(Debug)]
 pub struct RebuildLock {
     /// The graph file the rebuild is of.
@@ -279,7 +280,8 @@ pub enum StaleCopy {
     Absent,
     /// A stale copy stood there, and it is removed.
     Removed,
-    /// A copy stood there while a rebuild held the rebuild lock: that rebuild's own, kept.
+    /// A copy stood there while another held the rebuild lock - a rebuild, whose own copy it may
+    /// be, or a `rigger reset`: kept.
     InUse,
 }
 
@@ -506,7 +508,9 @@ impl Projector {
     /// whose tail it finishes. False when no graph file stands, whatever stands beside where it
     /// would be, and answered then, as over a standing shadow, without opening anything - so asking
     /// never makes a graph file. It takes the held rebuild lock, so no caller asks while a rebuild
-    /// could be moving either sign, and it writes nothing.
+    /// could be moving either sign. It writes no row, table or projection; a standing graph file
+    /// with no shadow beside it is opened through the one opener [`Projector::rebuild`] opens it
+    /// through, which checkpoints a write-ahead log a dead process left, as any open does.
     pub fn rebuild_unfinished(held: &RebuildLock) -> Result<bool, Error> {
         let path = held.path();
         if !Path::new(path).exists() {
@@ -585,12 +589,12 @@ impl Projector {
     }
 
     /// Remove the stale pruned copy ([`pruned_copy`]) of the graph file at `path` that a rebuild's
-    /// stopped swap left, and answer what it found ([`StaleCopy`]) - unless a rebuild holds the
-    /// rebuild lock, in which case the copy may be the one its live swap is using, so it is kept
-    /// and the rebuild in progress is answered. The lock ([`Projector::lock_rebuild`]) is taken
-    /// first, never waiting, and held while the copy is removed, so no copy a swap is using is ever
-    /// removed under it; with no copy nothing is taken and nothing is made. The shadow is never
-    /// read or removed here, since a rebuild resumes from it.
+    /// stopped swap left, and answer what it found ([`StaleCopy`]) - unless another holds the
+    /// rebuild lock, a rebuild or a `rigger reset`, in which case the copy may be the one a live
+    /// swap is using, so it is kept and that is answered. The lock ([`Projector::lock_rebuild`])
+    /// is taken first, never waiting, and held while the copy is removed, so no copy a swap is
+    /// using is ever removed under it; with no copy nothing is taken and nothing is made. The
+    /// shadow is never read or removed here, since a rebuild resumes from it.
     pub fn forget_stale_copy(path: &str) -> Result<StaleCopy, Error> {
         let copy = pruned_copy(path);
         if !Path::new(&copy).exists() {
@@ -4468,7 +4472,7 @@ mod tests {
         e
     }
 
-    /// The rebuild lock of the graph file at `path`, which no other rebuild holds.
+    /// The rebuild lock of the graph file at `path`, which no other holder has.
     fn locked(path: &str) -> RebuildLock {
         Projector::lock_rebuild(path).unwrap()
     }
@@ -5584,10 +5588,10 @@ mod tests {
         );
     }
 
-    /// A stale pruned copy is forgotten - removed, answering that it was - whenever no rebuild holds
-    /// the rebuild lock, whatever stands beside it; while a rebuild holds the lock the copy is that
-    /// rebuild's own and is kept, answering so; with no copy nothing is removed and no lock file is
-    /// made. The shadow beside it is never removed or rewritten here.
+    /// A stale pruned copy is forgotten - removed, answering that it was - whenever no one holds
+    /// the rebuild lock, whatever stands beside it; while another holds the lock the copy may be
+    /// a rebuild's own and is kept, answering so; with no copy nothing is removed and no lock file
+    /// is made. The shadow beside it is never removed or rewritten here.
     #[test]
     fn a_stale_pruned_copy_is_forgotten_unless_a_rebuild_holds_the_lock() {
         let dir = tempfile::tempdir().unwrap();
@@ -5625,7 +5629,7 @@ mod tests {
                 (StaleCopy::Removed, false),
                 b"the shadow the rebuild folds".to_vec()
             ),
-            "a copy no rebuild holds the lock for is removed, one a rebuild holds it for is kept, \
+            "a copy stood beside a free lock is removed, one beside a held lock is kept, \
              and the shadow stays as it was"
         );
     }
@@ -5933,7 +5937,7 @@ mod tests {
     }
 
     /// Forgetting a stale copy never reads the shadow beside it: beside a shadow that is not a
-    /// database, the copy no rebuild holds the lock for is removed, and the shadow stands byte for
+    /// database, the copy beside a free lock is removed, and the shadow stands byte for
     /// byte.
     #[test]
     fn forgetting_a_stale_copy_never_reads_the_shadow_beside_it() {
