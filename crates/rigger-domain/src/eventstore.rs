@@ -700,6 +700,12 @@ pub trait EventStore: Send + Sync {
     /// A store may write FEWER events than it was handed when it recognises an event as
     /// already recorded; the suppressed events report `None` and consume no per-stream
     /// revision, so the stream advances by exactly the events written.
+    ///
+    /// A batch holding an event of a derived type is refused WHOLE with
+    /// [`Error::DerivedAppend`], naming the first such type in batch order, and nothing of it
+    /// is written: no event, no group member, no position and no revision. The tree
+    /// re-derives a derived event, so the log keeps only the ledger entry of its generation.
+    /// A PORT obligation every adapter owes, pinned by the backend-agnostic contract suite.
     fn append(
         &self,
         stream: &str,
