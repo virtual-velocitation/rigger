@@ -276,6 +276,25 @@ pub fn logged_generations(
         .collect()
 }
 
+/// Every group lookup among `reads`, in call order: what the run's sink asked the store's group
+/// lookup, the reads its memo proves itself current by ([`ledger_head_read`]) set aside.
+pub fn group_lookups(reads: &[super::CountedRead]) -> Vec<super::CountedRead> {
+    reads
+        .iter()
+        .filter(|read| matches!(read, super::CountedRead::LatestInGroup { .. }))
+        .cloned()
+        .collect()
+}
+
+/// THE MEMO'S HEAD READ (spec 107): the read of `stream`'s ledger head - its newest ledger
+/// entry's revision - the run's sink makes for each batch it is handed, proving its memo current.
+pub fn ledger_head_read(stream: &str) -> super::CountedRead {
+    super::CountedRead::LastPosition {
+        stream: stream.to_string(),
+        event_type: rigger::retention::TYPE_GENERATION_INGESTED.to_string(),
+    }
+}
+
 /// A REBUILD FROM THE TREE ALONE: rebuild the graph file `graph_db` under the project `test`
 /// from `log`, one event to a committed batch, re-extracting each ledger entry from the tree at
 /// `root` with no object database to ask. It insists the rebuild ran. An entry whose file the

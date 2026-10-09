@@ -170,8 +170,8 @@ use config_fixtures::{agent, gate_def, gate_def_inputs};
     any(feature = "store", not(feature = "core"))
 ))]
 use {
-    extraction_tree_fixtures::WALKED, fold_fixtures::generation_ingested,
-    git_fixtures::git_hash_object,
+    event_fixtures::CountedRead, extraction_tree_fixtures::WALKED,
+    fold_fixtures::generation_ingested, git_fixtures::git_hash_object,
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {

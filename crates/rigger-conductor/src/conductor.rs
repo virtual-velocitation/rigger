@@ -2941,17 +2941,18 @@ struct RunCtx<'a> {
     /// prompt. The bound is for throughput alone (spec 107): what a walk records is decided for
     /// each batch against the log's latest generation and the graph's current one, never against
     /// a set of keys this process extends. The log's side is asked of the store once per identity
-    /// and remembered ([`logged_generations`](RunCtx::logged_generations)), so a second walk in
-    /// one process would record what a fresh process's walk would unless another process
-    /// recorded in between. Process-local: nothing is carried between processes. Exists
+    /// and remembered ([`logged_generations`](RunCtx::logged_generations)) while the run
+    /// stream's ledger head stands, so a second walk in one process records what a fresh
+    /// process's walk would. Process-local: nothing is carried between processes. Exists
     /// only in the `symbols` lane - the light lane compiles no extraction pass to ingest, so its
     /// no-op `ingest_project_into_graph` reads no guard.
     #[cfg(feature = "symbols")]
     ingested: std::sync::atomic::AtomicBool,
     /// THE LOG SIDE AS THIS PROCESS LEARNED IT (spec 107): the log's latest generation of each
     /// identity the ingest sink ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)) has asked the
-    /// store's group lookup about, or recorded an entry for. The sink asks the store for an
-    /// identity once and answers its later batches from here. Process-local and a memo only:
+    /// store's group lookup about, or recorded an entry for, beside the run stream's ledger head
+    /// those answers are current at. The sink asks the store for an identity once and answers
+    /// its later batches from here while that head stands. Process-local and a memo only:
     /// nothing is carried between processes, and the graph's side is never remembered. Exists
     /// only in the `symbols` lane, as the sink does.
     #[cfg(feature = "symbols")]
@@ -3341,16 +3342,18 @@ impl RunCtx<'_> {
     /// The log side is MEMOIZED for the process
     /// ([`logged_generations`](RunCtx::logged_generations)): the store's group lookup
     /// ([`crate::ingest::latest_generation`]) is asked for an identity once, and every later
-    /// batch of that identity is answered from the memo. The memo takes a lookup's answer when
-    /// the lookup succeeds - a failed one is asked again by the next batch - and the entry's
-    /// generation once its append succeeds; a failed append leaves it on the looked-up answer.
-    /// The graph's side is read on every batch and never remembered, so a long-lived run records
-    /// again an identity a rebuild of `graph.db` left behind the next time a walk hands its
-    /// batch. An entry another process records stales the memo. That costs at most one
-    /// re-recording where the graph's side differs from the generation the stale memo holds.
-    /// Where the graph holds that generation (a rebuild from the tree can leave it so), or owes
-    /// its rebuild and is not asked, a batch at that generation records nothing, so an entry
-    /// another process recorded can leave a later generation unrecorded by this process.
+    /// batch of that identity is answered from the memo while the memo is provably current. The
+    /// memo takes a lookup's answer when the lookup succeeds - a failed one is asked again by the
+    /// next batch - and the entry's generation once its append succeeds; a failed append leaves
+    /// it on the looked-up answer. Its proof is the run stream's ledger head: every batch reads
+    /// the revision of the stream's newest ledger entry
+    /// ([`last_position`](crate::eventstore::EventStore::last_position)), and a
+    /// head other than the one the memo was taken at - an entry another process recorded -
+    /// empties the memo, so a stale answer never suppresses a recording. After its own append
+    /// the sink reads the entries above the memo's head and follows the head only when they are
+    /// that entry alone. The graph's side is read on every batch and never remembered, so a
+    /// long-lived run records again an identity a rebuild of `graph.db` left behind the next
+    /// time a walk hands its batch.
     ///
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
@@ -3370,9 +3373,15 @@ impl RunCtx<'_> {
             keyed,
             excluded,
             |identity| {
-                self.logged_generations.latest(identity, || {
-                    crate::ingest::latest_generation(self.deps.store, STREAM, identity)
-                })
+                self.logged_generations.latest(
+                    identity,
+                    || {
+                        self.deps
+                            .store
+                            .last_position(STREAM, crate::retention::TYPE_GENERATION_INGESTED)
+                    },
+                    || crate::ingest::latest_generation(self.deps.store, STREAM, identity),
+                )
             },
             graph,
             self.deps.hash_blob,
@@ -3384,8 +3393,20 @@ impl RunCtx<'_> {
         let entry = self.stamped(&recorded.entry.event(recorded.batch.len()));
         let folding = self.deps.folding();
         let done = folding.append_entry_and_fold(STREAM, &entry, recorded.batch)?;
-        self.logged_generations
-            .record(&recorded.entry.identity(), &recorded.entry.generation);
+        self.logged_generations.record(
+            &recorded.entry.identity(),
+            &recorded.entry.generation,
+            done.appended.last(),
+            |from| {
+                self.deps.store.read_stream_typed(
+                    STREAM,
+                    from,
+                    crate::eventstore::TypeSelection::Only(&[
+                        crate::retention::TYPE_GENERATION_INGESTED,
+                    ]),
+                )
+            },
+        );
         folding.say_fold_lost(1, &done.fold);
         Ok(())
     }
@@ -20847,12 +20868,12 @@ mod tests {
         use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
         use crate::test_support::{
             arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
-            git_hash_object, handed_by_the_walk, held_generations, logged_generations,
-            one_lookup_each, owe_a_rebuild, planted_extraction_tree, rebuild_from_the_tree,
-            seed_generations_on_another_stream, source_with, walked_generations, walked_identities,
-            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
-            MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
-            WORKFLOW_BODY, WORKFLOW_PATH,
+            git_hash_object, group_lookups, handed_by_the_walk, held_generations, ledger_head_read,
+            logged_generations, one_lookup_each, owe_a_rebuild, planted_extraction_tree,
+            rebuild_from_the_tree, seed_generations_on_another_stream, source_with,
+            walked_generations, walked_identities, write_file, CountedRead, Handed,
+            ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY,
+            SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -21958,10 +21979,24 @@ mod tests {
             let built = counted.reads().len();
 
             assert_eq!(handed.emit(&ctx), Ok(()));
-            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
+            assert_eq!(
+                counted.reads()[built..],
+                [
+                    ledger_head_read(STREAM),
+                    one_lookup_each(STREAM, &[SOURCE]).remove(0)
+                ]
+            );
             assert_eq!(handed.emit(&ctx), Ok(()));
 
-            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
+            assert_eq!(
+                counted.reads()[built..],
+                [
+                    ledger_head_read(STREAM),
+                    one_lookup_each(STREAM, &[SOURCE]).remove(0),
+                    ledger_head_read(STREAM)
+                ],
+                "the second batch reads the ledger head alone: the memo answers the log side"
+            );
             assert_eq!(recorded(&inner), once);
         }
 
@@ -22012,11 +22047,14 @@ mod tests {
                 recorded(&inner),
                 entries(&[a_entry.clone(), b_entry, a_entry])
             );
-            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE])
+            );
 
             assert_eq!(handed_by_the_walk(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &[SOURCE, "gd/src/lib.rs"])
             );
         }
@@ -22047,12 +22085,15 @@ mod tests {
                      store: {LOOKUP_REFUSED}"
                 ))
             );
-            assert_eq!(counted.reads()[built..], one_lookup_each(STREAM, &[SOURCE]));
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE])
+            );
             assert_eq!(recorded(&inner), Recorded::new());
 
             assert_eq!(handed.emit(&ctx), Ok(()));
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &[SOURCE, SOURCE])
             );
             let once = entries(&[generation_ingested(
@@ -22066,15 +22107,15 @@ mod tests {
 
             assert_eq!(handed.emit(&ctx), Ok(()));
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &[SOURCE, SOURCE])
             );
             assert_eq!(recorded(&inner), once);
         }
 
         /// Hand `handed` twice to the sink of one run over an empty store, `graph` and `hash`:
-        /// both answers, what the store then holds, and what the store was asked past the reads
-        /// that built the run.
+        /// both answers, what the store then holds, and the group lookups the store was asked
+        /// past the reads that built the run.
         fn handed_twice_over_an_empty_store(
             root: &str,
             handed: &Handed,
@@ -22089,7 +22130,11 @@ mod tests {
             let ctx = RunCtx::for_test(&cfg, &deps);
             let built = counted.reads().len();
             let answers = [handed.emit(&ctx), handed.emit(&ctx)];
-            (answers, recorded(&inner), counted.reads()[built..].to_vec())
+            (
+                answers,
+                recorded(&inner),
+                group_lookups(&counted.reads()[built..]),
+            )
         }
 
         /// `answer` given twice, nothing recorded, and one group lookup of `identity`.
@@ -22222,14 +22267,14 @@ mod tests {
             let first_walk = entries(&walked_entries());
             assert_eq!(recorded(&inner), first_walk);
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &identities)
             );
 
             ctx.ingest_project_batches().unwrap();
 
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &identities)
             );
             assert_eq!(recorded(&inner), first_walk);
@@ -22269,7 +22314,7 @@ mod tests {
             let walked_once = entries(&walked_entries());
             assert_eq!(recorded(&inner), walked_once);
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &identities)
             );
 
@@ -22295,7 +22340,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(
-                counted.reads()[built..],
+                group_lookups(&counted.reads()[built..]),
                 one_lookup_each(STREAM, &identities),
                 "the reindex asks the store nothing: the memo answers the log side"
             );
@@ -36411,14 +36456,15 @@ mod tests {
     /// spawn - and so walks and ingests the tree - materializes no derived event: every read it
     /// makes is exactly the read a twin step that does NOT ingest makes over the same fixture (the
     /// run's events plus the typed carry-over), plus one `latest_in_group` lookup per identity
-    /// the walk emits. And it records exactly one ledger entry for each of the changed and the
+    /// the walk emits and the reads the run's memo proves itself current by: one read of the
+    /// ledger head per batch and one read of the entries above it per entry. And it records exactly one ledger entry for each of the changed and the
     /// reverted file, keyed and grouped, and no derived event. Asserted through the counting store
     /// double.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_step_that_ingests_seeds_each_identity_by_group_lookup_and_appends_only_what_moved() {
         use crate::test_support::{
-            git_commit_all, seed_one_shot_fixture, CountedRead, ReadCountingStore,
+            git_commit_all, ledger_head_read, seed_one_shot_fixture, CountedRead, ReadCountingStore,
         };
 
         let repo = temp_git_project_with_commit();
@@ -36527,13 +36573,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             "the step that does not ingest reads the run and the typed carry-over alone"
         );
-        // ... and the ingesting step reads exactly that, event for event, plus the lookups.
-        let (lookups, reads): (Vec<CountedRead>, Vec<CountedRead>) = ingesting
+        // ... and the ingesting step reads exactly that, event for event, plus the lookups and
+        // the reads its memo proves itself current by: the ledger head once per batch, and the
+        // entries above it once per entry appended.
+        let head = ledger_head_read(STREAM);
+        let is_tail = |r: &CountedRead| {
+            matches!(r, CountedRead::Typed { stream, only: true, types, .. }
+                if stream == STREAM && *types == [crate::retention::TYPE_GENERATION_INGESTED])
+        };
+        let (memo, rest): (Vec<CountedRead>, Vec<CountedRead>) = ingesting
+            .into_iter()
+            .partition(|r| *r == head || is_tail(r));
+        let (lookups, reads): (Vec<CountedRead>, Vec<CountedRead>) = rest
             .into_iter()
             .partition(|r| matches!(r, CountedRead::LatestInGroup { .. }));
         assert_eq!(
             reads, not_ingesting,
             "a step that ingests costs exactly the reads of one that does not"
+        );
+        assert_eq!(
+            (
+                memo.iter().filter(|r| **r == head).count(),
+                memo.iter().filter(|r| is_tail(r)).count()
+            ),
+            (now.len(), 2),
+            "one head read per batch the walk hands and one tail read per entry appended"
         );
         assert_eq!(
             lookups,

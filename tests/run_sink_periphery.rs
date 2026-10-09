@@ -40,11 +40,12 @@ use std::sync::Mutex;
 use common::cli::applied_positions;
 use common::fixtures::{
     agent, arm_read_fault, derived_count, entry_records, gate_def, generation_ingested,
-    git_commit_all, git_hash_object, held_generations, live_edges, logged_generations,
-    one_lookup_each, owe_a_rebuild, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
-    source_with, temp_git_project_with_commit, walked_git_entry_records, wire_owned, write_text,
-    CountedRead, EntryRecord, Handed, NoopDriver, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
-    MOVED, REWORDED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+    git_commit_all, git_hash_object, group_lookups, held_generations, live_edges,
+    logged_generations, one_lookup_each, owe_a_rebuild, rebuild_from_the_tree,
+    seed_pre_ledger_rows_without_a_group, source_with, temp_git_project_with_commit,
+    walked_git_entry_records, wire_owned, write_text, EntryRecord, Handed, NoopDriver,
+    ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, REWORDED, SOURCE, SOURCE_BODY,
+    SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
 };
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Stage};
@@ -803,15 +804,6 @@ fn landing(root: &Path, units: &[(&str, Option<&str>)]) -> Config {
         );
     }
     cfg
-}
-
-/// Every group lookup among `reads`, in call order.
-fn group_lookups(reads: &[CountedRead]) -> Vec<CountedRead> {
-    reads
-        .iter()
-        .filter(|read| matches!(read, CountedRead::LatestInGroup { .. }))
-        .cloned()
-        .collect()
 }
 
 /// ONE process walks the tree, lands the source file at its moved body and lands it back.

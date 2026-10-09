@@ -613,7 +613,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a5cc1c77da45708c"
+    "content_hash": "5bea30ebdb8b0b77"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3749,7 +3749,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "cc700758641db3c5"
+    "content_hash": "5b3090529ca75a86"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3757,7 +3757,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "f08e853fb95ac827"
+    "content_hash": "7e5a00c36590dfe7"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3765,7 +3765,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "944ba6f658d35ed4"
+    "content_hash": "58cc72e17b6ee160"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3773,7 +3773,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "065d6d37f049c932"
+    "content_hash": "9f3f6f73d49bcd31"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3797,7 +3797,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "74d6ef19a71dc571"
+    "content_hash": "9e10549c621a7031"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -3805,7 +3805,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "a8588297f6681031"
+    "content_hash": "680b44a688b621c5"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -6213,7 +6213,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "eb705edabc51bdd0"
+    "content_hash": "14ee064881123514"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
