@@ -1646,14 +1646,14 @@ Every function in `crates/rigger-conductor/src/conductor.rs`, `src/cli/mod.rs` a
 
 ## 2. Duplication Catalog
 
-210 clusters (1436 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+210 clusters (1437 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 89 site(s) - `dup-decc12fbf756`
 - **/proc-path string literals**: 55 site(s) - `dup-99a8136efbc4`
-- **sqlite Connection::open call sites**: 68 site(s) - `dup-1f66a86debc4`
-- **.rigger-path string literals**: 595 site(s) - `dup-e31752c98ad7`
+- **sqlite Connection::open call sites**: 70 site(s) - `dup-284d97a44d43`
+- **.rigger-path string literals**: 594 site(s) - `dup-a1a394c4891d`
 - **error-shaping helper functions**: 13 site(s) - `dup-2b8f802a2dc3`
 
 ### Clusters (51 exact, 132 near, 27 semantic)
@@ -1830,7 +1830,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:13423-13425` `unit_branch`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1105-1107` `key_expr`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1112-1114` `key_expr`
 
 #### `dup-c6dfc41a628c` (exact, 2 sites)
 
@@ -1978,11 +1978,11 @@ mandatory sweep: Command::new call sites - 89 site(s), collected mechanically re
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:128-128` `Command::new`
 
-#### `dup-e31752c98ad7` (semantic, 595 sites)
+#### `dup-a1a394c4891d` (semantic, 594 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
-mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-conductor/src/conductor.rs:18887-18887` `"the repo's own .rigger config must load"`
 - `crates/rigger-config-files/src/config_store.rs:377-377` `".rigger"`
@@ -2004,67 +2004,6 @@ mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanica
 - `crates/rigger-dash/src/dash.rs:3930-3930` `"{root}/.rigger/events.db"`
 - `crates/rigger-dash/src/dash.rs:3981-3981` `"/.rigger/events.db"`
 - `crates/rigger-domain/src/config.rs:20-20` `".rigger"`
-- `crates/rigger-domain/src/docs.rs:221-221` `"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
-         reset --derived`. Each run's project-ingest pass records the project's derived index - \
-         the code entities, inferred edges, design links, and doc concepts folded from your \
-         sources - and a log written before that pass deduplicated across runs holds the WHOLE \
-         index once per run, which is re-derivable duplication rather than history. `rigger reset \
-         --derived` keeps, for each file, only the recordings of its LATEST generation - the \
-         content the log last recorded for it - and of those the LATEST event per replay key, \
-         deletes every superseded generation and re-recording, and compacts the file so \
-         events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \
-         decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \
-         read. The live graph a rebuild folds is unchanged: a newer generation of a file \
-         retires every fact the one before it asserted and it does not, so the whole log \
-         already folds to each file's latest generation; nothing reads a shed recording again \
-         (a file that returns to an earlier content re-emits its batch); and the prune carries \
-         a design fact's EARLIEST valid-time within its unbroken run of generations onto the \
-         recording it keeps, so a design fact keeps the date it first became true rather than \
-         being re-dated to whichever recording survived. WHAT IT CANNOT RECLAIM, because \
-         this decides whether it is worth running at all: it never sheds the index itself. The latest generation of every file stays, so on \
-         a log that holds each file once, at one recording per key, `rigger reset --derived` \
-         deletes ZERO rows from it and reports so - that is the expected report on a clean log, \
-         not a failure, and the derived index remains the bulk of the log by design because it \
-         is what the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, \
-         because a non-zero prune is otherwise read as a broken dedup: every edit to a file \
-         records a new generation of its batch and leaves the one before it superseded, and a \
-         file whose content has RETURNED to a generation the log had already recorded - a \
-         revert, a branch switch, a checkout back - re-records that file's whole batch by \
-         design, since a dedup that suppressed an already-recorded key would strand the graph \
-         on the version the file has since moved past. A prune that sheds rows on such a log is \
-         shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \
-         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
-         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
-         space it needs is on whichever filesystem that resolves to rather than on the partition \
-         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
-         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \
-         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \
-         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \
-         pages, which is not the same as this run having deleted something: a prune with nothing \
-         to shed from an already-compact log leaves the file exactly as it found it and reports \
-         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \
-         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \
-         the deletes have committed, the command still reports what it removed and names the \
-         failure, and because the deletes are durable and the space they freed is still free in \
-         the file, re-running it is both safe and the way to reclaim that space. The two flags \
-         COMPOSE \
-         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
-         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \
-         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \
-         compaction leaves revision gaps by design, and a writer whose cursor was built before it \
-         ran could reissue a gap and reorder the log, so it refuses while the run is live - a \
-         `rigger step` holds its lock, an in-flight spawn (one with no recorded result, or only \
-         the step's liveness fault) has a liveness marker younger than its wall-clock bound, or \
-         a driver registration for this store has a heartbeat inside the idle window - naming \
-         what it found. A run whose driver died is not live: units it left non-terminal never \
-         block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
-         blocking once its marker outlives the spawn's bound or a real result is recorded for \
-         it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
-         result to end it. Every `rigger step`, `run` and `serve` registers as the run's \
-         driver, so the last step's stamp counts as a live driver for the idle window; a \
-         courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
-         does. `--force-live` overrides the refusal for an operator certain no writer is using \
-         the store; it checks nothing.\n"`
 - `crates/rigger-domain/src/docs.rs:853-853` `"Store hygiene for rigger's own state - growing .rigger/ disk usage, \
          the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand."`
@@ -2141,8 +2080,8 @@ mandatory sweep: .rigger-path string literals - 595 site(s), collected mechanica
 - `src/cli/critique.rs:168-168` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
 - `src/cli/hygiene.rs:628-628` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1636-1636` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1765-1765` `"/home/dev/proj/.rigger/events.db"`
+- `src/cli/hygiene.rs:1638-1638` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:1767-1767` `"/home/dev/proj/.rigger/events.db"`
 - `src/cli/mod.rs:638-638` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -3783,7 +3722,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/metrics.rs:494-500` `cost_per_upheld`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:886-892` `factor`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:893-899` `factor`
 
 #### `dup-c16dbfd88b00` (exact, 2 sites)
 
@@ -4010,11 +3949,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-driver/src/liveness.rs:924-938` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
 - `src/cli/setup.rs:2396-2410` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
-#### `dup-1f66a86debc4` (semantic, 68 sites)
+#### `dup-284d97a44d43` (semantic, 70 sites)
 
 Proposed home: `one sqlite-connection-opening adapter function every caller is injected with`
 
-mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: sqlite Connection::open call sites - 70 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1338-1338` `Connection::open_with_flags`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1355-1355` `Connection::open`
@@ -4025,10 +3964,10 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5137-5137` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9738-9738` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10507-10507` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1562-1562` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2083-2083` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2266-2266` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2418-2418` `Connection::open_with_flags`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1569-1569` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2090-2090` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2273-2273` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2370-2370` `Connection::open_with_flags`
 - `crates/rigger-store-sqlite/src/run_store.rs:417-417` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:5173-5173` `Connection::open`
@@ -4066,6 +4005,8 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `tests/group_lookup_periphery.rs:216-216` `Connection::open`
 - `tests/heartbeat_write_read_agree_periphery.rs:126-126` `Connection::open`
 - `tests/one_shot_reads_periphery.rs:293-293` `Connection::open`
+- `tests/reclaim_space_periphery.rs:235-235` `Connection::open`
+- `tests/reclaim_space_periphery.rs:381-381` `Connection::open`
 - `tests/reset_derived_compaction.rs:75-75` `Connection::open`
 - `tests/reset_derived_compaction.rs:230-230` `Connection::open`
 - `tests/reset_derived_compaction.rs:496-496` `Connection::open`
@@ -4075,7 +4016,7 @@ mandatory sweep: sqlite Connection::open call sites - 68 site(s), collected mech
 - `tests/reset_derived_compaction_periphery.rs:2537-2537` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:2742-2742` `Connection::open`
 - `tests/reset_derived_compaction_periphery.rs:3530-3530` `Connection::open`
-- `tests/reset_derived_compaction_periphery.rs:4170-4170` `Connection::open`
+- `tests/reset_derived_compaction_periphery.rs:4168-4168` `Connection::open`
 - `tests/reset_derived_live_writer_guard_periphery.rs:69-69` `Connection::open`
 - `tests/reset_menu.rs:60-60` `Connection::open`
 - `tests/reset_menu.rs:64-64` `Connection::open`
@@ -4227,7 +4168,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:775-786` `kind_str`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:790-799` `lang_str`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1502-1507` `direction_sql`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1509-1514` `direction_sql`
 
 #### `dup-ff3bcd827c2f` (semantic, 3 sites)
 
@@ -4345,7 +4286,7 @@ Proposed home: `one shared `read_forward` helper (e.g. relocated into `tests/com
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:569-576` `read_forward`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:582-599` `read_forward`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:589-606` `read_forward`
 
 #### `dup-8bed086eddda` (exact, 2 sites)
 
@@ -4380,8 +4321,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2158-2183` `measure_derived_duplication_on_a_clean_log_reports_no_duplication`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2186-2237` `measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2165-2190` `measure_derived_duplication_on_a_clean_log_reports_no_duplication`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2193-2244` `measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects`
 
 #### `dup-5cdeb5b1d1dd` (exact, 2 sites)
 
@@ -4470,8 +4411,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1943-1963` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:2017-2038` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1945-1965` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:2019-2040` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
 
@@ -5216,7 +5157,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8923 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8939 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4974-5015` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15023-15045` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5245,7 +5186,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `tests/concepts_labels_membership.rs:245-272` `label_of_the_documentless_hub` - no duplicate found by reading
 - `tests/event_classes_are_one_table.rs:387-401` `a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming_it` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `tests/one_shot_reads_periphery.rs:85-134` `a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read_per_selection` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `tests/reset_derived_compaction_periphery.rs:3687-3691` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - duplicate found by reading and closed: `the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`
+- `tests/reset_derived_compaction_periphery.rs:3686-3690` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - duplicate found by reading and closed: `the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`
 - `tests/simplification_audit.rs:7097-7101` `a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod` - duplicate found by reading and closed: it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions
 - `tests/worker_persona_label_periphery.rs:222-243` `the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation` - duplicate found by reading and closed: it re-rolled `assert_worker_label` inline; it now calls it
 
@@ -5490,12 +5431,12 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 9. Consolidate the 595 `.rigger`-path string-literal sites (`dup-e31752c98ad7`) - the single largest cluster in the entire catalog by site count
+#### 9. Consolidate the 594 `.rigger`-path string-literal sites (`dup-a1a394c4891d`) - the single largest cluster in the entire catalog by site count
 
-- Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 595 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-e31752c98ad7` for the follow-up spec to consume directly, not re-enumerated here.
-- Expected line delta: negative - 595 literal compositions collapse toward one helper's call sites; the helper itself is small.
-- Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 595 sites.
+- Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 594 sites routes through instead of building its own literal.
+- Files: spans dozens of files including `crates/rigger-conductor/src/conductor.rs`, `crates/rigger-config-files/src/config_store.rs`, `crates/rigger-dash/src/dash.rs`, `crates/rigger-domain/src/docs.rs`, `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-grounder/src/grounder/mod.rs`, `crates/rigger-grounder/src/grounder/symbols/store.rs`, `crates/rigger-grounder/src/ingest.rs`, `src/main.rs`, `crates/rigger-process/src/reap.rs`, `crates/rigger-store-sqlite/src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-a1a394c4891d` for the follow-up spec to consume directly, not re-enumerated here.
+- Expected line delta: negative - 594 literal compositions collapse toward one helper's call sites; the helper itself is small.
+- Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 594 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
 #### 10. The 89 `Command::new` call sites (`dup-decc12fbf756`) - production spawns already route through one process-spawn port
@@ -5506,13 +5447,13 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
 
-#### 11. Consolidate the 68 sqlite `Connection::open` call sites (`dup-1f66a86debc4`)
+#### 11. Consolidate the 70 sqlite `Connection::open` call sites (`dup-284d97a44d43`)
 
 - Scope: one sqlite-connection-opening adapter function (the cluster's own `proposed_home`) spanning `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, `crates/rigger-store-sqlite/src/eventstore/sqlite.rs` and `src/main.rs`, plus several `tests/` files.
-- Files: full site list in `docs/audit/duplication-catalog.json` under `dup-1f66a86debc4`.
-- Expected line delta: negative - 68 open calls collapse toward one function.
+- Files: full site list in `docs/audit/duplication-catalog.json` under `dup-284d97a44d43`.
+- Expected line delta: negative - 70 open calls collapse toward one function.
 - Risk: medium - touches the event store and context graph's own connection-lifecycle code; needs the store-identity and store-resolution contract tests green throughout.
-- Unblocks: one place to change pragma/timeout/journal-mode settings instead of 68.
+- Unblocks: one place to change pragma/timeout/journal-mode settings instead of 70.
 
 #### 12. Consolidate the 13 error-shaping helper sites (`dup-2b8f802a2dc3`) - caution, confirm before merging
 
@@ -5573,7 +5514,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 18. Sweep the remaining 140 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 210 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-decc12fbf756`, `dup-e31752c98ad7`, `dup-1f66a86debc4`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 140 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 210 clusters, 63 are test-only (items 13 and 15-17 above) and 7 are the named tier-1/tier-4 items (`dup-decc12fbf756`, `dup-a1a394c4891d`, `dup-284d97a44d43`, `dup-99a8136efbc4`, `dup-96daf6c3e468`, `dup-f2eee0c78cd6`, `dup-2b8f802a2dc3`); the remaining 140 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-49d4d9f335fc`, `dup-be7f6094aaff`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
