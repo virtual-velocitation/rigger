@@ -37,6 +37,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
     the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store);
+    an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothing(store);
 }
 
 /// An event of type `t` stamped with `group` (when given) and a `tag` entry naming it.
@@ -356,6 +357,127 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
     assert_eq!(
         answered, referenced,
         "the lookup answers what the reference answers"
+    );
+}
+
+/// THE STORE REFUSES A DERIVED APPEND (spec 107): an append whose batch holds an event of a
+/// derived type - alone, or anywhere among events the store keeps - is refused with the named
+/// error carrying the first derived type of the batch, and writes NO event of it:
+/// not the knowledge event ahead of the derived one, not the grouped ledger entry beside it, whose
+/// group stays without a member. A batch of a knowledge event, a ledger entry and a type no class
+/// list names is accepted whole, on a stream the refused batches left unborn, and a derived batch
+/// refused after it, under an expectation the stream meets, leaves that stream as it stood.
+fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothing(
+    store: &dyn EventStore,
+) {
+    use rigger_domain::ingest::DERIVED_INDEX_TYPES;
+    use rigger_domain::retention::TYPE_GENERATION_INGESTED;
+    let stream = "c-derived";
+    let of = |t: &str| Event::new(t, b"{}".to_vec());
+    let refused = |expected: ExpectedRevision, events: &[Event]| -> (String, String) {
+        match store.append(stream, expected, events) {
+            Err(Error::DerivedAppend { type_ }) => {
+                let said = Error::DerivedAppend {
+                    type_: type_.clone(),
+                }
+                .to_string();
+                (type_, said)
+            }
+            other => panic!("a batch holding a derived event must be refused by name: {other:?}"),
+        }
+    };
+    let naming = |type_: &str| {
+        (
+            type_.to_string(),
+            format!(
+                "event store: append refused: {type_} is a derived event, which the tree \
+                 re-derives - the log keeps the ledger entry of its generation and no event of \
+                 this batch was written"
+            ),
+        )
+    };
+    let held = || -> Vec<String> {
+        store
+            .read_stream(stream, 0, Direction::Forward)
+            .expect("the stream reads")
+            .into_iter()
+            .map(|e| e.type_)
+            .collect()
+    };
+    let head_of_the_entry = || {
+        store
+            .latest_in_group(stream, "gc/a.rs")
+            .expect("the group lookup must succeed")
+            .map(|h| h.meta.get(rigger_domain::ingest::META_REPLAY_KEY).cloned())
+    };
+
+    assert_eq!(
+        DERIVED_INDEX_TYPES,
+        [
+            "CodeEntityExtracted",
+            "EdgeInferred",
+            "DocConceptExtracted",
+            "DocLinkExtracted"
+        ],
+        "the four derived types the refusal is pinned over"
+    );
+    for derived in DERIVED_INDEX_TYPES {
+        assert_eq!(
+            refused(ExpectedRevision::Any, &[of(derived)]),
+            naming(derived),
+            "a batch of one derived event"
+        );
+    }
+    assert_eq!(
+        refused(
+            ExpectedRevision::NoStream,
+            &[
+                of("DecisionMade"),
+                identity_entry("gc", "a.rs", "h1", 1),
+                of("DocLinkExtracted"),
+                of("CodeEntityExtracted"),
+            ],
+        ),
+        naming("DocLinkExtracted"),
+        "the first derived type in batch order is named, wherever it stands in the batch"
+    );
+    assert_eq!(
+        (held(), head_of_the_entry()),
+        (Vec::new(), None),
+        "a refused batch writes none of its events, and its grouped entry joins no group"
+    );
+
+    let kept = [
+        of("DecisionMade"),
+        identity_entry("gc", "a.rs", "h1", 1),
+        of("ReviewVerdict"),
+    ];
+    let appended = store
+        .append(stream, ExpectedRevision::NoStream, &kept)
+        .expect("knowledge, a ledger entry and a type no list names are accepted on a stream the refused batches never created");
+    assert_eq!(appended.written(), 3, "every kept event is written");
+    let stood = (
+        vec![
+            "DecisionMade".to_string(),
+            TYPE_GENERATION_INGESTED.to_string(),
+            "ReviewVerdict".to_string(),
+        ],
+        Some(Some("gc/a.rs@h1#1".to_string())),
+    );
+    assert_eq!((held(), head_of_the_entry()), stood);
+
+    assert_eq!(
+        refused(
+            ExpectedRevision::Exact(2),
+            &[identity_entry("gc", "a.rs", "h2", 1), of("EdgeInferred")],
+        ),
+        naming("EdgeInferred"),
+        "a derived batch is refused under an expectation the stream meets"
+    );
+    assert_eq!(
+        (held(), head_of_the_entry()),
+        stood,
+        "the stream and the group stand as they stood before the refused batch"
     );
 }
 

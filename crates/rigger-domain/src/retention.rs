@@ -172,6 +172,29 @@ mod tests {
     }
 
     #[test]
+    fn class_of_answers_derived_for_each_type_of_the_derived_list_and_kept_for_every_other() {
+        assert_eq!(
+            DERIVED_INDEX_TYPES.map(class_of),
+            [Class::Derived; 4],
+            "every type of the derived list"
+        );
+        assert_eq!(
+            [
+                TYPE_GENERATION_INGESTED,
+                EPISODIC_TYPES[0],
+                crate::contextgraph::TYPE_ALIAS_DEFINED,
+                "ReviewVerdict",
+                "codeentityextracted",
+                "",
+            ]
+            .map(class_of),
+            [Class::Kept; 6],
+            "the ledger entry, an episodic type, a knowledge type, a type no list names, a \
+             derived type spelled in another case and the empty type"
+        );
+    }
+
+    #[test]
     fn identity_is_the_prefix_and_the_file_joined_by_a_slash() {
         assert_eq!(named().identity(), "gc/src/a.rs");
     }

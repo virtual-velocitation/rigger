@@ -6479,18 +6479,18 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 833,
-        "end_line": 853
+        "start_line": 955,
+        "end_line": 975
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 962,
-        "end_line": 1007
+        "start_line": 1084,
+        "end_line": 1129
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 1011,
-        "end_line": 1036
+        "start_line": 1133,
+        "end_line": 1158
       }
     ]
   },
