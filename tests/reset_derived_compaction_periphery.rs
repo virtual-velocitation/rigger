@@ -6,7 +6,8 @@
 //!
 //!   1. **The namespace boundary.** The migration reaches the run stream of the project it was
 //!      run in and no other: a store shared with a project whose identity differs from this one
-//!      by a character SQL reads as a wildcard is left byte-for-byte.
+//!      by a character SQL reads as a wildcard is left byte-for-byte, and the bare menu previews
+//!      that one stream's derived events and no neighbour's.
 //!   2. **The flag registry.** Each mode is named at most once and the two compose in either
 //!      order, each reporting its own work.
 //!   3. **The shipped operator-facing artifacts.** The usage the binary prints and the committed
@@ -208,6 +209,79 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
         );
     }
     assert_eq!(before.len() - after.len(), 2 * ROUNDS as usize - 1);
+}
+
+/// Given one store file holding three projects, each with a different number of recordings of
+/// its derived batch - the project the command runs in (twelve derived events), a neighbour whose
+/// identity differs from it by a character SQL reads as a wildcard (four) and an unrelated one
+/// (two) - when the operator runs bare `rigger reset`, then its `--derived` line names the twelve
+/// events of the one file identity this project's run stream holds and no neighbour's, and every
+/// row of the file stands as it stood; when `rigger reset --derived` then sheds exactly those
+/// twelve, bare `rigger reset` says none is left to shed while each neighbour still holds its own.
+#[test]
+fn bare_reset_names_the_derived_events_of_its_own_namespace_alone_on_a_store_it_shares() {
+    use common::cli::{derived_menu_line_naming, derived_menu_lines, NOTHING_TO_SHED_MENU_LINE};
+
+    const TARGET: &str = "my_repo";
+    const SEEDED: [(&str, u64); 3] = [(TARGET, 6), ("myXrepo", 2), ("other", 1)];
+    let dir = project_pinned_to(TARGET);
+    let root = dir.path();
+    assert_eq!(run_stream_identity(root), TARGET);
+    let db = rigger_file(root, "events.db");
+    {
+        let backend = Store::open(db.to_str().unwrap()).unwrap();
+        for (project, rounds) in SEEDED {
+            seed_namespace(&backend, project, rounds);
+        }
+    }
+    let before = raw_rows(&db);
+    let held = |rows: &[Row]| {
+        SEEDED.map(|(project, _)| rows_in(rows, &Namespaced::prefix_for(project)).len())
+    };
+    assert_eq!(
+        held(&before),
+        [13, 5, 3],
+        "premise: each namespace holds its run's own event and two derived events a recording"
+    );
+
+    let (menu, menu_err, menu_ok) = run_rigger(root, &["reset"]);
+    assert_eq!(
+        (menu_ok, derived_menu_lines(&menu)),
+        (true, vec![derived_menu_line_naming(12, 1).as_str()]),
+        "the menu names this project's twelve derived events and none of the six its neighbours \
+         hold; its stderr: {menu_err}"
+    );
+    assert_eq!(
+        raw_rows(&db),
+        before,
+        "the menu changes no row of any namespace"
+    );
+
+    let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
+    assert_eq!(
+        (shed_ok, shed),
+        (true, migrated_lines(1, 12, 0) + LOG_LEFT_AS_IT_STANDS_LINE),
+        "the derived reset sheds the twelve events the menu named; its stderr: {shed_err}"
+    );
+    let migrated = raw_rows(&db);
+    assert_eq!(
+        held(&migrated),
+        [2, 5, 3],
+        "the target keeps its run's own event and the one entry, each neighbour every row"
+    );
+
+    let (after, after_err, after_ok) = run_rigger(root, &["reset"]);
+    assert_eq!(
+        (after_ok, derived_menu_lines(&after)),
+        (true, vec![NOTHING_TO_SHED_MENU_LINE]),
+        "the menu says none is left to shed, the neighbours' six derived events being no part of \
+         what this project's derived reset sheds; its stderr: {after_err}"
+    );
+    assert_eq!(
+        raw_rows(&db),
+        migrated,
+        "the menu changes no row once migrated"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
