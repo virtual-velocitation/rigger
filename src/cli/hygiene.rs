@@ -82,9 +82,9 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         reset_scratch_orphans()?;
     }
     if modes.derived {
-        // Decided up front, before compacting: deleting rows and reclaiming the file are
-        // mechanics of the embedded log, not port operations, so `--derived` names the
-        // backend it needs rather than quietly doing nothing on one that cannot compact.
+        // Decided up front, before migrating: rewriting and deleting rows and reclaiming the
+        // file are mechanics of the embedded log, not port operations, so `--derived` names the
+        // backend it needs rather than quietly doing nothing on one the migration does not run on.
         // Checked HERE (inside this mode's own block), not as an early top-level return
         // before `--runs`/`--build-cache` even run - both those modes complete regardless
         // of what `--derived` decides, matching the SAME "each mode sheds only its own
@@ -100,13 +100,13 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
             )
             .into());
         }
-        // COMPACTION REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
-        // gaps by design, and a writer built before this compaction ran can reissue one of those
+        // THE MIGRATION REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
+        // gaps by design, and a writer built before this migration ran can reissue one of those
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
         //
-        // The step lock the guard took is held until the compaction returns, so its verdict that
+        // The step lock the guard took is held until the migration returns, so its verdict that
         // no `rigger step` is running stays true while the log is rewritten: a step started
         // meanwhile refuses on the held lock, and its courier retries once the reset is done.
         let _step_lock = if modes.force_live {
