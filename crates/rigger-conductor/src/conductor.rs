@@ -22316,6 +22316,95 @@ mod tests {
             assert_eq!(held_generations(&graph, &identities), walked_generations());
             assert_eq!(live_names(&graph), ["helper", "product"]);
         }
+
+        /// What the graph's side shows after another process recorded and folded the moved body.
+        enum AfterAnotherProcess {
+            /// The graph comes to owe its rebuild, so its side is not asked.
+            Owes,
+            /// A rebuild from the tree, back at the first body, leaves the graph holding it.
+            RebuiltAtTheFirstBody,
+        }
+
+        /// A MEMO ANOTHER PROCESS STALED NEVER SUPPRESSES A RECORDING.
+        ///
+        /// GIVEN a long-lived process whose sink recorded the source file at its first body, A,
+        /// and another process that then recorded and folded the moved body, B, followed by
+        /// `after`,
+        /// WHEN the file returns to A and the long-lived process's sink is handed A's batch,
+        /// THEN it records A again - the log's latest generation of the file is B, so A is not
+        /// current - although its memo still holds A.
+        fn a_revert_after_another_process_recorded_is_recorded(after: AfterAnotherProcess) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph =
+                contextgraph::sqlite::Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let long_lived = RunCtx::for_test(&cfg, &deps);
+            let a = handed_by_the_walk(root, SOURCE);
+            assert_eq!(a.emit(&long_lived), Ok(()));
+            write_file(&file, BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+            {
+                let other = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+                assert_eq!(b.emit(&RunCtx::for_test(&cfg, &other)), Ok(()));
+            }
+            write_file(&file, SOURCE_BODY.as_bytes());
+            match after {
+                AfterAnotherProcess::Owes => owe_a_rebuild(&graph),
+                AfterAnotherProcess::RebuiltAtTheFirstBody => {
+                    let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                    rebuild_from_the_tree(&graph_db, &log, tree.path());
+                    assert_eq!(
+                        graph.current_generation(SOURCE).unwrap(),
+                        Some(a.generation()),
+                        "premise: the rebuilt graph holds the first body"
+                    );
+                }
+            }
+
+            assert_eq!(a.emit(&long_lived), Ok(()));
+
+            let a_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &a.generation(),
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+            let b_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            assert_eq!(
+                recorded(&inner),
+                entries(&[a_entry.clone(), b_entry, a_entry])
+            );
+            assert_eq!(
+                logged_generations(&inner, STREAM, &[SOURCE]),
+                [Some(a.generation())]
+            );
+        }
+
+        #[test]
+        fn a_revert_another_process_staled_is_recorded_over_a_graph_that_owes_its_rebuild() {
+            a_revert_after_another_process_recorded_is_recorded(AfterAnotherProcess::Owes);
+        }
+
+        #[test]
+        fn a_revert_another_process_staled_is_recorded_over_a_graph_rebuilt_at_that_generation() {
+            a_revert_after_another_process_recorded_is_recorded(
+                AfterAnotherProcess::RebuiltAtTheFirstBody,
+            );
+        }
     }
 
     /// Spec 101 (A REINDEX THAT FAILS AFTER LANDING RE-EMITS NOTHING ON RESUME): GIVEN a merging

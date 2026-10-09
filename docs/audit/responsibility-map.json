@@ -3809,6 +3809,30 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_revert_after_another_process_recorded_is_recorded",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "b62552f42a2d1da7"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_revert_another_process_staled_is_recorded_over_a_graph_that_owes_its_rebuild",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "206853efcd0db728"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "a_revert_another_process_staled_is_recorded_over_a_graph_rebuilt_at_that_generation",
+    "is_test": true,
+    "proposed_module": "conductor::tests::run_sink",
+    "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "528b77af97298cc4"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "a_landed_unit_whose_reindex_lookup_fails_resumes_to_one_file_touched_and_one_integration",
     "is_test": true,
     "proposed_module": "conductor::tests",
