@@ -185,7 +185,8 @@ impl ResetEnv {
 /// prunable accumulation `--runs` / `--derived` would act on, each with a MEASURED count and the
 /// flag that acts on it, then exits 0. Read-only by construction - every number here comes from a
 /// `SELECT`, never from running a prune, so invoking the bare command is always safe to do "just
-/// to look".
+/// to look". The `--derived` line reads [`Store::count_derived`] over the project's run stream, the
+/// read the migration itself acts on, so what it names never drifts from what `--derived` sheds.
 ///
 /// WHY A COUNT, NOT A DISK-BYTE FORECAST. The flagged reports name bytes RECLAIMED
 /// ([`reclamation_lines`], `reset_runs`'s own line) because they measure a real before/after
@@ -195,9 +196,8 @@ impl ResetEnv {
 /// There is no honest byte figure to preview BEFORE that rewrite runs - printing one here would
 /// be exactly the fabricated number this whole command's design otherwise refuses to print. A
 /// COUNT of what would be removed is the real, read-only measurement the preview CAN make
-/// ([`contextgraph::sqlite::Projector::count_prunable`] /
-/// [`eventstore::sqlite::Store::count_derived_duplicates`], each the read-only twin of the
-/// predicate its flagged prune deletes by), so that is what this menu reports.
+/// ([`contextgraph::sqlite::Projector::count_prunable`] / [`Store::count_derived`], each the
+/// read-only twin of what its flag removes), so that is what this menu reports.
 fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     // --runs: works over ANY backend, exactly like a real `--runs` does (the context graph is
     // always a local file; only the EVENT log may be server-backed) - so this reads the whole run
@@ -220,15 +220,12 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
         );
     }
 
-    // --derived: a mechanic of the embedded sqlite store (see `reset_derived`'s own doc) - honest
-    // per backend rather than a number a server-backed project could never actually reclaim.
+    // --derived: the migration is a mechanic of the embedded sqlite store (see `reset_derived`'s
+    // own doc) - honest per backend rather than a count of a store it does not run on.
     if selection.is_sqlite() {
         let es = open_sqlite_store(&loc.file("events.db"))?;
-        let preview = es.count_derived_duplicates(
-            &Namespaced::prefix_for(&loc.identity()),
-            &rigger::ingest::derived_index_identity(),
-        )?;
-        println!("{}", derived_menu_line(selection, Some(&preview)));
+        let counted = es.count_derived(&loc.run_stream())?;
+        println!("{}", derived_menu_line(selection, Some(&counted)));
     } else {
         println!("{}", derived_menu_line(selection, None));
     }
@@ -245,33 +242,44 @@ fn runs_menu_line(stats: &PruneStats) -> String {
     )
 }
 
-/// The `--derived` line of [`reset_menu`], pure over the already-measured preview - the per-type
-/// counts and how many of them are superseded generations, worded as the `--derived` report words
-/// them - (or its absence, on a backend that cannot compact) so both branches are
-/// unit-testable without a store or a live server: `preview` is `Some` on the sqlite backend
-/// (`selection.is_sqlite()`) and `None` on any other, and this reads `selection` only to name the
-/// backend it is honest about.
-fn derived_menu_line(selection: &StoreSelection, preview: Option<&DerivedPreview>) -> String {
-    match preview {
-        Some(preview) => {
-            let total: usize = preview.removed.iter().map(|(_, n)| n).sum();
-            format!(
-                "--derived: {total} redundant derived-index event(s) prunable from the event log \
-                 across {} derived type(s), {} of them recordings of a superseded generation; \
-                 rerun `rigger reset --derived` to compact them",
-                preview.removed.len(),
-                preview.superseded_generations
-            )
-        }
+/// What a store holding no derived event is told of it, by the menu's `--derived` line and by
+/// `rigger reset --derived` itself.
+const NO_DERIVED_EVENT_TO_SHED: &str = "no derived event to shed";
+
+/// How the operator is told what the derived index of a log holds (spec 107): `events` derived
+/// events of `identities` file identities, the two numbers [`Store::count_derived`] answers as
+/// its count of events shed and the size of its set of identities.
+pub(crate) fn derived_count_phrase(events: usize, identities: usize) -> String {
+    format!("{events} derived events of {identities} file identities")
+}
+
+/// The `--derived` line of [`reset_menu`], pure over the already-read count (or its absence, on
+/// a backend the migration does not run on) so every branch is unit-testable without a store or
+/// a live server: `counted` is `Some` on the sqlite backend (`selection.is_sqlite()`) and `None`
+/// on any other, and this reads `selection` only to name the backend it is honest about.
+///
+/// A count holding no derived event says there is none to shed; any other names the events, the
+/// file identities holding them ([`derived_count_phrase`]) and the flag - decided by the events
+/// alone, so a store whose derived rows all name no identity is still told what `--derived`
+/// sheds.
+fn derived_menu_line(selection: &StoreSelection, counted: Option<&DerivedCount>) -> String {
+    match counted.map(|counted| (counted.shed, counted.identities.len())) {
+        Some((0, _)) => format!("--derived: {NO_DERIVED_EVENT_TO_SHED}"),
+        Some((events, identities)) => format!(
+            "--derived: {} to shed from the event log; rerun `rigger reset --derived` to \
+             migrate them",
+            derived_count_phrase(events, identities)
+        ),
         None => {
             debug_assert!(
                 !selection.is_sqlite(),
                 "derived_menu_line: a `None` count on the sqlite backend would hide a real \
                  measurement the caller could have taken"
             );
-            "--derived: unavailable on this backend - compaction deletes rows from the event log \
-             and vacuums the file, a mechanic of the embedded sqlite events.db store; this \
-             project is configured for the server-backed store, which rigger cannot compact"
+            "--derived: unavailable on this backend - the migration rewrites and deletes rows of \
+             the event log and vacuums the file, a mechanic of the embedded sqlite events.db \
+             store; this project is configured for the server-backed store, where the migration \
+             does not run"
                 .to_string()
         }
     }
@@ -453,7 +461,7 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// It is orchestration over ONE store transaction
 /// ([`rigger::eventstore::sqlite::Store::shed_derived`]) on the project's run stream, the one
 /// stream a sink ever appended a derived event to, named through the SAME stream-prefix spelling
-/// every namespaced read and write of this project uses ([`Namespaced::prefix_for`]). Before that
+/// every namespaced read and write of this project uses (`StoreLocation::run_stream`). Before that
 /// transaction opens it reads what the stream holds ([`Store::count_derived`]) and answers, for
 /// every identity holding a derived event, the blob and the flag its entry records
 /// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function, handed
@@ -498,14 +506,10 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     // THE OPERATOR'S BEFORE, taken before the migration's transaction opens: what the
     // reclamation reports is the space the log lost on disk across the whole command.
     let on_disk_before = store.bytes_on_disk();
-    let stream = format!(
-        "{}{}",
-        Namespaced::prefix_for(&loc.identity()),
-        conductor::STREAM
-    );
+    let stream = loc.run_stream();
     let counted = store.count_derived(&stream)?;
     if counted.shed == 0 {
-        println!("reset --derived: no derived event to shed");
+        println!("reset --derived: {NO_DERIVED_EVENT_TO_SHED}");
     } else {
         let entries = tree_entries(&tree_root(&loc.dir), &counted.identities, hash)?;
         // A TOTAL function: an identity the read above did not count - one recorded since - gets

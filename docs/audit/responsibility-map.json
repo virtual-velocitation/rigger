@@ -8401,6 +8401,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "run_stream",
+    "is_test": false,
+    "proposed_module": "main::store_location",
+    "reason": "method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.",
+    "content_hash": "eda7736ba5927575"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "identity",
     "is_test": false,
     "proposed_module": "main::store_location",

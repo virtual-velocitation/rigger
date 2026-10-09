@@ -498,7 +498,7 @@ pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to she
 
 /// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events
 /// of `identities` file identities.
-pub fn derived_menu_line(events: usize, identities: usize) -> String {
+pub fn derived_menu_line_naming(events: usize, identities: usize) -> String {
     format!(
         "--derived: {events} derived events of {identities} file identities to shed from the \
          event log; rerun `rigger reset --derived` to migrate them"

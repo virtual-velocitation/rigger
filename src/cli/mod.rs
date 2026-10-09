@@ -22,7 +22,7 @@ use rigger::driver::cli;
 use rigger::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
-    sqlite::{DerivedPreview, Store},
+    sqlite::{DerivedCount, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
@@ -1402,6 +1402,17 @@ impl StoreLocation {
     /// `&str` the sqlite `Store` / `Projector` opens.
     fn file(&self, name: &str) -> String {
         store_file(&self.dir, name)
+    }
+
+    /// The whole name this project's run stream has in the store's file - the one spelling a
+    /// read below the namespacing port ([`Namespaced`]) names it by: the prefix of this store's
+    /// [`identity`](Self::identity), then [`conductor::STREAM`].
+    fn run_stream(&self) -> String {
+        format!(
+            "{}{}",
+            Namespaced::prefix_for(&self.identity()),
+            conductor::STREAM
+        )
     }
 
     /// The identity scoping this store's namespaced streams, bound to the store's OWNING

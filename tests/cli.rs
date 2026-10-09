@@ -28301,16 +28301,16 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
 }
 
 /// Given a store recorded before the ledger holding six derived events of three file identities
-/// - a superseded and a latest generation of one source file, a design batch of that same file, a
+/// (a superseded and a latest generation of one source file, a design batch of that same file, a
 /// second source file whose latest recording is already a ledger entry, and one event naming no
-/// identity - when the operator runs bare `rigger reset`, then its `--derived` line names those
+/// identity), when the operator runs bare `rigger reset`, then its `--derived` line names those
 /// six events and three identities and the log stands as it stood; when `rigger reset --derived`
 /// then runs it sheds exactly those six events, the three identities holding none after it; and
 /// bare `rigger reset` then says no derived event is left to shed.
 #[test]
 fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
     use common::cli::{
-        derived_menu_line, derived_menu_lines, keyed, migrated_lines, pre_ledger_batch,
+        derived_menu_line_naming, derived_menu_lines, keyed, migrated_lines, pre_ledger_batch,
         stream_shape, with_run_store, NOTHING_TO_SHED_MENU_LINE,
     };
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
@@ -28367,7 +28367,7 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
     assert!(menu_ok, "bare reset exits 0: {menu_err}");
     assert_eq!(
         derived_menu_lines(&menu),
-        [derived_menu_line(6, 3)],
+        [derived_menu_line_naming(6, 3)],
         "the menu names the six derived events and the three file identities the log holds"
     );
     assert_eq!(stream_shape(root), shape, "the menu changes no row");

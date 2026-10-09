@@ -7236,6 +7236,35 @@
     "disposition": "not-a-duplicate"
   },
   {
+    "id": "dup-693345bdfc2f",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/cli/hygiene.rs",
+        "name": "derived_count_phrase",
+        "content_hash": "ec1089d3596b57b5"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "migrated_lines",
+        "content_hash": "de335965e504c042"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "derived_menu_line_naming",
+        "content_hash": "abc61f9406535fc4"
+      },
+      {
+        "file": "tests/compaction_generations_periphery.rs",
+        "name": "runs_prunable",
+        "content_hash": "b5bb3e7cbaf9fefe"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 3 files: src/cli/hygiene.rs, tests/common/cli.rs, tests/compaction_generations_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-4a813209194e",
     "classification": "near",
     "sites": [
@@ -7251,6 +7280,25 @@
       }
     ],
     "proposed_home": "hygiene::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-4b714a54ab5e",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/cli/hygiene.rs",
+        "name": "derived_count_phrase_names_the_events_first_and_the_file_identities_second",
+        "content_hash": "56fd8234bbe27157"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "pluralize_uses_singular_only_at_exactly_one",
+        "content_hash": "8f3218d239b5c19f"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: src/cli/hygiene.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7624,7 +7672,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b2e626ed7495",
+    "id": "dup-5e768c7156e7",
     "classification": "near",
     "sites": [
       {
@@ -7669,11 +7717,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "init_reports_the_positive_summary_then_is_a_quiet_noop",
-        "content_hash": "d7b0a03c7ea043e9"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "result_if_absent_records_when_the_spawn_is_unanswered",
         "content_hash": "18af3ee756253131"
       },
@@ -7704,16 +7747,6 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "status_prints_no_dashboard_line_when_none_was_ever_recorded",
-        "content_hash": "93672efa38f6743f"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "prime_with_no_spec_path_never_mentions_the_spec_lint",
-        "content_hash": "93672efa38f6743f"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "prime_given_a_spec_path_names_the_spec_lint_as_a_next_step",
         "content_hash": "37ef7aab90330b78"
       },
@@ -7724,18 +7757,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "name": "workflow_with_no_spec_path_never_mentions_the_spec_lint",
-        "content_hash": "222759f2ade2d565"
-      },
-      {
-        "file": "tests/cli.rs",
         "name": "mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments",
         "content_hash": "c0671d36a249debe"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "init_scaffolds_the_instructions_readme_and_names_it",
-        "content_hash": "ac6ce8509142b691"
       },
       {
         "file": "tests/graph_show_periphery.rs",
@@ -7756,16 +7779,6 @@
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "name": "reset_force_live_alone_is_refused_as_no_mode",
         "content_hash": "a59797ed5d0e270a"
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "name": "the_derived_help_entry_documents_force_live_and_owns_the_risk",
-        "content_hash": "7546110d06549f14"
-      },
-      {
-        "file": "tests/reset_menu.rs",
-        "name": "bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable",
-        "content_hash": "dc8bbd09893f4360"
       },
       {
         "file": "tests/statusline_command_periphery.rs",
@@ -7793,7 +7806,7 @@
         "content_hash": "f0f29def60c5e78e"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: tests/cli.rs, tests/graph_show_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: tests/cli.rs, tests/graph_show_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/statusline_command_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -7894,6 +7907,40 @@
       }
     ],
     "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-c72ffc4edd8c",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "name": "init_reports_the_positive_summary_then_is_a_quiet_noop",
+        "content_hash": "d7b0a03c7ea043e9"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "status_prints_no_dashboard_line_when_none_was_ever_recorded",
+        "content_hash": "93672efa38f6743f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "prime_with_no_spec_path_never_mentions_the_spec_lint",
+        "content_hash": "93672efa38f6743f"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "workflow_with_no_spec_path_never_mentions_the_spec_lint",
+        "content_hash": "222759f2ade2d565"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "init_scaffolds_the_instructions_readme_and_names_it",
+        "content_hash": "ac6ce8509142b691"
+      }
+    ],
+    "proposed_home": "cli::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -8041,21 +8088,21 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-f1b8cb556362",
-    "classification": "near",
+    "id": "dup-a1b7c48d72bd",
+    "classification": "exact",
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "name": "migrated_lines",
-        "content_hash": "de335965e504c042"
+        "name": "derived_menu_lines",
+        "content_hash": "abcb3e0cce3666b0"
       },
       {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "runs_prunable",
-        "content_hash": "b5bb3e7cbaf9fefe"
+        "file": "tests/common/cli.rs",
+        "name": "index_lag_lines",
+        "content_hash": "abcb3e0cce3666b0"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/common/cli.rs, tests/compaction_generations_periphery.rs)",
+    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

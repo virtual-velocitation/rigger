@@ -393,30 +393,6 @@ impl Store {
         }
     }
 
-    /// A read-only count of the rows the live selection ([`plan_derived_prune`]) sets aside
-    /// (spec 68, "the reset surface"): for each type `identity` covers, every recording of a
-    /// superseded generation and every earlier recording of a surviving key. No row is touched,
-    /// no valid-time carried, no `VACUUM` run.
-    ///
-    /// Unlike [`Store::read_live_selection`] this needs no [`ContentIdentity::reasserting`]
-    /// declaration: that check exists because a reader of the selection has to know whether a
-    /// surviving row's valid-time must be carried forward, and a count carries nothing, so the
-    /// one input that check guards against getting wrong is not read here at all.
-    ///
-    /// `rigger reset`'s bare-menu preview reads this.
-    pub fn count_derived_duplicates(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<DerivedPreview, Error> {
-        let guard = self.conn.lock().unwrap();
-        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
-        Ok(DerivedPreview {
-            removed: plan.removed_per_type(identity.types()),
-            superseded_generations: plan.superseded,
-        })
-    }
-
     /// Measure the derived-index REDUNDANCY already sitting in the log, WITHOUT deleting
     /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
     /// many rows carry a covered key versus how many of them the live selection KEEPS.
@@ -720,15 +696,6 @@ fn read_derived(
     Ok(read)
 }
 
-/// What [`Store::count_derived_duplicates`] counts the live selection setting aside.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DerivedPreview {
-    /// The rows the selection sets aside, per covered type in the policy's order, zeros included.
-    pub removed: Vec<(String, usize)>,
-    /// How many of them record a superseded generation of their file.
-    pub superseded_generations: usize,
-}
-
 /// What the live selection sets aside and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
     /// How many covered, keyed rows the selection weighed.
@@ -738,19 +705,6 @@ struct DerivedPrunePlan {
     /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
     /// first recorded earlier than its own valid-time.
     carries: Vec<(i64, i64)>,
-    /// How many of `deletes` record a superseded generation.
-    superseded: usize,
-}
-
-impl DerivedPrunePlan {
-    /// The deletes counted per type, in the order `types` names them, zeros included.
-    fn removed_per_type(&self, types: &[String]) -> Vec<(String, usize)> {
-        let mut counts = vec![0usize; types.len()];
-        for (t, _) in &self.deletes {
-            counts[*t] += 1;
-        }
-        types.iter().cloned().zip(counts).collect()
-    }
 }
 
 /// One re-asserted fact's valid-time as the selection walks its recordings newest first: the
@@ -830,8 +784,8 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
 }
 
 /// The ONE live selection of the derived index, shared by the rebuild's read, the migration's
-/// choice of the rows it converts, the reset menu's count and the `rigger validate` bloat
-/// measurement: which rows are set aside, and which surviving rows take an earlier valid-time.
+/// choice of the rows it converts and the `rigger validate` bloat measurement: which rows are
+/// set aside, and which surviving rows take an earlier valid-time.
 ///
 /// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
 /// met for a `(stream, batch identity)` names that identity's LATEST recorded generation
@@ -895,7 +849,6 @@ fn plan_derived_prune(
         rows: 0,
         deletes: Vec::new(),
         carries: Vec::new(),
-        superseded: 0,
     };
     while let Some(row) = rows.next().map_err(be)? {
         let position: i64 = row.get(0).map_err(be)?;
@@ -925,9 +878,6 @@ fn plan_derived_prune(
         let survives = !superseded && seen.insert(exact.clone());
         if !survives {
             plan.deletes.push((type_index, position));
-        }
-        if superseded {
-            plan.superseded += 1;
         }
         let fact = payload.and_then(|payload| match identity.facts() {
             Some(facts) => {

@@ -21,7 +21,7 @@
 
 mod common;
 
-use common::cli::derived_menu_line;
+use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;
 use common::cli::emit;
 use common::cli::rigger_file;
@@ -125,7 +125,7 @@ fn bare_reset_names_the_derived_events_of_a_store_whose_rows_name_no_file_identi
     assert!(ok, "bare reset must exit 0; stderr: {err}");
     assert_eq!(
         derived_menu_lines(&out),
-        [derived_menu_line(2, 0)],
+        [derived_menu_line_naming(2, 0)],
         "two derived events naming no file identity are still events `--derived` sheds"
     );
 }

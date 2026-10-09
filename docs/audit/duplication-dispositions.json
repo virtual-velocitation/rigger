@@ -760,7 +760,12 @@
     "reason": "Scenario tests that each seed a different run history through the shared store-project and seed_run_events fixtures and assert a different surface (causes, stats, release-ready, resume); only the fixture calls are common."
   },
   {
-    "id": "dup-b2e626ed7495",
+    "id": "dup-5e768c7156e7",
+    "disposition": "not-a-duplicate",
+    "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
+  },
+  {
+    "id": "dup-c72ffc4edd8c",
     "disposition": "not-a-duplicate",
     "reason": "CLI tests that each drive a different command through the shared project fixtures and run_rigger and assert a different outcome; they share only the arrange-run-assert idiom."
   },
@@ -880,9 +885,9 @@
     "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
   },
   {
-    "id": "dup-f1b8cb556362",
+    "id": "dup-693345bdfc2f",
     "disposition": "not-a-duplicate",
-    "reason": "Two different report lines spelled for two different commands (the counts `rigger reset --derived` prints of its migration vs the bare menu's `--runs` line); they share only the `format!` shape."
+    "reason": "Four different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line that holds that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, and the bare menu's `--runs` line); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",
@@ -1038,5 +1043,15 @@
     "id": "dup-cc1f48bd7d99",
     "disposition": "not-a-duplicate",
     "reason": "`f11` renders the plan critique's F11 advisory for one criterion and `graph_build_line` renders the line `rigger graph build` prints for an event count and a fold-loss clause: two test-side spellings of different product lines, each defined once, sharing only the shape of one `format!` over a number and a string."
+  },
+  {
+    "id": "dup-a1b7c48d72bd",
+    "disposition": "not-a-duplicate",
+    "reason": "Both already delegate to the one line picker `lines_where`; each names a different command's lines by its own predicate (the bare reset menu's `--derived` lines vs the index-lag advisory's)."
+  },
+  {
+    "id": "dup-4b714a54ab5e",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unit tests of two unrelated pure text functions (the derived-count phrase of `rigger reset` vs the audit report's pluralizer), each two exact-value assertions; they share only the assert_eq shape."
   }
 ]
