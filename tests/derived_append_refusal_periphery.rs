@@ -9,9 +9,10 @@
 //! 1. THE COMPOSED STORE. Every production writer reaches the adapter through a project namespace
 //!    and the folding store, which folds what the store placed into `graph.db`. A refused batch
 //!    must come back through both wrappers as the named error, unreworded, and must leave BOTH
-//!    files as they stood: no row in `events.db` read through a handle of its own, no `applied`
-//!    row and no node in `graph.db`, and no log position spent, so the next kept event lands at
-//!    the position the refused batch would have taken.
+//!    files as they stood: no row in `events.db` read through a handle of its own, no member of
+//!    the group its ledger entry names, no `applied` row and no node in `graph.db`, and no log
+//!    position or revision spent, so the next kept event lands where the refused batch would
+//!    have.
 //! 2. THE CLASS TABLE. The refusal reads `retention::class_of`. Over every type the class lists
 //!    name and types no list names, the store refuses exactly the types `class_of` answers
 //!    derived, and those are exactly the four derived index types.
@@ -28,7 +29,10 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use common::cli::applied_positions;
-use common::fixtures::{decision_json, def_json, event_of, live_node_ids, PreLedgerStore};
+use common::fixtures::{
+    decision_json, def_json, entry_of_a_batch, event_of, live_node_ids, naming, refused,
+    PreLedgerStore,
+};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Fold, Projection, KIND_DECISION, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
@@ -36,40 +40,12 @@ use rigger::contextgraph::{
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter};
+use rigger::eventstore::{Appended, Direction, Event, EventStore, ExpectedRevision, Filter};
 use rigger::ingest::{folding_into, DERIVED_INDEX_TYPES};
 use rigger::retention::{class_of, Class, EPISODIC_TYPES, PERCEPTION_TYPES};
 
 /// The stream every test of this file appends to.
 const STREAM: &str = "run";
-
-/// The type a refused append names and the text it says, or a panic naming what the append
-/// answered in its place.
-fn refused<T: std::fmt::Debug>(answer: Result<T, Error>) -> (String, String) {
-    match answer {
-        Err(e @ Error::DerivedAppend { .. }) => {
-            let said = e.to_string();
-            let Error::DerivedAppend { type_ } = e else {
-                unreachable!("matched above")
-            };
-            (type_, said)
-        }
-        other => panic!("a batch holding a derived event must be refused by name: {other:?}"),
-    }
-}
-
-/// What [`refused`] answers for a batch whose first derived event is of `type_`: the type and
-/// the whole text the store says of it.
-fn naming(type_: &str) -> (String, String) {
-    (
-        type_.to_string(),
-        format!(
-            "event store: append refused: {type_} is a derived event, which the tree re-derives - \
-             the log keeps the ledger entry of its generation and no event of this batch was \
-             written"
-        ),
-    )
-}
 
 /// Every row the log file `db` holds, as `(position, revision, type)` in position order, read
 /// through a store handle opened for the read alone.
@@ -126,10 +102,20 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
         )
     };
     let nothing = (Vec::new(), Vec::<u64>::new(), Vec::<String>::new());
+    let group_head = || {
+        Namespaced::new(
+            &Store::open(events_db.to_str().unwrap()).unwrap(),
+            "project",
+        )
+        .latest_in_group(STREAM, "gc/src/a.rs")
+        .unwrap()
+        .map(|head| (head.position, head.type_))
+    };
 
-    // A knowledge event ahead of a derived one: refused whole, through the folding form and
-    // through the port, and neither file gains a row.
-    let mixed = [decision("d1"), code_entity()];
+    // A knowledge event and a grouped ledger entry ahead of a derived one: refused whole, through
+    // the folding form and through the port, and neither file gains a row.
+    let entry = entry_of_a_batch("gc", "src/a.rs", "h1", 1, "b10b", false);
+    let mixed = [decision("d1"), entry.clone(), code_entity()];
     assert_eq!(
         refused(folding.append_and_fold(STREAM, ExpectedRevision::Any, &mixed)),
         naming("CodeEntityExtracted"),
@@ -144,6 +130,11 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
         held(),
         nothing,
         "a refused batch is in neither file: not its knowledge event, not a fold of it"
+    );
+    assert_eq!(
+        group_head(),
+        None,
+        "the ledger entry of a refused batch joins no group"
     );
 
     // The same knowledge event alone is kept: it lands at the log's first position, which no
@@ -196,6 +187,14 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
             vec!["d1".to_string(), "d2".to_string()],
         )
     );
+    // The entry alone, handed to the store, is its group's one member: the lookup that answered
+    // none for the refused batch answers an entry the store wrote.
+    assert_eq!(group_head(), None);
+    let alone = project
+        .append(STREAM, ExpectedRevision::Exact(1), &[entry])
+        .expect("a ledger entry is kept");
+    assert_eq!(positions(&alone), vec![3]);
+    assert_eq!(group_head(), Some((3, "GenerationIngested".to_string())));
     assert_eq!(
         *said.lock().unwrap(),
         Vec::<String>::new(),

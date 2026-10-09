@@ -2525,7 +2525,7 @@ mod tests {
         keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
     }
 
-    /// The ledger entry of `identity` at `generation`, built by the crate's one test-side entry
+    /// The ledger entry of `identity` at `generation`, built by the shared fixtures' one entry
     /// builder for a batch of `n` events extracted from `blob` under the flag `excluded`.
     fn entry_event(
         identity: &str,
@@ -2536,7 +2536,7 @@ mod tests {
     ) -> Event {
         let (prefix, file) =
             crate::retention::GenerationIngested::identity_parts(identity).unwrap();
-        crate::eventstore::contract::entry_of_a_batch(prefix, file, generation, n, blob, excluded)
+        crate::test_support::entry_of_a_batch(prefix, file, generation, n, blob, excluded)
     }
 
     /// `row` as the migration leaves the row it rewrites into `entry`: its type, payload and

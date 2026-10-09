@@ -579,8 +579,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 595,
-        "end_line": 597
+        "start_line": 624,
+        "end_line": 626
       },
       {
         "file": "tests/common/real_driver_spy.rs",
@@ -5234,8 +5234,8 @@
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 795,
-        "end_line": 797
+        "start_line": 824,
+        "end_line": 826
       }
     ]
   },
@@ -6479,18 +6479,18 @@
     "sites": [
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 955,
-        "end_line": 975
+        "start_line": 917,
+        "end_line": 937
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 1084,
-        "end_line": 1129
+        "start_line": 1046,
+        "end_line": 1091
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/contract.rs",
-        "start_line": 1133,
-        "end_line": 1158
+        "start_line": 1095,
+        "end_line": 1120
       }
     ]
   },
@@ -7474,13 +7474,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 156,
-        "end_line": 163
+        "start_line": 185,
+        "end_line": 192
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 185,
-        "end_line": 192
+        "start_line": 214,
+        "end_line": 221
       }
     ]
   },
@@ -7489,13 +7489,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 182,
-        "end_line": 184
+        "start_line": 211,
+        "end_line": 213
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 210,
-        "end_line": 212
+        "start_line": 239,
+        "end_line": 241
       }
     ]
   },
@@ -7504,8 +7504,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 193,
-        "end_line": 200
+        "start_line": 222,
+        "end_line": 229
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -7519,13 +7519,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 691,
-        "end_line": 699
+        "start_line": 720,
+        "end_line": 728
       },
       {
         "file": "tests/common/fixtures/events.rs",
-        "start_line": 758,
-        "end_line": 766
+        "start_line": 787,
+        "end_line": 795
       }
     ]
   },

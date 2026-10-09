@@ -65,27 +65,7 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
 /// The ledger entry of `<prefix>/<file>` at `generation`, its batch holding `n` events, as the
 /// entry's one constructor builds it: under its group and its replay key.
 fn identity_entry(prefix: &str, file: &str, generation: &str, n: usize) -> Event {
-    entry_of_a_batch(prefix, file, generation, n, "b10b", false)
-}
-
-/// THE ONE BUILDER of a ledger entry in this crate's tests: the entry of `<prefix>/<file>` at
-/// `generation`, its batch of `n` events extracted from `blob` under the walk's flag `excluded`.
-pub(crate) fn entry_of_a_batch(
-    prefix: &str,
-    file: &str,
-    generation: &str,
-    n: usize,
-    blob: &str,
-    excluded: bool,
-) -> Event {
-    rigger_domain::retention::GenerationIngested {
-        prefix: prefix.to_string(),
-        file: file.to_string(),
-        generation: generation.to_string(),
-        blob: blob.to_string(),
-        excluded,
-    }
-    .event(n)
+    crate::test_support::entry_of_a_batch(prefix, file, generation, n, "b10b", false)
 }
 
 /// Each of `identities` with its latest generation on `stream`, twice over: as the domain reader
@@ -374,27 +354,9 @@ fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothi
     use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     let stream = "c-derived";
     let of = |t: &str| Event::new(t, b"{}".to_vec());
-    let refused = |expected: ExpectedRevision, events: &[Event]| -> (String, String) {
-        match store.append(stream, expected, events) {
-            Err(Error::DerivedAppend { type_ }) => {
-                let said = Error::DerivedAppend {
-                    type_: type_.clone(),
-                }
-                .to_string();
-                (type_, said)
-            }
-            other => panic!("a batch holding a derived event must be refused by name: {other:?}"),
-        }
-    };
-    let naming = |type_: &str| {
-        (
-            type_.to_string(),
-            format!(
-                "event store: append refused: {type_} is a derived event, which the tree \
-                 re-derives - the log keeps the ledger entry of its generation and no event of \
-                 this batch was written"
-            ),
-        )
+    use crate::test_support::naming;
+    let refused = |expected: ExpectedRevision, events: &[Event]| {
+        crate::test_support::refused(store.append(stream, expected, events))
     };
     let held = || -> Vec<String> {
         store

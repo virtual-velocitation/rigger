@@ -17,6 +17,35 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// THE REFUSAL ORACLE, its reading half: the type a refused append names and the text the
+/// store says of it, or a panic naming what the append answered in its place.
+pub fn refused<T: std::fmt::Debug>(answer: Result<T, Error>) -> (String, String) {
+    match answer {
+        Err(e @ Error::DerivedAppend { .. }) => {
+            let said = e.to_string();
+            let Error::DerivedAppend { type_ } = e else {
+                unreachable!("matched above")
+            };
+            (type_, said)
+        }
+        other => panic!("a batch holding a derived event must be refused by name: {other:?}"),
+    }
+}
+
+/// THE REFUSAL ORACLE, its expected half: what [`refused`] answers for a batch whose first
+/// derived event is of `type_` - the type and the whole text the store says of it, spelled here
+/// and never read from the error, so the two stay independent.
+pub fn naming(type_: &str) -> (String, String) {
+    (
+        type_.to_string(),
+        format!(
+            "event store: append refused: {type_} is a derived event, which the tree re-derives - \
+             the log keeps the ledger entry of its generation and no event of this batch was \
+             written"
+        ),
+    )
+}
+
 /// Each event's type, in the order given.
 pub fn types_of(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
@@ -839,20 +868,41 @@ pub fn run_started(run: &str, criteria: &[&str]) -> Event {
     .with_meta("run_id", run)
 }
 
-/// `n` ledger entries of perception, each a generation of its own of one of four files, as the
-/// entry's one constructor builds them.
+/// THE ONE BUILDER of a ledger entry for the tests that include this file: the entry of
+/// `<prefix>/<file>` at `generation`, its batch of `n` events extracted from `blob` under the
+/// walk's flag `excluded`, as the entry's one constructor builds its event.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn entry_of_a_batch(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    n: usize,
+    blob: &str,
+    excluded: bool,
+) -> Event {
+    rigger::retention::GenerationIngested {
+        prefix: prefix.to_string(),
+        file: file.to_string(),
+        generation: generation.to_string(),
+        blob: blob.to_string(),
+        excluded,
+    }
+    .event(n)
+}
+
+/// `n` ledger entries of perception, each a generation of its own of one of four files.
 #[cfg(any(feature = "store", not(feature = "core")))]
 fn flood_entries(n: usize) -> Vec<Event> {
     (0..n)
         .map(|i| {
-            rigger::retention::GenerationIngested {
-                prefix: "gc".to_string(),
-                file: format!("src/f{}.rs", i % 4),
-                generation: format!("h{i}"),
-                blob: String::new(),
-                excluded: false,
-            }
-            .event(1)
+            entry_of_a_batch(
+                "gc",
+                &format!("src/f{}.rs", i % 4),
+                &format!("h{i}"),
+                1,
+                "",
+                false,
+            )
         })
         .collect()
 }
