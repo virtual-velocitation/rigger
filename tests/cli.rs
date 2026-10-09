@@ -40,6 +40,7 @@ use common::cli::{
     REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
 };
 use common::fixtures::assert_driver_guards_a_null_step;
+use common::fixtures::file_len;
 use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
@@ -712,7 +713,7 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
     let (dir, graph_path, id) = bloated_graph_project();
     let root = dir.path();
 
-    let before = std::fs::metadata(&graph_path).unwrap().len();
+    let before = file_len(&graph_path);
 
     // Drive the real reset: it reclaims every pre-boundary superseded edge, then VACUUMs so the file
     // shrinks to match, reporting BOTH on the reset line.
@@ -734,7 +735,7 @@ fn reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows() {
 
     // The on-disk graph file is STRICTLY smaller: a VACUUM ran. Without the compaction the DELETE
     // only frees internal pages and the file stays exactly `before` bytes.
-    let after = std::fs::metadata(&graph_path).unwrap().len();
+    let after = file_len(&graph_path);
     assert!(
         after < before,
         "reset --runs must COMPACT the on-disk graph (a VACUUM ran): file went from {before} to {after} bytes"
@@ -789,7 +790,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
     let (dir, graph_path, id) = bloated_graph_project();
     let root = dir.path();
 
-    let before = std::fs::metadata(&graph_path).unwrap().len();
+    let before = file_len(&graph_path);
 
     // FIRST pass: reclaims every pre-boundary superseded edge and reports a NON-ZERO reclamation.
     let (out1, err1, ok1) = run_rigger(root, &["reset", "--runs"]);
@@ -815,7 +816,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
         reclaimed1 > 0,
         "first reset --runs must REPORT a non-zero reclaimed-byte count on a real prune; got {reclaimed1} from {out1:?}"
     );
-    let after1 = std::fs::metadata(&graph_path).unwrap().len();
+    let after1 = file_len(&graph_path);
     assert!(
         after1 < before,
         "first reset --runs must shrink the on-disk graph: {before} -> {after1} bytes"
@@ -837,7 +838,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
         reclaimed2, 0,
         "second reset --runs compacts an already-compact file, so nothing was freed and it reclaims 0 bytes; got {reclaimed2}"
     );
-    let after2 = std::fs::metadata(&graph_path).unwrap().len();
+    let after2 = file_len(&graph_path);
     assert!(
         after2 <= after1,
         "an idempotent second reset --runs must never GROW the on-disk graph: {after1} -> {after2} bytes"
@@ -959,7 +960,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
         "prune must free all {BLOATED_SUPERSEDED} superseded edges onto the freelist before compaction"
     );
 
-    let before = std::fs::metadata(&graph_path).unwrap().len();
+    let before = file_len(&graph_path);
     let query_before = project(&graph);
     assert_eq!(
         query_before.len(),
@@ -969,7 +970,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
 
     // The API under test: compact and read back the reclaimed byte count.
     let reclaimed = graph.compact().unwrap();
-    let after = std::fs::metadata(&graph_path).unwrap().len();
+    let after = file_len(&graph_path);
 
     assert!(
         reclaimed > 0,
@@ -997,7 +998,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
 
     // A second compaction freed nothing: it reclaims exactly 0 bytes and does not shrink further.
     let reclaimed_again = graph.compact().unwrap();
-    let after_again = std::fs::metadata(&graph_path).unwrap().len();
+    let after_again = file_len(&graph_path);
     assert_eq!(
         reclaimed_again, 0,
         "compacting an already-compact file frees nothing, so it must reclaim 0 bytes; got {reclaimed_again}"

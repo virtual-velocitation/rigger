@@ -998,7 +998,7 @@ pub struct PrunedDerived {
     /// (one that is not the latest the log records for it), as opposed to an earlier recording
     /// of a key that survives.
     pub superseded_generations: usize,
-    /// What reclaiming the space those deletes freed did to the file.
+    /// What reclaiming the space the file was holding free did to the file.
     pub reclamation: Reclamation,
 }
 
@@ -1516,7 +1516,7 @@ fn direction_sql(dir: Direction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{plant_free_pages, pragma_i64};
+    use crate::test_support::{file_len, plant_free_pages, pragma_i64};
 
     #[test]
     fn passes_the_contract() {
@@ -2353,7 +2353,8 @@ mod tests {
     }
 
     /// Spec 60, criterion 5: the post-commit step this store guards against failing really can
-    /// fail, so the capture above is not a defense against an imaginary error.
+    /// fail, so the capture `a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted`
+    /// pins is not a defense against an imaginary error.
     ///
     /// A file the process cannot write is the reachable shape of every trigger: the rewrite needs
     /// to write both the database and a full copy of it, and either can be refused.
@@ -2406,11 +2407,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The length of the main database file alone, without its write-ahead log.
-    fn main_file_len(path: &std::path::Path) -> u64 {
-        std::fs::metadata(path).unwrap().len()
-    }
-
     /// A file holding free pages is rewritten smaller, the bytes reported are the before-size the
     /// CALLER handed in less what the file occupies afterwards, and the copy the rewrite stages is
     /// held in memory: the store's own connection reports `temp_store` as memory after the call.
@@ -2422,7 +2418,7 @@ mod tests {
         // in the main file and the main file is what the rewrite has to shrink.
         assert_eq!(pragma_i64(&path, "wal_checkpoint(TRUNCATE)"), 0);
         let measured_before = s.bytes_on_disk().expect("a file-backed store has a size");
-        let main_before = main_file_len(&path);
+        let main_before = file_len(&path);
         let pages_before = pragma_i64(&path, "page_count");
         assert_eq!(
             temp_store_of(&s),
@@ -2450,7 +2446,7 @@ mod tests {
             }
         );
         assert!(
-            main_file_len(&path) < main_before,
+            file_len(&path) < main_before,
             "the main file itself is rewritten smaller, not only its write-ahead log"
         );
         assert_eq!(pragma_i64(&path, "freelist_count"), 0);
@@ -2569,8 +2565,8 @@ mod tests {
             path.to_str().unwrap(),
             &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
         );
-        let main = main_file_len(&path);
-        let wal = main_file_len(std::path::Path::new(&format!(
+        let main = file_len(&path);
+        let wal = file_len(std::path::Path::new(&format!(
             "{}-wal",
             path.to_str().unwrap()
         )));

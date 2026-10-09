@@ -24,3 +24,10 @@ pub fn pragma_i64(db: &std::path::Path, pragma: &str) -> i64 {
         .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
         .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
 }
+
+/// Bytes the file at `path` occupies on disk, or 0 when it is not there: a `-wal` does not exist
+/// before the first write and is deleted on a clean close, and neither absence is an error about
+/// the space a store occupies.
+pub fn file_len(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}

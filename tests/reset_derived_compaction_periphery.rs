@@ -88,7 +88,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
-use common::fixtures::{meta_replay_key, plant_free_pages, pragma_i64};
+use common::fixtures::{file_len, meta_replay_key, plant_free_pages, pragma_i64};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
@@ -3981,11 +3981,6 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 // at once: it equals the pages the file lost, and the file on disk really is that size afterwards
 // - no `-wal` still holding the frames the number already counted as reclaimed.
 // ---------------------------------------------------------------------------------------
-
-/// Bytes of `path` on disk, or 0 when it does not exist - the `-wal` is deleted on a clean close.
-fn file_len(path: &Path) -> u64 {
-    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
 
 #[test]
 fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {

@@ -28,7 +28,7 @@
 
 mod common;
 
-use common::fixtures::{plant_free_pages, pragma_i64};
+use common::fixtures::{file_len, plant_free_pages, pragma_i64};
 use rigger::eventstore::sqlite::{Reclamation, Store};
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
 use std::sync::{Mutex, MutexGuard};
@@ -66,8 +66,8 @@ fn a_caller_is_told_what_the_log_lost_since_the_size_it_measured_before_its_own_
     // the caller measures is the main file alone and every byte written after it is visible.
     assert_eq!(pragma_i64(&db, "wal_checkpoint(TRUNCATE)"), 0);
     let pages_before = pragma_i64(&db, "page_count");
-    let main_before = std::fs::metadata(&db).unwrap().len();
-    assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+    let main_before = file_len(&db);
+    assert_eq!(file_len(&wal), 0);
 
     let before = store.bytes_on_disk();
     assert_eq!(
@@ -85,7 +85,7 @@ fn a_caller_is_told_what_the_log_lost_since_the_size_it_measured_before_its_own_
             &[Event::new("RunStarted", vec![b'x'; 64 * 1024])],
         )
         .expect("the caller's own write");
-    let wal_at_the_call = std::fs::metadata(&wal).unwrap().len();
+    let wal_at_the_call = file_len(&wal);
     assert!(
         wal_at_the_call >= 64 * 1024,
         "the write must have landed in the write-ahead log, or the size at the call equals the \
@@ -99,9 +99,9 @@ fn a_caller_is_told_what_the_log_lost_since_the_size_it_measured_before_its_own_
 
     let reclaimed = store.reclaim_space(Some(before));
 
-    let main_after = std::fs::metadata(&db).unwrap().len();
+    let main_after = file_len(&db);
     assert_eq!(
-        std::fs::metadata(&wal).unwrap().len(),
+        file_len(&wal),
         0,
         "a reclamation that landed folded the write-ahead log back and truncated it"
     );
@@ -302,6 +302,31 @@ fn log_too_large_to_stage_in_the_page_cache(
     (store, db)
 }
 
+/// The whole process's engine pointed at one temporary directory for as long as this value
+/// lives. The setting is process-global, so it is cleared when the value drops, which a test
+/// that fails part way reaches as surely as one that passes.
+struct EngineStagingIn(rusqlite::Connection);
+
+impl EngineStagingIn {
+    fn point_at(dir: &std::path::Path) -> Self {
+        let engine = rusqlite::Connection::open_in_memory().unwrap();
+        engine
+            .execute_batch(&format!(
+                "PRAGMA temp_store_directory = '{}'",
+                dir.display()
+            ))
+            .unwrap();
+        Self(engine)
+    }
+}
+
+impl Drop for EngineStagingIn {
+    fn drop(&mut self) {
+        // A failure to clear is not raised from a drop that may already be unwinding.
+        let _ = self.0.execute_batch("PRAGMA temp_store_directory = ''");
+    }
+}
+
 #[test]
 fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves() {
     let _serial = serial();
@@ -314,13 +339,7 @@ fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves()
     // THE WHOLE PROCESS'S ENGINE IS POINTED AT `staging`, the first place it looks for somewhere
     // to put a temporary file. A file created there and unlinked again still moves the
     // directory's modification time, which is what is read below.
-    let engine = rusqlite::Connection::open_in_memory().unwrap();
-    engine
-        .execute_batch(&format!(
-            "PRAGMA temp_store_directory = '{}'",
-            staging.path().display()
-        ))
-        .unwrap();
+    let _engine = EngineStagingIn::point_at(staging.path());
     let touched = || {
         std::fs::metadata(staging.path())
             .unwrap()
@@ -394,8 +413,4 @@ fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves()
         "a rewrite staged in a file must move the watched directory's modification time, or \
          the two assertions above watched a directory nothing would ever have written to"
     );
-
-    engine
-        .execute_batch("PRAGMA temp_store_directory = ''")
-        .unwrap();
 }

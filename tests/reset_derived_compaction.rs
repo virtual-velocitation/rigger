@@ -32,6 +32,7 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
 use common::fixtures::edge_inferred;
+use common::fixtures::file_len;
 use common::fixtures::meta_replay_key;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -420,7 +421,7 @@ fn reset_derived_shrinks_the_log_on_disk_and_reports_the_rows_per_type_and_the_b
     seed_bloated_log(root);
 
     let db = rigger_file(root, "events.db");
-    let before_bytes = std::fs::metadata(&db).unwrap().len();
+    let before_bytes = file_len(&db);
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
@@ -455,7 +456,7 @@ fn reset_derived_shrinks_the_log_on_disk_and_reports_the_rows_per_type_and_the_b
         reclaimed > 0,
         "a real prune must report a non-zero reclaimed-byte count; got {reclaimed} from {out:?}"
     );
-    let after_bytes = std::fs::metadata(&db).unwrap().len();
+    let after_bytes = file_len(&db);
     assert!(
         after_bytes < before_bytes,
         "reset --derived must COMPACT the log on disk: {before_bytes} -> {after_bytes} bytes"
