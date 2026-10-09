@@ -900,11 +900,8 @@ fn with_no_activity_the_stream_emits_only_prompt_heartbeats_never_a_liveness_fra
 
 /// Serve `dash::serve_on` whose provider reads back a FIXED `Vec<Event>` exactly as handed
 /// in, positions and all - unlike [`FakeStore::push_event`], which renumbers every event to
-/// a contiguous `len() + 1`, and would therefore erase the very GAPS a real
-/// `prune_derived_index` deletion leaves behind. The events below come from a REAL
-/// `rigger::eventstore::sqlite::Store` (never a mocked/hand-picked gap), read back once
-/// after the prune so this provider re-serves precisely what the store actually still
-/// holds.
+/// a contiguous `len() + 1`, and would therefore erase the very GAP in positions these tests
+/// are about.
 fn serve_test_dash_over_fixed_events(events: Vec<Event>) -> std::net::SocketAddr {
     serve_dash_with_provider(
         move |_instance: Option<&str>| -> Result<DashInputs, String> {
@@ -921,78 +918,42 @@ fn open_stream_status_line(addr: std::net::SocketAddr, query: &str) -> String {
     send_stream_request(addr, query, &[]).0
 }
 
-/// A real store holding three recordings of ONE derived-index replay key (positions 1-3, a
-/// duplication `prune_derived_index` sheds down to its latest recording) followed by one
-/// real console event (position 4) - then PRUNED for real, exactly the way `rigger reset
-/// --derived` prunes production data. `prune_derived_index`'s own `rn DESC` window keeps the
-/// group's LATEST position (3) and deletes the two earlier duplicates (1, 2), so the store's
-/// post-prune floor - the smallest position ANY row still occupies, of ANY type - moves from
-/// 1 to 3. A `since=`/`Last-Event-ID` naming 1 or 2 therefore names a position this store
-/// has ACTUALLY pruned, not a mocked one: exactly the scenario
-/// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch` requires a test to exercise.
-fn store_with_a_real_retained_window_gap() -> (tempfile::TempDir, Vec<Event>) {
-    use rigger::eventstore::sqlite::Store;
-    use rigger::eventstore::{Direction as StoreDirection, EventStore, ExpectedRevision, Filter};
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the real sqlite store");
-    let path = dir.path().join("events.db");
-    let path = path.to_str().unwrap();
-    let store = Store::open(path).expect("open a real sqlite event store");
-
-    let events = vec![
-        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
-            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
-            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
-            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-        Event::new("DecisionMade", br#"{"id":"d1","summary":"kept"}"#.to_vec()),
-    ];
-    store
-        .append("run", ExpectedRevision::Any, &events)
-        .expect("seed the real store");
-
-    let pruned = store
-        .prune_derived_index("", &rigger::ingest::derived_index_identity())
-        .expect("a real prune_derived_index run");
-    assert!(
-        pruned.total_removed() > 0,
-        "the seeded duplicates must actually be deleted, not a no-op: {pruned:?}"
-    );
-
-    let remaining = store
-        .read_all(0, StoreDirection::Forward, &Filter::default())
-        .expect("read back what the store actually still holds, post-prune");
-    let floor = remaining
-        .iter()
-        .map(|e| e.position)
-        .min()
-        .expect("the store still holds the surviving duplicate and the console event");
-    assert_eq!(
-        floor, 3,
-        "the prune must delete positions 1 and 2 and keep the group's latest (3): {remaining:?}"
-    );
-    (dir, remaining)
+/// What a store whose two lowest positions were deleted still holds, built by hand: one
+/// graph-extraction row at position 3 and one console event at position 4. The floor - the
+/// smallest position ANY row still occupies, of ANY type - is 3, so a `since=`/`Last-Event-ID`
+/// naming 1 or 2 names a position the log no longer holds.
+fn events_above_a_gap() -> Vec<Event> {
+    vec![
+        common::fixtures::ev_at(
+            3,
+            "CodeEntityExtracted",
+            serde_json::json!({"id": "src/a.rs::x"}),
+        ),
+        common::fixtures::ev_at(
+            4,
+            "DecisionMade",
+            serde_json::json!({"id": "d1", "summary": "kept"}),
+        ),
+    ]
 }
 
-/// A reconnecting client naming a `since=`/`Last-Event-ID` the store has actually pruned
+/// A reconnecting client naming a `since=`/`Last-Event-ID` below the lowest position the store holds
 /// receives a REAL, distinct non-200 response (never a bare closed socket, which a real
 /// `EventSource` would just retry forever at the same stale position) -
 /// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch`'s own required fix. `since=`
 /// naming the surviving floor (3) EXACTLY is a different story: not-less-than the floor is
 /// not a gap, so that connects normally - proving the guard is a STRICT `since < floor`
-/// comparison over the SAME real prune-created gap, never an off-by-one that also refuses
+/// comparison over the same gap, never an off-by-one that also refuses
 /// the boundary.
 #[test]
 #[serial(dash_console_stream_periphery)]
-fn a_since_strictly_below_the_stores_real_prune_floor_is_refused_but_the_floor_itself_streams() {
-    let (_dir, remaining) = store_with_a_real_retained_window_gap();
-    let addr = serve_test_dash_over_fixed_events(remaining);
+fn a_since_strictly_below_the_stores_floor_is_refused_but_the_floor_itself_streams() {
+    let addr = serve_test_dash_over_fixed_events(events_above_a_gap());
 
     let refused = open_stream_status_line(addr, "since=2&progress_since=0");
     assert!(
         refused.starts_with("HTTP/1.1 410"),
-        "a since= the store has actually pruned must be refused with a distinct non-200, \
+        "a since= below the store's floor must be refused with a distinct non-200, \
          not served as an ordinary 200 stream: {refused}"
     );
 
@@ -1005,15 +966,14 @@ fn a_since_strictly_below_the_stores_real_prune_floor_is_refused_but_the_floor_i
 
 /// Recovery: reconnecting from `since=0` (the "no prior cursor" sentinel a page-side
 /// snapshot re-fetch + `connectStream(0)`... in practice `connectStream(snapshot.head)`,
-/// exercised here at its own `since=0` floor case) after the SAME real prune delivers
-/// exactly the current console event, never the deleted duplicates and never a corrupted or
+/// exercised here at its own `since=0` floor case) over the same gap delivers
+/// exactly the current console event, never a deleted row and never a corrupted or
 /// missing fold - proving the recovery a `410` is meant to trigger actually lands a client
 /// on the CORRECT current state, not merely on SOME response.
 #[test]
 #[serial(dash_console_stream_periphery)]
-fn reconnecting_from_scratch_after_the_real_prune_delivers_exactly_the_surviving_console_event() {
-    let (_dir, remaining) = store_with_a_real_retained_window_gap();
-    let addr = serve_test_dash_over_fixed_events(remaining);
+fn reconnecting_from_scratch_above_a_gap_delivers_exactly_the_surviving_console_event() {
+    let addr = serve_test_dash_over_fixed_events(events_above_a_gap());
 
     let mut stream = open_stream(addr, 0);
     let frame = read_frame(&mut stream).expect("a frame must arrive");

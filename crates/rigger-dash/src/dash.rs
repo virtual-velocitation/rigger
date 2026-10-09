@@ -3738,10 +3738,10 @@ fn serve_console_stream<F>(
     // reconnecting client's `since=`/`Last-Event-ID` names a position it has ALREADY
     // applied; if the store's own current floor - the smallest [`Position`] any row (of
     // ANY type, not just a console one) still occupies - has moved PAST that position,
-    // something that once sat between them is gone (the routine `rigger reset --derived`
-    // hygiene operation, [`crate::eventstore::sqlite::Store::prune_derived_index`], is
-    // one such compaction today; a future one may cover more ground than today's four
-    // derived-index types), and resuming with `since` as though nothing had changed would
+    // something that once sat between them is gone (the `rigger reset --derived`
+    // migration, [`crate::eventstore::sqlite::Store::shed_derived`], deletes every derived
+    // row it does not rewrite into a ledger entry; a later hygiene operation may cover more
+    // ground than the four derived-index types), and resuming with `since` as though nothing had changed would
     // silently miss whatever stood there. `since == 0` is the "from the very start"
     // sentinel a fresh tab's first-ever connect always carries, never a stale cursor, so
     // it is exempt; an empty store (`floor` is `None` - no row anywhere yet) exempts

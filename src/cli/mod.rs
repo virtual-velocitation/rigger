@@ -22,7 +22,7 @@ use rigger::driver::cli;
 use rigger::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
-    sqlite::{DerivedPreview, PrunedDerived, Store},
+    sqlite::{DerivedPreview, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{

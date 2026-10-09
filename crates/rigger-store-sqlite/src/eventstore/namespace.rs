@@ -31,9 +31,9 @@ impl<'a> Namespaced<'a> {
     /// written here so a consumer takes it rather than re-spelling it.
     ///
     /// It is published because a store-level MAINTENANCE operation has to address a project's
-    /// streams without going through the decorator: the compacting prune
-    /// (`sqlite::Store::prune_derived_index`) works on the backend directly, since deleting rows
-    /// and reclaiming the file are not port operations. Reading the prefix from here rather than
+    /// streams without going through the decorator: the migration of the derived index
+    /// (`sqlite::Store::shed_derived`) works on the backend directly, since rewriting and deleting
+    /// rows and reclaiming the file are not port operations. Reading the prefix from here rather than
     /// re-spelling `proj-<id>-` at the call site is what keeps that maintenance and every
     /// namespaced read and write on ONE SPELLING of the namespace, so a change to the wire form
     /// can never leave a maintenance command addressing streams that no longer exist.
@@ -57,10 +57,11 @@ impl<'a> Namespaced<'a> {
     /// safe direction rather than being absent. The sqlite adapter's prefix-scoped reads match
     /// with SQL `LIKE '<prefix>%'` and no `ESCAPE` clause, so an `_` or a `%` inside a project id
     /// is a WILDCARD there - a project directory named `my_repo` gives a read slice that also
-    /// matches `myXrepo`'s streams. The compacting prune matches the prefix LITERALLY
-    /// (`substr(stream, 1, length(?)) = ?`), so its slice is a subset of what those reads see,
-    /// never a superset. For a command that deletes rows that is the direction to be wrong in: the
-    /// prune can only ever reach streams the project's own reads already reach.
+    /// matches `myXrepo`'s streams. The live selection a rebuild folds matches the prefix
+    /// LITERALLY (`substr(stream, 1, length(?)) = ?`) and the migration names its one stream
+    /// whole, so each reaches a subset of what those reads see, never a superset. For a command
+    /// that deletes rows that is the direction to be wrong in: the migration can only ever reach
+    /// a stream the project's own reads already reach.
     pub fn prefix_for(project: &str) -> String {
         format!("proj-{project}-")
     }

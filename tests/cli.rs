@@ -27645,7 +27645,7 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             unfinished,
             (
                 shed_ok,
-                shed.split(" redundant").next(),
+                shed.lines().next(),
                 common::cli::graph_files(root)
                     .iter()
                     .map(|(name, _)| name.as_str())
@@ -27668,7 +27668,7 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             ),
             (
                 true,
-                Some("reset --derived: pruned 2"),
+                common::cli::migrated_lines(1, 3, 0).lines().next(),
                 vec!["graph.db", "graph.db.lock"]
             ),
         ),
@@ -28098,12 +28098,9 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         (
             true,
             format!(
-                "reset --derived: converted 7 latest batch(es) into ledger entries and shed 26 \
-                 derived event(s) from the event log\n\
-                 reset --derived: 2 of the derived event(s) shed named no file identity (no \
-                 replay key, or one that does not parse)\n\
-                 reset --derived: compacted the log file and reclaimed {} byte(s) on disk\n",
-                size_before - size_migrated
+                "{}{}",
+                common::cli::migrated_lines(7, 25, 2),
+                common::cli::reclaimed_line(size_before - size_migrated)
             )
             .as_str(),
             vec![
@@ -28214,9 +28211,9 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         (
             true,
             format!(
-                "reset --derived: no derived event to shed\n\
-                 reset --derived: compacted the log file and reclaimed {} byte(s) on disk\n",
-                size_planted - size_reclaimed
+                "{}{}",
+                common::cli::NOTHING_TO_SHED_LINE,
+                common::cli::reclaimed_line(size_planted - size_reclaimed)
             )
             .as_str(),
             true,
@@ -28257,7 +28254,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         ),
         (
             true,
-            vec![
+            [
                 "rebuilt graph.db from the event log".to_string(),
                 format!(
                     "identities the tree holds a file for whose generation in graph.db is not \
@@ -28276,8 +28273,10 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         let rebuilt_graph = common::cli::open_graph(root);
         let (mut nodes, mut edges) = folded_facts.clone();
         // What only the unkeyed event and the one whose key does not parse asserted is gone, and
-        // the spanning generation folds whole at its entry, before the second alias.
+        // the spanning generation folds whole at its entry, before the second alias, so the
+        // name that alias resolved its citation to is gone with the edge to it.
         let gone_nodes = [
+            "docs/guide.md",
             "src/odd.rs",
             "src/odd.rs::odd",
             "src/unkeyed.rs",
@@ -28300,7 +28299,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
                 facts(&rebuilt_graph),
                 common::fixtures::held_generations(&rebuilt_graph, &identities),
             ),
-            (4, 3, (nodes, edges), held_before),
+            (5, 3, (nodes, edges), held_before),
             "the rebuilt graph holds the facts the parsable recordings asserted and the \
              generations the store held"
         );

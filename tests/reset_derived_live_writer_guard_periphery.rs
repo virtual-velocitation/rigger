@@ -77,14 +77,22 @@ fn assert_prunes(root: &Path, args: &[&str], envs: &[(&str, &str)], why: &str) {
     assert_compacted(run_rigger_envs(root, args, envs), why);
 }
 
-/// Asserts a `reset --derived` invocation's `(stdout, stderr, success)` is a compaction that ran
-/// and printed its usual prune report, `why` naming the case.
+/// Asserts a `reset --derived` invocation's `(stdout, stderr, success)` is a migration that ran
+/// over a store holding no derived event and no free page, and printed its report, `why` naming
+/// the case.
 fn assert_compacted(said: (String, String, bool), why: &str) {
     let (out, err, ok) = said;
-    assert!(ok, "{why}; stderr: {err}");
-    assert!(
-        out.contains("reset --derived: pruned"),
-        "{why}: must print the usual prune report; got {out:?}"
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            format!(
+                "{}{}",
+                common::cli::NOTHING_TO_SHED_LINE,
+                common::cli::LOG_LEFT_AS_IT_STANDS_LINE
+            )
+        ),
+        "{why}: must print the migration's report; stderr: {err}"
     );
 }
 
@@ -856,14 +864,14 @@ fn reset_scratch_orphans_with_derived_force_live_sweeps_and_compacts_over_an_unp
     let root = dir.path();
     let (_workdir, _) = configure_unparsable_defaults(root);
     let why = "a selection of modes that read no scratch root, over an unparsable defaults block";
-    assert_compacted(
-        assert_sweeps_the_orphan_root(
-            root,
-            &["reset", "--scratch-orphans", "--derived", "--force-live"],
-            why,
-        ),
+    let (out, err, ok) = assert_sweeps_the_orphan_root(
+        root,
+        &["reset", "--scratch-orphans", "--derived", "--force-live"],
         why,
     );
+    // The sweep's line comes first; what follows it is the migration's report.
+    let after_the_sweep = out.split_once('\n').map_or("", |(_, rest)| rest);
+    assert_compacted((after_the_sweep.to_string(), err, ok), why);
 }
 
 /// Every mode that reads the scratch root resolves it BEFORE the one-time identity migration, so

@@ -171,166 +171,127 @@ impl Store {
         Ok(renamed as usize)
     }
 
-    /// Prune the superseded recordings a log's derived index accreted, and reclaim the disk they
-    /// held: for each type `identity` covers, within each stream under `stream_prefix`, keep only
-    /// each batch identity's LATEST generation and, of that generation, the latest recording per
-    /// content key (property 1); carry each re-asserted fact's earliest valid-time within its
-    /// unbroken run of generations onto the recording that keeps it (property 2); delete every
-    /// other keyed recording; then `VACUUM` so the file actually shrinks.
+    /// THE READ-ONLY COUNT of the derived index `stream` holds (spec 107): how many derived
+    /// events `rigger reset --derived` sheds from it, how many of those name no file identity,
+    /// and the set of `<prefix>/<file>` identities holding one. It is the same read the
+    /// migration acts on ([`read_derived`]), so what it answers never drifts from what
+    /// [`Store::shed_derived`] deletes; it writes nothing.
     ///
-    /// This is the COMPACTION half of spec 60 - the supported way to shed what edits and the
-    /// pre-dedup ingest accreted: every generation a later edit of its file superseded, a
-    /// returned file's earlier recordings of the generation it came back to (a revert, a branch
-    /// switch), and the duplicates a store recorded BEFORE the ingest dedup existed. The dedup
-    /// above the port stops an UNCHANGED file re-recording its batch, not every new duplicate: a
-    /// file that returns to a generation the log already recorded re-records that batch by
-    /// design. This removes all three piles already on disk. Deleting rows and reclaiming a
-    /// file is a mechanic of the embedded store, so it lives here rather than on the port: a
-    /// backend that cannot do it says so to the operator instead of silently reporting a prune
-    /// that did not happen.
-    ///
-    /// It takes the [`ContentIdentity`] policy value, rather than a metadata-key string plus a type list plus a carry list: the policy already
-    /// exists as one injected value, and re-spelling its fields as positional parameters is a
-    /// second parallel expression of one rule that can be passed in the wrong order and can drift
-    /// a call site at a time. The valid-time partition property 2 rests on is part of that value
-    /// ([`ContentIdentity::with_reasserting_types`]) for exactly that reason, and it is CHECKED
-    /// here before a single row is read, because it is the one input to this function that can
-    /// corrupt the projection while leaving every row looking intact.
-    ///
-    /// Five properties, each load-bearing:
-    ///
-    /// 1. **Latest generation per identity, then latest recording per key.** A content key
-    ///    names a batch identity AND its content generation ([`ContentIdentity::key_parts`]), so
-    ///    every recording of a generation that is not its identity's LATEST is shed, and of the
-    ///    latest generation only each key's last recording survives. Nothing shed is ever read
-    ///    again: the ingest sinks seed from the latest generation only, and a file that returns
-    ///    to an earlier content re-emits its batch. A key the policy cannot parse (or a policy
-    ///    that declares no parser) keeps exact-key semantics: its latest recording survives.
-    ///    The selection is [`plan_derived_prune`], shared with the read-only preview.
-    /// 2. **A RE-ASSERTED fact's valid-time is CARRIED, not dropped.** A projection that
-    ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
-    ///    became true"), so deleting that key's earliest recording would silently re-date the
-    ///    fact to whichever recording survived - and for the design-intent edge class the date IS
-    ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
-    ///    this is true of; each of their surviving rows takes, before the deletes run, the
-    ///    `MIN(valid_from)` over its fact's unbroken run of generations - the recordings of its
-    ///    identity asserting the same fact, as the policy's [`ContentIdentity::facts`] keys it,
-    ///    from its own generation back through each earlier one that asserts it, stopping at the
-    ///    first that does not - plus the earlier recordings of its own key in its generation's
-    ///    run ([`plan_derived_prune`] walks both). A generation that dropped the fact retired it,
-    ///    so the fold dates the fact anew when a later generation asserts it again, and a
-    ///    recording before that break is never carried. Because a minimum is associative and
-    ///    every deleted recording in that run has a valid-time at or above the minimum retained
-    ///    on its survivor, the compacted log then yields exactly the valid-times the whole log
-    ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
-    ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
-    ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
-    ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
-    ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
-    ///    and `ingest::reasserted_derived_types`, where the partition is derived once).
-    ///
-    ///    THERE IS NO SAFE DEFAULT FOR AN UNDECLARED PARTITION, so this REFUSES rather than
-    ///    picking one. Treating an undeclared policy as "nothing re-asserts" would not be the
-    ///    fail-safe direction: the deletes below run over every covered type either way, so an
-    ///    unnamed re-asserting type would have its earliest recordings deleted with no carry and
-    ///    every one of its facts silently re-dated - the exact corruption this property exists to
-    ///    prevent. The opposite default fails the other way, dragging a superseded fact back to a
-    ///    date its fold retired. A policy that never declared the partition, or that declares a
-    ///    type it does not cover, is therefore an [`Error::Backend`] before any row is read.
-    ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
-    ///    none of its types re-assert.
-    /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
-    ///    them only a keyed row that something recorded LATER in the same stream supersedes: a
-    ///    later recording of its exact key, or a later generation of its batch identity - that
-    ///    identity's latest, when it is not the row's own (property 1). A row with no key at all
-    ///    names no content generation and is never provably redundant, so it is never touched -
-    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream
-    ///    revision, its type, its id, its payload bytes and its metadata; the ONLY column this
-    ///    writes is the valid-time of a surviving DERIVED row that takes an earlier valid-time
-    ///    under property 2 - which is how a survivor whose superseded or duplicate fact-mates were
-    ///    deleted keeps its fact's date - and it writes the value the fold would have derived
-    ///    anyway. No non-derived row is written or moved, and the only non-derived rows the
-    ///    selection reads are its streams' alias definitions ([`FactIdentity::alias_type`]),
-    ///    replayed in position order so each recording's names resolve through the aliases
-    ///    defined before it.
-    /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
-    ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
-    ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
-    /// 5. **Everything after the commit is a REPORT, not an outcome.** The deletes are durable the
-    ///    moment the transaction commits; the space reclamation that follows can still fail, and
-    ///    when it does this returns the counts with the failure NAMED beside them rather than an
-    ///    `Err` that says only that something went wrong with a log which HAS been pruned. And it
-    ///    only runs at all when the FILE has free space to reclaim - never merely because this
-    ///    pass deleted something, and never merely because it did not. A file holding no free
-    ///    page is left exactly as it stands rather than rewritten in full to reclaim nothing;
-    ///    a file holding free pages is reclaimed even by a pass that deleted nothing, which is
-    ///    what makes re-running the command after a failed reclamation the remedy this reports
-    ///    tell an operator it is.
-    pub fn prune_derived_index(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<PrunedDerived, Error> {
-        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2), so a policy that cannot be
-        // acted on never takes the write lock at all.
-        let reasserting = reasserting_types(identity)?;
-        // THE OPERATOR'S BEFORE, taken before a single row is deleted: what the reclamation
-        // reports is the space the LOG LOST ON DISK across the whole command, so it is measured
-        // where the command starts (see [`Store::reclaim_space`]).
-        let on_disk_before = self.bytes_on_disk();
-        let types = identity.types();
-        let removed: Vec<(String, usize)>;
-        let superseded_generations: usize;
-        {
-            let mut guard = self.conn.lock().unwrap();
-            // ONE transaction for the whole prune: a partial compaction is not a state an operator
-            // can reason about. The carry-forward shares it, so a log can never be left with its
-            // duplicates deleted and its survivors' valid-times un-carried.
-            //
-            // WHAT `BEGIN IMMEDIATE` BUYS, AND WHAT IT DOES NOT. It takes the write lock up front,
-            // so this transaction cannot fail the deferred lock upgrade a read-then-write
-            // transaction attempts half way through - that failure mode is closed. It does NOT
-            // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
-            // large log runs for longer than `busy_timeout` (5000ms, set by `crate::sqlite::open_connection` -
-            // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
-            // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
-            // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN
-            // runs and never against a live one, which is what the shipped guidance says; the
-            // window is bounded here, not eliminated.
-            let tx = guard
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(be)?;
-            // The selection is read INSIDE the write transaction, so what it decided is exactly
-            // what the deletes below act on: no append can land between the two.
-            let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
-            {
-                // Property 2: a surviving re-asserting row takes its fact's EARLIEST valid-time,
-                // decided while every recording was still in the log.
-                let mut carry = tx
-                    .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
-                    .map_err(be)?;
-                for (position, earliest) in &plan.carries {
-                    carry.execute(params![position, earliest]).map_err(be)?;
-                }
-                let mut delete = tx
-                    .prepare("DELETE FROM events WHERE position = ?1")
-                    .map_err(be)?;
-                for (_, position) in &plan.deletes {
-                    delete.execute(params![position]).map_err(be)?;
-                }
-            }
-            removed = plan.removed_per_type(types);
-            superseded_generations = plan.superseded;
-            tx.commit().map_err(be)?;
-        }
+    /// `stream` is one stream's whole name, matched exactly: a stream whose name only starts
+    /// with it is never counted.
+    pub fn count_derived(&self, stream: &str) -> Result<DerivedCount, Error> {
+        let guard = self.conn.lock().unwrap();
+        let read = read_derived(&guard, stream, &std::collections::HashSet::new())?;
+        Ok(DerivedCount {
+            shed: read.shed,
+            unkeyed: read.unkeyed,
+            identities: read.identities.into_keys().collect(),
+        })
+    }
 
-        // FROM HERE ON THE DELETES ARE DURABLE, so nothing below may turn this call into an
-        // `Err`: the reclamation is a REPORT carried back beside the counts (property 5), and the
-        // connection is released above so the reclamation takes it for itself.
-        Ok(PrunedDerived {
-            removed,
-            superseded_generations,
-            reclamation: self.reclaim_space(on_disk_before),
+    /// THE MIGRATION'S ONE TRANSACTION (spec 107): convert the derived index `stream` holds into
+    /// the ledger, in place, and leave no derived event behind.
+    ///
+    /// For every `<prefix>/<file>` identity whose latest recording - a derived row or a ledger
+    /// entry, each naming its identity in its replay key - is a derived row, the lowest-position
+    /// row the live selection keeps for it ([`plan_derived_prune`]: the first row of its latest
+    /// batch when that batch was recorded whole) is rewritten IN PLACE into the identity's
+    /// ledger entry. Its position, stream, id, revision and recorded-time stay, so every column
+    /// a uniqueness rule covers is kept; its type, payload and metadata become the entry's, built
+    /// by the entry's one constructor for that generation, the blob and flag `entry_of` answers
+    /// for the identity, and the count of distinct replay keys of that generation among the
+    /// identity's derived rows. An identity whose latest recording is already an entry has no
+    /// row rewritten.
+    ///
+    /// Every identity holding a derived row then has its EARLIEST SURVIVING RECORDING - its
+    /// earliest ledger entry when one precedes the rewritten row, else the rewritten row -
+    /// dated at the identity's earliest recorded valid-time, and every remaining row of a
+    /// derived type in the stream is deleted, keyed or not. A row with no replay key, or one
+    /// whose key does not parse, names no identity: it is deleted and counted as unkeyed.
+    ///
+    /// The selection is read INSIDE the write transaction, opened immediate, so no append lands
+    /// between what was decided and what is written, and a failure rolls the whole of it back.
+    /// The types are the derived list itself ([`crate::ingest::DERIVED_INDEX_TYPES`]) and the
+    /// selection the derived index's own policy ([`crate::ingest::derived_index_identity`]),
+    /// neither injected: this is the one writer that sheds a derived event. Deleting from a
+    /// stream leaves holes in its revisions, which [`Store::append`] tolerates (see the comment
+    /// there); a stream whose tail was derived rows ends at a lower revision.
+    pub fn shed_derived(
+        &self,
+        stream: &str,
+        entry_of: &dyn Fn(&str) -> (String, bool),
+    ) -> Result<ShedDerived, Error> {
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(be)?;
+        let plan = plan_derived_prune(&tx, stream, &crate::ingest::derived_index_identity(), &[])?;
+        let shed_by_the_plan = plan.deletes.iter().map(|(_, position)| *position).collect();
+        let read = read_derived(&tx, stream, &shed_by_the_plan)?;
+        let mut converted = 0;
+        {
+            let mut rewrite = tx
+                .prepare("UPDATE events SET type = ?2, data = ?3, meta = ?4 WHERE position = ?1")
+                .map_err(be)?;
+            let mut redate = tx
+                .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
+                .map_err(be)?;
+            for (identity, recorded) in &read.identities {
+                let entry = read.entries.get(identity);
+                let mut surviving = entry.map(|entry| entry.first);
+                if let (true, Some((position, generation))) =
+                    (recorded.latest_is_derived, &recorded.kept)
+                {
+                    let (prefix, file) =
+                        crate::retention::GenerationIngested::identity_parts(identity)
+                            .expect("an identity cut from a replay key holds its prefix and file");
+                    let (blob, excluded) = entry_of(identity);
+                    let event = crate::retention::GenerationIngested {
+                        prefix: prefix.to_string(),
+                        file: file.to_string(),
+                        generation: generation.clone(),
+                        blob,
+                        excluded,
+                    }
+                    .event(
+                        recorded
+                            .keys
+                            .iter()
+                            .filter(|(of, _)| of == generation)
+                            .count(),
+                    );
+                    rewrite
+                        .execute(params![
+                            position,
+                            event.type_,
+                            event.data,
+                            meta_json(&event.meta)
+                        ])
+                        .map_err(be)?;
+                    surviving = surviving.into_iter().chain([*position]).min();
+                    converted += 1;
+                }
+                let earliest = entry
+                    .map(|entry| entry.earliest)
+                    .into_iter()
+                    .chain([recorded.earliest])
+                    .min();
+                redate.execute(params![surviving, earliest]).map_err(be)?;
+            }
+            tx.execute(
+                &format!(
+                    "DELETE FROM events WHERE stream = ?1 AND type IN ({})",
+                    type_list(&derived_types())
+                ),
+                params![stream],
+            )
+            .map_err(be)?;
+        }
+        tx.commit().map_err(be)?;
+        Ok(ShedDerived {
+            converted,
+            shed: read.shed,
+            unkeyed: read.unkeyed,
         })
     }
 
@@ -426,19 +387,17 @@ impl Store {
         }
     }
 
-    /// A read-only PREVIEW of what [`prune_derived_index`] would delete (spec 68, "the reset
-    /// surface"): for each type `identity` covers, the count of rows the prune's own selection
-    /// ([`plan_derived_prune`]) marks for deletion - every recording of a superseded generation
-    /// and every earlier recording of a surviving key. No row is touched, no valid-time carried,
-    /// no `VACUUM` run.
+    /// A read-only count of the rows the live selection ([`plan_derived_prune`]) sets aside
+    /// (spec 68, "the reset surface"): for each type `identity` covers, every recording of a
+    /// superseded generation and every earlier recording of a surviving key. No row is touched,
+    /// no valid-time carried, no `VACUUM` run.
     ///
-    /// Unlike [`prune_derived_index`] this needs no [`ContentIdentity::reasserting`] declaration:
-    /// that check exists because a DELETE has to know whether a surviving row's valid-time must be
-    /// carried forward, and a count writes nothing, so the one input that check guards against
-    /// getting wrong is not read here at all.
+    /// Unlike [`Store::read_live_selection`] this needs no [`ContentIdentity::reasserting`]
+    /// declaration: that check exists because a reader of the selection has to know whether a
+    /// surviving row's valid-time must be carried forward, and a count carries nothing, so the
+    /// one input that check guards against getting wrong is not read here at all.
     ///
-    /// `rigger reset`'s bare-menu preview reads this so its printed count can never drift from
-    /// what a real `--derived` removes - both come from the one selection.
+    /// `rigger reset`'s bare-menu preview reads this.
     pub fn count_derived_duplicates(
         &self,
         stream_prefix: &str,
@@ -454,14 +413,14 @@ impl Store {
 
     /// Measure the derived-index REDUNDANCY already sitting in the log, WITHOUT deleting
     /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
-    /// many rows carry a covered key versus how many of them a compaction would KEEP.
+    /// many rows carry a covered key versus how many of them the live selection KEEPS.
     ///
-    /// The READ-ONLY twin of [`Store::prune_derived_index`]: both are answered by the one
-    /// selection [`plan_derived_prune`], so `rigger validate`'s bloat advisory (spec 68) measures
-    /// exactly the rows `rigger reset --derived` would shed - superseded generations as well as
-    /// earlier recordings of one key - and can never drift from a second, independently re-derived
-    /// definition of "redundant" (Design: "one measurement authority per advisory ... no shadow
-    /// accounting"). No row is touched, no valid-time carried.
+    /// Answered by the one selection [`plan_derived_prune`], the one a rebuild reads through
+    /// [`Store::read_live_selection`], so `rigger validate`'s bloat advisory (spec 68) measures
+    /// superseded generations as well as earlier recordings of one key and can never drift from
+    /// a second, independently re-derived definition of "redundant" (Design: "one measurement
+    /// authority per advisory ... no shadow accounting"). No row is touched, no valid-time
+    /// carried.
     pub fn measure_derived_duplication(
         &self,
         stream_prefix: &str,
@@ -476,11 +435,10 @@ impl Store {
     }
 
     /// Stream the LIVE SELECTION of `stream_prefix` + `stream` after position `after` (spec 101):
-    /// exactly the rows [`Store::prune_derived_index`] keeps - every non-derived event, and of the
-    /// derived index each identity's latest generation at the latest recording of each key, its
-    /// valid-time carried back exactly as the prune carries it - so a graph folded from it is the
-    /// one folded from the compacted log, by construction: both act on the one selection,
-    /// [`plan_derived_prune`], over the same `stream_prefix`.
+    /// every non-derived event, and of the derived index each identity's latest generation at the
+    /// latest recording of each key, its valid-time carried back to the earliest the fact has
+    /// held without a break - the rows the one selection, [`plan_derived_prune`], keeps over the
+    /// same `stream_prefix`.
     ///
     /// The stream is read ONCE, in position order, and handed to `sink` in batches of at most
     /// `batch` events, never materialized whole; each batch goes with the stream's last position,
@@ -618,17 +576,154 @@ fn stream_head(conn: &Connection, stream: &str) -> Result<Option<Position>, Erro
     .map_err(be)
 }
 
-/// What [`Store::count_derived_duplicates`] previews a `rigger reset --derived` would remove,
-/// counted exactly as [`PrunedDerived`] reports the prune itself.
+/// What [`Store::count_derived`] answers of one stream's derived index (spec 107).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DerivedCount {
+    /// How many derived events the stream holds: every one of them is shed by the migration,
+    /// the rows it rewrites into ledger entries included.
+    pub shed: usize,
+    /// How many of them name no file identity: a row with no replay key, or one whose key does
+    /// not parse.
+    pub unkeyed: usize,
+    /// The `<prefix>/<file>` identities holding a derived event, so a file holding a `gc` and a
+    /// `gd` batch is two.
+    pub identities: std::collections::BTreeSet<String>,
+}
+
+/// What one [`Store::shed_derived`] call did (spec 107).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShedDerived {
+    /// How many identities had their latest derived batch rewritten into a ledger entry: fewer
+    /// than the identities holding a derived event when one's latest recording was already an
+    /// entry.
+    pub converted: usize,
+    /// How many derived events were shed, the rewritten rows counted among them.
+    pub shed: usize,
+    /// How many of them named no file identity.
+    pub unkeyed: usize,
+}
+
+/// What one stream's keyed derived rows record of one identity, read in position order.
+struct DerivedRecordings {
+    /// The earliest valid-time any of the rows carries.
+    earliest: i64,
+    /// Whether the identity's latest recording is a derived row, and not a ledger entry.
+    latest_is_derived: bool,
+    /// The position and generation of the lowest row the live selection keeps, the row the
+    /// migration rewrites.
+    kept: Option<(i64, String)>,
+    /// The distinct `(generation, replay key)` pairs the rows carry.
+    keys: std::collections::BTreeSet<(String, String)>,
+}
+
+/// What one stream's ledger entries record of one identity, read in position order.
+struct EntryRecordings {
+    /// The position of the identity's earliest entry.
+    first: i64,
+    /// The earliest valid-time any of the entries carries.
+    earliest: i64,
+}
+
+/// One stream's perception as [`read_derived`] reads it: the derived rows counted, and what the
+/// keyed ones and the ledger entries record of each identity.
+#[derive(Default)]
+struct DerivedRead {
+    shed: usize,
+    unkeyed: usize,
+    identities: BTreeMap<String, DerivedRecordings>,
+    entries: BTreeMap<String, EntryRecordings>,
+}
+
+/// The derived list as the owned names a maintenance statement renders.
+fn derived_types() -> Vec<String> {
+    crate::ingest::DERIVED_INDEX_TYPES
+        .map(String::from)
+        .to_vec()
+}
+
+/// THE ONE READ the migration and its read-only count share (spec 107): every row of perception
+/// `stream` holds - the derived list and the ledger entry, by type, the stream matched by its
+/// whole name - in position order. Each derived row is counted; one with no replay key, or whose
+/// key the one key parser ([`crate::ingest::derived_key_parts`]) does not cut, names no identity
+/// and is counted as unkeyed. A keyed derived row and a ledger entry name their identity alike,
+/// in their replay key, so an identity's latest recording is whichever of the two the read met
+/// last. `shed_by_the_plan` holds the positions the live selection sheds: the first derived row
+/// of an identity outside it is the row the migration rewrites.
+fn read_derived(
+    conn: &Connection,
+    stream: &str,
+    shed_by_the_plan: &std::collections::HashSet<i64>,
+) -> Result<DerivedRead, Error> {
+    let sql = format!(
+        "SELECT position, type, {key}, valid_from FROM events
+          WHERE stream = ?1 AND type IN ({perception})
+          ORDER BY position",
+        key = key_expr(crate::ingest::META_REPLAY_KEY),
+        perception = type_list(&crate::retention::PERCEPTION_TYPES.map(String::from)),
+    );
+    let mut stmt = conn.prepare(&sql).map_err(be)?;
+    let mut rows = stmt.query(params![stream]).map_err(be)?;
+    let mut read = DerivedRead::default();
+    while let Some(row) = rows.next().map_err(be)? {
+        let position: i64 = row.get(0).map_err(be)?;
+        let type_: String = row.get(1).map_err(be)?;
+        let key: Option<String> = row.get(2).map_err(be)?;
+        let valid_from: i64 = row.get(3).map_err(be)?;
+        let named = key.as_deref().and_then(crate::ingest::derived_key_parts);
+        if type_ == crate::retention::TYPE_GENERATION_INGESTED {
+            if let Some((identity, _)) = named {
+                let entry = read
+                    .entries
+                    .entry(identity.to_string())
+                    .or_insert(EntryRecordings {
+                        first: position,
+                        earliest: valid_from,
+                    });
+                entry.earliest = entry.earliest.min(valid_from);
+                if let Some(recorded) = read.identities.get_mut(identity) {
+                    recorded.latest_is_derived = false;
+                }
+            }
+            continue;
+        }
+        read.shed += 1;
+        let Some((identity, generation)) = named else {
+            read.unkeyed += 1;
+            continue;
+        };
+        let recorded = read
+            .identities
+            .entry(identity.to_string())
+            .or_insert(DerivedRecordings {
+                earliest: valid_from,
+                latest_is_derived: true,
+                kept: None,
+                keys: std::collections::BTreeSet::new(),
+            });
+        recorded.earliest = recorded.earliest.min(valid_from);
+        recorded.latest_is_derived = true;
+        recorded
+            .keys
+            .insert((generation.to_string(), key.clone().unwrap_or_default()));
+        if !shed_by_the_plan.contains(&position) {
+            recorded
+                .kept
+                .get_or_insert((position, generation.to_string()));
+        }
+    }
+    Ok(read)
+}
+
+/// What [`Store::count_derived_duplicates`] counts the live selection setting aside.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DerivedPreview {
-    /// The rows the prune would delete, per covered type in the policy's order, zeros included.
+    /// The rows the selection sets aside, per covered type in the policy's order, zeros included.
     pub removed: Vec<(String, usize)>,
     /// How many of them record a superseded generation of their file.
     pub superseded_generations: usize,
 }
 
-/// What one derived-index compaction deletes and re-dates, decided by [`plan_derived_prune`].
+/// What the live selection sets aside and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
     /// How many covered, keyed rows the selection weighed.
     rows: usize,
@@ -702,9 +797,9 @@ fn alias_histories(
 fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
     let Some(declared) = identity.reasserting() else {
         return Err(Error::Backend(format!(
-            "prune_derived_index: the content-identity policy for {:?} has not declared which \
+            "the live selection: the content-identity policy for {:?} has not declared which \
              of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
-             Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+             Without it the selection cannot know whether a key's EARLIEST recorded valid-time \
              is the one the projection holds, and either default silently re-dates facts. \
              Refusing rather than guessing.",
             identity.types()
@@ -712,10 +807,10 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
     };
     if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
         return Err(Error::Backend(format!(
-            "prune_derived_index: the content-identity policy declares {stray:?} as \
+            "the live selection: the content-identity policy declares {stray:?} as \
              re-asserting, but does not cover that type ({:?}). A declaration naming a type \
-             this policy will never prune describes some other policy, so it cannot be the \
-             partition for this one. Refusing rather than pruning against a declaration that \
+             this policy will never select describes some other policy, so it cannot be the \
+             partition for this one. Refusing rather than selecting against a declaration that \
              does not fit.",
             identity.types()
         )));
@@ -728,9 +823,9 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview
-/// and the `rigger validate` bloat measurement: which rows go, and which surviving rows take an
-/// earlier valid-time.
+/// The ONE live selection of the derived index, shared by the rebuild's read, the migration's
+/// choice of the rows it converts, the reset menu's count and the `rigger validate` bloat
+/// measurement: which rows are set aside, and which surviving rows take an earlier valid-time.
 ///
 /// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
 /// met for a `(stream, batch identity)` names that identity's LATEST recorded generation
@@ -977,30 +1072,12 @@ fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
 /// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
 /// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
 ///
-/// Bounded and short on purpose: the prune's transaction has already committed and its vacuum has
+/// Bounded and short on purpose: the caller's transaction has already committed and the vacuum has
 /// already run by the time this matters, so the only thing at stake is whether the freed frames
 /// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
 /// reader out indefinitely would trade a correct, honestly-reported result for a hang.
 const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
 const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
-/// the caller named the types, including the types nothing was removed from), and what the space
-/// reclamation that followed the commit did ([`Reclamation`]).
-///
-/// Per type, not just a total, because that is what an operator can check a prune against: a
-/// single number cannot be compared to what the log was expected to hold.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PrunedDerived {
-    /// `(type, rows deleted)`, in the order the caller named the types.
-    pub removed: Vec<(String, usize)>,
-    /// How many of the deleted rows recorded a SUPERSEDED generation of their batch identity
-    /// (one that is not the latest the log records for it), as opposed to an earlier recording
-    /// of a key that survives.
-    pub superseded_generations: usize,
-    /// What reclaiming the space the file was holding free did to the file.
-    pub reclamation: Reclamation,
-}
 
 /// What one [`Store::reclaim_space`] call did to the log's file: the bytes the log lost on disk,
 /// whether it was rewritten to lose them at all, whether there was a before-size to measure them
@@ -1073,13 +1150,6 @@ pub struct Reclamation {
     /// shrunk, and running the command again is safe AND useful - the space this call failed to
     /// reclaim is still free in the file, so the reclamation is tried again over it.
     pub compaction_error: Option<String>,
-}
-
-impl PrunedDerived {
-    /// Every row this pass deleted, across all types.
-    pub fn total_removed(&self) -> usize {
-        self.removed.iter().map(|(_, n)| n).sum()
-    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
@@ -1201,7 +1271,7 @@ impl EventStore for Store {
         // only ever been written through this function: a write only ever lands at
         // `last_revision + 1`, so each new row is simultaneously the newest by position
         // AND the highest by revision, and deleting an arbitrary subset of rows (what the
-        // supported compaction, `Store::prune_derived_index`, does, leaving holes in the
+        // migration, `Store::shed_derived`, does, leaving holes in the
         // revision sequence) cannot change that relative order among whatever survives.
         // A count-derived cursor would reissue a revision the stream still holds and
         // collide on the `UNIQUE(stream, revision)` index; the position-order seek is
@@ -2049,10 +2119,10 @@ mod tests {
         assert_eq!(clean[0].revision, 0);
     }
 
-    // --- Spec 60, criterion 5: the prune's POST-COMMIT half is reported, never propagated ---
+    // --- Spec 60, criterion 5: the reclamation after a commit is reported, never propagated ---
 
     /// A store holding `rounds` recordings of one derived-index replay key, in one namespaced
-    /// stream, plus a non-derived event that no prune may touch. The duplication the prune sheds.
+    /// stream, plus a non-derived event the migration never touches. The duplication the migration sheds.
     fn seeded_with_duplicated_key(path: &str, rounds: usize) -> Store {
         let mut events = vec![Event::new("RunStarted", b"{}".to_vec())];
         for _ in 0..rounds {
@@ -2093,7 +2163,7 @@ mod tests {
             .unwrap()
     }
 
-    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the prune's read-only twin ---
+    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the live selection's count ---
 
     #[test]
     fn measure_derived_duplication_reports_rows_vs_the_rows_a_compaction_keeps() {
@@ -2121,7 +2191,7 @@ mod tests {
         assert_eq!(
             recordings_of_the_key(path),
             3,
-            "measuring must never delete anything - that is the prune's job, not this read"
+            "measuring must never delete anything - that is the migration's job, not this read"
         );
     }
 
@@ -2187,151 +2257,6 @@ mod tests {
         assert_eq!(measured.rows, 2);
         assert_eq!(measured.kept, 2);
         assert_eq!(measured.factor(), 1.0);
-    }
-
-    #[test]
-    fn measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects(
-    ) {
-        // A prune deletes duplicates PER TYPE (`prune_derived_index`'s own
-        // per-type loop, `WHERE type = ?1` scoping its own `PARTITION BY stream, key`): each
-        // covered type is its own duplicate-key space, so the same replay key recorded once
-        // under TWO different types is never a duplicate to the real DELETE - each type's pass
-        // only ever sees ITS OWN one row for it. The measurement must report the same zero
-        // reclaimable count the prune actually reclaims here, never a cross-type merged
-        // overcount (spec 68 Global constraints: one measurement authority, no shadow
-        // accounting).
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(crate::contextgraph::TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#0"),
-                ],
-            )],
-        );
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2, "one row of each of the two covered types");
-        assert_eq!(
-            measured.kept, 2,
-            "the same key under two DIFFERENT types is two distinct subjects to the per-type \
-             prune, not one - each type's own DELETE never sees the other type's row"
-        );
-        assert_eq!(
-            measured.factor(),
-            1.0,
-            "no row here is actually reclaimable by a real prune, so the factor must not warn"
-        );
-
-        // Cross-check against the real compaction: it must reclaim zero rows for this key,
-        // proving the measurement's factor of 1.0 matches what actually happens rather than
-        // merely being asserted.
-        let pruned = s
-            .prune_derived_index("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(
-            pruned.total_removed(),
-            0,
-            "the real per-type prune reclaims nothing for a key that appears once per type"
-        );
-    }
-
-    /// Spec 101, criterion 4: a carried valid-time never crosses a generation that dropped the
-    /// fact, however many generations before that gap asserted it. `L` is asserted at h1 (10s)
-    /// and h3 (15s), dropped at h2 (20s) and asserted again on the return to h1 (30s): the
-    /// surviving recording holds from 30s.
-    #[test]
-    fn a_carried_valid_time_stops_at_the_generation_that_dropped_the_fact() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let at = |key: &str, data: &[u8], secs: u64| {
-            Event::new(crate::contextgraph::TYPE_DOC_LINK_EXTRACTED, data.to_vec())
-                .with_meta(crate::ingest::META_REPLAY_KEY, key)
-                .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-        };
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    at("gd/docs/f.md@h1#0", b"L", 10),
-                    at("gd/docs/f.md@h3#0", b"L", 15),
-                    at("gd/docs/f.md@h2#0", b"M", 20),
-                    at("gd/docs/f.md@h1#0", b"L", 30),
-                ],
-            )],
-        );
-        s.prune_derived_index("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        let kept: Vec<(i64, i64)> = Connection::open(&path)
-            .unwrap()
-            .prepare("SELECT position, valid_from FROM events ORDER BY position")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            kept,
-            vec![(4, Duration::from_secs(30).as_nanos() as i64)],
-            "only the return's recording survives, dated from the return"
-        );
-    }
-
-    /// Spec 101, criterion 4: the measurement is the prune's own selection, so superseded
-    /// generations count as redundancy even when every key is recorded once. Three generations of
-    /// one file are three rows of which the prune keeps one: 3.0x, and the rows the measurement
-    /// calls redundant are exactly the rows the prune's preview counts.
-    #[test]
-    fn measure_derived_duplication_counts_superseded_generations_as_the_prune_selects_them() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h2#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h3#0",
-                    ),
-                ],
-            )],
-        );
-        let identity = crate::ingest::derived_index_identity();
-        let measured = s.measure_derived_duplication("", &identity).unwrap();
-        assert_eq!(measured.rows, 3);
-        assert_eq!(
-            measured.factor(),
-            3.0,
-            "three generations of which a compaction keeps only the latest"
-        );
-        let previewed: usize = s
-            .count_derived_duplicates("", &identity)
-            .unwrap()
-            .removed
-            .iter()
-            .map(|(_, n)| n)
-            .sum();
-        assert_eq!(
-            previewed, 2,
-            "the prune's own preview selects the two superseded generations"
-        );
     }
 
     #[test]
@@ -2594,10 +2519,15 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
         let s = seeded_with_duplicated_key(path_str, 4);
-        let pruned = s
-            .prune_derived_index("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(pruned.total_removed(), 3);
+        let shed = s.shed_derived("run", &|_| (String::new(), false)).unwrap();
+        assert_eq!(
+            shed,
+            ShedDerived {
+                converted: 1,
+                shed: 4,
+                unkeyed: 0,
+            }
+        );
         plant_free_pages(&path, 400);
         let free_before = pragma_i64(&path, "freelist_count");
         let before = s.bytes_on_disk();
@@ -2625,8 +2555,8 @@ mod tests {
         );
         assert_eq!(
             recordings_of_the_key(path_str),
-            1,
-            "and the committed deletes stand whatever the reclamation reports"
+            0,
+            "and the committed migration stands whatever the reclamation reports"
         );
     }
 
@@ -2924,6 +2854,50 @@ mod tests {
                     at(22).clone(),
                     at(23).clone(),
                     at(24).clone(),
+                ]
+            )
+        );
+    }
+
+    /// An identity recorded as a derived row, then a ledger entry, then the same derived row
+    /// again has a derived latest recording: the later row is rewritten, and the entry below it,
+    /// the earliest surviving recording, keeps the earliest valid-time, its own.
+    #[test]
+    fn shed_derived_rewrites_a_derived_row_recorded_again_above_a_ledger_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "p-run",
+                vec![
+                    derived_at(ce, "gc/a.rs@h1#0", 30),
+                    entry_event("gc/a.rs", "h1", 1, "held", false)
+                        .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(20)),
+                    derived_at(ce, "gc/a.rs@h1#0", 40),
+                ],
+            )],
+        );
+        let before = rows_of(&path);
+
+        let shed = s.shed_derived("p-run", &named_entry).unwrap();
+
+        assert_eq!(
+            (shed, rows_of(&path)),
+            (
+                ShedDerived {
+                    converted: 1,
+                    shed: 2,
+                    unkeyed: 0,
+                },
+                vec![
+                    before[1].clone(),
+                    rewritten(
+                        &before[2],
+                        &entry_event("gc/a.rs", "h1", 1, "blob-of-gc/a.rs", false),
+                        40
+                    ),
                 ]
             )
         );

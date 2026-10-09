@@ -10,8 +10,7 @@
 //! What this file OWNS (criterion 3) and what it deliberately does not:
 //!
 //!   - OWNS: the bare-menu's exit code, its per-mode measured counts on an empty AND a populated
-//!     store, that the menu never mutates the store, and that its numbers agree with what a real
-//!     flagged prune actually removes.
+//!     store, and that the menu never mutates the store.
 //!   - NOT OWNED: the flagged `--runs`/`--derived` prune behavior itself (already pinned by
 //!     `tests/cli.rs` and `tests/reset_derived_compaction.rs`, both untouched by this criterion -
 //!     that is what "flagged behavior is byte-for-byte unchanged" means and what leaving those
@@ -24,10 +23,8 @@ mod common;
 use common::cli::emit;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
-use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::DUP_ROUNDS;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
@@ -92,60 +89,6 @@ fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
     assert!(
         out.contains("--derived: 0 redundant derived-index event(s)"),
         "the --derived line must report zero prunable on an empty store; got: {out:?}"
-    );
-}
-
-#[test]
-fn bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune_and_mutates_nothing(
-) {
-    let dir = temp_store_project();
-    let root = dir.path();
-    seed_one_dead_run_node(root);
-    seed_derived_duplicates(root);
-
-    let before = store_row_counts(root);
-
-    let (out, err, ok) = run_rigger(root, &["reset"]);
-    assert!(
-        ok,
-        "a bare `rigger reset` on a populated store must exit 0; stderr: {err}"
-    );
-    assert!(
-        out.contains("--runs: 1 dead-run node(s)"),
-        "the --runs line must report the one dead-run node the fixture seeds; got: {out:?}"
-    );
-    assert!(
-        out.contains(&format!(
-            "--derived: {} redundant derived-index event(s)",
-            DUP_ROUNDS - 1
-        )),
-        "the --derived line must report the {} prunable duplicates the fixture seeds; got: {out:?}",
-        DUP_ROUNDS - 1
-    );
-
-    // READ-ONLY: the bare menu must never prune anything itself.
-    let after = store_row_counts(root);
-    assert_eq!(
-        before, after,
-        "a bare `rigger reset` must not mutate the event log or the context graph"
-    );
-
-    // HONEST: the previewed counts must agree with what a REAL flagged prune actually removes.
-    let (out2, err2, ok2) = run_rigger(root, &["reset", "--runs", "--derived"]);
-    assert!(
-        ok2,
-        "reset --runs --derived must succeed; stderr: {err2}\n{out2}"
-    );
-    assert!(
-        out2.contains("pruned 1 dead-run"),
-        "the real --runs prune must remove exactly the node the menu previewed; got: {out2:?}"
-    );
-    assert!(
-        out2.contains(&format!(
-            "CodeEntityExtracted {}",
-            DUP_ROUNDS - 1
-        )),
-        "the real --derived prune must remove exactly the duplicates the menu previewed; got: {out2:?}"
     );
 }
 

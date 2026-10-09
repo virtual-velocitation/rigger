@@ -334,7 +334,7 @@ rigger::test_cases! {
         "a log with no duplication must draw no bloat warning",
     );
     /// spec 68 Global constraints: "one measurement authority per advisory ... no shadow
-    /// accounting". The real compaction (`rigger reset --derived` / `prune_derived_index`)
+    /// accounting". The real compaction (the live selection, `plan_derived_prune`)
     /// deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
     /// against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
     /// DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is

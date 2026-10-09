@@ -465,6 +465,31 @@ pub fn refused_derived_reset(
     (ok, out, err, log_and_graph_files(root) == *found)
 }
 
+/// The two lines `rigger reset --derived` prints, each ended, for a migration that converted
+/// `converted` latest batches into ledger entries and shed `shed` derived events, `unkeyed` of
+/// them naming no file identity.
+pub fn migrated_lines(converted: usize, shed: usize, unkeyed: usize) -> String {
+    format!(
+        "reset --derived: converted {converted} latest batch(es) into ledger entries and shed \
+         {shed} derived event(s) from the event log\n\
+         reset --derived: {unkeyed} of the derived event(s) shed named no file identity (no \
+         replay key, or one that does not parse)\n"
+    )
+}
+
+/// The line `rigger reset --derived` prints, ended, over a store holding no derived event.
+pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to shed\n";
+
+/// The line `rigger reset --derived` prints, ended, when the log's file held no free page.
+pub const LOG_LEFT_AS_IT_STANDS_LINE: &str =
+    "reset --derived: the log file holds no reclaimable free page, so it was left as it stands \
+     rather than rewritten to reclaim nothing\n";
+
+/// The line `rigger reset --derived` prints, ended, for a rewrite that reclaimed `bytes`.
+pub fn reclaimed_line(bytes: u64) -> String {
+    format!("reset --derived: compacted the log file and reclaimed {bytes} byte(s) on disk\n")
+}
+
 /// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
 pub const REBUILD_LOCK_REFUSAL: &str =
     "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";

@@ -7,7 +7,7 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
-///   - `--derived` (spec 60, criterion 5) compacts the EVENT LOG: see [`reset_derived`].
+///   - `--derived` (spec 107, criterion 16) migrates the EVENT LOG: see [`reset_derived`].
 ///
 /// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
 /// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
@@ -92,12 +92,11 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // refusal" honesty the live-writer guard just below already commits to.
         if !selection.is_sqlite() {
             return Err(format!(
-                "reset --derived: the derived-index compaction deletes rows from the event log \
-                 and vacuums the file, which is a mechanic of the embedded \
-                 {RIGGER_DIR}/events.db store; this project is configured for the \
-                 server-backed store, which rigger cannot compact. Re-run it against a project \
-                 on the sqlite backend, or prune the server store with its own retention \
-                 tooling. Refusing rather than reporting a prune that did not happen."
+                "reset --derived: the migration rewrites and deletes rows of the event log and \
+                 vacuums the file, which is a mechanic of the embedded {RIGGER_DIR}/events.db \
+                 store; this project is configured for the server-backed store, where the \
+                 migration does not run. Re-run it against a project on the sqlite backend. \
+                 Refusing rather than reporting a migration that did not happen."
             )
             .into());
         }
@@ -115,7 +114,9 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         } else {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
-        reset_derived(&loc)?;
+        reset_derived(&loc, &|root, bytes| {
+            Ok(rigger::worktree::hash_blob(root, bytes)?)
+        })?;
     }
     Ok(())
 }
@@ -187,7 +188,7 @@ impl ResetEnv {
 /// to look".
 ///
 /// WHY A COUNT, NOT A DISK-BYTE FORECAST. The flagged reports name bytes RECLAIMED
-/// (`derived_prune_report`, `reset_runs`'s own line) because they measure a real before/after
+/// ([`reclamation_lines`], `reset_runs`'s own line) because they measure a real before/after
 /// across the mutation that just ran - `Reclamation::reclaimed_bytes`'s own docs are explicit
 /// that this is "MEASURED, NOT DERIVED" over the actual rewrite, and `Projector::compact`'s docs
 /// say the same of `VACUUM`: a page-count delta is only meaningful once the rewrite has happened.
@@ -346,7 +347,8 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     if !modes.runs && !modes.derived && !modes.build_cache && !modes.scratch_orphans {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph), rigger reset --derived (compact the event log), rigger reset \
+                    graph), rigger reset --derived (migrate the event log's derived events into ledger \
+                    entries), rigger reset \
                     --build-cache (reclaim the shared gate build cache), and/or rigger reset \
                     --scratch-orphans (reclaim cache-home scratch roots whose repo is gone)"
                 .into(),
@@ -427,7 +429,7 @@ fn reset_build_cache(env: &ResetEnv) -> Res {
 }
 
 /// The line (success) or refusal (busy) `rigger reset --build-cache` reports, rendered from
-/// the already-computed [`BuildCacheReclaim`] - pure, mirroring `derived_prune_report`'s own
+/// the already-computed [`BuildCacheReclaim`] - pure, mirroring [`reclamation_lines`]'s own
 /// "render from the real outcome, never re-derive it" convention.
 fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, String> {
     match outcome {
@@ -444,41 +446,37 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
     }
 }
 
-/// `rigger reset --derived` (spec 60, criterion 5) - SUPPORTED COMPACTION of an event log that
-/// accumulated derived-index duplication before the project-scoped ingest dedup existed.
+/// `rigger reset --derived` (spec 107) - THE ONE-TIME MIGRATION of an event log recorded before
+/// the ledger: it converts each file's latest derived batch into a ledger entry, in place, and
+/// leaves no derived event behind.
 ///
-/// Per `<prefix>/<file>` identity it keeps only the recordings of the LATEST generation (spec
-/// 101, criterion 4), of those only the latest recording per replay key, carries a re-asserted
-/// fact's earliest valid-time onto the recording it keeps, and vacuums so the file shrinks on
-/// disk. Every non-derived event survives byte-for-byte, and the live projection rebuilt from the
-/// compacted log is the one the whole log rebuilds.
+/// It is orchestration over ONE store transaction
+/// ([`rigger::eventstore::sqlite::Store::shed_derived`]) on the project's run stream, the one
+/// stream a sink ever appended a derived event to, named through the SAME stream-prefix spelling
+/// every namespaced read and write of this project uses ([`Namespaced::prefix_for`]). Before that
+/// transaction opens it reads what the stream holds ([`Store::count_derived`]) and answers, for
+/// every identity holding a derived event, the blob and the flag its entry records
+/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function, handed
+/// in by the composition root, and a hash that fails fails the command before any row changes.
+/// A store holding no derived event has nothing to shed and says so.
 ///
-/// It is orchestration over ONE store-mutation primitive
-/// ([`rigger::eventstore::sqlite::Store::prune_derived_index`]), handed the ONE derived-index
-/// content-identity policy [`rigger::ingest::derived_index_identity`] owns (the replay-key
-/// metadata name, the four derived types, where a key's content generation lies, and which of
-/// those types re-assert a fact in place rather than superseding it), and the
-/// SAME stream-prefix spelling every namespaced read and write of this project uses
-/// ([`Namespaced::prefix_for`]) - so a change to the namespace's wire form can never leave the
-/// compaction addressing streams that no longer exist. That prefix is a string match, with the
-/// property a string match has: a project whose id is a prefix of another's shares its slice,
-/// exactly as `read_all`, `subscribe_all` and the identity migration already do. The boundary is
-/// inherited, not tightened here. The two are the same PREFIX, not the same predicate: those
-/// reads match it with SQL `LIKE` and no `ESCAPE`, so an `_` or `%` in a project id is a wildcard
-/// there, while the prune matches literally and so reaches a SUBSET of the streams the project's
-/// own reads reach - the safe direction for a command that deletes.
+/// Either way it then reclaims the space the log's file holds free
+/// ([`Store::reclaim_space`]) against the size the log had on disk before the transaction, and
+/// prints what that did ([`reclamation_lines`]), so a rerun after a reclamation that failed
+/// reclaims what it left.
 ///
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
 /// store for a maintenance operation the port does not carry.
 ///
-/// It refuses, in this order and before it changes anything (spec 107): a rebuild lock another
-/// holds ([`Projector::lock_rebuild`]), which it takes first and holds across the compaction; a
-/// rebuild left unfinished ([`Projector::rebuild_unfinished`]), naming `rigger setup`; and a
-/// standing `graph.db` that owes its rebuild.
-fn reset_derived(loc: &StoreLocation) -> Res {
+/// It refuses, in this order and before it changes anything: a rebuild lock another holds
+/// ([`Projector::lock_rebuild`]), which it takes first and holds across the migration; a rebuild
+/// left unfinished ([`Projector::rebuild_unfinished`]), naming `rigger setup`; and a standing
+/// `graph.db` that owes its rebuild. It appends nothing, folds nothing and writes no projection
+/// or ledger row to `graph.db`.
+fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     // The rebuild lock first, before anything more is read, and held until this returns (spec
-    // 107): no rebuild starts under the compaction, and another already holding it - a `rigger
+    // 107): no rebuild starts under the migration, and another already holding it - a `rigger
     // setup` or a `rigger reset` - refuses this at once.
     let graph_db = loc.file("graph.db");
     let held = Projector::lock_rebuild(&graph_db)?;
@@ -492,120 +490,128 @@ fn reset_derived(loc: &StoreLocation) -> Res {
         );
     }
     // A `graph.db` that owes its rebuild is refused here as every command that depends on the
-    // fold refuses it (spec 101): the compaction runs once `rigger setup` has paid the rebuild.
+    // fold refuses it (spec 101): the migration runs once `rigger setup` has paid the rebuild.
     if Path::new(&graph_db).exists() {
         open_graph(&graph_db, &loc.identity(), "reset --derived")?;
     }
     let store = open_sqlite_store(&loc.file("events.db"))?;
-    let pruned = store.prune_derived_index(
-        &Namespaced::prefix_for(&loc.identity()),
-        &rigger::ingest::derived_index_identity(),
-    )?;
-    println!("{}", derived_prune_report(&pruned));
+    // THE OPERATOR'S BEFORE, taken before the migration's transaction opens: what the
+    // reclamation reports is the space the log lost on disk across the whole command.
+    let on_disk_before = store.bytes_on_disk();
+    let stream = format!(
+        "{}{}",
+        Namespaced::prefix_for(&loc.identity()),
+        conductor::STREAM
+    );
+    let counted = store.count_derived(&stream)?;
+    if counted.shed == 0 {
+        println!("reset --derived: no derived event to shed");
+    } else {
+        let entries = tree_entries(&tree_root(&loc.dir), &counted.identities, hash)?;
+        // A TOTAL function: an identity the read above did not count - one recorded since - gets
+        // no blob and a clear flag.
+        let shed = store.shed_derived(&stream, &|identity| {
+            entries.get(identity).cloned().unwrap_or_default()
+        })?;
+        println!(
+            "reset --derived: converted {} latest batch(es) into ledger entries and shed {} \
+             derived event(s) from the event log",
+            shed.converted, shed.shed
+        );
+        println!(
+            "reset --derived: {} of the derived event(s) shed named no file identity (no replay \
+             key, or one that does not parse)",
+            shed.unkeyed
+        );
+    }
+    for line in reclamation_lines(&store.reclaim_space(on_disk_before)) {
+        println!("{line}");
+    }
     Ok(())
 }
 
-/// The one line `rigger reset --derived` prints, rendered from what the prune actually did.
-///
-/// A pure function of the report, and separate from the command, because FOUR of its five
-/// compaction states are unreachable from a happy-path run of the binary - a reclamation the
-/// truncating checkpoint declined, a rewrite that failed after the deletes committed, a rewrite
-/// that was deliberately not run, and a database with no file behind it (which `rigger reset
-/// --derived` never opens at all, though the store this renders is a published entry point that
-/// does) - and each of them is a state whose whole purpose is to be READ correctly by an
-/// operator. A report only the lucky path renders is a report nothing pins.
-fn derived_prune_report(pruned: &PrunedDerived) -> String {
-    let per_type = pruned
-        .removed
+/// The one hash function as [`reset_derived`] takes it: the object id of `bytes` under a root.
+type HashBlob<'h> = dyn Fn(&Path, &[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
+
+/// What the ledger entry of each of `identities` records of the tree at `root` (spec 107): the
+/// blob `hash` gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
+/// for the identity's path - none for a path it hands no bytes for - and whether the walk
+/// excludes the identity as an out-of-line test module's ([`rigger::ingest::walk_exclusions`]).
+/// A hash that fails fails the whole answer.
+fn tree_entries(
+    root: &Path,
+    identities: &std::collections::BTreeSet<String>,
+    hash: &HashBlob,
+) -> Result<std::collections::BTreeMap<String, (String, bool)>, Box<dyn std::error::Error>> {
+    let (_, excluded) = rigger::ingest::walk_exclusions(&root.to_string_lossy());
+    identities
         .iter()
-        .map(|(t, n)| format!("{t} {n}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    // WHAT HAPPENED TO THE FILE, in the four states the prune can leave it. The deletes have
-    // committed before any of this is decided, so none of them is a failure of the prune:
-    //   - the rewrite failed: the rows are gone anyway, so the operator gets the counts, the
-    //     failure by name, and the two facts that follow from the ordering (the deletes are
-    //     durable; a re-run is safe, and it retries the reclamation because what triggers the
-    //     rewrite is the free space still in the file). Anything less is an "error" about a log
-    //     that WAS pruned.
-    //   - the file had no free space to reclaim: it is deliberately not rewritten, because a full
-    //     rewrite there holds the write lock for a whole scan and stages a second copy of the log
-    //     in the process's memory to reclaim nothing. Zero bytes is the measurement, not a
-    //     missing one. Read from `compaction_ran`, never inferred from a zero count: a pass that
-    //     deleted nothing still rewrites a file that HAS space to reclaim, and telling an
-    //     operator their log was left alone while it was being rewritten is the misreport this
-    //     whole line exists to avoid.
-    //   - the reclamation was measured: report the bytes the log lost on disk.
-    //   - the truncating checkpoint was declined by a concurrent reader: the freed pages stay in
-    //     the write-ahead log, so it is reported as unmeasured rather than as a byte count the
-    //     operator's own `ls` would contradict.
-    //   - the database has no file behind it at all: there was never a before-measurement to
-    //     take, so the same "rewritten, no number" shape arrives from a different cause and says
-    //     so. Read from `on_disk_measured`, never folded into the declined-checkpoint arm: those
-    //     two are the ONLY producers of that shape, and naming a concurrent reader for the second
-    //     asserts a cause this function was not handed - it would send a reader looking for a
-    //     writer that does not exist and promise pages at a checkpoint that will never put a byte
-    //     on a disk this database does not use.
-    let compaction = match (
-        &pruned.reclamation.compaction_error,
-        pruned.reclamation.compaction_ran,
-        pruned.reclamation.reclaimed_bytes,
-        pruned.reclamation.on_disk_measured,
+        .map(|identity| {
+            let bytes = rigger::retention::GenerationIngested::identity_parts(identity)
+                .and_then(|(prefix, file)| rigger::grounder::tree_bytes(root, prefix, file));
+            let blob = match bytes {
+                Some(bytes) => hash(root, &bytes)?,
+                None => String::new(),
+            };
+            Ok((identity.clone(), (blob, excluded.contains(identity))))
+        })
+        .collect()
+}
+
+/// The lines `rigger reset --derived` prints for what reclaiming the log's space did, a pure
+/// function of the [`Reclamation`](rigger::eventstore::sqlite::Reclamation): one rendering per
+/// state the store tells apart, because four of the five are unreachable from a happy-path run of
+/// the binary and each exists to be READ correctly by an operator.
+///
+/// The command's own change has committed before any of this is decided, so none of them is a
+/// failure of the command:
+///   - the rewrite failed: the failure by name, and the two facts that follow from the ordering
+///     (what the run changed is durable; a re-run is safe, and it retries the reclamation because
+///     what triggers the rewrite is the free space still in the file).
+///   - the file had no free space to reclaim: it is deliberately not rewritten. Read from
+///     `compaction_ran`, never inferred from a zero count.
+///   - the reclamation was measured: the bytes the log lost on disk.
+///   - the truncating checkpoint was declined by a concurrent reader: the freed pages stay in
+///     the write-ahead log, so it is reported as unmeasured rather than as a byte count the
+///     operator's own `ls` would contradict.
+///   - the database has no file behind it at all: there was never a before-measurement to take.
+///     Read from `on_disk_measured`, never folded into the declined-checkpoint arm, which would
+///     name a concurrent reader this function was not handed.
+fn reclamation_lines(reclamation: &rigger::eventstore::sqlite::Reclamation) -> Vec<String> {
+    match (
+        &reclamation.compaction_error,
+        reclamation.compaction_ran,
+        reclamation.reclaimed_bytes,
+        reclamation.on_disk_measured,
     ) {
-        (Some(err), _, _, _) => format!(
-            "the log file could NOT be compacted afterwards: {err}. The deletes are committed and \
-             durable, so nothing was lost and re-running the command is safe - and it retries the \
-             reclamation, because the space this run could not reclaim is still free in the file"
-        ),
-        (None, false, _, _) => "the log file was holding no reclaimable free page, so it was left \
-                                exactly as it stands rather than rewritten to reclaim nothing"
-            .to_string(),
-        (None, true, Some(bytes), _) => {
-            format!("then compacted the log file and reclaimed {bytes} byte(s) on disk")
-        }
-        (None, true, None, true) => "then compacted the log file, but the freed pages could not \
-                                     be folded back into the file: a concurrent reader held the \
-                                     write-ahead log, so they land at the next checkpoint and \
-                                     this run reclaimed an unmeasured amount"
-            .to_string(),
-        (None, true, None, false) => "then compacted the log, which has no file behind it (an \
-                                      in-memory or temporary database): there are no bytes on \
-                                      disk to have been reclaimed, so the reclamation is \
-                                      unmeasured rather than zero"
-            .to_string(),
-    };
-    // WHAT THE COUNT MEANS, both ways round, because each direction is misread in its own way.
-    //
-    // ZERO is the expected report on a log whose derived index holds one recording per distinct
-    // key, and an operator who reads "pruned 0" as a failure goes looking for a defect that is not
-    // there. It is justified by WHAT THIS LOG HOLDS and never by WHEN it was written: a log
-    // written since the ingest dedup existed still re-records a file's whole batch whenever that
-    // file's content returns to a generation the log already recorded, so "written after the
-    // dedup" implies nothing about the count.
-    //
-    // NON-ZERO on such a log is therefore NOT evidence the dedup is broken - it is that
-    // by-design duplication being shed - and saying so is the same sentence's other half: an
-    // operator who has just been told zero is normal will otherwise read a non-zero prune as the
-    // dedup having failed.
-    let what_the_count_means = if pruned.total_removed() == 0 {
-        " - a log whose derived index already holds each file's latest generation once has no \
-         redundancy to shed, so this is the expected report on such a log, not a failed prune"
-    } else {
-        " - a non-zero count is not a sign the ingest dedup is broken: every edit to a file \
-         supersedes the generation it recorded before, and a file whose content RETURNS to a \
-         generation the log already recorded (a revert, a branch switch, a checkout back) \
-         re-records its whole batch by design, because a dedup that suppressed it would strand \
-         the graph on the version the file has since moved past, and this is that accumulation \
-         being shed"
-    };
-    format!(
-        "reset --derived: pruned {} redundant derived-index event(s) from the event log \
-         ({per_type}), {} of them recordings of a superseded generation, {compaction} - every \
-         non-derived event and the latest recording of every content key of each file's latest \
-         generation are preserved{what_the_count_means}",
-        pruned.total_removed(),
-        pruned.superseded_generations,
-    )
+        (Some(err), _, _, _) => vec![
+            format!("reset --derived: the log file could NOT be compacted: {err}"),
+            "reset --derived: what this run changed is committed and durable, so re-running the \
+             command is safe - and it retries the reclamation, because the space this run could \
+             not reclaim is still free in the file"
+                .to_string(),
+        ],
+        (None, false, _, _) => vec![
+            "reset --derived: the log file holds no reclaimable free page, so it was left as it \
+             stands rather than rewritten to reclaim nothing"
+                .to_string(),
+        ],
+        (None, true, Some(bytes), _) => vec![format!(
+            "reset --derived: compacted the log file and reclaimed {bytes} byte(s) on disk"
+        )],
+        (None, true, None, true) => vec![
+            "reset --derived: compacted the log file, but the freed pages could not be folded \
+             back into it: a concurrent reader held the write-ahead log, so they land at the next \
+             checkpoint and this run reclaimed an unmeasured amount"
+                .to_string(),
+        ],
+        (None, true, None, false) => vec![
+            "reset --derived: compacted the log, which has no file behind it (an in-memory or \
+             temporary database): there are no bytes on disk to have been reclaimed, so the \
+             reclamation is unmeasured rather than zero"
+                .to_string(),
+        ],
+    }
 }
 
 /// The reasons `rigger reset --derived` must refuse, from the three already-gathered facts that
@@ -692,13 +698,14 @@ fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
 /// operator reads the same risk-owning sentence wherever they meet the flag.
 fn live_writer_refusal(reasons: &[String]) -> String {
     format!(
-        "reset --derived: refusing to compact the event log while the run is live - {}. \
-         Compaction deletes superseded derived-index recordings, which leaves REVISION GAPS by \
-         design; a writer whose append cursor was built before this compaction ran can reissue \
-         one of those gap revisions, and every later event then sorts BELOW it in revision order \
-         - the incident this guard exists to prevent, and the corruption forcing past a genuinely \
-         live writer would risk. Stop the run machinery named above and retry, or pass \
-         --force-live to compact anyway if you are certain no writer is using this store \
+        "reset --derived: refusing to migrate the event log while the run is live - {}. The \
+         migration rewrites each file's latest derived batch into a ledger entry and deletes \
+         every other derived event, which leaves REVISION GAPS by design; a writer whose append \
+         cursor was built before this migration ran can reissue one of those gap revisions, and \
+         every later event then sorts BELOW it in revision order - the incident this guard \
+         exists to prevent, and the corruption forcing past a genuinely live writer would risk. \
+         Stop the run machinery named above and retry, or pass \
+         --force-live to migrate anyway if you are certain no writer is using this store \
          (--force-live checks nothing; it trusts you with that risk).",
         reasons.join("; "),
     )

@@ -20,12 +20,13 @@
 //!      a temporary directory of this test's own; a rewrite staged in a file writes there and a
 //!      rewrite staged in memory does not. The same log rewritten through a connection left on
 //!      the engine's default is the positive control that the directory is being watched at all.
-//!      The same watch covers the reclamation `prune_derived_index` calls; that block goes with
-//!      the function when criterion 16 deletes it, and the rest of this file stands.
 //!   5. **What the rewrite takes on the log's own partition.** The shipped guidance tells an
 //!      operator the rewritten file passes through the write-ahead log beside the log, so that
 //!      partition needs about the compacted size free. A reader parked on the log until the
 //!      rewrite has committed holds that write-ahead log where it can be measured.
+//!   6. **A reader that never lets go.** A reader parked on the log for the whole call declines
+//!      the checkpoint that folds the rewrite into the file: the report says the rewrite ran,
+//!      that nothing failed and that the bytes are unmeasured, over a file measured before it.
 //!
 //! Every test here takes [`serial`]: item 4 points the whole process's engine at one directory,
 //! so nothing else in this binary may stage a temporary file while it watches.
@@ -337,7 +338,6 @@ fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves()
     let logs = tempfile::tempdir().unwrap();
     let staging = tempfile::tempdir().unwrap();
     let (subject, subject_db) = log_too_large_to_stage_in_the_page_cache(logs.path(), "subject");
-    let (pruned, pruned_db) = log_too_large_to_stage_in_the_page_cache(logs.path(), "pruned");
     let (_control, control_db) = log_too_large_to_stage_in_the_page_cache(logs.path(), "control");
 
     // THE WHOLE PROCESS'S ENGINE IS POINTED AT `staging`, the first place it looks for somewhere
@@ -381,22 +381,6 @@ fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves()
         "the reclamation staged its copy of the log in a file under the temporary directory"
     );
 
-    // THE RECLAMATION THE PRUNE CALLS, over a log it has nothing to delete from.
-    let report = pruned
-        .prune_derived_index("", &rigger::ingest::derived_index_identity())
-        .expect("prune a log holding no derived row");
-    assert_eq!(report.total_removed(), 0);
-    assert!(
-        report.reclamation.compaction_ran && report.reclamation.compaction_error.is_none(),
-        "the prune's reclamation must really have rewritten the file; got {report:?}"
-    );
-    assert_eq!(pragma_i64(&pruned_db, "freelist_count"), 0);
-    assert_eq!(
-        touched(),
-        untouched,
-        "the prune's reclamation staged its copy of the log in a file under the temporary \
-         directory"
-    );
     assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
 
     // THE POSITIVE CONTROL: the same log rewritten through a connection left on the engine's
@@ -490,5 +474,59 @@ fn the_rewritten_file_passes_through_the_write_ahead_log_beside_the_log() {
     assert!(
         compacted >= 256 * 1024,
         "the compacted file still holds the live row; it is {compacted} byte(s)"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 6. A reader that never lets go: the rewrite ran, and its bytes are unmeasured
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_reader_parked_past_the_rewrite_leaves_the_reclamation_unmeasured_over_a_rewritten_file() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("RunStarted", b"{}".to_vec())],
+        )
+        .expect("seed a live row");
+    plant_free_pages(&db, 3_000);
+    assert!(pragma_i64(&db, "freelist_count") > 100);
+    let before = store
+        .bytes_on_disk()
+        .expect("a file-backed store has a size");
+
+    // A READER PARKED ON THE LOG for the whole of the call - an open read transaction from a
+    // second connection, which is what a second process reading the log holds. The rewrite
+    // commits under it; the truncating checkpoint that would fold it into the file is declined
+    // every time it is asked.
+    let reader = rusqlite::Connection::open(&db).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
+        .expect("park a reader on the log");
+
+    let reclaimed = store.reclaim_space(Some(before));
+    drop(reader);
+
+    assert_eq!(
+        reclaimed,
+        Reclamation {
+            reclaimed_bytes: None,
+            compaction_ran: true,
+            on_disk_measured: true,
+            compaction_error: None,
+        },
+        "the rewrite ran and nothing failed, and the file has a size that was measured before \
+         it: the bytes alone are unmeasured, because the freed pages have not left the pair"
+    );
+    assert_eq!(
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the rewrite the report names really ran: the log holds no free page"
     );
 }
