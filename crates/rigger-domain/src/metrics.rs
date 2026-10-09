@@ -125,8 +125,8 @@ use crate::spawn::{
 
 /// A unit's computed two-view blast radius, recorded as PURE AUDIT (spec 16 unit 3,
 /// architecture 5.5.9). It carries the unit, the `precise` seed view, the uncapped
-/// `safe`-superset view partitioning and tier-routing key on, the `serialize` (hub) verdict,
-/// and the grounder's `index_stamp` provenance - emitted on EVERY structural-grounding path
+/// `safe`-superset view scheduling and tier-routing key on, and the grounder's `index_stamp`
+/// provenance - emitted on EVERY structural-grounding path
 /// including the empty-radius fail-safe, so "why the full panel?" is always answerable and the
 /// wave-level parallelism-retention metric (`metrics::project`) is reconstructable from the log.
 /// It adds no graph node/edge: the context-graph projector matches no fold arm for it and so
@@ -182,74 +182,53 @@ pub const META_WORKTREE_SHA: &str = "worktree_sha";
 /// always-zero in production.
 pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
 
-/// Greedily group stage names into disjoint batches by blast-radius (§3.2, §8).
-/// `items` pairs each stage name with the set of files in its blast radius. A stage
-/// joins the FIRST existing batch none of whose members share any file with it;
-/// otherwise it opens a new batch. Stages with an empty blast radius conflict with
-/// nothing and so all collapse into the first batch. The result is deterministic:
-/// `items` is consumed in order and batches keep insertion order, so callers get a
-/// stable partition for a stable (e.g. sorted) input. The guarantee: two stages
-/// whose blast radii overlap never land in the same batch, so running the batches
-/// sequentially keeps overlapping units off the same file at the same time - they
-/// never share a worktree.
-pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
-    let mut batches: Vec<Vec<String>> = Vec::new();
-    // The accumulated file set of each batch, parallel to `batches`, so the
-    // disjointness test is a set lookup rather than a re-scan of every member.
-    let mut batch_files: Vec<HashSet<&str>> = Vec::new();
-    for (name, files) in items {
-        let want: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
-        let mut placed = false;
-        for (i, taken) in batch_files.iter_mut().enumerate() {
-            if want.is_disjoint(taken) {
-                batches[i].push(name.clone());
-                taken.extend(want.iter().copied());
-                placed = true;
-                break;
-            }
-        }
-        if !placed {
-            batches.push(vec![name.clone()]);
-            batch_files.push(want);
-        }
+/// Whether two units' safe-superset radii CONFLICT - the ONE co-scheduling rule (§3.2, §8): they
+/// share a file, or either is EMPTY. An empty radius is a TOTAL grounding miss, the worst
+/// unassessable case, and the whole hazard this rule exists to prevent is co-scheduling two units
+/// that touch a file the grounding failed to surface - so an empty radius conflicts with every
+/// other radius (the same fail-safe stance `route_review_tier` takes: empty -> full panel). A hub
+/// symbol needs no rule of its own: its whole neighborhood is already in its safe view. The
+/// conductor's wave scheduling and [`partition_by_blast_radius`] (the retention metric's
+/// partition) both decide through this, so the live schedule and the metric never drift.
+pub fn radii_conflict(a: &[String], b: &[String]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
     }
-    batches
+    let taken: HashSet<&str> = a.iter().map(String::as_str).collect();
+    b.iter().any(|f| taken.contains(f.as_str()))
 }
 
-/// The ONE serialize/empty-aware partition authority (spec 16 unit 3): group `items` -
-/// each `(name, safe-superset files, serialize)` - into batches that never co-schedule two
-/// units that must not run together. A unit is UNPARTITIONED (takes its OWN singleton batch,
-/// never fed to the disjointness grouping) when EITHER its radius is a hub (`serialize`) OR
-/// its safe view is EMPTY. Empty is treated exactly like a hub because an empty radius is a
-/// TOTAL grounding MISS - the worst UNASSESSABLE case - and the whole hazard this partition
-/// exists to prevent is co-scheduling two units that share a file the grounding failed to
-/// surface: `partition_by_blast_radius` reads an empty want-set as disjoint from EVERY batch,
-/// so an empty radius would otherwise fail OPEN into the first shared batch. Own-batching it
-/// is the SAME fail-SAFE stance `route_review_tier` takes (empty -> full panel): when risk
-/// cannot be measured, isolate. The remaining shareable radii (non-serialize, non-empty) go
-/// through the ONE [`partition_by_blast_radius`] disjointness authority; own-batch units are
-/// appended after, in input order, so the result is deterministic for a stable input. This is
-/// the SINGLE writer of the serialize/empty own-batch rule - `partition_wave` (the conductor)
-/// and `metrics::parallelism_retention_of` (the runtime warn metric) both call it, so the two
-/// can never drift.
-pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Vec<String>> {
-    let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
-    let mut own_batch: Vec<String> = Vec::new();
-    for (name, files, serialize) in items {
-        if *serialize || files.is_empty() {
-            own_batch.push(name.clone());
-        } else {
-            let mut files = files.clone();
-            files.sort();
-            files.dedup();
-            shareable.push((name.clone(), files));
+/// A `BlastRadiusComputed` audit event's `(unit, safe files)`, or `None` for any other event or
+/// one with no unit id. The ONE decoder of a recorded radius: the retention fold and the
+/// conductor's wave scheduling both read a unit's radius through it, so the schedule and the
+/// metric read the same recorded radius.
+pub fn recorded_radius(e: &Event) -> Option<(String, Vec<String>)> {
+    if e.type_ != TYPE_BLAST_RADIUS_COMPUTED {
+        return None;
+    }
+    Some((field_str(e, "id")?, field_str_vec(e, "safe")))
+}
+
+/// Greedily group stage names into batches no two members of which [`radii_conflict`] (§3.2,
+/// §8). `items` pairs each stage name with the files of its safe radius. A stage joins the FIRST
+/// existing batch it conflicts with no member of; otherwise it opens a new batch - so an EMPTY
+/// radius always takes its own batch. Deterministic: `items` is consumed in order and batches
+/// keep insertion order, so a stable input yields a stable partition.
+pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
+    let mut batches: Vec<Vec<usize>> = Vec::new();
+    for (i, (_, files)) in items.iter().enumerate() {
+        match batches
+            .iter_mut()
+            .find(|batch| batch.iter().all(|&j| !radii_conflict(files, &items[j].1)))
+        {
+            Some(batch) => batch.push(i),
+            None => batches.push(vec![i]),
         }
     }
-    let mut batches = partition_by_blast_radius(&shareable);
-    for name in own_batch {
-        batches.push(vec![name]);
-    }
     batches
+        .into_iter()
+        .map(|batch| batch.into_iter().map(|i| items[i].0.clone()).collect())
+        .collect()
 }
 
 /// The tier a review spawn belongs to, recovered from its deterministic
@@ -340,8 +319,8 @@ pub struct Metrics {
     /// The runtime PARALLELISM-RETENTION metric (spec 16 unit 3, architecture 5.5.9), derived
     /// from the `BlastRadiusComputed` audit events: the share of grounded units that STAY
     /// co-schedulable (land in a partition batch with a peer) once each unit's safe-superset
-    /// radius and hub-`serialize`-OR-empty own-batch verdict are honored, via the SAME
-    /// [`partition_with_serialize`] authority `partition_wave` runs. It is a RUN-WIDE estimate
+    /// radius is partitioned by the SAME [`radii_conflict`] rule the conductor's wave scheduling
+    /// runs. It is a RUN-WIDE estimate
     /// over all units' latest radii, not a per-wave reconstruction (the audit carries no wave
     /// id), so it reads how PACKABLE the fleet's radii are rather than any one wave's exact
     /// batching. `None` when no `BlastRadiusComputed` event was recorded (the non-symbols default
@@ -352,6 +331,12 @@ pub struct Metrics {
     /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) surfaces so it is
     /// visible in production.
     pub parallelism_retention: Option<f64>,
+    /// The grounded units [`parallelism_retention`](Metrics::parallelism_retention) measured over
+    /// (each unit's latest recorded radius), so a reading states its own denominator.
+    pub grounded_units: u64,
+    /// How many of those [`grounded_units`](Metrics::grounded_units) have an EMPTY radius - a
+    /// criterion naming no code, which runs alone and so lowers the retention by construction.
+    pub empty_radii: u64,
     /// Per-agent wall-clock duration aggregates (spec 61, SPAWN TIMING), keyed by the spawn's
     /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME
     /// per-agent breakdown the review-tier cost fold uses, but covering EVERY recorded spawn
@@ -427,31 +412,28 @@ impl Metrics {
     }
 }
 
-/// The share of `radii` (each a unit's safe-superset file set + hub-`serialize` verdict) that
-/// stays CO-SCHEDULABLE once partitioned through the ONE [`partition_with_serialize`] authority
-/// the conductor's `partition_wave` also calls: the shareable radii grouped disjoint, and each
-/// hub-OR-empty radius taking its OWN singleton batch. Sharing that one writer is what keeps the
-/// runtime metric from drifting from the live partition rule (a future own-batch change lands in
-/// both at once); an all-empty (fully unassessable) fleet therefore correctly reads `0.0` and
-/// warns, rather than the fail-open `1.0` an empty-collapses partition would report. A unit is
-/// co-schedulable iff its batch has a peer (size >= 2). Returns the co-schedulable count over the
-/// total unit count, or `None` for an empty input (no units => no parallelism to measure).
+/// The share of `radii` (each a unit's safe-superset file set) that stays CO-SCHEDULABLE once
+/// partitioned by [`partition_by_blast_radius`] - the SAME [`radii_conflict`] rule the conductor's
+/// wave scheduling runs, so the runtime metric cannot drift from the live schedule; an all-empty
+/// (fully unassessable) fleet therefore correctly reads `0.0` and warns. A unit is co-schedulable
+/// iff its batch has a peer (size >= 2). Returns the co-schedulable count over the total unit
+/// count, or `None` for an empty input (no units => no parallelism to measure).
 ///
 /// This is a RUN-WIDE approximation, NOT a per-wave reconstruction: the `BlastRadiusComputed`
 /// audit carries no wave id, so all units' latest radii are partitioned in one pass. It measures
-/// whether the fleet's radii are PACKABLE, not the exact batching any single wave saw - so it is
+/// whether the fleet's radii are PACKABLE, not the exact schedule any single wave ran - so it is
 /// the runtime cousin of `blast_radius_eval::parallelism_retention`, computed from the audit log
-/// rather than a corpus, sharing the partition rule but not claiming per-wave fidelity.
-fn parallelism_retention_of(radii: &[(Vec<String>, bool)]) -> Option<f64> {
+/// rather than a corpus, sharing the conflict rule but not claiming per-wave fidelity.
+fn parallelism_retention_of(radii: &[Vec<String>]) -> Option<f64> {
     if radii.is_empty() {
         return None;
     }
-    let items: Vec<(String, Vec<String>, bool)> = radii
+    let items: Vec<(String, Vec<String>)> = radii
         .iter()
         .enumerate()
-        .map(|(i, (files, serialize))| (i.to_string(), files.clone(), *serialize))
+        .map(|(i, files)| (i.to_string(), files.clone()))
         .collect();
-    let batches = partition_with_serialize(&items);
+    let batches = partition_by_blast_radius(&items);
     let co_schedulable: usize = batches.iter().filter(|b| b.len() >= 2).map(Vec::len).sum();
     Some(co_schedulable as f64 / radii.len() as f64)
 }
@@ -719,10 +701,10 @@ pub fn project(events: &[Event]) -> Metrics {
     let mut pending_cause: BTreeMap<String, String> = BTreeMap::new();
     // review spawns recorded per tier (the cost side of cost-per-upheld).
     let mut tier_spawns: BTreeMap<String, u64> = BTreeMap::new();
-    // per-unit LATEST safe-superset radius + hub-serialize verdict (spec 16 unit 3), for the
+    // per-unit LATEST safe-superset radius (spec 16 unit 3), for the
     // runtime parallelism-retention metric. Latest-per-unit so a remediation attempt's re-record
     // supersedes the prior attempt's radius rather than double-counting the same unit.
-    let mut blast_radii: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+    let mut blast_radii: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // spec 61 SPAWN TIMING: keyed by (run WINDOW, spawn id) - NEVER by spawn id alone.
     // spawn::spawn_id ("{unit}/{role}#{attempt}") carries no run component, and this project
     // namespace routinely reuses spawn ids across independent runs (a re-proposed/relaunched
@@ -998,24 +980,27 @@ pub fn project(events: &[Event]) -> Metrics {
             }
             TYPE_BLAST_RADIUS_COMPUTED => {
                 // A unit's computed blast radius (spec 16 unit 3), pure audit. Fold the LATEST
-                // safe view + hub-serialize verdict per unit for the parallelism-retention
-                // metric; nothing else in this read-model reacts to it.
-                let Some(id) = field_str(e, "id") else {
-                    continue;
-                };
-                blast_radii.insert(id, (field_str_vec(e, "safe"), field_bool(e, "serialize")));
+                // safe view per unit for the parallelism-retention metric; nothing else in this
+                // read-model reacts to it. A `serialize` key an older log carries is ignored: only
+                // an overlap keeps two units apart.
+                if let Some((id, safe)) = recorded_radius(e) {
+                    blast_radii.insert(id, safe);
+                }
             }
             // Unknown / foreign event types (DecisionMade, LessonLearned, ...) are
             // ignored so the same shared log feeds every read-model.
             _ => {}
         }
     }
-    // Runtime parallelism-retention (spec 16 unit 3): partition every unit's latest safe radius
-    // the way `partition_wave` will and measure the share that stays co-schedulable. Absent when
+    // Runtime parallelism-retention (spec 16 unit 3): partition every unit's latest safe radius by
+    // the same `radii_conflict` rule `run_wave` admits by and measure the share that stays
+    // co-schedulable, with the count of empty radii that explains a low reading. Absent when
     // no `BlastRadiusComputed` was recorded (the non-symbols default), so a run with no structural
     // grounding reports no retention rather than a spurious full-parallelism reading.
-    let radii: Vec<(Vec<String>, bool)> = blast_radii.into_values().collect();
+    let radii: Vec<Vec<String>> = blast_radii.into_values().collect();
     metrics.parallelism_retention = parallelism_retention_of(&radii);
+    metrics.grounded_units = radii.len() as u64;
+    metrics.empty_radii = radii.iter().filter(|r| r.is_empty()).count() as u64;
 
     // ---- Finalize the spec-61 SPAWN TIMING fold: pair each recorded request with its result by
     // (run window, spawn id), bucketed per spawn ROLE. Two cases fall through to `unpaired_spawns`
@@ -1139,16 +1124,6 @@ struct GateVerdictView {
 fn field_str(e: &Event, key: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(&e.data).ok()?;
     value.get(key)?.as_str().map(str::to_owned)
-}
-
-/// Pull a boolean field out of an event's JSON payload, defaulting to `false` when the
-/// payload is malformed, the field is absent, or it is not a bool. The `serialize` (hub)
-/// verdict of a `BlastRadiusComputed` audit event is read this way.
-fn field_bool(e: &Event, key: &str) -> bool {
-    serde_json::from_slice::<serde_json::Value>(&e.data)
-        .ok()
-        .and_then(|v| v.get(key).and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
 }
 
 /// Pull a string-array field out of an event's JSON payload as a `Vec<String>`; empty
@@ -1577,46 +1552,36 @@ mod tests {
         )
     }
 
-    /// The pure retention primitive partitions exactly as `partition_wave` does: shareable radii
-    /// through `partition_by_blast_radius`, each hub in its OWN singleton batch, and reports the
+    /// The pure retention primitive partitions by the one conflict rule the wave scheduling runs -
+    /// two radii sharing a file never pair, an empty radius pairs with nothing - and reports the
     /// co-schedulable share.
     #[test]
     fn parallelism_retention_of_measures_the_co_schedulable_share() {
+        let r = |files: &[&str]| files.iter().map(|f| f.to_string()).collect::<Vec<String>>();
         // Three disjoint radii all co-schedule => 3/3.
-        let all = [
-            (vec!["a.rs".to_string()], false),
-            (vec!["b.rs".to_string()], false),
-            (vec!["c.rs".to_string()], false),
-        ];
-        assert_eq!(parallelism_retention_of(&all), Some(1.0));
-        // Flip one to a hub: it serializes into its own batch, so only 2/3 co-schedule.
-        let one_hub = [
-            (vec!["a.rs".to_string()], false),
-            (vec!["b.rs".to_string()], false),
-            (vec!["h.rs".to_string()], true),
-        ];
-        assert_eq!(parallelism_retention_of(&one_hub), Some(2.0 / 3.0));
+        assert_eq!(
+            parallelism_retention_of(&[r(&["a.rs"]), r(&["b.rs"]), r(&["c.rs"])]),
+            Some(1.0)
+        );
+        // A radius overlapping both others sits alone while the disjoint pair co-schedules => 2/3.
+        assert_eq!(
+            parallelism_retention_of(&[r(&["a.rs"]), r(&["b.rs"]), r(&["a.rs", "b.rs"])]),
+            Some(2.0 / 3.0)
+        );
         // Two radii sharing a file cannot co-schedule => 0/2.
-        let overlap = [
-            (vec!["x.rs".to_string()], false),
-            (vec!["x.rs".to_string()], false),
-        ];
-        assert_eq!(parallelism_retention_of(&overlap), Some(0.0));
-        // An EMPTY radius is a total, unassessable grounding miss: it own-batches (never fed to
-        // the disjointness grouping, where an empty want-set would fail OPEN into the first shared
-        // batch), so it never co-schedules. An ALL-EMPTY fleet therefore reads 0.0 - not the
-        // fail-open 1.0 an empty-collapses partition would report - so the warn fires exactly when
-        // the fleet is LEAST assessable (adj-u3 metrics corollary).
-        let all_empty = [(Vec::<String>::new(), false), (Vec::new(), false)];
-        assert_eq!(parallelism_retention_of(&all_empty), Some(0.0));
-        // One empty radius among disjoint shareable units drops only itself: a.rs and b.rs still
-        // co-schedule (2/3), the empty unit own-batches.
-        let one_empty = [
-            (vec!["a.rs".to_string()], false),
-            (vec!["b.rs".to_string()], false),
-            (Vec::new(), false),
-        ];
-        assert_eq!(parallelism_retention_of(&one_empty), Some(2.0 / 3.0));
+        assert_eq!(
+            parallelism_retention_of(&[r(&["x.rs"]), r(&["x.rs"])]),
+            Some(0.0)
+        );
+        // An EMPTY radius is a total, unassessable grounding miss: it pairs with nothing. An
+        // ALL-EMPTY fleet therefore reads 0.0 - not a fail-open 1.0 - so the warn fires exactly
+        // when the fleet is LEAST assessable (adj-u3 metrics corollary).
+        assert_eq!(parallelism_retention_of(&[r(&[]), r(&[])]), Some(0.0));
+        // One empty radius among disjoint units drops only itself => 2/3.
+        assert_eq!(
+            parallelism_retention_of(&[r(&["a.rs"]), r(&["b.rs"]), r(&[])]),
+            Some(2.0 / 3.0)
+        );
         // No radii => nothing to measure.
         assert_eq!(parallelism_retention_of(&[]), None);
     }
@@ -1635,11 +1600,21 @@ mod tests {
         assert_eq!(healthy.parallelism_retention, Some(1.0));
         assert!(!healthy.parallelism_retention_warns());
 
-        // A silently-serializing fleet: every unit a hub => 0.0 retention => warn.
-        let serialized = project(&[
+        // A log recorded with a hub flag on every unit (the shape older runs left) reads the
+        // real share: the radii are disjoint, so all three co-schedule => 1.0, no warn.
+        let hub_flagged = project(&[
             blast_radius_ev("a", &["a.rs"], true),
             blast_radius_ev("b", &["b.rs"], true),
             blast_radius_ev("c", &["c.rs"], true),
+        ]);
+        assert_eq!(hub_flagged.parallelism_retention, Some(1.0));
+        assert!(!hub_flagged.parallelism_retention_warns());
+
+        // A genuinely serializing fleet: every radius overlaps the others => 0.0 => warn.
+        let serialized = project(&[
+            blast_radius_ev("a", &["shared.rs", "a.rs"], false),
+            blast_radius_ev("b", &["shared.rs", "b.rs"], false),
+            blast_radius_ev("c", &["shared.rs"], false),
         ]);
         assert_eq!(serialized.parallelism_retention, Some(0.0));
         assert!(serialized.parallelism_retention_warns());
@@ -1653,6 +1628,12 @@ mod tests {
         ]);
         assert_eq!(all_empty.parallelism_retention, Some(0.0));
         assert!(all_empty.parallelism_retention_warns());
+        assert_eq!(
+            (all_empty.grounded_units, all_empty.empty_radii),
+            (2, 2),
+            "both grounded units are counted, both as empty radii"
+        );
+        assert_eq!((healthy.grounded_units, healthy.empty_radii), (2, 0));
 
         // No `BlastRadiusComputed` events (the non-symbols default): absent metric, never warns.
         let none = project(&[verdict("g", true)]);
@@ -1838,6 +1819,8 @@ mod tests {
             review_quality: ReviewQuality::default(),
             // No BlastRadiusComputed events in this slice, so the retention metric is absent.
             parallelism_retention: None,
+            grounded_units: 0,
+            empty_radii: 0,
             // No SpawnRequested/SpawnResult events in this slice, so the spec-61 spawn-timing
             // fold is empty too - the new fields never disturb the existing ones.
             spawn_timing: BTreeMap::new(),
@@ -1926,7 +1909,7 @@ mod tests {
             ],
             &[("units_started", 1), ("first_pass_clean", 0)],
         );
-        // Two units' events interleave in the append-only stream (run_batch spawns
+        // Two units' events interleave in the append-only stream (run_wave spawns
         // under a thread scope). Per-id state must not bleed: `a` approves, `b`
         // rejects.
         interleaved_units_keep_per_id_review_state: assert_counters(

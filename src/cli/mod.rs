@@ -2103,7 +2103,8 @@ const NO_RUNS_MESSAGE: &str =
 /// wave-parallelism the fleet retained), and a fleet that has quietly serialized itself - a
 /// retention below [`metrics::PARALLELISM_RETENTION_WARN`], per
 /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) - gets a loud inline
-/// `WARN` naming the floor.
+/// `WARN` naming the floor. Units whose radius is empty (their criterion names no code) are
+/// counted on the line, since each runs alone and so lowers the share by construction.
 ///
 /// Single-sourced so the `rigger stats` retention row and the end-of-`rigger run` stderr notice
 /// render IDENTICALLY: the warn text and its firing condition have ONE authority and cannot drift.
@@ -2113,6 +2114,12 @@ fn parallelism_retention_line(m: &Metrics) -> Option<String> {
         "{:.1}% of grounded units stay co-schedulable (wave-parallelism retained)",
         retention * 100.0,
     );
+    if m.empty_radii > 0 {
+        line.push_str(&format!(
+            "; {} of {} grounded units name no code (an empty radius runs alone)",
+            m.empty_radii, m.grounded_units,
+        ));
+    }
     if m.parallelism_retention_warns() {
         line.push_str(&format!(
             " - WARN: below the {:.1}% floor, the fleet is largely serializing (most units \
@@ -11015,6 +11022,33 @@ mod tests {
         assert!(
             warn.contains("40.0%") && warn.contains("WARN") && warn.contains("80.0% floor"),
             "a below-floor retention warns and names the floor: {warn}"
+        );
+    }
+
+    /// A retention reading explains itself: when some grounded units have an EMPTY radius (their
+    /// criterion names no code, so each runs alone), the line says how many of how many.
+    #[test]
+    fn parallelism_retention_line_counts_the_units_whose_radius_is_empty() {
+        let line = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.0),
+            grounded_units: 20,
+            empty_radii: 2,
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            line.contains("2 of 20 grounded units name no code"),
+            "the line counts the empty radii: {line}"
+        );
+        let none_empty = parallelism_retention_line(&Metrics {
+            parallelism_retention: Some(0.9),
+            grounded_units: 10,
+            ..Default::default()
+        })
+        .expect("a measured retention yields a line");
+        assert!(
+            !none_empty.contains("name no code"),
+            "no empty radius, no count: {none_empty}"
         );
     }
 

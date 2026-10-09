@@ -234,7 +234,7 @@ stages:
   #    fix owned by two units with no exclusion named) and open DISPOSITIONS (rule 8 - a
   #    criterion a reviewer can re-litigate). A shared blast radius is NOT one of them: it
   #    is surfaced as INFORMATIONAL context only, because `partition: by-blast-radius`
-  #    serializes overlapping units into disjoint sequential batches and worktree
+  #    never runs two overlapping units at the same time and worktree
   #    isolation keeps every reviewer on its own diff, so overlap integrates cleanly (see
   #    handbook rule 6). A reject feeds back to the planner (bounded by max_retries); only
   #    an approve RELEASES the fan-out. It is review-only (no `agent`) - it critiques the

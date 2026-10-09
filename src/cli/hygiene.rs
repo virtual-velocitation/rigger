@@ -1443,10 +1443,6 @@ mod tests {
             "an unrelated file is not in the radius; got {:?}",
             br.safe
         );
-        assert!(
-            !br.serialize,
-            "apply_damage is not a hub, so the radius does not serialize"
-        );
     }
 
     // --- Spec 107, criterion 16: what `rigger reset --derived` SAYS about the reclamation ---

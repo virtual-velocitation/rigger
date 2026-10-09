@@ -10,12 +10,13 @@
 //! Two arms with different jobs (5.5.8):
 //!
 //! - Arm (a), the IMPLEMENTATION-INVARIANT guard: on an adversarial corpus (macro, trait
-//!   object, re-export, reflection, common-name) the safe view MUST be a superset of grep. It
-//!   is a REGRESSION guard, not a discovery mechanism: because `safe = structural ∪ grep`
-//!   (5.5.1) it can only go RED if the union is built WRONG (it intersects, or drops the grep
-//!   side). The corpus deliberately carries grep-only mentions (a reflection string a symbol
-//!   index never indexes, a macro body) so a `safe = structural` or `safe = structural ∩ grep`
-//!   mutation actually drops a file and trips the superset check.
+//!   object, re-export, reflection, common-name) the safe view of a span the index cannot
+//!   resolve MUST carry every whole-identifier text hit of it, and the safe view of a name the
+//!   index resolves is its structural set alone. It is a REGRESSION guard: it goes RED if the
+//!   text-search fallback is dropped or intersected, or if a resolved name is text-searched
+//!   again. The corpus carries a reflection string naming an undefined handler (text-only, so
+//!   dropping the fallback drops a file) and a macro-body call of a defined name (text-only,
+//!   so text-searching a resolved name adds a file).
 //!
 //! - Arm (b), the real QUANTIFIED go/no-go on a PINNED polyglot repo: a parallelism-retention
 //!   gate (units stay co-schedulable versus the grep baseline; median safe-radius bounded) and
@@ -23,13 +24,9 @@
 //!   all-full). Both bounds are MEASURED on the pinned fixture and FROZEN as red-on-regression
 //!   assertions rather than hand-chosen (adv-quant-bound-unpinned).
 //!
-//! The co-scheduling measure REUSES [`crate::conductor::partition_by_blast_radius`] - the ONE
-//! partitioner authority the run itself uses - for the file-set grouping, so THAT dimension is
-//! the ACTUAL partition, not a parallel re-implementation. The serialize->own-singleton-batch
-//! dimension, by contrast, IS a model of unit 3's not-yet-written wiring (see [`partition`]): the
-//! production `partition_by_blast_radius` has no serialize concept, so this gate holds unit 3 to
-//! wiring `serialize` with EXACTLY these own-singleton-batch semantics - it stays valid only if
-//! unit 3 does. It deliberately does NOT drive the production `route_review_tier`: that
+//! The co-scheduling measure IS [`crate::conductor::partition_by_blast_radius`] - the partition
+//! over the ONE `radii_conflict` rule the run's wave scheduling uses - so it measures the actual
+//! co-scheduling rule, not a parallel re-implementation. It deliberately does NOT drive the production `route_review_tier`: that
 //! router's size `threshold` is the un-retuned `8`, and against an UNCAPPED safe radius every
 //! unit would clear it and the split would collapse to all-full - a deadlock that is unit-3's
 //! re-tune to fix (adv-tier-threshold-coupling). The tier arm instead models a
@@ -41,20 +38,16 @@
 // symbols-OFF lane carries no dead code.
 use crate::conductor::partition_by_blast_radius;
 
-/// One unit's blast radius for the eval: its id and the file set partitioning keys on.
+/// One unit's blast radius for the eval: its id and the file set co-scheduling keys on.
 #[derive(Clone)]
 struct UnitRadius {
     unit: String,
-    /// The safe file set (what the conductor partitions and routes tiers by).
+    /// The safe file set (what the conductor schedules and routes tiers by).
     files: Vec<String>,
-    /// Whether this radius must SERIALIZE (conflict-with-everything) because its query is a hub
-    /// (unit 1's `BlastRadius::serialize`). The grep baseline never serializes; the symbols
-    /// subject does when a queried name is a hub.
-    serialize: bool,
 }
 
 /// The units co-schedulable under a partition: those landing in a batch with at least one peer
-/// (batch size >= 2). A singleton batch is a serialized / unshared unit and contributes zero.
+/// (batch size >= 2). A singleton batch is an unshared unit and contributes zero.
 fn co_schedulable(batches: &[Vec<String>]) -> usize {
     batches
         .iter()
@@ -63,25 +56,13 @@ fn co_schedulable(batches: &[Vec<String>]) -> usize {
         .sum()
 }
 
-/// Partition the units the way the conductor will once unit 3 honors the two-view contract: a
-/// SERIALIZE radius (a hub) takes its OWN batch (conflict-with-everything), and every other
-/// radius is grouped by file-set disjointness through the ONE existing
-/// [`partition_by_blast_radius`] authority. This is the eval's MODEL of the partition (unit 3
-/// owns the wiring); it re-implements nothing - the file-set grouping is the production
-/// partitioner, and the serialize->own-batch rule is unit 1's `serialize` contract verbatim.
+/// Partition the units by the conductor's own co-scheduling rule.
 fn partition(units: &[UnitRadius]) -> Vec<Vec<String>> {
-    let shareable: Vec<(String, Vec<String>)> = units
+    let items: Vec<(String, Vec<String>)> = units
         .iter()
-        .filter(|u| !u.serialize)
         .map(|u| (u.unit.clone(), u.files.clone()))
         .collect();
-    let mut batches = partition_by_blast_radius(&shareable);
-    // Each serialized (hub) unit conflicts with everything: it never co-schedules, so it lands
-    // in its own singleton batch rather than joining the shareable partition.
-    for u in units.iter().filter(|u| u.serialize) {
-        batches.push(vec![u.unit.clone()]);
-    }
-    batches
+    partition_by_blast_radius(&items)
 }
 
 /// Parallelism retention of the `subject` partition versus the `baseline`: the share of the
@@ -111,12 +92,8 @@ fn median_width(radii: &[UnitRadius]) -> usize {
 
 /// A tier size `threshold` RE-TUNED to a width distribution: the nearest-rank `percentile` value
 /// of the sorted widths (the degree at 0-based rank `floor(N * percentile)`, clamped to the top).
-/// This is the TIER-ROUTING split point over the radius-WIDTH distribution - a distinct concern
-/// from `model::is_hub`, which detects a strict high-degree OUTLIER over the reference-DEGREE
-/// distribution (`floor((N - 1) * percentile)` with a strict `>`). The two used to share the
-/// `floor(N * percentile)` rule, but hub detection was retuned to an outlier definition so it does
-/// not degenerate on a long tail; this tier threshold keeps the nearest-rank percentile because it
-/// wants a split POINT, not outlier detection. Unit 3 owns the PRODUCTION re-tune; unit 2 uses this
+/// This is the TIER-ROUTING split point over the radius-WIDTH distribution: it wants a split
+/// POINT, not outlier detection, so it keeps the nearest-rank percentile. Unit 3 owns the PRODUCTION re-tune; unit 2 uses this
 /// only to demonstrate that a distribution-tuned threshold keeps the light/full split non-degenerate
 /// where the un-retuned absolute `8` collapses it.
 fn width_threshold(widths: &[usize], percentile: f64) -> usize {
@@ -147,59 +124,47 @@ mod pure_metric_tests {
     //! synthetic radii so the corpus arms below rest on measured-correct primitives.
     use super::*;
 
-    fn u(unit: &str, files: &[&str], serialize: bool) -> UnitRadius {
+    fn u(unit: &str, files: &[&str]) -> UnitRadius {
         UnitRadius {
             unit: unit.to_string(),
             files: files.iter().map(|s| s.to_string()).collect(),
-            serialize,
         }
     }
 
     #[test]
     fn co_schedulable_counts_only_units_with_a_peer() {
         // One batch of 3 (all disjoint) => 3 co-schedulable; a singleton contributes 0.
-        let disjoint = [
-            u("a", &["a.rs"], false),
-            u("b", &["b.rs"], false),
-            u("c", &["c.rs"], false),
-        ];
+        let disjoint = [u("a", &["a.rs"]), u("b", &["b.rs"]), u("c", &["c.rs"])];
         assert_eq!(co_schedulable(&partition(&disjoint)), 3);
         // Two units sharing a file cannot co-schedule: they split into two singleton batches.
-        let overlap = [u("a", &["x.rs"], false), u("b", &["x.rs"], false)];
+        let overlap = [u("a", &["x.rs"]), u("b", &["x.rs"])];
         assert_eq!(co_schedulable(&partition(&overlap)), 0);
     }
 
     #[test]
-    fn a_serialized_hub_takes_its_own_batch_and_never_co_schedules() {
-        // Three disjoint units co-schedule (3); flip one to serialize and it drops to its own
-        // batch, so only the remaining two co-schedule.
-        let mut units = [
-            u("a", &["a.rs"], false),
-            u("b", &["b.rs"], false),
-            u("hub", &["h.rs"], false),
+    fn an_overlapping_radius_keeps_only_its_own_pairs_apart() {
+        // A radius that shares a file with one unit only stays apart from that unit: the third
+        // unit overlaps the first, so it sits alone while the first two co-schedule (2).
+        let units = [
+            u("a", &["a.rs"]),
+            u("b", &["b.rs"]),
+            u("c", &["a.rs", "c.rs"]),
         ];
-        assert_eq!(co_schedulable(&partition(&units)), 3);
-        units[2].serialize = true;
-        assert_eq!(
-            co_schedulable(&partition(&units)),
-            2,
-            "a serialized hub must not co-schedule; the other two still do"
-        );
+        assert_eq!(co_schedulable(&partition(&units)), 2);
+        // An EMPTY radius is unassessable: it pairs with nothing, the other two still do (2).
+        let units = [u("a", &["a.rs"]), u("b", &["b.rs"]), u("e", &[])];
+        assert_eq!(co_schedulable(&partition(&units)), 2);
     }
 
     #[test]
     fn parallelism_retention_is_the_share_of_baseline_parallelism_kept() {
-        // Baseline: three disjoint units, none serialized => co_schedulable 3.
-        let baseline = [
-            u("a", &["a.rs"], false),
-            u("b", &["b.rs"], false),
-            u("c", &["c.rs"], false),
-        ];
-        // Subject: same file sets but one serializes => co_schedulable 2 => retention 2/3.
+        // Baseline: three disjoint units => co_schedulable 3.
+        let baseline = [u("a", &["a.rs"]), u("b", &["b.rs"]), u("c", &["c.rs"])];
+        // Subject: one radius widens onto another's file => co_schedulable 2 => retention 2/3.
         let subject = [
-            u("a", &["a.rs"], false),
-            u("b", &["b.rs"], false),
-            u("c", &["c.rs"], true),
+            u("a", &["a.rs"]),
+            u("b", &["b.rs"]),
+            u("c", &["a.rs", "c.rs"]),
         ];
         let r = parallelism_retention(&subject, &baseline);
         assert!(
@@ -215,10 +180,8 @@ mod pure_metric_tests {
     #[test]
     fn width_threshold_is_the_tier_width_nearest_rank_percentile() {
         // The tier-routing width split point is nearest-rank floor(N * percentile): [1, 20] at the
-        // 90th percentile picks 20 (floor(2 * 0.9) = 1 => index 1), not 1. This is deliberately a
-        // DIFFERENT rule than model::is_hub's outlier cutoff (which uses floor((N - 1) * percentile)
-        // with a strict `>` so it does not degenerate on a long tail); width_threshold wants a split
-        // POINT over the width distribution, not high-degree outlier detection.
+        // 90th percentile picks 20 (floor(2 * 0.9) = 1 => index 1), not 1: width_threshold wants a
+        // split POINT over the width distribution, not outlier detection.
         assert_eq!(width_threshold(&[1, 20], 0.90), 20);
         // Order-independent (it sorts).
         assert_eq!(width_threshold(&[20, 1], 0.90), 20);
@@ -243,12 +206,12 @@ mod pure_metric_tests {
 
     #[test]
     fn median_width_is_the_deterministic_lower_median() {
-        assert_eq!(median_width(&[u("a", &["a.rs", "b.rs"], false)]), 2);
+        assert_eq!(median_width(&[u("a", &["a.rs", "b.rs"])]), 2);
         assert_eq!(
             median_width(&[
-                u("a", &["1"], false),
-                u("b", &["1", "2", "3"], false),
-                u("c", &["1", "2"], false),
+                u("a", &["1"]),
+                u("b", &["1", "2", "3"]),
+                u("c", &["1", "2"]),
             ]),
             2
         );
@@ -258,10 +221,10 @@ mod pure_metric_tests {
         // HERE (a grounder-agnostic pure-metric test), not only in the symbols-gated arm_b.
         assert_eq!(
             median_width(&[
-                u("a", &["1"], false),
-                u("b", &["1", "2"], false),
-                u("c", &["1", "2", "3"], false),
-                u("d", &["1", "2", "3", "4"], false),
+                u("a", &["1"]),
+                u("b", &["1", "2"]),
+                u("c", &["1", "2", "3"]),
+                u("d", &["1", "2", "3", "4"]),
             ]),
             2
         );
@@ -294,10 +257,16 @@ mod corpus_gates {
     /// (d16-u2-retention-isolates-serialize-cost). Arm (a) likewise runs grep uncapped.
     const GROUND_K: usize = 8;
 
-    /// The queries whose `subject` safe view is NOT a superset of grep's UNCAPPED radius - the
-    /// arm-(a) invariant violations (empty = pass). Grep runs uncapped (`usize::MAX`) so the
-    /// check is against the FULL grep radius, not a top-k slice; the safe view is
-    /// `blast_radius(q).safe`.
+    /// A symbol name as a criterion names it - in a code span - so the symbols radius grounds on
+    /// it (a bare prose word is never a blast-radius term).
+    fn span(name: &str) -> String {
+        format!("`{name}`")
+    }
+
+    /// The queries whose `subject` safe view misses a whole-identifier text hit of the query - the
+    /// arm-(a) invariant violations for spans the index cannot resolve (empty = pass). The search
+    /// runs uncapped (`usize::MAX`) so the check is against every hit, not a top-k slice; the safe
+    /// view is `blast_radius(q).safe`.
     fn safe_superset_violations(
         subject: &dyn Grounder,
         grep: &Grep,
@@ -305,10 +274,13 @@ mod corpus_gates {
     ) -> Vec<String> {
         let mut bad = Vec::new();
         for &q in queries {
-            let safe: HashSet<String> =
-                subject.blast_radius(q, GROUND_K).safe.into_iter().collect();
+            let safe: HashSet<String> = subject
+                .blast_radius(&span(q), GROUND_K)
+                .safe
+                .into_iter()
+                .collect();
             let grep_files: HashSet<String> = grep
-                .ground(q, usize::MAX)
+                .ground_identifier(q, usize::MAX)
                 .into_iter()
                 .map(|r| r.file)
                 .collect();
@@ -357,24 +329,25 @@ mod corpus_gates {
             "mod inner { pub fn helper() {} }\npub use inner::helper;\n",
         );
 
-        // reflection: `compute` is invoked ONLY by a string literal - never a symbol reference,
-        // so the structural graph cannot see reflect.rs; grep matches the string. This is the
-        // load-bearing grep-only mention that gives the whole arm its teeth.
+        // reflection: `compute` is defined and also invoked by a string literal; `on_reload` is a
+        // handler registered ONLY by name - no definition anywhere, so the index cannot resolve
+        // it and only the text search finds reflect.rs. That undefined handler is the
+        // load-bearing text-only mention that gives the fallback its teeth.
         write("compute_impl.rs", "fn compute() {}\n");
         write(
             "reflect.rs",
-            "fn invoke(_name: &str) {}\nfn boot() { invoke(\"compute\"); }\n",
+            "fn invoke(_name: &str) {}\nfn boot() { invoke(\"compute\"); invoke(\"on_reload\"); }\n",
         );
 
-        vec!["new", "render", "draw", "helper", "compute"]
+        vec!["new", "render", "draw", "helper", "compute", "on_reload"]
     }
 
-    /// Arm (a) - the implementation-invariant guard. On the adversarial corpus the safe view is
-    /// a superset of grep for EVERY query, and the grep-only reflection mention is recovered by
-    /// the union (present in `safe`, absent from the precise structural view). RED only if the
-    /// `structural ∪ grep` union is built wrong.
+    /// Arm (a) - the implementation-invariant guard. On the adversarial corpus the safe view of a
+    /// span the index cannot resolve carries every whole-identifier text hit of it (the fallback),
+    /// and the safe view of a name the index resolves is its structural set, never a text-only
+    /// mention. RED if the fallback is dropped or intersected, or a resolved name is text-searched.
     #[test]
-    fn arm_a_safe_view_is_a_grep_superset_on_the_adversarial_corpus() {
+    fn arm_a_safe_view_text_searches_exactly_the_spans_the_index_cannot_resolve() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let queries = build_adversarial_corpus(root);
@@ -383,71 +356,56 @@ mod corpus_gates {
             root: root.to_str().unwrap().to_string(),
         };
 
-        // The corpus must be non-vacuous: grep matches at least one file for every query, so an
-        // empty safe view could never pass the superset check by default.
+        // The corpus must be non-vacuous: the text search matches at least one file for every
+        // query, so an empty safe view could never pass the checks by default.
         for &q in &queries {
             assert!(
-                !grep.ground(q, usize::MAX).is_empty(),
-                "adversarial query {q:?} must match at least one file under grep"
+                !grep.ground_identifier(q, usize::MAX).is_empty(),
+                "adversarial query {q:?} must match at least one file as text"
             );
         }
 
-        // The invariant: safe ⊇ grep for every query. This is the regression guard - it can
-        // only fail if the union drops or intersects the grep side.
-        let violations = safe_superset_violations(&symbols, &grep, &queries);
+        // The fallback: the unresolved handler's safe view carries every text hit, and its
+        // reflect.rs is text-only - absent from the precise structural view - so dropping or
+        // intersecting the fallback drops it.
+        let violations = safe_superset_violations(&symbols, &grep, &["on_reload"]);
         assert!(
             violations.is_empty(),
-            "the safe view must be a superset of grep on every adversarial query; \
-             the union under-includes for: {violations:?}"
+            "an unresolved span's safe view must carry every text hit; misses for: {violations:?}"
+        );
+        let reload = symbols.blast_radius("`on_reload`", GROUND_K);
+        assert!(
+            reload.safe.contains(&"reflect.rs".to_string())
+                && !reload.precise.contains(&"reflect.rs".to_string()),
+            "the reflection string is found by the text search alone; got {reload:?}"
         );
 
-        // Teeth: the reflection string is a grep-only file the structural graph cannot index.
-        // It MUST be recovered into `safe` yet be ABSENT from the precise structural view - so a
-        // `safe = structural` (drop grep) or `safe = structural ∩ grep` (intersect) mutation
-        // drops reflect.rs and trips the superset check above.
-        let compute = symbols.blast_radius("compute", GROUND_K);
+        // A resolved name is its structural set: `render` is defined in widget.rs and called only
+        // inside a macro body in macros.rs, which the name-level index does not link, so
+        // macros.rs is a text-only mention and stays out of the safe view. Text-searching a
+        // resolved name again would add it.
+        let render = symbols.blast_radius("`render`", GROUND_K);
         assert!(
-            compute.safe.contains(&"reflect.rs".to_string()),
-            "the safe union must recover the reflection string mention grep matches; got {compute:?}"
+            render.precise.contains(&"widget.rs".to_string())
+                && !render.safe.contains(&"macros.rs".to_string()),
+            "a resolved name grounds on its structural set alone; got {render:?}"
         );
-        assert!(
-            !compute.precise.contains(&"reflect.rs".to_string()),
-            "a reflection string is no symbol reference; the precise structural view must miss \
-             reflect.rs (which is exactly why the grep union is load-bearing); got {compute:?}"
-        );
-        // And the real definition IS in both views (the structural graph does see the def).
-        assert!(compute.precise.contains(&"compute_impl.rs".to_string()));
-
-        // Second cross-file teeth class: `render` is CALLED only inside a macro body. The
-        // name-level tags query parses the macro_rules transcriber as an unresolved token tree,
-        // so the precise structural view does NOT link macros.rs; grep matches the `render`
-        // substring there, so the union MUST recover it into safe. A `safe = structural`
-        // (drop-grep) or `safe = structural ∩ grep` (intersect) mutation drops macros.rs and
-        // trips the superset guard for this class too. (The remaining three classes -
-        // new/common-name, draw/trait-object, helper/re-export - keep the definition and the
-        // hard-to-resolve reference in the SAME file, so precise == safe and they carry no
-        // drop-grep teeth; only the reflection and macro classes are load-bearing here.)
-        let render = symbols.blast_radius("render", GROUND_K);
-        assert!(
-            render.safe.contains(&"macros.rs".to_string()),
-            "the safe union must recover the macro-body call grep matches in macros.rs; got {render:?}"
-        );
-        assert!(
-            !render.precise.contains(&"macros.rs".to_string()),
-            "a macro-body call is not a resolved reference; the precise structural view must miss \
-             macros.rs (which is exactly why the grep union is load-bearing for the macro class); \
-             got {render:?}"
-        );
-        // And the real definition IS in both views (the structural graph does see the def).
-        assert!(render.precise.contains(&"widget.rs".to_string()));
+        for &q in &queries {
+            let br = symbols.blast_radius(&span(q), GROUND_K);
+            for f in &br.precise {
+                assert!(
+                    br.safe.contains(f),
+                    "{q}: safe must hold precise; got {br:?}"
+                );
+            }
+        }
     }
 
     /// The unit ids and queries of the PINNED polyglot repo (arm b). Each entry is
     /// `(unit id, query, definition file, definition source, reference degree)`. The definitions
     /// span five languages (Rust, Go, C#, Python, TypeScript) so radii are genuinely polyglot;
     /// all REFERENCES are Rust so the per-language degree distribution is controlled and
-    /// non-degenerate (six distinct referenced names), with exactly one hub (`audit`, the top
-    /// decile). Degrees are chosen so every safe radius exceeds the un-retuned `8` (proving the
+    /// non-degenerate (six distinct referenced names), with one hub (`audit`, the top decile). Degrees are chosen so every safe radius exceeds the un-retuned `8` (proving the
     /// naive tier threshold collapses) with a spread that a distribution-tuned threshold splits.
     fn pinned_polyglot_units() -> Vec<(
         &'static str,
@@ -499,7 +457,7 @@ mod corpus_gates {
     /// Materialize the pinned polyglot repo: each unit's definition file (in its language) plus
     /// `degree` dedicated Rust referencer files that each reference ONLY that unit's name. The
     /// referencer files are per-unit disjoint, so under grep every unit is co-schedulable (all
-    /// radii disjoint) - retention then measures purely the parallelism the hub serialize costs.
+    /// radii disjoint) - retention then measures purely what the safe view's widening costs.
     fn build_pinned_polyglot_repo(root: &Path) {
         for (unit, query, def_file, def_src, degree) in pinned_polyglot_units() {
             std::fs::write(root.join(def_file), def_src).unwrap();
@@ -517,8 +475,8 @@ mod corpus_gates {
     }
 
     /// Compute the per-unit radii under the grep baseline and under the symbols safe view. The
-    /// baseline is grep's own `blast_radius` run UNCAPPED (its full radius, never serializing);
-    /// the subject is the symbols safe superset with its hub serialize verdict.
+    /// baseline is grep's own `blast_radius` run UNCAPPED (its full radius); the subject is the
+    /// symbols safe superset.
     fn measure(root: &Path) -> (Vec<UnitRadius>, Vec<UnitRadius>) {
         let symbols = Symbols::open(root.to_str().unwrap(), None);
         let grep = Grep {
@@ -531,19 +489,16 @@ mod corpus_gates {
             // honoring d16-u2-retention-isolates-serialize-cost: grep's trait-default blast_radius
             // returns ground(q, k) for both views, so a capped baseline would be a read_dir-order
             // nondeterministic WHICH-k slice, unfit for a frozen gate. Uncapped, the baseline IS
-            // the full grep radius, so it equals the safe superset at the file-set level and the
-            // ONLY thing that can differ is the hub serialize verdict.
+            // the full grep radius, the floor the safe superset can only widen.
             let g: BlastRadius = grep.blast_radius(query, usize::MAX);
             baseline.push(UnitRadius {
                 unit: unit.to_string(),
                 files: g.safe,
-                serialize: g.serialize,
             });
-            let s: BlastRadius = symbols.blast_radius(query, GROUND_K);
+            let s: BlastRadius = symbols.blast_radius(&span(query), GROUND_K);
             subject.push(UnitRadius {
                 unit: unit.to_string(),
                 files: s.safe,
-                serialize: s.serialize,
             });
         }
         (baseline, subject)
@@ -553,8 +508,8 @@ mod corpus_gates {
     ///
     /// The bounds below are MEASURED on this fixture and FROZEN as red-on-regression assertions
     /// (adv-quant-bound-unpinned), not hand-chosen. The reasoning for each frozen bound is in
-    /// its assertion. Because the safe view is a superset of grep by construction, this arm
-    /// proves VALUE (retained parallelism, a non-collapsed tier split), never safety.
+    /// its assertion. Arm (a) pins what the safe view carries; this arm proves VALUE (retained
+    /// parallelism, a non-collapsed tier split), never safety.
     #[test]
     fn arm_b_partitioning_and_routing_retention_gate_on_the_pinned_polyglot_repo() {
         let dir = tempfile::tempdir().unwrap();
@@ -562,37 +517,18 @@ mod corpus_gates {
         build_pinned_polyglot_repo(root);
         let (baseline, subject) = measure(root);
 
-        // Exactly one unit - `audit`, the top-decile hub - serializes; the polyglot corpus is
-        // non-degenerate (six distinct referenced names) so this is a genuine percentile
-        // outlier, not the thin-distribution artifact that flags a lone name
-        // (adv-u16-1rr-degenerate-perlang-distribution-over-serializes). If a mis-tune flagged a
-        // second unit, retention drops below the floor below and this count trips first.
-        let serialized: Vec<&str> = subject
-            .iter()
-            .filter(|u| u.serialize)
-            .map(|u| u.unit.as_str())
-            .collect();
-        assert_eq!(
-            serialized,
-            vec!["audit"],
-            "exactly the hub unit must serialize on the pinned corpus"
-        );
-        assert!(
-            !baseline.iter().any(|u| u.serialize),
-            "the grep baseline never serializes"
-        );
-
-        // The safe view is a file-set superset of the grep baseline for every unit, and because
-        // the baseline runs UNCAPPED (measure passes usize::MAX) it IS the full grep radius; with
-        // structural ⊆ grep on this corpus that makes safe == the baseline grep radius EXACTLY
-        // (both are widths 9..=15). So the ONLY thing that can cost parallelism is the hub
-        // serialize - which is what retention measures.
+        // On this corpus every grep hit is a structural reference, so the safe view holds the
+        // grep baseline for every unit, and because the baseline runs UNCAPPED (measure passes
+        // usize::MAX) it IS the full grep radius; with structural ⊆ grep that makes safe == the
+        // baseline grep radius EXACTLY
+        // (both are widths 9..=15). The hub `audit` costs no parallelism of its own: its whole
+        // neighborhood is in its radius, and that neighborhood shares no file with another unit.
         for (b, s) in baseline.iter().zip(subject.iter()) {
             let bset: HashSet<&String> = b.files.iter().collect();
             let sset: HashSet<&String> = s.files.iter().collect();
             assert!(
                 bset.is_subset(&sset),
-                "unit {}: safe must be a superset of the grep baseline radius",
+                "unit {}: on this corpus safe must hold the grep baseline radius",
                 s.unit
             );
         }
@@ -602,24 +538,23 @@ mod corpus_gates {
         let subj_co = co_schedulable(&partition(&subject));
         let retention = parallelism_retention(&subject, &baseline);
         // MEASURED on this fixture: grep co-schedules all six units (all radii disjoint) and the
-        // symbols view keeps five - only the hub serializes. retention = 5/6 ≈ 0.833.
+        // symbols view keeps all six - the hub `audit` included. retention = 6/6 = 1.0.
         assert_eq!(
             base_co, 6,
             "grep baseline co-schedules all six disjoint units"
         );
         assert_eq!(
-            subj_co, 5,
-            "symbols keeps five co-schedulable (audit serializes)"
+            subj_co, 6,
+            "symbols keeps all six co-schedulable, the hub included"
         );
-        // FROZEN floor 0.80: it sits between the healthy 0.833 and the first regression - a
-        // SECOND unit serializing drops retention to 4/6 = 0.667, well under 0.80. So the floor
-        // is a meaningful red line calibrated to the corpus, not an arbitrary number.
+        // FROZEN floor 0.80: a safe view widening onto another unit's files costs at least one
+        // pair - two units falling out drops retention to 4/6 = 0.667, well under 0.80.
         const MIN_RETENTION: f64 = 0.80;
         assert!(
             retention >= MIN_RETENTION,
             "parallelism retention {retention:.3} fell below the frozen floor {MIN_RETENTION} \
-             (measured 0.833 on the pinned corpus; a regression here means the safe view \
-             serializes or over-includes more than the pinned hub)"
+             (measured 1.0 on the pinned corpus; a regression here means the safe view \
+             over-includes onto another unit's files)"
         );
 
         // MEASURED median safe-radius is 11; FROZEN ceiling 12 (measured + 1) is red-on-regression
@@ -658,98 +593,6 @@ mod corpus_gates {
             tuned_full < naive_full,
             "re-tuning must strictly reduce the full-panel share versus the collapsed naive \
              threshold ({tuned_full} !< {naive_full})"
-        );
-    }
-
-    /// The hapax-heavy (degree-one-dominated) referenced-name counts arm-c materializes: a long
-    /// tail of `TAIL_NAMES` single-reference names plus two genuine high-degree outliers. This is
-    /// the realistic long-tail distribution `model::is_hub` must not degenerate on - the shape the
-    /// all-distinct-degree arm-b corpus never exercises.
-    const TAIL_NAMES: usize = 20;
-    const HUB_DEGREE: usize = 10;
-
-    /// Materialize a hapax-heavy Rust repo: `TAIL_NAMES` names each referenced exactly once
-    /// (degree 1) and two names (`hub_a`, `hub_b`) each referenced `HUB_DEGREE` times. Every
-    /// referencer file references exactly one name, so the per-language degree distribution is a
-    /// long tail of 1s with two genuine outliers. Returns the full name list (tail then hubs).
-    fn build_hapax_heavy_repo(root: &Path) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
-        for i in 0..TAIL_NAMES {
-            let name = format!("hapax_{i}");
-            std::fs::write(
-                root.join(format!("tail_{i}.rs")),
-                format!("fn caller() {{ {name}(); }}\n"),
-            )
-            .unwrap();
-            names.push(name);
-        }
-        for hub in ["hub_a", "hub_b"] {
-            for i in 0..HUB_DEGREE {
-                std::fs::write(
-                    root.join(format!("{hub}_ref_{i}.rs")),
-                    format!("fn caller() {{ {hub}(); }}\n"),
-                )
-                .unwrap();
-            }
-            names.push(hub.to_string());
-        }
-        names
-    }
-
-    /// Arm (c) - the hapax-heavy red-on-regression arm that guards `model::is_hub`'s robustness
-    /// through the real grounder. On a degree-one-dominated distribution the hub check (which
-    /// drives `BlastRadius::serialize`) must flag ONLY the genuine high-degree outliers, never
-    /// nearly every referenced name. The old nearest-rank `floor(N * percentile)` cutoff with the
-    /// `>=` comparison collapses to 1 on this long tail and flags EVERY name as a hub - so every
-    /// unit serializes and parallelism-retention collapses to near zero. This arm goes RED for
-    /// exactly that over-serializing cutoff, while the all-distinct-degree arm-b corpus (which
-    /// never enters the long-tail failure mode) still passes.
-    #[test]
-    fn arm_c_hub_detection_does_not_over_serialize_a_hapax_heavy_distribution() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let names = build_hapax_heavy_repo(root);
-        let symbols = Symbols::open(root.to_str().unwrap(), None);
-
-        // A single-name query's serialize verdict IS its hub verdict (serialize fires if any query
-        // term is a hub in any present language). Collect every name the hub check serializes.
-        let serialized: Vec<String> = names
-            .iter()
-            .filter(|n| symbols.blast_radius(n, GROUND_K).serialize)
-            .cloned()
-            .collect();
-
-        // The two genuine outliers serialize; a degree-1 tail name never does.
-        assert!(
-            symbols.blast_radius("hub_a", GROUND_K).serialize,
-            "the genuine high-degree outlier hub_a must serialize"
-        );
-        assert!(
-            symbols.blast_radius("hub_b", GROUND_K).serialize,
-            "the genuine high-degree outlier hub_b must serialize"
-        );
-        assert!(
-            !symbols.blast_radius("hapax_0", GROUND_K).serialize,
-            "a degree-1 tail name is not a hub and must not serialize"
-        );
-
-        // RED-ON-REGRESSION: an over-serializing cutoff floods this long tail, flagging nearly
-        // every name. A robust cutoff flags only the genuine outliers, so the serialized fraction
-        // stays near the top decile, never approaching all.
-        let fraction = serialized.len() as f64 / names.len() as f64;
-        assert!(
-            fraction <= 0.20,
-            "hub detection over-serialized a hapax-heavy distribution: {}/{} = {fraction:.3} names \
-             flagged (an over-serializing cutoff floods a degree-one-dominated distribution); a \
-             robust cutoff flags only the genuine high-degree outliers",
-            serialized.len(),
-            names.len()
-        );
-        assert_eq!(
-            serialized,
-            vec!["hub_a".to_string(), "hub_b".to_string()],
-            "only the two genuine high-degree outliers serialize on a degree-one-dominated \
-             distribution; got {serialized:?}"
         );
     }
 }

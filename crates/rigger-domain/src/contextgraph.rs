@@ -192,9 +192,9 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
-// three tiers partition the reference set so their UNION stays a superset of the grep union
-// (addendum 2.4): a later traversal reads the EXTRACTED sub-graph as the precise prompt seed and
-// EXTRACTED u INFERRED u AMBIGUOUS as the safe superset the safety consumers need.
+// three tiers partition the reference set, so the graph keeps EVERY reference: a later traversal
+// reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
+// EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
 /// An explicit-in-source structural fact: a definition's containment, or a reference resolved to a
 /// definition in the SAME file (a call / import / inherit of a known local symbol). The highest
 /// confidence tier - the precise seed. Every non-code dev-loop edge (DECIDED / GOVERNS / ABOUT /
@@ -204,10 +204,10 @@ pub const TIER_EXTRACTED: &str = "extracted";
 /// IS defined in ANOTHER file the graph knows. The reference is inferred to reach that definition
 /// across files - real, but one confidence step below an explicit same-file reference.
 pub const TIER_INFERRED: &str = "inferred";
-/// A grep-visible-only occurrence: a reference whose name is defined NOWHERE the graph knows - a
-/// macro body, a reflection string, a dynamic name, an external symbol. It is kept (never dropped)
-/// so the safe superset stays a grep-superset, but tiered lowest: the structural pass cannot
-/// confirm it resolves to any definition.
+/// A text-only occurrence: a reference whose name is defined NOWHERE the graph knows - a macro
+/// body, a reflection string, a dynamic name, an external symbol. It is kept on the graph (never
+/// dropped) but tiered lowest: the structural pass cannot confirm it resolves to any definition,
+/// so the blast radius never crosses it (addendum 2.4).
 pub const TIER_AMBIGUOUS: &str = "ambiguous";
 
 /// The metadata key carrying the acting agent on an event (the DECIDED source).

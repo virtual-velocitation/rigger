@@ -264,8 +264,18 @@ pub struct Grep {
     pub root: String,
 }
 
-impl Grounder for Grep {
-    fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+impl Grep {
+    /// The lines holding `term` as a WHOLE identifier - no `[A-Za-z0-9_]` character directly
+    /// before or after it - case-insensitively, up to `k` hits: `gc` matches `run gc now`, never
+    /// `logcat`. A term ending in `_` names a family by its prefix (`TYPE_`), so it needs the left
+    /// boundary only and matches `TYPE_RUN_STARTED`. The blast radius text-searches a criterion's
+    /// unresolved names this way, so a short name never reaches every file that merely contains
+    /// its letters.
+    pub fn ground_identifier(&self, term: &str, k: usize) -> Vec<Ref> {
+        self.search(term, k, true)
+    }
+
+    fn search(&self, query: &str, k: usize, bounded: bool) -> Vec<Ref> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
@@ -276,7 +286,7 @@ impl Grounder for Grep {
         // use - so no walk can drift from another; this walk's ONLY leaf action is to search
         // each file's lines, stopping once it has `k` hits.
         let _ = walk_guarded(Path::new(&self.root), &mut |path| {
-            search_file(path, &self.root, &needle, k, &mut refs);
+            search_file(path, &self.root, &needle, bounded, k, &mut refs);
             // Stop the whole walk once we have collected the requested k hits - the
             // early-out that keeps grep from scanning the rest of the tree once full.
             if refs.len() >= k {
@@ -289,7 +299,35 @@ impl Grounder for Grep {
     }
 }
 
-fn search_file(path: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<Ref>) {
+impl Grounder for Grep {
+    fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+        self.search(query, k, false)
+    }
+}
+
+/// Whether `line` (lowercased) holds `needle` (lowercased) - anywhere, or when `bounded` only
+/// where no `[A-Za-z0-9_]` character stands directly before it nor, unless `needle` ends in `_`
+/// (a prefix), directly after it.
+fn line_matches(line: &str, needle: &str, bounded: bool) -> bool {
+    if !bounded {
+        return line.contains(needle);
+    }
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let prefix = needle.ends_with('_');
+    line.match_indices(needle).any(|(i, _)| {
+        !line[..i].chars().next_back().is_some_and(word)
+            && (prefix || !line[i + needle.len()..].chars().next().is_some_and(word))
+    })
+}
+
+fn search_file(
+    path: &Path,
+    root: &str,
+    needle: &str,
+    bounded: bool,
+    k: usize,
+    refs: &mut Vec<Ref>,
+) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return, // binary or unreadable
@@ -303,7 +341,7 @@ fn search_file(path: &Path, root: &str, needle: &str, k: usize, refs: &mut Vec<R
         if refs.len() >= k {
             return;
         }
-        if line.to_lowercase().contains(needle) {
+        if line_matches(&line.to_lowercase(), needle, bounded) {
             refs.push(Ref {
                 file: rel.clone(),
                 line: (i + 1) as u32,
@@ -335,13 +373,13 @@ mod tests {
     }
 
     /// The DEFAULT `blast_radius` (the one a non-symbols grounder inherits) is EXACTLY the
-    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds, and it
-    /// NEVER serializes. This is the contract that keeps unit 3's symbols-inactive `grounded_seed`
+    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds. This is
+    /// the contract that keeps unit 3's symbols-inactive `grounded_seed`
     /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set.
     /// This test is ungated: it holds identically in both feature lanes because the default impl
     /// touches no structural index.
     #[test]
-    fn default_blast_radius_is_the_grounders_own_top_k_radius_both_views_never_serialize() {
+    fn default_blast_radius_is_the_grounders_own_top_k_radius_in_both_views() {
         let dir = tempfile::tempdir().unwrap();
         // Two files both matching the needle so the radius has more than one file.
         std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
@@ -367,16 +405,15 @@ mod tests {
             "the default radius is exactly the two files grep matches; got {br:?}"
         );
         // Both views are the SAME grep radius - equal element-for-element, in the same order (safe is
-        // the trivial superset of precise on the default path) - and it never serializes.
+        // the trivial superset of precise on the default path).
         assert_eq!(
             br.precise, br.safe,
             "the default safe view equals the precise view (grep radius, a trivial superset)"
         );
-        assert!(!br.serialize, "the default path never serializes");
 
         // An empty query / k=0 grounds nothing, so both views are empty (the empty fail-safe).
         let empty = g.blast_radius("apply_damage", 0);
-        assert!(empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize);
+        assert!(empty.precise.is_empty() && empty.safe.is_empty());
     }
 
     /// The shared walk (here via the grep grounder, the ungated default) scopes to the project's

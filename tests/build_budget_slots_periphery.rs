@@ -39,7 +39,7 @@
 //! 4. `configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds`:
 //!    the cross-module seam - `conductor::run` with `build.max_concurrent: 1` and
 //!    two independent (`needs: []`) stages, both scheduled into the SAME
-//!    concurrent wave (`run_batch`'s `std::thread::scope`), each running a REAL
+//!    concurrent wave (`run_wave`'s `std::thread::scope`), each running a REAL
 //!    gate subprocess. Proves `RunCtx::build_budget()` truly threads the committed
 //!    config into the real call site and forces the two real builds to serialize -
 //!    and, since the redirected `TMPDIR` (see the test's own doc comment) makes
@@ -316,7 +316,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         },
     );
     // Two INDEPENDENT stages (`needs` empty on both): `ready_stages` puts both in
-    // the SAME wave, and `run_batch` runs a whole batch's stages concurrently via
+    // the SAME wave, and `run_wave` runs a wave's admitted stages concurrently via
     // `std::thread::scope` (MAX_CONCURRENCY=4, well above 2) - real OS-thread
     // concurrency, not a simulated one.
     cfg.workflow.stages.insert(

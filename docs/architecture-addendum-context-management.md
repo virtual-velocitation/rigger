@@ -96,10 +96,31 @@ class; closing it is a prerequisite for §5 and §6.
 
 ### 2.4 Safe-superset recall is a correctness invariant, not a token cost
 Pruning, dedup, and tier filtering apply to **prompt rendering only** — never to the safety
-consumers `partition_by_blast_radius`, `partition_wave`, `route_review_tier` and rule-6
-conflict detection (`dag_unit_blast_radii`), which require over-inclusion. The `safe` view stays an uncapped
-grep-superset; any confidence-tier mapping (§6) must keep the wide tier a superset of grep.
-Dropping a reference a safety consumer needs is a correctness regression, not a saving.
+consumers `radii_conflict` (wave admission and `partition_by_blast_radius`), `route_review_tier`
+and rule-6 conflict detection (`dag_unit_blast_radii`), which require over-inclusion. Dropping a
+reference a safety consumer needs is a correctness regression, not a saving.
+
+**The safe view's contract** (the one statement every other site refers to). A criterion's blast
+radius grounds only on the code it NAMES, never its prose. A span names code when it is an
+identifier or a `::` path (a symbol), or a path the tree holds (a file, indexed or not). A
+multi-word span (a command line), a directory fragment, a path the tree does not hold and a
+language keyword name nothing; a criterion naming no code has the empty radius. The `safe` view is
+uncapped and holds:
+- every file that defines or references a named symbol the index defines (the index records the
+  references its grammar parses, so a call written inside a macro invocation is not one);
+- every file a named path holds;
+- for a named symbol the index does NOT define (a string-literal event name, a name nothing defines
+  yet), every file holding it as a whole identifier - a name ending in `_` is a family prefix
+  (`TYPE_`) and needs only its left boundary - outside spec files and the regenerated audit under
+  `docs/audit/`. A defined symbol and a path are never text-searched: a text-only mention of a
+  resolved name is not a reference a unit edits through.
+
+When the knowledge graph is present the radius is widened over it: the traversal is seeded from
+the first k files of the structural view - the files the named code resolves to, capped at
+`GROUNDED_SEED_K` (never the prompt seed, which reads the whole criterion) - it expands
+`BLAST_RADIUS_GRAPH_DEPTH` (2) hops, and it crosses STRUCTURAL edges only - `EXTRACTED ∪ INFERRED`; an `AMBIGUOUS` edge is a text-only
+mention and is never crossed, for the same reason. A criterion naming no code keeps the empty
+radius with or without the graph.
 
 ### 2.5 The knowledge graph is the retrieval surface; build its data model natively
 Criterion queries ground on spec prose that often names no symbol. Measurement settled how they
@@ -232,9 +253,9 @@ unit ──needs──► unit,  unit ──GATED_BY──► gate,  unit ──
 ```
 
 The confidence tier IS the two-view blast radius, unified: the **precise seed** for a prompt is
-the `EXTRACTED` sub-graph; the **safe superset** the safety consumers need (§2.4) is
-`EXTRACTED ∪ INFERRED ∪ AMBIGUOUS`, which must remain a superset of the grep union. One edge
-set, two filters — replacing the hand-rolled `BlastRadius{precise,safe,serialize}` struct and
+the `EXTRACTED` sub-graph; the **safe view** the safety consumers need is the structural reach
+`EXTRACTED ∪ INFERRED` (§2.4 states what it holds and why `AMBIGUOUS` is not crossed). One edge
+set, two filters - replacing the hand-rolled `BlastRadius{precise,safe}` struct and
 the documented seed-vs-precise divergence.
 
 ### 6.3 How it is built - knowledge folded from the log, structure re-derived from the tree
@@ -348,9 +369,9 @@ is grounded on the *design intent*, not just the code and prior decisions.
 
 **Impact:** ~2000–2400 LOC removed *(est.)* — `symbols` (2,607) folds into the projection, and
 the two-view `BlastRadius` struct + the seed-vs-precise divergence workaround collapse into
-confidence-tier filters (`EXTRACTED` = precise seed; `EXTRACTED∪INFERRED∪AMBIGUOUS` = the safe
-superset, which must stay a grep-superset per §2.4). The hub-percentile heuristic gives way to
-community detection. And the genuinely new capability: **deterministic design-intent grounding**
+confidence-tier filters (`EXTRACTED` = precise seed; `EXTRACTED∪INFERRED` = the safe view, per
+§2.4). Hubs surface through community
+detection. And the genuinely new capability: **deterministic design-intent grounding**
 — an agent whose blast radius touches file F traverses `F → GOVERNED_BY → handbook-rule` and
 injects the governing rule by traversal, not embedding luck, attacking the rule-7 /
 spec-authoring failure class. The graph's own structural retrieval serves the symbol-free NL queries too, so no vector sidecar is needed (§2.5).

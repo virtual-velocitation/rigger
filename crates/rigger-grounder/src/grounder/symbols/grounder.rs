@@ -12,12 +12,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// The degree percentile at or above which a symbol is treated as a HUB and its blast radius
-/// SERIALIZES (architecture 5.5.2). Drawn from the repo's OWN per-language reference-degree
-/// distribution (not an absolute constant a monorepo would blow past): the 90th percentile flags
-/// only the top decile of highest-degree names, so a hub serializes conservatively rather than
-/// truncating. Unit 2's eval measures the parallelism this knob retains; unit 3 owns any retune.
-const HUB_DEGREE_PERCENTILE: f64 = 0.90;
+/// The percentile of the tree-wide name-ambiguity distribution above which a name counts as
+/// AMBIGUOUS for the ranked-by-intent page (spec 92 criterion 3): drawn from the repo's OWN
+/// distribution, not an absolute constant a monorepo would blow past, so only the top decile of
+/// most-defined names is down-weighted.
+const AMBIGUITY_PERCENTILE: f64 = 0.90;
 
 /// The `symbols` grounder over the persisted index. `open` loads the persisted index (building and
 /// persisting it on a cold start); `ground` ranks name matches by the precise contract; `reindex`
@@ -97,17 +96,13 @@ fn changed_files(
     changed
 }
 
-/// The query's symbol-candidate terms: the alphanumeric/underscore runs of at least TWO Unicode
-/// characters, so `apply_damage` stays ONE term and single-character noise is dropped. The filter
-/// counts CHARACTERS (`chars().count()`), not bytes, so a single multibyte alphanumeric character
-/// (an accented letter, a CJK ideograph) is dropped exactly like an ASCII single char rather than
-/// surviving on its 2-3 byte length. This is the ONE authority both [`Symbols::ground`] and
-/// [`Symbols::blast_radius`] extract terms with, so the two can never disagree on what a query
-/// means - a query that grounds to nothing (no terms) also has an empty blast radius. Keeping the
-/// extraction shared is exactly what lets `blast_radius` short-circuit to the empty fail-safe on a
-/// degenerate query (a one-character or all-punctuation query whose every token is dropped by the
-/// character-count filter) BEFORE it ever runs grep, rather than falling through to an unbounded
-/// whole-repo grep.
+/// The query's symbol-candidate terms for [`Symbols::ground`] (the prompt seed): the
+/// alphanumeric/underscore runs of at least TWO Unicode characters, so `apply_damage` stays ONE
+/// term and single-character noise is dropped. The filter counts CHARACTERS (`chars().count()`),
+/// not bytes, so a single multibyte alphanumeric character (an accented letter, a CJK ideograph)
+/// is dropped exactly like an ASCII single char rather than surviving on its 2-3 byte length. The
+/// prompt seed reads the WHOLE criterion, prose included; the blast radius never does - it takes
+/// its terms from [`code_terms`], the code a criterion names.
 fn query_terms(query: &str) -> Vec<&str> {
     query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -120,6 +115,169 @@ fn query_terms(query: &str) -> Vec<&str> {
         .collect()
 }
 
+/// What a criterion NAMES AS CODE, which is all its blast radius grounds on (never its prose):
+/// the symbols it `names` and the file `paths` it names. A criterion that names no code has
+/// neither, and a span that is not a name of code (a multi-word phrase such as a command line, a
+/// directory fragment) contributes nothing.
+#[derive(Debug, Default, PartialEq)]
+struct CodeTerms {
+    names: Vec<Named>,
+    paths: Vec<String>,
+}
+
+/// A symbol a criterion names: the `text` as written (`a::b`, `store.open`) and the `name` the
+/// index matches (its last `::` or `.` segment). A name the index defines is grounded
+/// structurally; one it does not (a string-literal event name, a constant prefix, a name nothing
+/// defines yet) falls back to a whole-identifier text search for `text`.
+#[derive(Debug, PartialEq)]
+struct Named {
+    text: String,
+    name: String,
+}
+
+/// Files the text search never matches: spec files no unit edits, and the simplification audit
+/// every unit regenerates, so a mention there is never a conflict between two units.
+const TEXT_SEARCH_SKIPS: &[&str] = &["specs/", "docs/audit/"];
+
+/// Language keywords a code span may carry (`pub fn`, `&mut self`) that name no code of the
+/// project, so they are never terms.
+const KEYWORDS: &[&str] = &["fn", "pub", "mut", "self", "let", "use", "mod", "impl"];
+
+/// The file extensions that make a dotted term a PATH (`ingest.rs`) rather than a member access
+/// (`store.open`).
+const FILE_EXTENSIONS: &[&str] = &[
+    "rs", "md", "toml", "yml", "yaml", "json", "sh", "py", "ts", "js", "txt", "lock", "html",
+    "css", "db",
+];
+
+/// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
+/// token that is identifier-shaped ([`identifier_shaped`]) contributes; a plain prose word never
+/// does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
+/// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it looks
+/// like one (contains `/`, starts with `.`, or ends in a file extension), else a symbol when it is
+/// an identifier or a `::`/`.` path of identifiers; anything else names no code. A span left
+/// with SEVERAL pieces (`rigger validate`, a command line) is prose about the code, not a name of
+/// it, so it contributes nothing.
+fn code_terms(query: &str) -> CodeTerms {
+    let mut terms = CodeTerms::default();
+    for (i, part) in query.split('`').enumerate() {
+        if i % 2 == 1 {
+            terms.add_span(part);
+            continue;
+        }
+        for word in part.split_whitespace() {
+            let stripped = strip_groups(word);
+            let piece = clean_piece(&stripped);
+            if identifier_shaped(piece) {
+                terms.add_piece(piece);
+            }
+        }
+    }
+    terms
+}
+
+impl CodeTerms {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.paths.is_empty()
+    }
+
+    fn add_span(&mut self, span: &str) {
+        let stripped = strip_groups(span);
+        let pieces: Vec<&str> = stripped
+            .split_whitespace()
+            .map(clean_piece)
+            .filter(|p| meaningful(p) && !KEYWORDS.contains(p))
+            .collect();
+        if let [one] = pieces.as_slice() {
+            self.add_piece(one);
+        }
+    }
+
+    fn add_piece(&mut self, piece: &str) {
+        if !meaningful(piece) || KEYWORDS.contains(&piece) {
+            return;
+        }
+        if is_path(piece) {
+            push_new(&mut self.paths, piece);
+        } else if piece
+            .split("::")
+            .flat_map(|s| s.split('.'))
+            .all(|s| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_'))
+            && !self.names.iter().any(|n| n.text == piece)
+        {
+            self.names.push(Named {
+                text: piece.to_string(),
+                name: last_segment(piece).to_string(),
+            });
+        }
+    }
+}
+
+fn push_new(terms: &mut Vec<String>, term: &str) {
+    if !terms.iter().any(|t| t == term) {
+        terms.push(term.to_string());
+    }
+}
+
+/// Two characters, one of them alphanumeric.
+fn meaningful(piece: &str) -> bool {
+    piece.chars().count() >= 2 && piece.chars().any(char::is_alphanumeric)
+}
+
+/// A term reads as a file path when it has a `/`, starts with `.` (`.gitignore`) or ends in a
+/// known file extension. It grounds only when the tree holds that file.
+fn is_path(term: &str) -> bool {
+    term.contains('/')
+        || term.starts_with('.')
+        || term
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTENSIONS.contains(&ext))
+}
+
+/// The symbol a path-shaped name ends in: `grounder::tree_bytes` -> `tree_bytes`, `a.b` -> `b`.
+fn last_segment(term: &str) -> &str {
+    let tail = term.rsplit("::").next().unwrap_or(term);
+    tail.rsplit('.').next().unwrap_or(tail)
+}
+
+/// `text` with every bracketed `<...>` and `(...)` group removed (nesting included), so
+/// `a::b<T>` reads `a::b` and `foo(x)` reads `foo`. An unmatched closer is kept.
+fn strip_groups(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0usize;
+    for c in text.chars() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A piece without its surrounding punctuation or a trailing `:`, `!`, `?` or `.`; a leading `.`
+/// stays, so `.rigger/workflow.yml` keeps its name.
+fn clean_piece(piece: &str) -> &str {
+    piece
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | ';' | ':' | '!' | '?' | '&' | '*' | '"' | '\'' | '(' | ')' | '[' | ']'
+            )
+        })
+        .trim_end_matches('.')
+}
+
+/// Whether a bare prose token reads as code: it contains `_` or `::`, or mixes case with an
+/// uppercase letter past its first character (`camelCase`, `CamelCase`) - never an ALL-CAPS or
+/// Capitalized prose word.
+fn identifier_shaped(token: &str) -> bool {
+    token.contains('_')
+        || token.contains("::")
+        || (token.chars().any(char::is_lowercase) && token.chars().skip(1).any(char::is_uppercase))
+}
+
 /// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
 /// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
 /// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
@@ -128,8 +286,7 @@ fn query_terms(query: &str) -> Vec<&str> {
 /// `(name, Lang)`, never a bare name (spec 92 criterion 3 remediation round 5,
 /// adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages): a bare-name
 /// key sums an entity's popularity/ambiguity across every language sharing that name, exactly
-/// the cross-language collision [`SymbolIndex::reference_degree`] and [`SymbolIndex::is_hub`]
-/// already guard against (5.5.2) - a `run` over-defined in Python must never inflate the same
+/// the cross-language collision [`SymbolIndex::reference_degree`] already guards against (5.5.2) - a `run` over-defined in Python must never inflate the same
 /// bare name's Rust count, in either direction.
 fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, Lang), usize> {
     let mut counts: BTreeMap<(&str, Lang), usize> = BTreeMap::new();
@@ -171,10 +328,8 @@ fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
 /// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
 /// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
 /// on - never [`commonness_map`]'s raw def+ref occurrence volume, which conflates one entity's
-/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Shares its
-/// percentile-cutoff formula with [`SymbolIndex::is_hub`] via
-/// [`crate::grounder::symbols::model::percentile_cutoff`] rather than re-deriving it, per
-/// arch-u92c3-cutoff-formula-duplicated-not-shared.
+/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Its cutoff
+/// is [`crate::grounder::symbols::model::percentile_cutoff`].
 fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
     name_occurrence_map(idx, false)
 }
@@ -285,7 +440,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             // ignoring `fs.lang` (round-4 defect, adv-u92c3r4-ambiguity-map-bleeds-across-
             // languages), pooled a same-named entity's commonness across every language sharing
             // it; `(name, fs.lang)` scopes the lookup to this hit's OWN language, exactly as
-            // `SymbolIndex::reference_degree`/`is_hub` already scope the fan-out signal (5.5.2).
+            // `SymbolIndex::reference_degree` already scopes the fan-out signal (5.5.2).
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
@@ -350,8 +505,8 @@ impl Grounder for Symbols {
             return Vec::new();
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
-        // stays one term). Single-character terms are dropped as noise. `blast_radius` extracts
-        // terms through the SAME `query_terms` authority, so the two views agree on emptiness.
+        // stays one term). Single-character terms are dropped as noise. This is the prompt seed's
+        // whole-text match; `blast_radius` grounds on `code_terms` instead.
         let terms = query_terms(query);
         if terms.is_empty() {
             return Vec::new();
@@ -398,21 +553,26 @@ impl Grounder for Symbols {
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
-    /// 1) - the `symbols` override of the grep-only trait default:
+    /// 1) - the `symbols` override of the grep-only trait default.
+    ///
+    /// The query is a criterion, and its terms are the CODE it names ([`code_terms`]: the symbols
+    /// and the files of its code spans and identifier-shaped tokens), never its prose words - a
+    /// prose word that happens to be a symbol name would pull that symbol's whole neighborhood
+    /// in - and never a multi-word span, which is prose about the code rather than a name of it:
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
-    ///   queried symbol ranked ABOVE the files that REFERENCE it - capped at `k`. It is what seeds
-    ///   an agent's prompt, so it favors precision.
-    /// - `safe` (the safety contract) is the UNION of the structural view and grep, UNCAPPED. It
-    ///   runs BOTH engines - the structural graph AND the EXISTING [`Grep`] grounder over the same
-    ///   root - so it is never narrower than today's grep radius (5.5.9). Name-level linking MISSES
-    ///   references (macros, dynamic dispatch, re-exports, a mention the tags query never indexes as
-    ///   a symbol); the grep union recovers them, so the partitioning consumer can never
-    ///   under-partition.
-    /// - `serialize` is set when ANY query term is a HUB in ANY present language (its per-language
-    ///   reference degree clears [`HUB_DEGREE_PERCENTILE`] of that language's OWN degree
-    ///   distribution). A hub's radius fails SAFE by conflict-with-everything - the consumer gives
-    ///   the unit its own batch - NEVER by truncating `safe` (which still carries every file).
+    ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
+    ///   files that REFERENCE them - capped at `k`. It is what seeds an agent's prompt, so it
+    ///   favors precision.
+    /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
+    ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the index
+    ///   does NOT define - the fallback for references a name index never sees (a string-literal
+    ///   event name, a constant prefix, a name nothing defines yet), outside spec files and the
+    ///   regenerated audit. A defined name and a path are never text-searched.
+    /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
+    ///   every file that defines or references it is in the view, never truncated, so the
+    ///   partitioning consumer's overlap test keeps the unit apart from exactly the units that
+    ///   share one of those files - and pairs it with every unit that shares none.
     ///
     /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
     /// files in sorted path order (the ranked `precise` / structural head of `safe`), and the
@@ -420,48 +580,76 @@ impl Grounder for Symbols {
     /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
     /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
     /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
-    /// `BlastRadiusComputed` audit event. An empty query, or a degenerate query whose every term is
-    /// dropped by the character-count filter (a single character - ASCII or multibyte - or all
-    /// punctuation, the same guard `ground` applies), returns empty views (the empty-radius
-    /// fail-safe unit 3 routes to the full panel) WITHOUT running a whole-repo grep, never a partial
-    /// or a panic. A query WITH real terms that simply matches nothing is ALSO empty, but that case
-    /// does run the uncapped grep - it just comes back empty; only the empty/degenerate-terms cases
-    /// short-circuit before grep.
+    /// `BlastRadiusComputed` audit event. A query naming no code - empty, prose only, a single
+    /// character (ASCII or multibyte) or all punctuation - returns empty views (the empty-radius
+    /// fail-safe the scheduler runs alone and unit 3 routes to the full panel) WITHOUT running a
+    /// whole-repo grep, never a partial or a panic. A query WITH code terms that simply matches
+    /// nothing is ALSO empty, but that case does run the uncapped search per unresolved name - it
+    /// just comes back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        // The query's symbol candidates: the SAME alphanumeric/underscore terms `ground` extracts
-        // through the shared `query_terms` authority (so `apply_damage` stays one term and
-        // single-char noise is dropped).
-        let terms = query_terms(query);
-        // The empty-terms fail-safe, applied BEFORE any index read or grep: a degenerate query (an
-        // empty query, a single character, or all punctuation) that drops EVERY term grounds to
-        // nothing, so its blast radius is the empty radius too - matching `ground`, which
-        // early-returns on the same condition. Without this short-circuit `blast_radius` would fall
-        // through to the UNCAPPED `grep.ground(query, usize::MAX)` below, and a one-char query would
-        // match nearly every line in the tree - an unbounded whole-repo grep that leaves `precise`
-        // empty but `safe` covering almost the entire repo, forcing the full panel and corrupting
-        // the retention metric. `BlastRadius::default()` is empty precise, empty safe, not-serialize
-        // - the same empty fail-safe unit 3 routes to the full, unpartitioned panel.
+        // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
+        // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
+        // every file defining or referencing them into the radius.
+        let terms = code_terms(query);
+        // The empty-terms fail-safe, applied BEFORE any index read or text search: a query naming
+        // no code (an empty query, prose only, a single character, all punctuation) grounds to the
+        // empty radius - empty precise and empty safe - which the scheduler runs alone and unit 3
+        // routes to the full, unpartitioned panel.
         if terms.is_empty() {
             return BlastRadius::default();
         }
+        let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
-        // plus the hub verdict - all computed under ONE read lock over the index, returned as a
-        // tuple so neither binding needs a dead pre-initialization before the locked block.
-        let (structural, serialize): (Vec<String>, bool) = {
+        // computed under ONE read lock over the index.
+        // The names the index DEFINES: a name that resolves is grounded by the structural view
+        // alone, and only an unresolved one falls back to the text search.
+        let mut defined: HashSet<&str> = HashSet::new();
+        let mut found_paths: HashSet<&str> = HashSet::new();
+        let structural: Vec<String> = {
             let idx = self.idx.lock().unwrap();
             // Iterate `files()` directly to KEEP each hit's owning file.
             // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
+            // A file the criterion names counts as a definer; a symbol it names matches by name.
             let mut definers: Vec<&str> = Vec::new();
             let mut referencers: Vec<&str> = Vec::new();
             for (path, fs) in idx.files() {
-                if fs.defs.iter().any(|d| terms.contains(&d.name.as_str())) {
+                let named: Vec<&str> = terms
+                    .paths
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|t| path == t || path.ends_with(&format!("/{t}")))
+                    .collect();
+                found_paths.extend(&named);
+                let defines: Vec<&str> = names
+                    .iter()
+                    .copied()
+                    .filter(|n| fs.defs.iter().any(|d| d.name == *n))
+                    .collect();
+                defined.extend(&defines);
+                if !named.is_empty() || !defines.is_empty() {
                     definers.push(path.as_str());
                 }
-                if fs.refs.iter().any(|r| terms.contains(&r.name.as_str())) {
+                if fs.refs.iter().any(|r| names.contains(&r.name.as_str())) {
                     referencers.push(path.as_str());
                 }
             }
+            // A named path the index does not parse (`.gitignore`) still grounds on its own file
+            // when the tree holds it; a path the tree does not hold grounds nothing, and an
+            // absolute or `..` path, which would escape the tree, is never read.
+            let root = std::path::Path::new(&self.root);
+            let unindexed: Vec<&str> = terms
+                .paths
+                .iter()
+                .map(String::as_str)
+                .filter(|t| {
+                    !found_paths.contains(t)
+                        && !std::path::Path::new(t).is_absolute()
+                        && !t.split('/').any(|c| c == "..")
+                })
+                .filter(|t| root.join(t).is_file())
+                .collect();
+            definers.extend(unindexed);
             // Ranked: every definer file first, then each referencer that is not also a definer.
             let mut ranked: Vec<String> = Vec::new();
             for f in &definers {
@@ -472,25 +660,18 @@ impl Grounder for Symbols {
                     ranked.push((*f).to_string());
                 }
             }
-            // Hub composition: serialize if ANY term is a hub WITHIN ANY language the index holds.
-            // The per-language scope is drawn from the languages actually present, so a name that
-            // over-links in another language never flags this one (the 5.5.2 cross-language fix).
-            let langs: BTreeSet<Lang> = idx.files().values().map(|f| f.lang).collect();
-            let hub = terms.iter().any(|t| {
-                langs
-                    .iter()
-                    .any(|&l| idx.is_hub(t, l, HUB_DEGREE_PERCENTILE))
-            });
-            (ranked, hub)
+            ranked
         };
 
-        // The SAFE-SUPERSET view: the FULL (untruncated) structural set UNIONed with an UNCAPPED
-        // grep over the same root - the honest "both engines" cost (5.5.9). This clone happens
-        // BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not reorder the
-        // truncation above it or the uncapped-superset contract breaks. `usize::MAX` makes grep
-        // collect every matching file, not a top-`k` slice. A `seen` set keeps the dedup O(lines)
-        // rather than O(lines * files): grep yields one hit per matching LINE and the safe view is
-        // uncapped, so a per-file linear scan would be quadratic on a wide radius.
+        // The SAFE view: the FULL (untruncated) structural set UNIONed with an UNCAPPED text search
+        // for each name the index does NOT define - the fallback for the references a name index
+        // misses (a string-literal event name, a constant prefix, a name nothing defines yet). A
+        // name the index resolves is grounded structurally alone: text-searching it would put
+        // every file mentioning a common type name in the radius. A path is never text-searched. The search matches whole
+        // identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone happens BEFORE `precise`
+        // is capped, so the safe view is never bounded by `k`; do not reorder the truncation
+        // above it. A `seen` set keeps the dedup O(lines) rather than O(lines * files): the search
+        // yields one hit per matching LINE and the safe view is uncapped.
         let mut safe = structural.clone();
         let mut seen: HashSet<String> = safe.iter().cloned().collect();
         let grep = Grep {
@@ -503,7 +684,17 @@ impl Grounder for Symbols {
         // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
         // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
         let mut grep_tail: Vec<String> = Vec::new();
-        for r in grep.ground(query, usize::MAX) {
+        let unresolved = terms
+            .names
+            .iter()
+            .filter(|n| !defined.contains(n.name.as_str()));
+        for r in unresolved.flat_map(|n| grep.ground_identifier(&n.text, usize::MAX)) {
+            if TEXT_SEARCH_SKIPS
+                .iter()
+                .any(|skip| r.file.starts_with(skip))
+            {
+                continue;
+            }
             if seen.insert(r.file.clone()) {
                 grep_tail.push(r.file);
             }
@@ -514,11 +705,7 @@ impl Grounder for Symbols {
         // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
         let mut precise = structural;
         precise.truncate(k);
-        BlastRadius {
-            precise,
-            safe,
-            serialize,
-        }
+        BlastRadius { precise, safe }
     }
 
     /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event: the content-hash of
@@ -554,7 +741,7 @@ impl Grounder for Symbols {
     /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
     /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
-    /// language - the same primitive [`SymbolIndex::is_hub`] already uses, not an approximate
+    /// language, not an approximate
     /// count of what happened to be visible in this page - EXCEPT on an ambiguous name's own
     /// Def row, which reports 0 rather than the tree-wide count (spec 92 criterion 3
     /// remediation round 6, adj-u92c3-r5-verdict-reject /
@@ -656,7 +843,7 @@ impl Grounder for Symbols {
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
-    /// own name-ambiguity distribution's [`HUB_DEGREE_PERCENTILE`] cutoff (spec 92 criterion 3:
+    /// own name-ambiguity distribution's [`AMBIGUITY_PERCENTILE`] cutoff (spec 92 criterion 3:
     /// "a query with no strong token returns the honest 'no entity matches strongly' line
     /// instead of noise"). Two fixes over the first round of this unit (spec 92 criterion 3
     /// remediation, adj-u92c3-verdict-reject):
@@ -676,7 +863,7 @@ impl Grounder for Symbols {
     /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
     ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
     ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages),
-    ///    mirroring [`SymbolIndex::is_hub`]'s own per-language cutoff exactly: a name defined
+    ///    as [`SymbolIndex::reference_degree`] scopes its count: a name defined
     ///    once in Rust and, separately, once in an unrelated language is genuinely unambiguous
     ///    in EACH language alone; pooling the two definition counts into one bare-name bucket
     ///    manufactures a tree-wide-ambiguous verdict neither language's own distribution
@@ -697,8 +884,7 @@ impl Grounder for Symbols {
         let ambiguity = ambiguity_map(&idx);
         // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
         // distinct-definition distribution - never one pooled cutoff across every language
-        // present, exactly as `SymbolIndex::is_hub` draws its degree cutoff from only the
-        // queried language's own reference-degree distribution (5.5.2). A language absent from
+        // present (5.5.2). A language absent from
         // `ambiguity` (no definition anywhere in it) falls back to 0: nothing has EVER been
         // observed as ambiguous there, so every hit in that language trivially clears the
         // cutoff, matching `ambiguity.get(..).unwrap_or(0)` below for every such hit regardless.
@@ -711,7 +897,7 @@ impl Grounder for Symbols {
             let cutoff = if degrees.is_empty() {
                 0
             } else {
-                percentile_cutoff(&mut degrees, HUB_DEGREE_PERCENTILE)
+                percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
             };
             cutoffs.insert(lang, cutoff);
         }
@@ -799,15 +985,14 @@ mod tests {
         );
     }
 
-    /// Spec 16 unit 1, the criterion-1 recall fixture: the SAFE-SUPERSET view recovers a reference
-    /// the name-level structural graph alone MISSES. `apply_damage` is defined in one file, called
-    /// (a real symbol reference the graph links) in another, and mentioned ONLY in a COMMENT in a
-    /// third - a comment is not a symbol, so the tags query never indexes it and the structural
-    /// graph misses that file, but a literal grep matches the substring. `structural ∪ grep`
-    /// recovers it, so the safe view is strictly a superset of the structural (precise) view - the
-    /// recall the partitioning consumer needs, safe by construction.
+    /// Spec 16 unit 1, the criterion-1 fixture: `apply_damage` is defined in one file, called (a
+    /// real symbol reference the graph links) in another, and mentioned ONLY in a COMMENT in a
+    /// third. The index resolves the name, so its radius is the structural set - the definer
+    /// ranked above the call site - and the comment mention, which no unit edits through the
+    /// name, stays out of both views (the text search is the fallback for spans the index cannot
+    /// resolve, `blast_radius_text_searches_only_the_spans_the_index_does_not_resolve`).
     #[test]
-    fn safe_superset_recovers_a_grep_only_reference_the_structural_graph_misses() {
+    fn a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("combat.rs"),
@@ -824,12 +1009,6 @@ mod tests {
             "// apply_damage is discussed but never called here\n",
         )
         .unwrap();
-        // A higher-degree symbol (`helper`, referenced twice) so the per-language degree
-        // distribution is non-degenerate: `apply_damage` (degree 1) then sits BELOW the hub
-        // percentile, making the `!serialize` assertion below meaningful rather than a single-name
-        // artifact (a lone referenced name would trivially be its own 100th percentile).
-        std::fs::write(dir.path().join("h1.rs"), "fn a() { helper(); }\n").unwrap();
-        std::fs::write(dir.path().join("h2.rs"), "fn b() { helper(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
         let br = g.blast_radius("apply_damage", 8);
@@ -854,11 +1033,10 @@ mod tests {
             combat_at < caller_at,
             "the definer must rank above the referencer; got {br:?}"
         );
-        // The safe-superset view UNIONs an uncapped grep, so it RECOVERS the comment mention the
-        // structural graph missed - the miss the safety contract exists to backstop.
+        // The name resolves, so the comment mention is never text-searched into the safe view.
         assert!(
-            br.safe.contains(&"notes.rs".to_string()),
-            "the safe view must recover the grep-only reference the structural graph misses; got {br:?}"
+            !br.safe.contains(&"notes.rs".to_string()),
+            "a resolved name's safe view carries no comment-only mention; got {br:?}"
         );
         // And it is a strict superset of the precise (structural) view.
         for f in &br.precise {
@@ -867,22 +1045,253 @@ mod tests {
                 "safe must be a superset of precise; missing {f} in {br:?}"
             );
         }
-        assert!(
-            !br.serialize,
-            "apply_damage is not a hub, so this radius does not serialize; got {br:?}"
+    }
+
+    /// A criterion grounds its blast radius on the CODE it names, never on its prose: the query
+    /// terms are its code spans plus identifier-shaped bare tokens, so the prose words `tests`,
+    /// `run` and `parse` - which happen to be symbol names here - pull in nothing, and the radius
+    /// is `reclaim_space`'s alone. A criterion naming no code at all grounds on nothing (the empty
+    /// radius, which the scheduler serializes).
+    #[test]
+    fn blast_radius_grounds_a_criterion_on_its_code_spans_not_its_prose() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("reclaim.rs"), "fn reclaim_space() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("caller.rs"),
+            "fn go() { reclaim_space(); }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("tests.rs"), "fn tests() {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("run.rs"),
+            "fn run() { parse(); tests(); }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let br = g.blast_radius(
+            "a test proves the run reclaims space: `reclaim_space` frees what tests and parse \
+             leave behind, asserted in the run's tests",
+            8,
+        );
+        let mut safe = br.safe.clone();
+        safe.sort();
+        assert_eq!(
+            safe,
+            vec!["caller.rs".to_string(), "reclaim.rs".to_string()],
+            "the radius is the named span's alone, never the prose words'; got {br:?}"
+        );
+
+        let prose = g.blast_radius("the run parses its tests and reclaims one of them", 8);
+        assert_eq!(
+            prose,
+            BlastRadius::default(),
+            "a criterion naming no code grounds on nothing; got {prose:?}"
         );
     }
 
-    /// Spec 16 unit 1, the criterion-1 hub fixture: a HUB symbol (degree at or above the repo's
-    /// per-language degree percentile) fails SAFE by SERIALIZING (flagged conflict-with-everything)
-    /// rather than TRUNCATING its large file set. The safe view still carries EVERY file (never
-    /// dropped, even past the `k` cap); `serialize` tells the partitioning consumer to give the
-    /// unit its own batch. A degree-1 symbol in the same repo does not serialize.
+    /// Over a tree holding `files`, `query`'s safe view is exactly `expected`.
+    fn assert_safe(files: &[(&str, &str)], query: &str, expected: &[&str], why: &str) {
+        let (_tree, g) = grounder_over(files);
+        let br = g.blast_radius(query, 8);
+        assert_eq!(br.safe, expected, "{why}; got {br:?}");
+    }
+
+    /// Over a tree holding `files`, every one of `queries` grounds nothing - the empty radius a
+    /// criterion naming no code gets.
+    fn assert_grounds_nothing(files: &[(&str, &str)], queries: &[&str]) {
+        let (_tree, g) = grounder_over(files);
+        for query in queries {
+            let br = g.blast_radius(query, 8);
+            assert_eq!(
+                br,
+                BlastRadius::default(),
+                "{query} grounds nothing; got {br:?}"
+            );
+        }
+    }
+
+    /// A span naming only language keywords (`&mut self`, `pub fn`) names no code at all.
     #[test]
-    fn a_hub_symbol_serializes_and_its_safe_view_is_not_truncated() {
+    fn blast_radius_never_grounds_on_language_keywords() {
+        assert_grounds_nothing(
+            &[("check.rs", "pub fn validate(&mut self) {}\n")],
+            &["the method takes `&mut self` and is `pub fn`"],
+        );
+    }
+
+    /// A span naming a path the tree holds grounds on that file itself, indexed or not (a
+    /// `.gitignore` the symbol index never parses), and never on the files that mention the path.
+    #[test]
+    fn blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone() {
+        assert_safe(
+            &[
+                (".gitignore", "target/\n"),
+                ("notes.rs", "// see .gitignore for the build dir\n"),
+            ],
+            "`.gitignore` lists the build dir",
+            &[".gitignore"],
+            "a held path grounds on its own file alone",
+        );
+    }
+
+    /// A span of several words (`rigger validate`) is prose about the code, not a name of it, so
+    /// it grounds nothing - not on the files holding the phrase, nor on its words.
+    #[test]
+    fn blast_radius_a_multi_word_span_grounds_nothing() {
+        assert_grounds_nothing(
+            &[
+                ("verb.rs", "// run rigger validate first\n"),
+                ("check.rs", "fn validate() {}\n"),
+            ],
+            &["`rigger validate` refuses a drifted spec"],
+        );
+    }
+
+    /// A path the tree does not hold (`graph.db`, a runtime artifact), a directory fragment
+    /// (`src/`) and an absolute path (which would escape the tree) name no file of the tree, so
+    /// they ground nothing - never the files mentioning them, never a file outside the tree.
+    #[test]
+    fn blast_radius_a_path_the_tree_does_not_hold_grounds_nothing() {
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let absolute = format!("`{}` is read", outside.path().display());
+        assert_grounds_nothing(
+            &[("src/open.rs", "// opens graph.db under src/ here\n")],
+            &[
+                "`graph.db` holds the graph",
+                "code lives in `src/`",
+                &absolute,
+            ],
+        );
+    }
+
+    /// A span ending in `_` names a FAMILY by its prefix (`TYPE_` for the `TYPE_*` constants): the
+    /// text search matches it with the left identifier boundary only, so it finds every member
+    /// and never a name that merely contains the prefix.
+    #[test]
+    fn blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix() {
+        assert_safe(
+            &[
+                ("consts.rs", "const KIND: &str = TYPE_RUN_STARTED;\n"),
+                ("other.rs", "const K: &str = MY_TYPE_X;\n"),
+            ],
+            "the `TYPE_` constants",
+            &["consts.rs"],
+            "a trailing-underscore span matches its family by prefix",
+        );
+    }
+
+    /// The text search matches a span only on identifier boundaries: `gc` matches where it stands
+    /// as its own word, never inside `logcat`.
+    #[test]
+    fn blast_radius_text_search_matches_a_span_only_on_identifier_boundaries() {
+        assert_safe(
+            &[
+                ("word.rs", "// run gc now\n"),
+                ("inside.rs", "// logcat output\n"),
+            ],
+            "`gc` reclaims space",
+            &["word.rs"],
+            "a span matches only as a whole identifier",
+        );
+    }
+
+    /// A span the index resolves to a definition grounds on its structural set alone, never on
+    /// every file mentioning the word; a span the index cannot resolve (a string-literal event
+    /// name) still falls back to the text search.
+    #[test]
+    fn blast_radius_text_searches_only_the_spans_the_index_does_not_resolve() {
+        let files = [
+            ("def.rs", "pub struct Store;\n"),
+            ("prose.rs", "// the Store is only mentioned here\n"),
+            ("events.rs", "const STARTED: &str = \"RunStarted\";\n"),
+        ];
+        assert_safe(
+            &files,
+            "`Store` reclaims space",
+            &["def.rs"],
+            "a resolved span grounds on its structural set, not its mentions",
+        );
+        assert_safe(
+            &files,
+            "`RunStarted` opens a run",
+            &["events.rs"],
+            "an unresolved span falls back to the text search",
+        );
+    }
+
+    /// The text search never matches a spec file or the regenerated audit: no unit edits the
+    /// first and every unit regenerates the second, so neither is a conflict. Tests and the
+    /// handbook stay in scope.
+    #[test]
+    fn blast_radius_text_search_skips_specs_and_the_audit() {
+        assert_safe(
+            &[
+                ("code.rs", "const K: &str = \"unindexed_name\";\n"),
+                ("specs/107-x.md", "uses `unindexed_name`\n"),
+                (
+                    "docs/audit/catalog.json",
+                    "{\"name\": \"unindexed_name\"}\n",
+                ),
+                ("docs/audit/report.md", "unindexed_name\n"),
+                ("docs/handbook/page.md", "unindexed_name\n"),
+                ("tests/cli.rs", "// unindexed_name\n"),
+            ],
+            "`unindexed_name` is read",
+            &["code.rs", "docs/handbook/page.md", "tests/cli.rs"],
+            "specs and the audit are never text-search hits",
+        );
+    }
+
+    /// A span keeps the name it carries through generic and call arguments, trailing marks and
+    /// member access: `spawn_unit<T>`, `finish(x)`, `parked:` and `store.open()` each match the
+    /// symbol they name, and a dotted term is a path only when it ends in a file extension.
+    #[test]
+    fn blast_radius_reads_the_name_inside_generics_calls_marks_and_member_access() {
         let dir = tempfile::tempdir().unwrap();
-        // `spawn` is referenced across many files (a hub); `rare_call` in exactly one, so the
-        // per-language degree distribution has a genuine high-degree name to clear the percentile.
+        for (file, def) in [
+            ("generic.rs", "spawn_unit"),
+            ("call.rs", "finish"),
+            ("mark.rs", "parked"),
+            ("member.rs", "open"),
+        ] {
+            std::fs::write(dir.path().join(file), format!("fn {def}() {{}}\n")).unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        for (query, file) in [
+            ("`spawn_unit<T>`", "generic.rs"),
+            ("`finish(x)`", "call.rs"),
+            ("`parked:`", "mark.rs"),
+            ("`store.open()`", "member.rs"),
+            ("`call.rs`", "call.rs"),
+        ] {
+            let br = g.blast_radius(query, 8);
+            assert!(
+                br.safe.contains(&file.to_string()),
+                "{query} names the code in {file}; got {br:?}"
+            );
+        }
+        // A store file (`graph.db`) is a path, never the symbol `db`.
+        let store_dir = tempfile::tempdir().unwrap();
+        std::fs::write(store_dir.path().join("handle.rs"), "fn db() {}\n").unwrap();
+        let g = Symbols::open(store_dir.path().to_str().unwrap(), None);
+        let br = g.blast_radius("`graph.db`", 8);
+        assert!(
+            !br.safe.contains(&"handle.rs".to_string()),
+            "a .db file name never grounds on a symbol named db; got {br:?}"
+        );
+    }
+
+    /// A HUB symbol (a name referenced across many files) fails SAFE through its radius, never by
+    /// truncating it and never by a conflict-with-everything flag: the safe view carries EVERY file
+    /// of the hub's neighborhood (even past the `k` cap), so the overlap test keeps it apart from
+    /// exactly the units that share one of those files and pairs it with every unit that shares
+    /// none.
+    #[test]
+    fn a_hub_symbol_s_safe_view_carries_its_whole_neighborhood_untruncated() {
+        let dir = tempfile::tempdir().unwrap();
+        // `spawn` is referenced across many files (a hub).
         std::fs::write(dir.path().join("def.rs"), "fn spawn() {}\n").unwrap();
         let mut expected: Vec<String> = vec!["def.rs".to_string()];
         for i in 0..12 {
@@ -890,15 +1299,10 @@ mod tests {
             std::fs::write(dir.path().join(&name), "fn c() { spawn(); }\n").unwrap();
             expected.push(name);
         }
-        std::fs::write(dir.path().join("rare.rs"), "fn r() { rare_call(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
-        let br = g.blast_radius("spawn", 8);
-        assert!(
-            br.serialize,
-            "a hub symbol must serialize (conflict-with-everything), never truncate; got {br:?}"
-        );
+        let br = g.blast_radius("`spawn`", 8);
         for f in &expected {
             assert!(
                 br.safe.contains(f),
@@ -911,18 +1315,12 @@ mod tests {
             expected.len(),
             br.safe.len()
         );
-        // A degree-1 symbol in the SAME repo is NOT a hub and does not serialize.
-        let rare = g.blast_radius("rare_call", 8);
-        assert!(
-            !rare.serialize,
-            "a degree-1 symbol is not a hub; got {rare:?}"
-        );
     }
 
     /// The blast-radius fail-safe paths (spec 16 unit 1): an empty query and a no-match query each
-    /// return EMPTY views and never serialize (unit 3 routes an empty radius to the full,
+    /// return EMPTY views (unit 3 routes an empty radius to the full,
     /// unpartitioned panel). A `k=0` cap collapses the PRECISE view to empty, but the SAFE view is
-    /// UNCAPPED by design - it still carries the full structural-union-grep radius so the
+    /// UNCAPPED by design - it still carries the full safe radius (addendum 2.4) so the
     /// partitioning consumer can never under-include just because the prompt budget was zero.
     #[test]
     fn blast_radius_empty_and_no_match_are_the_empty_failsafe_and_k0_keeps_safe_uncapped() {
@@ -932,22 +1330,22 @@ mod tests {
         std::fs::write(dir.path().join("call.rs"), "fn run() { parse(); }\n").unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
-        // Empty query -> no terms -> empty views, never serialize.
+        // Empty query -> no terms -> empty views.
         let empty = g.blast_radius("", 8);
         assert!(
-            empty.precise.is_empty() && empty.safe.is_empty() && !empty.serialize,
-            "an empty query is the empty fail-safe: both views empty, no serialize; got {empty:?}"
+            empty.precise.is_empty() && empty.safe.is_empty(),
+            "an empty query is the empty fail-safe: both views empty; got {empty:?}"
         );
 
         // A name that appears nowhere -> nothing structural AND nothing grep -> empty views.
         let none = g.blast_radius("nonexistent_symbol_zzz", 8);
         assert!(
-            none.precise.is_empty() && none.safe.is_empty() && !none.serialize,
-            "a no-match query is the empty fail-safe: both views empty, no serialize; got {none:?}"
+            none.precise.is_empty() && none.safe.is_empty(),
+            "a no-match query is the empty fail-safe: both views empty; got {none:?}"
         );
 
         // k=0 caps the PRECISE view to empty; the SAFE view is uncapped and still carries the radius.
-        let k0 = g.blast_radius("parse", 0);
+        let k0 = g.blast_radius("`parse`", 0);
         assert!(
             k0.precise.is_empty(),
             "k=0 caps the precise view to empty; got {k0:?}"
@@ -999,7 +1397,7 @@ mod tests {
             one_char,
             BlastRadius::default(),
             "a degenerate single-char query is the empty fail-safe radius (empty precise, empty \
-             safe, no serialize), not an unbounded whole-repo grep; got {one_char:?}"
+             safe), not an unbounded whole-repo grep; got {one_char:?}"
         );
 
         // A single MULTIBYTE character (U+00E9: 2 UTF-8 bytes, but still ONE Unicode character).
@@ -1042,14 +1440,14 @@ mod tests {
     /// ALL languages, mirroring `ground`'s own cross-language matching. So a query for a Rust symbol
     /// pulls in a Python file that references the same name - the OVER-inclusion (safe) direction,
     /// which is correct by construction (definers/referencers are deliberately cross-language for
-    /// grounding recall; only the fan-out HUB verdict is per-language). This pins that a Python
+    /// grounding recall). This pins that a Python
     /// referencer of a Rust-defined name lands in the precise AND safe views, and that safe stays a
     /// superset of precise. Gated behind the `symbols` feature like every test here (real parsing).
     #[test]
     fn structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included() {
         let dir = tempfile::tempdir().unwrap();
         // Rust DEFINES `render`; Python CALLS `render` (a real symbol reference, in another
-        // language) and a comment-only mention grep alone recovers.
+        // language) and mentions it in a comment only.
         std::fs::write(dir.path().join("view.rs"), "fn render() {}\n").unwrap();
         std::fs::write(dir.path().join("client.py"), "def draw():\n    render()\n").unwrap();
         std::fs::write(
@@ -1059,7 +1457,7 @@ mod tests {
         .unwrap();
         let g = Symbols::open(dir.path().to_str().unwrap(), None);
 
-        let br = g.blast_radius("render", 8);
+        let br = g.blast_radius("`render`", 8);
         // The Rust definer is present (the precise structural view).
         assert!(
             br.precise.contains(&"view.rs".to_string()),
@@ -1070,10 +1468,11 @@ mod tests {
             br.precise.contains(&"client.py".to_string()),
             "the cross-language Python referencer must be in the precise structural view (over-inclusion); got {br:?}"
         );
-        // The comment-only Python mention is no symbol; grep recovers it into the safe superset.
+        // The comment-only Python mention is no symbol, and the resolved name is never
+        // text-searched, so it stays out of the safe view.
         assert!(
-            br.safe.contains(&"notes.py".to_string()),
-            "the safe view must recover the comment-only cross-language grep reference; got {br:?}"
+            !br.safe.contains(&"notes.py".to_string()),
+            "a resolved name's safe view carries no comment-only mention; got {br:?}"
         );
         // Safe is a superset of precise.
         for f in &br.precise {
@@ -1686,7 +2085,7 @@ mod tests {
     /// strongly". A single-definition entity is UNAMBIGUOUS no matter how many places call it;
     /// the old cutoff conflated one entity's own reference VOLUME with tree-wide name
     /// AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
-    /// shape at a scale that clears `HUB_DEGREE_PERCENTILE` under the OLD (broken) raw
+    /// shape at a scale that clears `AMBIGUITY_PERCENTILE` under the OLD (broken) raw
     /// occurrence-count cutoff, proving the fix measures ambiguity, not popularity.
     #[test]
     fn has_strong_match_is_true_for_a_single_definition_referenced_many_times() {

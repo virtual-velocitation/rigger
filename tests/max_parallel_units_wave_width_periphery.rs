@@ -4,14 +4,14 @@
 //! sequential in-process calls.
 //!
 //! WHAT THE INSIDE-OUT TESTS CANNOT REACH. Both of `conductor.rs`'s own new tests
-//! (`run_wave_admits_at_most_max_parallel_units_leaving_the_rest_neither_failed_nor_terminal`,
+//! (`run_wave_hands_each_freed_slot_to_the_next_ready_stage_under_max_parallel_units`,
 //! `occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one`)
 //! drive either the private `run_wave` directly or the public `run()` entry point, but every
 //! spawn in both runs through the crate-internal `Stub` driver, which resolves synchronously
 //! with no subprocess and no real elapsed time. That proves the admission bookkeeping (which
-//! names land in `admitted`/`in_flight`) is correct, but it can never prove the other half of
+//! names land in `in_flight`) is correct, but it can never prove the other half of
 //! the claim `run_wave`'s own doc comment makes: that the bound actually constrains
-//! `run_batch`'s REAL `std::thread::scope` concurrency (spec 102's whole motivation - three
+//! `run_wave`'s REAL `std::thread::scope` concurrency (spec 102's whole motivation - three
 //! real 54 GB build caches alive at once) rather than merely bookkeeping names nobody ever
 //! runs in parallel. Nor does it prove the converse - that a width greater than one truly
 //! ADMITS real concurrent spawns rather than accidentally over-serializing (a width-2 config
