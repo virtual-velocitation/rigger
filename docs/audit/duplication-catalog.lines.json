@@ -474,8 +474,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1085,
-        "end_line": 1087
+        "start_line": 1089,
+        "end_line": 1091
       }
     ]
   },
@@ -5759,23 +5759,23 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1543,
-        "end_line": 1543
+        "start_line": 1547,
+        "end_line": 1547
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2156,
-        "end_line": 2156
+        "start_line": 2160,
+        "end_line": 2160
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2178,
-        "end_line": 2178
+        "start_line": 2182,
+        "end_line": 2182
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2501,
-        "end_line": 2501
+        "start_line": 2505,
+        "end_line": 2505
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
@@ -6309,8 +6309,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1483,
-        "end_line": 1488
+        "start_line": 1487,
+        "end_line": 1492
       }
     ]
   },
@@ -6574,8 +6574,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 505,
-        "end_line": 522
+        "start_line": 506,
+        "end_line": 523
       }
     ]
   },

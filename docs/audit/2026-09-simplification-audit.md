@@ -1852,7 +1852,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/conductor.rs:13424-13426` `unit_branch`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1085-1087` `key_expr`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1089-1091` `key_expr`
 
 #### `dup-c6dfc41a628c` (exact, 2 sites)
 
@@ -4038,10 +4038,10 @@ mandatory sweep: sqlite Connection::open call sites - 64 site(s), collected mech
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:5669-5669` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:9827-9827` `Connection::open`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10595-10595` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1543-1543` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2156-2156` `Connection::open`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2178-2178` `Connection::open_with_flags`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2501-2501` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1547-1547` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2160-2160` `Connection::open`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2182-2182` `Connection::open_with_flags`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:2505-2505` `Connection::open`
 - `crates/rigger-store-sqlite/src/run_store.rs:419-419` `Connection::open`
 - `crates/rigger-store-sqlite/src/sqlite.rs:13-13` `Connection::open`
 - `src/cli/mod.rs:5193-5193` `Connection::open`
@@ -4244,7 +4244,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:775-786` `kind_str`
 - `crates/rigger-grounder/src/grounder/symbols/events.rs:790-799` `lang_str`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1483-1488` `direction_sql`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1487-1492` `direction_sql`
 
 #### `dup-ff3bcd827c2f` (semantic, 3 sites)
 
@@ -4381,7 +4381,7 @@ Proposed home: `one shared `read_forward` helper (e.g. relocated into `tests/com
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs:569-576` `read_forward`
-- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:505-522` `read_forward`
+- `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:506-523` `read_forward`
 
 #### `dup-8bed086eddda` (exact, 2 sites)
 

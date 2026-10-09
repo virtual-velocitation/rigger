@@ -195,8 +195,9 @@ impl Store {
     /// For every `<prefix>/<file>` identity whose latest recording - a derived row or a ledger
     /// entry, each naming its identity in its replay key - is a derived row, the lowest-position
     /// row the live selection keeps for it ([`plan_derived_prune`]: the first row of its latest
-    /// batch when that batch was recorded whole) is rewritten IN PLACE into the identity's
-    /// ledger entry. Its position, stream, id, revision and recorded-time stay, so every column
+    /// batch when that batch was recorded whole) above its latest ledger entry is rewritten IN
+    /// PLACE into the identity's ledger entry, so the identity's latest recording keeps its
+    /// generation; a kept row below that entry is deleted with the rest. Its position, stream, id, revision and recorded-time stay, so every column
     /// a uniqueness rule covers is kept; its type, payload and metadata become the entry's, built
     /// by the entry's one constructor for that generation, the blob and flag `entry_of` answers
     /// for the identity, and the count of distinct replay keys of that generation among the
@@ -567,8 +568,8 @@ struct DerivedRecordings {
     earliest: i64,
     /// Whether the identity's latest recording is a derived row, and not a ledger entry.
     latest_is_derived: bool,
-    /// The position and generation of the lowest row the live selection keeps, the row the
-    /// migration rewrites.
+    /// The position and generation of the lowest row the live selection keeps above the
+    /// identity's latest ledger entry, the row the migration rewrites.
     kept: Option<(i64, String)>,
     /// The distinct `(generation, replay key)` pairs the rows carry.
     keys: std::collections::BTreeSet<(String, String)>,
@@ -606,7 +607,9 @@ fn derived_types() -> Vec<String> {
 /// and is counted as unkeyed. A keyed derived row and a ledger entry name their identity alike,
 /// in their replay key, so an identity's latest recording is whichever of the two the read met
 /// last. `shed_by_the_plan` holds the positions the live selection sheds: the first derived row
-/// of an identity outside it is the row the migration rewrites.
+/// of an identity outside it and above the identity's latest ledger entry is the row the
+/// migration rewrites, so the rewritten entry is the identity's latest recording, of the
+/// generation that was latest before.
 fn read_derived(
     conn: &Connection,
     stream: &str,
@@ -640,6 +643,7 @@ fn read_derived(
                 entry.earliest = entry.earliest.min(valid_from);
                 if let Some(recorded) = read.identities.get_mut(identity) {
                     recorded.latest_is_derived = false;
+                    recorded.kept = None;
                 }
             }
             continue;
