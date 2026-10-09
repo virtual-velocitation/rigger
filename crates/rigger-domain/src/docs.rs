@@ -249,11 +249,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
          shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \
          the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
          a COMPLETE COPY of the log in the process's MEMORY while it does, never in a temporary \
-         directory, so what it needs is free memory of about the size of your log rather than \
-         free space on any disk, no temporary-directory setting changes where the copy goes, and \
-         a crash leaves no temporary file behind to clean up. A machine short of that memory \
-         fails the rewrite and nothing else: the rewrite rolls back and the log stays as the \
-         deletes left it. It rewrites only when the FILE is holding reclaimable free \
+         directory, so it needs free memory of about the size of your log, no \
+         temporary-directory setting changes where the copy goes, and a crash leaves no \
+         temporary file behind to clean up. It needs room on disk too, beside the log: \
+         events.db is in write-ahead mode, so the rewritten file passes through events.db-wal \
+         before it replaces the old pages, and the partition holding .rigger/ needs about the \
+         compacted size of the log free while it does. A machine short of that memory or that \
+         room fails the rewrite and nothing else: the rewrite rolls back and the log stays as \
+         the deletes left it. It rewrites only when the FILE is holding reclaimable free \
          pages, which is not the same as this run having deleted something: a prune with nothing \
          to shed from an already-compact log leaves the file exactly as it found it and reports \
          reclaiming zero, while a prune that sheds nothing from a log still holding free pages \
