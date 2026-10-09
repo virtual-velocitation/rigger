@@ -7,7 +7,7 @@ description: Cold-build the context graph - empty `rigger graph --around`/`--sho
 
 ## Procedure
 
-`rigger graph build` folds the project's source straight into `.rigger/graph.db` - no run, no `RunStarted`, nothing but the code-ingest events the fold already emits. It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and it reuses the exact same walk-and-content-key ingest authority a live run uses, so a standalone build and a run can never fold the same file under two different keys.
+`rigger graph build` folds the project's source straight into `.rigger/graph.db` - no run, no `RunStarted`, and nothing on the event log but one ledger entry per file batch whose generation moved, since the tree re-derives the batch itself. It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and it reuses the exact same walk-and-content-key ingest authority a live run uses, so a standalone build and a run can never fold the same file under two different keys.
 
 Rerun it any time it is convenient - on a schedule, after pulling a large set of changes, or simply because a lookup came back empty and you want to check. It is always safe: nothing is deleted, only appended and incrementally refreshed.
 
