@@ -2345,61 +2345,6 @@ mod tests {
         );
     }
 
-    /// Spec 60, criterion 5: everything after the commit is a REPORT, never an error return.
-    ///
-    /// The deletes are durable the moment the transaction commits, so a failure in the space
-    /// reclamation that follows it describes a log that HAS been pruned. Propagating it hands the
-    /// operator an error and nothing else - not the per-type counts, not the fact that a prune
-    /// happened at all - which is precisely the undetectable outcome this command's design names
-    /// as the one it must never produce. So the failure is carried back beside the counts.
-    ///
-    /// The failing step is INJECTED rather than provoked, because the real triggers (a temporary
-    /// directory too small for the full copy the rewrite stages there, a writer holding the file
-    /// past the busy timeout) are properties of the machine the test runs on and would make this
-    /// pin conditional on the filesystem. That the real step can fail at all is pinned separately
-    /// by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
-    #[test]
-    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 4);
-
-        let pruned = s
-            .prune_derived_index_compacting_with(
-                "",
-                &crate::ingest::derived_index_identity(),
-                |_| Err(Error::Backend("database or disk is full".into())),
-            )
-            .expect("a compaction that failed after the deletes committed is not a failed prune");
-
-        assert_eq!(
-            pruned.total_removed(),
-            3,
-            "the report must still name what the committed transaction deleted; got {:?}",
-            pruned.removed
-        );
-        assert_eq!(
-            pruned.reclaimed_bytes, None,
-            "a reclamation whose step failed is unmeasured, not zero"
-        );
-        assert!(
-            pruned
-                .compaction_error
-                .as_deref()
-                .is_some_and(|e| e.contains("database or disk is full")),
-            "the report must NAME the failure, or an operator cannot tell a skipped compaction \
-             from a failed one; got {:?}",
-            pruned.compaction_error
-        );
-        assert_eq!(
-            recordings_of_the_key(path),
-            1,
-            "and the deletes really are committed: that is why the failure below them cannot be \
-             an error return"
-        );
-    }
-
     /// Spec 60, criterion 5: the post-commit step this store guards against failing really can
     /// fail, so the capture above is not a defense against an imaginary error.
     ///
@@ -2430,27 +2375,265 @@ mod tests {
         );
     }
 
-    /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
-    /// after the deletes have committed, the command tells the operator that re-running it is
-    /// safe - and [`PrunedDerived::compaction_error`] says in so many words that the second pass
-    /// "tries the reclamation again". That promise is only true if what triggers the rewrite is
-    /// the space there is to reclaim rather than the rows THIS pass deleted: the first pass
-    /// deleted them all, so a second pass deletes nothing, and a rewrite gated on its own deletes
-    /// would never run again on that log. The space would then be unreclaimable through this
-    /// command forever, with the report cheerfully telling the operator to re-run it.
+    // --- Spec 107, criterion 14: RECLAMATION STAGES IN MEMORY (`Store::reclaim_space`) ---
+
+    /// A file-backed store at `dir`/events.db holding one event and roughly `rows` blobs' worth
+    /// of free pages, with the path of its file.
+    fn store_holding_free_pages(dir: &std::path::Path, rows: u64) -> (Store, std::path::PathBuf) {
+        let path = dir.join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        plant_free_pages(&path, rows);
+        (s, path)
+    }
+
+    /// `PRAGMA temp_store` as the store's OWN connection reports it: 0 is the build's default
+    /// (a file in the temporary directory), 2 is memory.
+    fn temp_store_of(s: &Store) -> i64 {
+        s.conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA temp_store", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// The length of the main database file alone, without its write-ahead log.
+    fn main_file_len(path: &std::path::Path) -> u64 {
+        std::fs::metadata(path).unwrap().len()
+    }
+
+    /// A file holding free pages is rewritten smaller, the bytes reported are the before-size the
+    /// CALLER handed in less what the file occupies afterwards, and the copy the rewrite stages is
+    /// held in memory: the store's own connection reports `temp_store` as memory after the call.
+    #[test]
+    fn reclaim_space_rewrites_a_file_holding_free_pages_smaller_and_stages_the_copy_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 3_000);
+        let measured_before = s.bytes_on_disk().expect("a file-backed store has a size");
+        let main_before = main_file_len(&path);
+        let pages_before = pragma_i64(&path, "page_count");
+        assert_eq!(
+            temp_store_of(&s),
+            0,
+            "the connection starts on the default, so memory afterwards is this call's doing"
+        );
+        // A before that is NOT the file's own size at the call: the report must be taken against
+        // the figure handed in, never against a size the store measured again for itself.
+        let handed = measured_before + 4_096;
+
+        let reclaimed = s.reclaim_space(Some(handed));
+
+        let after = s.bytes_on_disk().expect("a file-backed store has a size");
+        assert!(
+            after < measured_before,
+            "the log must occupy less than it did: {measured_before} before, {after} after"
+        );
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: Some(handed - after),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert!(
+            main_file_len(&path) < main_before,
+            "the main file itself is rewritten smaller, not only its write-ahead log"
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        assert!(pragma_i64(&path, "page_count") < pages_before);
+        assert_eq!(
+            temp_store_of(&s),
+            2,
+            "the rewrite's copy is staged in memory, on the store's own connection"
+        );
+    }
+
+    /// The bytes the log lost saturate at zero: a caller whose before-size is below what the file
+    /// occupies after the rewrite is told zero, never a wrapped figure.
+    #[test]
+    fn reclaim_space_reports_zero_when_the_file_ends_larger_than_the_before_it_was_handed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 400);
+
+        let reclaimed = s.reclaim_space(Some(1));
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: Some(0),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+    }
+
+    /// A caller with no before-size (a store with no file to measure) still has its free pages
+    /// reclaimed, and is told the bytes were never measured rather than that they were zero.
+    #[test]
+    fn reclaim_space_handed_no_before_size_rewrites_and_reports_the_bytes_unmeasured() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 400);
+
+        let reclaimed = s.reclaim_space(None);
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: false,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+    }
+
+    /// A file holding no free page is left exactly as it stands: not rewritten, zero bytes
+    /// reported as the measurement whatever before-size was handed in, and the connection's
+    /// `temp_store` untouched because no copy was staged.
+    #[test]
+    fn reclaim_space_leaves_a_file_holding_no_free_pages_unrewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        let measured_before = s.bytes_on_disk().expect("a file-backed store has a size");
+        let bytes_before = std::fs::read(&path).unwrap();
+        let wal = format!("{}-wal", path.to_str().unwrap());
+        let wal_before = std::fs::read(&wal).unwrap();
+
+        let measured = s.reclaim_space(Some(measured_before + 4_096));
+        let unmeasured = s.reclaim_space(None);
+
+        assert_eq!(
+            measured,
+            Reclamation {
+                reclaimed_bytes: Some(0),
+                compaction_ran: false,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(
+            unmeasured,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: false,
+                on_disk_measured: false,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes_before,
+            "the main file is byte-for-byte the file the call found"
+        );
+        assert_eq!(
+            std::fs::read(&wal).unwrap(),
+            wal_before,
+            "and nothing was written to its write-ahead log either"
+        );
+        assert_eq!(
+            temp_store_of(&s),
+            0,
+            "no rewrite ran, so no copy was staged"
+        );
+    }
+
+    /// The size a caller measures before its transaction is the main file PLUS its write-ahead
+    /// log, the pair an operator's own `du` adds up; a store with no file behind it has none.
+    #[test]
+    fn bytes_on_disk_is_the_main_file_plus_its_write_ahead_log_and_none_without_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        let main = main_file_len(&path);
+        let wal = main_file_len(std::path::Path::new(&format!(
+            "{}-wal",
+            path.to_str().unwrap()
+        )));
+        assert!(
+            main > 1 && wal > 1,
+            "both files must hold bytes, or a sum, a difference and a product could agree: \
+             main {main}, wal {wal}"
+        );
+
+        assert_eq!(s.bytes_on_disk(), Some(main + wal));
+        assert_eq!(Store::open(":memory:").unwrap().bytes_on_disk(), None);
+    }
+
+    /// Everything after a caller's commit is a REPORT, never an error return: the compacting step
+    /// that fails is named in the `Reclamation` beside what the committed transaction deleted,
+    /// which stays deleted.
     ///
-    /// So the failure is injected on the first pass and the REAL step runs on the second, over a
-    /// log whose freed pages are still sitting in the file.
+    /// The failing step is INJECTED rather than provoked, because the real triggers (too little
+    /// memory for the copy the rewrite stages, a writer holding the file past the busy timeout)
+    /// are properties of the machine the test runs on. That the real step can fail at all is
+    /// pinned separately by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
+    #[test]
+    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path_str, 4);
+        let pruned = s
+            .prune_derived_index("", &crate::ingest::derived_index_identity())
+            .unwrap();
+        assert_eq!(pruned.total_removed(), 3);
+        plant_free_pages(&path, 400);
+        let free_before = pragma_i64(&path, "freelist_count");
+        let before = s.bytes_on_disk();
+
+        let reclaimed = s.reclaim_space_compacting_with(before, |_| {
+            Err(Error::Backend("database or disk is full".into()))
+        });
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: Some(
+                    Error::Backend("database or disk is full".into()).to_string()
+                ),
+            },
+            "a reclamation whose step failed is unmeasured, not zero, and names the failure"
+        );
+        assert_eq!(
+            pragma_i64(&path, "freelist_count"),
+            free_before,
+            "a step that failed reclaimed nothing: the free pages are still in the file"
+        );
+        assert_eq!(
+            recordings_of_the_key(path_str),
+            1,
+            "and the committed deletes stand whatever the reclamation reports"
+        );
+    }
+
+    /// THE REMEDY THE REPORT PROMISES EXISTS. What triggers the rewrite is the space the file is
+    /// holding free, never what an earlier step deleted, so the call after a failed reclamation
+    /// reclaims what that failure left behind.
+    ///
+    /// The failure is injected on the first call and the REAL step runs on the second, over a
+    /// file whose free pages are still sitting in it.
     #[test]
     fn a_rerun_reclaims_the_space_a_failed_reclamation_left_behind() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap().to_string();
-        let s = seeded_with_duplicated_key(&path_str, 4);
-        // The deletes of a handful of small rows can free no whole page at all, which would leave
-        // this asserting that nothing was reclaimed from a file with nothing in it to reclaim.
-        // Planted free pages make the reclamation a definite figure without changing what it is.
-        plant_free_pages(&path, 3_000);
+        let (s, path) = store_holding_free_pages(dir.path(), 3_000);
         let free_before = pragma_i64(&path, "freelist_count");
         let pages_before = pragma_i64(&path, "page_count");
         assert!(
@@ -2458,60 +2641,34 @@ mod tests {
             "the fixture must leave real free pages, or a reclaimed file and an untouched one \
              look identical; the freelist holds {free_before} page(s)"
         );
+        let before = s.bytes_on_disk().expect("a file-backed store has a size");
 
-        // FIRST PASS: the deletes commit, the reclamation fails.
-        let first = s
-            .prune_derived_index_compacting_with(
-                "",
-                &crate::ingest::derived_index_identity(),
-                |_| Err(Error::Backend("database or disk is full".into())),
-            )
-            .expect("a compaction that failed after the deletes committed is not a failed prune");
-        assert!(
-            first.total_removed() > 0,
-            "the first pass must be the one that sheds the duplication; got {:?}",
-            first.removed
+        let first = s.reclaim_space_compacting_with(Some(before), |_| {
+            Err(Error::Backend("database or disk is full".into()))
+        });
+        assert_eq!(
+            first.compaction_error,
+            Some(Error::Backend("database or disk is full".into()).to_string())
         );
-        assert!(
-            first.compaction_error.is_some(),
-            "the first pass's reclamation must have failed, or there is nothing for the re-run to \
-             retry; got {first:?}"
-        );
-        assert!(
-            pragma_i64(&path, "freelist_count") >= free_before,
-            "a reclamation that failed reclaimed nothing: the free pages must still be in the file"
-        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), free_before);
 
-        // SECOND PASS, the one the report told the operator to run. It deletes nothing - the first
-        // pass took the duplication - and it must still reclaim the space the first pass could not.
-        let second = s
-            .prune_derived_index("", &crate::ingest::derived_index_identity())
-            .expect("the re-run the report promises is safe");
-        assert_eq!(
-            second.total_removed(),
-            0,
-            "the re-run deletes nothing - that is exactly why a rewrite gated on deletes would \
-             never retry the reclamation; got {:?}",
-            second.removed
-        );
-        assert_eq!(
-            second.compaction_error, None,
-            "the re-run's reclamation must succeed; got {second:?}"
-        );
+        let second = s.reclaim_space(Some(before));
+
+        let after = s.bytes_on_disk().expect("a file-backed store has a size");
         assert!(
-            second.reclaimed_bytes.is_some_and(|b| b > 0),
-            "the re-run must RECLAIM the space the failed pass left behind, or the report's \
-             promise that re-running is safe is a promise that re-running is pointless; got \
-             {second:?}"
+            after < before,
+            "the rerun must shrink the log: {before} before, {after} after"
         );
         assert_eq!(
-            pragma_i64(&path, "freelist_count"),
-            0,
-            "and the file must actually be compact afterwards: VACUUM drives the freelist to zero"
+            second,
+            Reclamation {
+                reclaimed_bytes: Some(before - after),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
         );
-        assert!(
-            pragma_i64(&path, "page_count") < pages_before,
-            "the re-run must shrink the file it reclaimed from: {pages_before} page(s) before"
-        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        assert!(pragma_i64(&path, "page_count") < pages_before);
     }
 }
