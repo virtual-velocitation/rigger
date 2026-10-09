@@ -258,7 +258,9 @@ fn derived_count_phrase(events: usize, identities: usize) -> String {
 /// its identity set ([`derived_count_phrase`]). `None` for a count holding no derived event -
 /// decided by the events alone, so a store whose derived rows all name no identity still holds
 /// what `--derived` sheds. The menu's `--derived` line, `rigger validate`'s log-bloat advisory
-/// and `rigger reset --derived` itself each ask this, never the count's fields.
+/// and `rigger reset --derived` itself each ask this whether the store holds a derived event,
+/// never the count's fields; the migration then reads the count's identity set for the entries
+/// it writes ([`tree_entries`]).
 pub(crate) fn derived_events_held(counted: &DerivedCount) -> Option<String> {
     match counted.shed {
         0 => None,
