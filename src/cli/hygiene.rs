@@ -1533,20 +1533,41 @@ mod tests {
         );
     }
 
+    /// A git project in `dir` holding the regular file `src/a.rs`, whose store's run stream holds
+    /// one derived row naming it: the store `reset_derived` migrates.
+    fn store_holding_one_derived_row_of_a_tree_file(dir: &Path) -> StoreLocation {
+        crate::test_support::git_init_quiet(dir);
+        let rigger_dir = dir.join(RIGGER_DIR);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let loc = StoreLocation { dir: rigger_dir };
+        let db = loc.file("events.db");
+        let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+        let pre_ledger = crate::test_support::PreLedgerStore {
+            db: std::path::Path::new(&db),
+            inner: &backend,
+        };
+        Namespaced::new(&pre_ledger, &loc.identity())
+            .append(
+                conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    Event::new(contextgraph::TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec())
+                        .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                ],
+            )
+            .unwrap();
+        loc
+    }
+
     /// Given a store whose run stream holds a derived row naming a regular file of the tree, when
     /// the migration is handed a hash function that fails, then it fails with that function's own
     /// error, having handed it the tree's root and the file's bytes, before any row changes.
     #[test]
     fn reset_derived_handed_a_failing_hash_function_fails_before_any_row_changes() {
         let dir = tempfile::tempdir().unwrap();
-        crate::test_support::git_init_quiet(dir.path());
-        let rigger_dir = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
-        let loc = StoreLocation {
-            dir: rigger_dir.clone(),
-        };
+        let loc = store_holding_one_derived_row_of_a_tree_file(dir.path());
         let db = loc.file("events.db");
         let rows = || {
             let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
@@ -1557,23 +1578,6 @@ mod tests {
                 .map(|event| (event.position, event.type_, event.data, event.meta))
                 .collect::<Vec<_>>()
         };
-        {
-            let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
-            let pre_ledger = crate::test_support::PreLedgerStore {
-                db: std::path::Path::new(&db),
-                inner: &backend,
-            };
-            Namespaced::new(&pre_ledger, &loc.identity())
-                .append(
-                    conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[
-                        Event::new(contextgraph::TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec())
-                            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-                    ],
-                )
-                .unwrap();
-        }
         let before = rows();
         let asked = std::cell::RefCell::new(Vec::new());
 
@@ -1599,6 +1603,37 @@ mod tests {
                 1,
             )
         );
+    }
+
+    /// THE REBUILD LOCK IS HELD WHILE THE MIGRATION RUNS: given a store holding a derived row of
+    /// a tree file, when the migration hashes that file - past both refusals, before its one
+    /// transaction - a second take of `graph.db.lock` is refused with the lock line, so no
+    /// `rigger setup` or `rigger reset` starts a rebuild under it.
+    #[test]
+    fn a_second_rebuild_lock_taken_while_the_migration_runs_is_refused_with_the_lock_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let loc = store_holding_one_derived_row_of_a_tree_file(dir.path());
+        let graph_db = loc.file("graph.db");
+        let second = std::cell::RefCell::new(Vec::new());
+
+        reset_derived(&loc, &|_, _| {
+            second.borrow_mut().push(
+                Projector::lock_rebuild(&graph_db)
+                    .map(drop)
+                    .map_err(|e| e.to_string()),
+            );
+            Ok("blob".to_string())
+        })
+        .expect("the migration runs");
+
+        assert_eq!(
+            second.into_inner(),
+            [Err(format!(
+                "graph: {}",
+                rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
+            ))]
+        );
+        assert_eq!(Projector::lock_rebuild(&graph_db).map(drop).ok(), Some(()));
     }
 
     // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS (spec 101: it reads liveness) ---

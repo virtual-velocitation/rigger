@@ -1459,13 +1459,13 @@
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1616,
-        "end_line": 1616
+        "start_line": 1651,
+        "end_line": 1651
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1745,
-        "end_line": 1745
+        "start_line": 1780,
+        "end_line": 1780
       },
       {
         "file": "src/cli/mod.rs",
@@ -6794,13 +6794,13 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1923,
-        "end_line": 1943
+        "start_line": 1958,
+        "end_line": 1978
       },
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 1997,
-        "end_line": 2018
+        "start_line": 2032,
+        "end_line": 2053
       }
     ]
   },
@@ -6809,8 +6809,8 @@
     "sites": [
       {
         "file": "src/cli/hygiene.rs",
-        "start_line": 2059,
-        "end_line": 2068
+        "start_line": 2094,
+        "end_line": 2103
       },
       {
         "file": "tests/simplification_audit.rs",
