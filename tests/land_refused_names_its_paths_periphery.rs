@@ -83,6 +83,7 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let err = match run(&cfg, &deps) {
         Err(e) => e,
@@ -228,6 +229,7 @@ fn a_land_refused_names_a_unit_branch_whose_tip_already_holds_identical_content(
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let err = match run(&cfg, &deps) {
         Err(e) => e,
@@ -273,6 +275,7 @@ fn a_land_refused_for_a_fifo_blocking_path_never_hangs_and_still_names_it() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     // If the fix regresses, this call hangs forever rather than returning Err - that IS the
     // failure mode this test exists to catch, so it is deliberately a plain call with no

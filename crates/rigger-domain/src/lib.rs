@@ -38,6 +38,10 @@ pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
+/// The classes of event (spec 107): the perception and episodic type lists and the ledger entry
+/// of perception. Under `ingest`'s gate, whose derived index it cites.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod review;
 pub mod run;

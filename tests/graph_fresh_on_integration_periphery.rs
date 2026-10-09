@@ -138,6 +138,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         graph: Some(&graph),
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
 
     let rs = run(&cfg, &deps).unwrap();

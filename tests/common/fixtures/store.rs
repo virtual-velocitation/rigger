@@ -98,7 +98,7 @@ pub fn repo_with_refusing_hook() -> (tempfile::TempDir, String) {
 #[cfg(feature = "symbols")]
 pub fn minted_events(root: &std::path::Path) -> Vec<(String, Event)> {
     let mut out: Vec<(String, Event)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, _| {
         for (key, event) in batch {
             out.push((key.clone(), (*event).clone()));
         }

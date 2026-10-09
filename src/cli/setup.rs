@@ -888,11 +888,21 @@ const REBUILD_BATCH: usize = 10_000;
 /// ([`Projector::rebuild`]), streaming the log once, resuming an interrupted rebuild from its last
 /// committed batch and finishing exactly the tail of one interrupted after its swap.
 ///
+/// A ledger entry of perception folds with the batch re-extracted for it (spec 107,
+/// `ingest::resolve_entry`): from the entry's blob in the repository's object database, read
+/// through one batch process ([`entry_blobs`]) started when the rebuild meets its first entry and
+/// kept to its end, else from the tree's file under THE ONE ROOT ([`tree_root`]), asked of git at
+/// that first entry too, else from no bytes; an entry no source resolves folds nothing. A rebuild
+/// that folds no entry starts no batch process. The report that follows a rebuild
+/// ([`identities_behind_their_recording`]) reads the tree under the same root, and is the one to
+/// ask git for it when no entry did and an identity is behind its latest recording: the root is
+/// asked for once, by whichever needs it first, and git is asked nothing when neither does.
+///
 /// Before it reads or writes anything else it takes the rebuild lock on `graph.db.lock`
 /// ([`Projector::lock_rebuild`]), making that zero-byte file beside `graph.db` if it is not there,
-/// and holds it until the rebuild is paid or found not owed: while another rebuild holds it this
-/// setup is refused at once with the one refusal text naming the rebuild in progress, whatever
-/// phase that rebuild is in, having opened no graph file and made none.
+/// and holds it until the rebuild is paid or found not owed: while another holds it - a rebuild,
+/// whatever phase it is in, or a `rigger reset` - this setup is refused at once with the one
+/// refusal text naming the lock, having opened no graph file and made none.
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     if !Path::new(&graph_db).exists() {
@@ -906,6 +916,28 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     migrate_local_identity()?;
     let project = project_identity();
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
+    // Where the tree is rooted is decided once, by the first to need it: the first entry that
+    // resolves, or else the report's first identity behind its latest recording, which reads the
+    // tree under the root the entries resolved under. Whether an object database can be asked is
+    // decided at that first entry alone: `batch` is none until it, and then holds the batch
+    // process, or none where no database can be asked. A rebuild that folds no entry and leaves
+    // no identity behind asks git for neither.
+    let rooted = std::cell::OnceCell::new();
+    let tree = || -> &Path { rooted.get_or_init(|| tree_root(&cwd().join(RIGGER_DIR))) };
+    let mut batch: Option<Option<rigger::worktree::BlobBatch>> = None;
+    let mut reextract = |entry: &Event| {
+        let root = tree();
+        let blobs = batch.get_or_insert_with(|| entry_blobs(root));
+        let mut held = blobs
+            .as_mut()
+            .map(|batch| |id: &str| batch.blob(id).map_err(|e| contextgraph::Error(e.0)));
+        rigger::ingest::resolve_entry(
+            root,
+            entry,
+            held.as_mut()
+                .map(|source| source as &mut rigger::ingest::BlobSource),
+        )
+    };
     match store_selection(None, None)? {
         StoreSelection::Sqlite => {
             let store = open_sqlite_store(&db_path("events.db"))?;
@@ -914,6 +946,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             pay_owed_rebuild(
                 &held,
                 &project,
+                &Namespaced::new(&store, &project),
+                &tree,
                 &mut |sink| {
                     store
                         .read_live_positions(
@@ -942,6 +976,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                         )
                         .map_err(graph_error)
                 },
+                &mut reextract,
             )
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
@@ -954,23 +989,48 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
             let mut source =
                 contextgraph::sqlite::stream_source(&store, conductor::STREAM, REBUILD_BATCH);
-            pay_owed_rebuild(&held, &project, &mut positions, &mut source)
+            pay_owed_rebuild(
+                &held,
+                &project,
+                &store,
+                &tree,
+                &mut positions,
+                &mut source,
+                &mut reextract,
+            )
         }
+    }
+}
+
+/// The batch process a rebuild reads its entries' blobs from, over the repository holding `root`:
+/// none outside a git repository or when the process cannot start, and none in the lane that
+/// compiles no extraction, where no entry resolves and no process is started.
+fn entry_blobs(root: &Path) -> Option<rigger::worktree::BlobBatch> {
+    if cfg!(feature = "symbols") {
+        rigger::worktree::BlobBatch::start(root)
+    } else {
+        None
     }
 }
 
 /// Read why the `graph.db` whose rebuild lock is `held` owes its rebuild - its own records, and
 /// its ledger against the positions `live` streams ([`Projector::owed_against`]) - say so naming
-/// each cause, and pay it by rebuilding from `source`, which also finishes a rebuild's own
+/// each cause, and pay it by rebuilding from `source`, each ledger entry of perception folded with
+/// the batch `reextract` answers for it, which also finishes a rebuild's own
 /// unfinished work (a standing shadow, or a swapped-in cursor's tail) with no cause to name, since
 /// the ledger owes none of it; print how far along the rebuild is, what its run-closure prune
 /// removed from the rebuilt graph ([`pruned_line`], as `rigger reset --runs` words its own) and how
-/// many events it passed over because the fold rejects their payload; report whether it rebuilt.
-fn pay_owed_rebuild(
+/// many events it passed over because the fold rejects their payload, and, read from `log` and the
+/// rebuilt graph once the rebuild ends, how many identities the next ingest records again
+/// ([`rebuild_report_line`]); report whether it rebuilt.
+fn pay_owed_rebuild<'t>(
     held: &contextgraph::sqlite::RebuildLock,
     project: &str,
+    log: &dyn EventStore,
+    tree: &dyn Fn() -> &'t Path,
     live: &mut contextgraph::sqlite::PositionSource,
     source: &mut contextgraph::sqlite::RebuildSource,
+    reextract: &mut contextgraph::sqlite::Reextract,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let causes = Projector::open(held.path(), project)?.owed_against(live)?;
     if !causes.is_empty() {
@@ -981,11 +1041,18 @@ fn pay_owed_rebuild(
         );
     }
     let mut printed = 0;
-    let rebuilt = Projector::rebuild(held, project, !causes.is_empty(), source, &mut |at| {
-        if let Some(line) = rebuild_progress_line(at, &mut printed) {
-            println!("{line}");
-        }
-    })?;
+    let rebuilt = Projector::rebuild(
+        held,
+        project,
+        !causes.is_empty(),
+        source,
+        reextract,
+        &mut |at| {
+            if let Some(line) = rebuild_progress_line(at, &mut printed) {
+                println!("{line}");
+            }
+        },
+    )?;
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
@@ -995,8 +1062,50 @@ fn pay_owed_rebuild(
                 rebuilt.passed_over
             );
         }
+        let graph = Projector::open(held.path(), project)?;
+        println!(
+            "{}",
+            rebuild_report_line(identities_behind_their_recording(log, &graph, tree)?)
+        );
     }
     Ok(rebuilt.is_some())
+}
+
+/// How many identities `graph` holds at a generation that is not their latest recording's on
+/// `log` ([`rigger::ingest::perceived_generations`]), none held included, and whose file the tree
+/// holds ([`rigger::ingest::next_ingest_records`]): the ones whose next ingest records an entry
+/// (spec 107). The tree is asked for its root only once an identity differs, so a graph that
+/// holds every latest recording reads no file and asks git nothing.
+fn identities_behind_their_recording<'t>(
+    log: &dyn EventStore,
+    graph: &dyn contextgraph::Projection,
+    tree: &dyn Fn() -> &'t Path,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let mut behind = 0;
+    for (identity, recorded) in rigger::ingest::perceived_generations(log, conductor::STREAM)? {
+        if graph.current_generation(&identity)? != Some(recorded)
+            && rigger::ingest::next_ingest_records(tree(), &identity)
+        {
+            behind += 1;
+        }
+    }
+    Ok(behind)
+}
+
+/// The line a rebuild reports `behind` on ([`identities_behind_their_recording`]). Where an
+/// extraction is compiled a number above zero carries the note that each counted identity
+/// records an entry at its next ingest; a zero carries none, and neither does the lane that
+/// compiles no extraction, where no ingest records one.
+fn rebuild_report_line(behind: usize) -> String {
+    let note = if cfg!(feature = "symbols") && behind > 0 {
+        " (each records an entry at its next ingest of the file)"
+    } else {
+        ""
+    };
+    format!(
+        "identities the tree holds a file for whose generation in graph.db is not their latest \
+         recording's: {behind}{note}"
+    )
 }
 
 /// The progress line a graph rebuild prints at `at`, if any: one each time a batch carries it into

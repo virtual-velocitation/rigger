@@ -91,8 +91,15 @@ const COMMUNITIES: LayerCli = LayerCli {
 /// combat/net line and B's across the render/ui line. The store / projection handles drop at
 /// function end, freeing the sqlite files before the binary opens them.
 fn seed_coupling(root: &Path) {
-    let backend = Store::open(&rigger_db(root, "events.db")).unwrap();
-    let store = Namespaced::new(&backend, IDENTITY);
+    // The layer is seeded from derived events, which a store refuses: they land as the rows of
+    // a store recorded before the ledger.
+    let db = rigger_db(root, "events.db");
+    let backend = Store::open(&db).unwrap();
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db: Path::new(&db),
+        inner: &backend,
+    };
+    let store = Namespaced::new(&pre_ledger, IDENTITY);
     let graph = Projector::open(&rigger_db(root, "graph.db"), IDENTITY).unwrap();
 
     let events = vec![

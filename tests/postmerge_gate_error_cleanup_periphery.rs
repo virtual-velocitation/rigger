@@ -138,6 +138,7 @@ impl PostmergeFixture {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run(&self.cfg, &deps).is_err()
     }

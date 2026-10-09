@@ -171,309 +171,234 @@ impl Store {
         Ok(renamed as usize)
     }
 
-    /// Prune the superseded recordings a log's derived index accreted, and reclaim the disk they
-    /// held: for each type `identity` covers, within each stream under `stream_prefix`, keep only
-    /// each batch identity's LATEST generation and, of that generation, the latest recording per
-    /// content key (property 1); carry each re-asserted fact's earliest valid-time within its
-    /// unbroken run of generations onto the recording that keeps it (property 2); delete every
-    /// other keyed recording; then `VACUUM` so the file actually shrinks.
+    /// THE READ-ONLY COUNT of the derived index `stream` holds (spec 107): how many derived
+    /// events `rigger reset --derived` sheds from it, how many of those name no file identity,
+    /// and the set of `<prefix>/<file>` identities holding one. It is the same read the
+    /// migration acts on ([`read_derived`]), so what it answers never drifts from what
+    /// [`Store::shed_derived`] deletes; it writes nothing.
     ///
-    /// This is the COMPACTION half of spec 60 - the supported way to shed what edits and the
-    /// pre-dedup ingest accreted: every generation a later edit of its file superseded, a
-    /// returned file's earlier recordings of the generation it came back to (a revert, a branch
-    /// switch), and the duplicates a store recorded BEFORE the ingest dedup existed. The dedup
-    /// above the port stops an UNCHANGED file re-recording its batch, not every new duplicate: a
-    /// file that returns to a generation the log already recorded re-records that batch by
-    /// design. This removes all three piles already on disk. Deleting rows and reclaiming a
-    /// file is a mechanic of the embedded store, so it lives here rather than on the port: a
-    /// backend that cannot do it says so to the operator instead of silently reporting a prune
-    /// that did not happen.
-    ///
-    /// It takes the [`ContentIdentity`] policy value, rather than a metadata-key string plus a type list plus a carry list: the policy already
-    /// exists as one injected value, and re-spelling its fields as positional parameters is a
-    /// second parallel expression of one rule that can be passed in the wrong order and can drift
-    /// a call site at a time. The valid-time partition property 2 rests on is part of that value
-    /// ([`ContentIdentity::with_reasserting_types`]) for exactly that reason, and it is CHECKED
-    /// here before a single row is read, because it is the one input to this function that can
-    /// corrupt the projection while leaving every row looking intact.
-    ///
-    /// Five properties, each load-bearing:
-    ///
-    /// 1. **Latest generation per identity, then latest recording per key.** A content key
-    ///    names a batch identity AND its content generation ([`ContentIdentity::key_parts`]), so
-    ///    every recording of a generation that is not its identity's LATEST is shed, and of the
-    ///    latest generation only each key's last recording survives. Nothing shed is ever read
-    ///    again: the ingest sinks seed from the latest generation only, and a file that returns
-    ///    to an earlier content re-emits its batch. A key the policy cannot parse (or a policy
-    ///    that declares no parser) keeps exact-key semantics: its latest recording survives.
-    ///    The selection is [`plan_derived_prune`], shared with the read-only preview.
-    /// 2. **A RE-ASSERTED fact's valid-time is CARRIED, not dropped.** A projection that
-    ///    re-asserts a fact in place keeps its EARLIEST valid-time ("it has held since it first
-    ///    became true"), so deleting that key's earliest recording would silently re-date the
-    ///    fact to whichever recording survived - and for the design-intent edge class the date IS
-    ///    the value. The policy's own declaration ([`ContentIdentity::reasserts`]) names the types
-    ///    this is true of; each of their surviving rows takes, before the deletes run, the
-    ///    `MIN(valid_from)` over its fact's unbroken run of generations - the recordings of its
-    ///    identity asserting the same fact, as the policy's [`ContentIdentity::facts`] keys it,
-    ///    from its own generation back through each earlier one that asserts it, stopping at the
-    ///    first that does not - plus the earlier recordings of its own key in its generation's
-    ///    run ([`plan_derived_prune`] walks both). A generation that dropped the fact retired it,
-    ///    so the fold dates the fact anew when a later generation asserts it again, and a
-    ///    recording before that break is never carried. Because a minimum is associative and
-    ///    every deleted recording in that run has a valid-time at or above the minimum retained
-    ///    on its survivor, the compacted log then yields exactly the valid-times the whole log
-    ///    yields. A type NOT named here is one whose batch SUPERSEDES the subject's prior
-    ///    assertions, so the surviving (latest) recording's own valid-time is already the one a
-    ///    fold arrives at, and carrying an earlier one onto it would MOVE the graph rather than
-    ///    preserve it. WHICH types are which is not this store's knowledge to hold - it is a fact
-    ///    about the fold, so it arrives as data (see `contextgraph::refold_supersedes_prior_edges`
-    ///    and `ingest::reasserted_derived_types`, where the partition is derived once).
-    ///
-    ///    THERE IS NO SAFE DEFAULT FOR AN UNDECLARED PARTITION, so this REFUSES rather than
-    ///    picking one. Treating an undeclared policy as "nothing re-asserts" would not be the
-    ///    fail-safe direction: the deletes below run over every covered type either way, so an
-    ///    unnamed re-asserting type would have its earliest recordings deleted with no carry and
-    ///    every one of its facts silently re-dated - the exact corruption this property exists to
-    ///    prevent. The opposite default fails the other way, dragging a superseded fact back to a
-    ///    date its fold retired. A policy that never declared the partition, or that declares a
-    ///    type it does not cover, is therefore an [`Error::Backend`] before any row is read.
-    ///    Declaring an EMPTY list is a different thing and is honored: it is a caller stating that
-    ///    none of its types re-assert.
-    /// 3. **Nothing else is touched.** Only the types `identity` covers are eligible, and within
-    ///    them only a keyed row that something recorded LATER in the same stream supersedes: a
-    ///    later recording of its exact key, or a later generation of its batch identity - that
-    ///    identity's latest, when it is not the row's own (property 1). A row with no key at all
-    ///    names no content generation and is never provably redundant, so it is never touched -
-    ///    the fail-safe direction. Every surviving row keeps its position, its per-stream
-    ///    revision, its type, its id, its payload bytes and its metadata; the ONLY column this
-    ///    writes is the valid-time of a surviving DERIVED row that takes an earlier valid-time
-    ///    under property 2 - which is how a survivor whose superseded or duplicate fact-mates were
-    ///    deleted keeps its fact's date - and it writes the value the fold would have derived
-    ///    anyway. No non-derived row is written or moved, and the only non-derived rows the
-    ///    selection reads are its streams' alias definitions ([`FactIdentity::alias_type`]),
-    ///    replayed in position order so each recording's names resolve through the aliases
-    ///    defined before it.
-    /// 4. **The gaps it leaves are safe.** Deleting from the middle of a stream leaves holes in
-    ///    that stream's revisions, which is exactly why [`Store::append`] reads the stream's
-    ///    current revision as `MAX(revision)` rather than counting rows - see the comment there.
-    /// 5. **Everything after the commit is a REPORT, not an outcome.** The deletes are durable the
-    ///    moment the transaction commits; the space reclamation that follows can still fail, and
-    ///    when it does this returns the counts with the failure NAMED beside them rather than an
-    ///    `Err` that says only that something went wrong with a log which HAS been pruned. And it
-    ///    only runs at all when the FILE has free space to reclaim - never merely because this
-    ///    pass deleted something, and never merely because it did not. A file holding no free
-    ///    page is left exactly as it stands rather than rewritten in full to reclaim nothing;
-    ///    a file holding free pages is reclaimed even by a pass that deleted nothing, which is
-    ///    what makes re-running the command after a failed reclamation the remedy this reports
-    ///    tell an operator it is.
-    pub fn prune_derived_index(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<PrunedDerived, Error> {
-        self.prune_derived_index_compacting_with(stream_prefix, identity, compact_in_place)
-    }
-
-    /// A read-only PREVIEW of what [`prune_derived_index`] would delete (spec 68, "the reset
-    /// surface"): for each type `identity` covers, the count of rows the prune's own selection
-    /// ([`plan_derived_prune`]) marks for deletion - every recording of a superseded generation
-    /// and every earlier recording of a surviving key. No row is touched, no valid-time carried,
-    /// no `VACUUM` run.
-    ///
-    /// Unlike [`prune_derived_index`] this needs no [`ContentIdentity::reasserting`] declaration:
-    /// that check exists because a DELETE has to know whether a surviving row's valid-time must be
-    /// carried forward, and a count writes nothing, so the one input that check guards against
-    /// getting wrong is not read here at all.
-    ///
-    /// `rigger reset`'s bare-menu preview reads this so its printed count can never drift from
-    /// what a real `--derived` removes - both come from the one selection.
-    pub fn count_derived_duplicates(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<DerivedPreview, Error> {
+    /// `stream` is one stream's whole name, matched exactly by the one read this count is
+    /// ([`read_derived`]): a stream whose name only starts with it is never counted.
+    pub fn count_derived(&self, stream: &str) -> Result<DerivedCount, Error> {
         let guard = self.conn.lock().unwrap();
-        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
-        Ok(DerivedPreview {
-            removed: plan.removed_per_type(identity.types()),
-            superseded_generations: plan.superseded,
+        let read = read_derived(&guard, stream, &std::collections::HashSet::new())?;
+        Ok(DerivedCount {
+            shed: read.shed,
+            unkeyed: read.unkeyed,
+            identities: read.identities.into_keys().collect(),
         })
     }
 
-    /// [`Store::prune_derived_index`] with its post-commit space reclamation INJECTED.
+    /// THE MIGRATION'S ONE TRANSACTION (spec 107): convert the derived index `stream` holds into
+    /// the ledger, in place, and leave no derived event behind.
     ///
-    /// The seam exists because that step's real failures - a temporary directory too small for the
-    /// full copy the rewrite stages there, a writer holding the file past the busy timeout - are
-    /// properties of the machine, not of this code, so the only way to pin what the prune does
-    /// WITH a failure is to hand it one. Production has exactly one implementation
-    /// ([`compact_in_place`]) and the public entry point above passes it; nothing chooses.
-    fn prune_derived_index_compacting_with(
+    /// For every `<prefix>/<file>` identity whose latest recording - a derived row or a ledger
+    /// entry, each naming its identity in its replay key - is a derived row, the lowest-position
+    /// row the live selection keeps for it ([`plan_derived_prune`]: the first row of its latest
+    /// batch when that batch was recorded whole) above its latest ledger entry is rewritten IN
+    /// PLACE into the identity's ledger entry, so the identity's latest recording keeps its
+    /// generation; a kept row below that entry is deleted with the rest. Its position, stream, id, revision and recorded-time stay, so every column
+    /// a uniqueness rule covers is kept; its type, payload and metadata become the entry's, built
+    /// by the entry's one constructor for that generation, the blob and flag `entry_of` answers
+    /// for the identity, and the count of distinct replay keys of that generation among the
+    /// identity's derived rows. An identity whose latest recording is already an entry has no
+    /// row rewritten.
+    ///
+    /// Every identity holding a derived row then has its EARLIEST SURVIVING RECORDING - its
+    /// earliest ledger entry when one precedes the rewritten row, else the rewritten row -
+    /// dated at the identity's earliest recorded valid-time, and every remaining row of a
+    /// derived type in the stream is deleted, keyed or not. A row with no replay key, or one
+    /// whose key does not parse, names no identity: it is deleted and counted as unkeyed.
+    ///
+    /// `stream` is one stream's whole name. The read of its rows ([`read_derived`]) and the
+    /// DELETE match it exactly, so a stream whose name only starts with it has no row rewritten,
+    /// re-dated or deleted; the live selection ([`plan_derived_prune`]) matches its stream
+    /// argument as a PREFIX, so its plan may also name positions of such a stream, which the
+    /// exact read never meets.
+    ///
+    /// The selection is read INSIDE the write transaction, opened immediate, so no append lands
+    /// between what was decided and what is written, and a failure rolls the whole of it back.
+    /// The types are the derived list itself ([`crate::ingest::DERIVED_INDEX_TYPES`]) and the
+    /// selection the derived index's own policy ([`crate::ingest::derived_index_identity`]),
+    /// neither injected: this is the one writer that sheds a derived event. Deleting from a
+    /// stream leaves holes in its revisions, which [`Store::append`] tolerates (see the comment
+    /// there); a stream whose tail was derived rows ends at a lower revision.
+    pub fn shed_derived(
         &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-        compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
-    ) -> Result<PrunedDerived, Error> {
-        // THE PARTITION IS CHECKED BEFORE ANY ROW IS READ (property 2), so a policy that cannot be
-        // acted on never takes the write lock at all.
-        let reasserting = reasserting_types(identity)?;
+        stream: &str,
+        entry_of: &dyn Fn(&str) -> (String, bool),
+    ) -> Result<ShedDerived, Error> {
         let mut guard = self.conn.lock().unwrap();
-        // THE OPERATOR'S BEFORE, taken before a single row is deleted. What the reclamation is
-        // reported as is the space the LOG LOST ON DISK across the whole command, so it is
-        // measured where the command starts rather than derived from a page count inside the
-        // rewrite: a page count is the database's LOGICAL size, it counts pages living only in an
-        // un-checkpointed `-wal`, and a figure computed from it can name a reclamation over a
-        // file that grew. This is the number an operator reproduces by measuring the log before
-        // they run the command and again after, which is the only check they can make.
-        //
-        // `None` for a database with no file behind it (`:memory:`, a temporary database): there
-        // are no bytes on disk to have lost, so the reclamation below is reported as UNMEASURED
-        // rather than as a zero that claims a measurement was taken.
-        let db_file = guard
-            .path()
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_string());
-        let on_disk_before = db_file.as_deref().map(bytes_on_disk);
-        let types = identity.types();
-        let removed: Vec<(String, usize)>;
-        let superseded_generations: usize;
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(be)?;
+        let plan = plan_derived_prune(&tx, stream, &crate::ingest::derived_index_identity(), &[])?;
+        let shed_by_the_plan = plan.deletes.iter().copied().collect();
+        let read = read_derived(&tx, stream, &shed_by_the_plan)?;
+        let mut converted = 0;
         {
-            // ONE transaction for the whole prune: a partial compaction is not a state an operator
-            // can reason about. The carry-forward shares it, so a log can never be left with its
-            // duplicates deleted and its survivors' valid-times un-carried.
-            //
-            // WHAT `BEGIN IMMEDIATE` BUYS, AND WHAT IT DOES NOT. It takes the write lock up front,
-            // so this transaction cannot fail the deferred lock upgrade a read-then-write
-            // transaction attempts half way through - that failure mode is closed. It does NOT
-            // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
-            // large log runs for longer than `busy_timeout` (5000ms, set by `crate::sqlite::open_connection` -
-            // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
-            // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
-            // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN
-            // runs and never against a live one, which is what the shipped guidance says; the
-            // window is bounded here, not eliminated.
-            let tx = guard
-                .transaction_with_behavior(TransactionBehavior::Immediate)
+            let mut rewrite = tx
+                .prepare("UPDATE events SET type = ?2, data = ?3, meta = ?4 WHERE position = ?1")
                 .map_err(be)?;
-            // The selection is read INSIDE the write transaction, so what it decided is exactly
-            // what the deletes below act on: no append can land between the two.
-            let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
-            {
-                // Property 2: a surviving re-asserting row takes its fact's EARLIEST valid-time,
-                // decided while every recording was still in the log.
-                let mut carry = tx
-                    .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
-                    .map_err(be)?;
-                for (position, earliest) in &plan.carries {
-                    carry.execute(params![position, earliest]).map_err(be)?;
+            let mut redate = tx
+                .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
+                .map_err(be)?;
+            for (identity, recorded) in &read.identities {
+                let entry = read.entries.get(identity);
+                let mut surviving = entry.map(|entry| entry.first);
+                if let (true, Some((position, generation))) =
+                    (recorded.latest_is_derived, &recorded.kept)
+                {
+                    let (prefix, file) =
+                        crate::retention::GenerationIngested::identity_parts(identity)
+                            .expect("an identity cut from a replay key holds its prefix and file");
+                    let (blob, excluded) = entry_of(identity);
+                    let event = crate::retention::GenerationIngested {
+                        prefix: prefix.to_string(),
+                        file: file.to_string(),
+                        generation: generation.clone(),
+                        blob,
+                        excluded,
+                    }
+                    .event(
+                        recorded
+                            .keys
+                            .iter()
+                            .filter(|(of, _)| of == generation)
+                            .count(),
+                    );
+                    rewrite
+                        .execute(params![
+                            position,
+                            event.type_,
+                            event.data,
+                            meta_json(&event.meta)
+                        ])
+                        .map_err(be)?;
+                    surviving = surviving.into_iter().chain([*position]).min();
+                    converted += 1;
                 }
-                let mut delete = tx
-                    .prepare("DELETE FROM events WHERE position = ?1")
-                    .map_err(be)?;
-                for (_, position) in &plan.deletes {
-                    delete.execute(params![position]).map_err(be)?;
-                }
+                let earliest = entry
+                    .map(|entry| entry.earliest)
+                    .into_iter()
+                    .chain([recorded.earliest])
+                    .min();
+                redate.execute(params![surviving, earliest]).map_err(be)?;
             }
-            removed = plan.removed_per_type(types);
-            superseded_generations = plan.superseded;
-            tx.commit().map_err(be)?;
+            tx.execute(
+                &format!(
+                    "DELETE FROM events WHERE stream = ?1 AND type IN ({})",
+                    type_list(&derived_types())
+                ),
+                params![stream],
+            )
+            .map_err(be)?;
         }
+        tx.commit().map_err(be)?;
+        Ok(ShedDerived {
+            converted,
+            shed: read.shed,
+            unkeyed: read.unkeyed,
+        })
+    }
 
-        // FROM HERE ON THE DELETES ARE DURABLE, so nothing below may turn this call into an
-        // `Err`. An error return would tell the operator only that something failed, about a log
-        // that HAS been pruned: not the per-type counts, not that a prune happened at all - the
-        // one outcome this command's design says an operator cannot detect. So the reclamation's
-        // failure is CARRIED BACK beside the counts instead, and the same honesty that reports an
-        // unmeasurable reclamation as unmeasured reports an unrun one as named.
-        //
-        // AND WHETHER IT RUNS AT ALL IS DECIDED BY THE FILE, not by this pass's deletes - see
-        // [`compact_in_place`], which skips a file holding no free page. The two directions are
-        // one rule and both matter. A rewrite over a file with nothing to reclaim holds the write
-        // lock for a full scan and stages a COMPLETE copy of the database in the temporary
-        // directory SQLite resolves (a different, typically much smaller filesystem than the one
-        // holding the log) to reclaim nothing at all - and that is the path the shipped guidance
-        // calls the expected one, so it is the path an operator runs most. A rewrite gated the
-        // OTHER way, on this pass having deleted something, would never run again over the log a
-        // FAILED reclamation leaves behind: the first pass took the duplication, so the re-run
-        // this report tells the operator is safe deletes nothing, and the space it was told to
-        // re-run for would stay in the file forever.
-        match compact(&guard) {
+    /// The bytes this store's log occupies on disk: the main file plus its write-ahead log, which
+    /// is where a WAL-mode database's most recent pages live until a checkpoint folds them back.
+    /// Counting only the main file would report a reclamation over a log whose `-wal` had just
+    /// grown by more than the file shrank. `None` for a database with no file behind it
+    /// (`:memory:`, a temporary database): there are no bytes on disk to measure.
+    ///
+    /// A file that is not there counts as zero rather than failing: the `-wal` does not exist
+    /// before the first write and is deleted on a clean close, and neither absence is an error
+    /// about the space the log occupies.
+    pub fn bytes_on_disk(&self) -> Option<u64> {
+        let guard = self.conn.lock().unwrap();
+        let db = guard.path().filter(|p| !p.is_empty())?;
+        let len = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        Some(len(db) + len(&format!("{db}-wal")))
+    }
+
+    /// Reclaim on disk the space the log's file is holding free, and report the bytes the log
+    /// lost against `on_disk_before`: the size ([`Store::bytes_on_disk`]) the caller measured
+    /// BEFORE its own transaction opened, so the figure spans the whole command and is the one an
+    /// operator reproduces by measuring the log either side of it. A page count is no substitute:
+    /// it is the database's LOGICAL size, it counts pages living only in an un-checkpointed
+    /// `-wal`, and a figure computed from it can name a reclamation over a file that grew.
+    ///
+    /// It returns a [`Reclamation`], never a `Result`, because it runs AFTER its caller's commit:
+    /// the caller's change is durable whatever happens here, so a step that fails is NAMED in the
+    /// report rather than returned as an error about a log that was in fact changed.
+    ///
+    /// WHETHER THE FILE IS REWRITTEN IS DECIDED BY THE FILE, never by what the caller deleted
+    /// (see [`compact_in_place`]). A file holding no free page is left exactly as it stands
+    /// rather than rewritten in full to reclaim nothing; a file holding free pages is reclaimed
+    /// whoever freed them, which is what makes calling this again the remedy for a reclamation
+    /// that failed. The copy the rewrite stages is held in the process's memory, never in a
+    /// temporary directory, so a crash leaves nothing behind to reap.
+    pub fn reclaim_space(&self, on_disk_before: Option<u64>) -> Reclamation {
+        self.reclaim_space_compacting_with(on_disk_before, compact_in_place)
+    }
+
+    /// [`Store::reclaim_space`] with its compacting step INJECTED.
+    ///
+    /// The seam exists because that step's real failures - too little memory for the copy the
+    /// rewrite stages, a writer holding the file past the busy timeout - are properties of the
+    /// machine, not of this code, so the only way to pin what a reclamation reports WITH a failure
+    /// is to hand it one. Production has exactly one implementation ([`compact_in_place`]) and
+    /// the public entry point above passes it; nothing chooses.
+    fn reclaim_space_compacting_with(
+        &self,
+        on_disk_before: Option<u64>,
+        compact: impl FnOnce(&Connection) -> Result<Compaction, Error>,
+    ) -> Reclamation {
+        // The connection is released as soon as the step returns, so the after-size below is
+        // read through the same `bytes_on_disk` the caller's before was.
+        let outcome = compact(&self.conn.lock().unwrap());
+        let on_disk_measured = on_disk_before.is_some();
+        match outcome {
             // Nothing to reclaim, nothing rewritten: zero bytes is the MEASUREMENT here, not a
             // measurement that could not be taken - but only where a FILE existed to measure.
             // A database with no file behind it has no reading to report, and a `Some(0)`
-            // beside `on_disk_measured: false` would claim a measurement the flag denies;
-            // unmeasured is the honest report there, exactly as on the pending path below.
-            Ok(Compaction::Skipped) => Ok(PrunedDerived {
-                removed,
-                superseded_generations,
-                reclaimed_bytes: db_file.as_deref().map(|_| 0),
+            // beside `on_disk_measured: false` would claim a measurement the flag denies.
+            Ok(Compaction::Skipped) => Reclamation {
+                reclaimed_bytes: on_disk_before.map(|_| 0),
                 compaction_ran: false,
-                on_disk_measured: db_file.is_some(),
+                on_disk_measured,
                 compaction_error: None,
-            }),
-            // The rewrite ran and its result is on disk NOW, so the before taken above and the
+            },
+            // The rewrite ran and its result is on disk NOW, so the caller's before and the
             // after taken here bracket the whole command: their difference is what the log lost.
-            Ok(Compaction::Landed) => Ok(PrunedDerived {
-                removed,
-                superseded_generations,
-                reclaimed_bytes: db_file
-                    .as_deref()
-                    .zip(on_disk_before)
-                    .map(|(db, before)| before.saturating_sub(bytes_on_disk(db))),
+            Ok(Compaction::Landed) => Reclamation {
+                reclaimed_bytes: on_disk_before
+                    .zip(self.bytes_on_disk())
+                    .map(|(before, after)| before.saturating_sub(after)),
                 compaction_ran: true,
-                on_disk_measured: db_file.is_some(),
+                on_disk_measured,
                 compaction_error: None,
-            }),
+            },
             // The rewrite ran but its result has NOT landed: the freed frames are still in the
             // write-ahead log, so any difference measured now is between two states of a move
             // that has not finished. Unmeasured is the honest report.
-            Ok(Compaction::Pending) => Ok(PrunedDerived {
-                removed,
-                superseded_generations,
+            Ok(Compaction::Pending) => Reclamation {
                 reclaimed_bytes: None,
                 compaction_ran: true,
-                on_disk_measured: db_file.is_some(),
+                on_disk_measured,
                 compaction_error: None,
-            }),
-            Err(e) => Ok(PrunedDerived {
-                removed,
-                superseded_generations,
+            },
+            Err(e) => Reclamation {
                 reclaimed_bytes: None,
                 compaction_ran: true,
-                on_disk_measured: db_file.is_some(),
+                on_disk_measured,
                 compaction_error: Some(e.to_string()),
-            }),
+            },
         }
     }
 
-    /// Measure the derived-index REDUNDANCY already sitting in the log, WITHOUT deleting
-    /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
-    /// many rows carry a covered key versus how many of them a compaction would KEEP.
-    ///
-    /// The READ-ONLY twin of [`Store::prune_derived_index`]: both are answered by the one
-    /// selection [`plan_derived_prune`], so `rigger validate`'s bloat advisory (spec 68) measures
-    /// exactly the rows `rigger reset --derived` would shed - superseded generations as well as
-    /// earlier recordings of one key - and can never drift from a second, independently re-derived
-    /// definition of "redundant" (Design: "one measurement authority per advisory ... no shadow
-    /// accounting"). No row is touched, no valid-time carried.
-    pub fn measure_derived_duplication(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<DerivedDuplication, Error> {
-        let guard = self.conn.lock().unwrap();
-        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
-        Ok(DerivedDuplication {
-            rows: plan.rows,
-            kept: plan.rows - plan.deletes.len(),
-        })
-    }
-
     /// Stream the LIVE SELECTION of `stream_prefix` + `stream` after position `after` (spec 101):
-    /// exactly the rows [`Store::prune_derived_index`] keeps - every non-derived event, and of the
-    /// derived index each identity's latest generation at the latest recording of each key, its
-    /// valid-time carried back exactly as the prune carries it - so a graph folded from it is the
-    /// one folded from the compacted log, by construction: both act on the one selection,
-    /// [`plan_derived_prune`], over the same `stream_prefix`.
+    /// every non-derived event, and of the derived index each identity's latest generation at the
+    /// latest recording of each key, its valid-time carried back to the earliest the fact has
+    /// held without a break - the rows the one selection, [`plan_derived_prune`], keeps over the
+    /// same `stream_prefix`.
     ///
     /// The stream is read ONCE, in position order, and handed to `sink` in batches of at most
     /// `batch` events, never materialized whole; each batch goes with the stream's last position,
@@ -544,8 +469,7 @@ impl Store {
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
         let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
-        let shed: std::collections::HashSet<i64> =
-            plan.deletes.iter().map(|(_, position)| *position).collect();
+        let shed: std::collections::HashSet<i64> = plan.deletes.iter().copied().collect();
         let carried: std::collections::HashMap<i64, i64> = plan.carries.into_iter().collect();
         let stream = format!("{stream_prefix}{stream}");
         let Some(head) = stream_head(&tx, &stream)? else {
@@ -611,38 +535,154 @@ fn stream_head(conn: &Connection, stream: &str) -> Result<Option<Position>, Erro
     .map_err(be)
 }
 
-/// What [`Store::count_derived_duplicates`] previews a `rigger reset --derived` would remove,
-/// counted exactly as [`PrunedDerived`] reports the prune itself.
+/// What [`Store::count_derived`] answers of one stream's derived index (spec 107).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DerivedPreview {
-    /// The rows the prune would delete, per covered type in the policy's order, zeros included.
-    pub removed: Vec<(String, usize)>,
-    /// How many of them record a superseded generation of their file.
-    pub superseded_generations: usize,
+pub struct DerivedCount {
+    /// How many derived events the stream holds: every one of them is shed by the migration,
+    /// the rows it rewrites into ledger entries included.
+    pub shed: usize,
+    /// How many of them name no file identity: a row with no replay key, or one whose key does
+    /// not parse.
+    pub unkeyed: usize,
+    /// The `<prefix>/<file>` identities holding a derived event, so a file holding a `gc` and a
+    /// `gd` batch is two.
+    pub identities: std::collections::BTreeSet<String>,
 }
 
-/// What one derived-index compaction deletes and re-dates, decided by [`plan_derived_prune`].
+/// What one [`Store::shed_derived`] call did (spec 107).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShedDerived {
+    /// How many identities had their latest derived batch rewritten into a ledger entry: fewer
+    /// than the identities holding a derived event when one's latest recording was already an
+    /// entry.
+    pub converted: usize,
+    /// How many derived events were shed, the rewritten rows counted among them.
+    pub shed: usize,
+    /// How many of them named no file identity.
+    pub unkeyed: usize,
+}
+
+/// What one stream's keyed derived rows record of one identity, read in position order.
+struct DerivedRecordings {
+    /// The earliest valid-time any of the rows carries.
+    earliest: i64,
+    /// Whether the identity's latest recording is a derived row, and not a ledger entry.
+    latest_is_derived: bool,
+    /// The position and generation of the lowest row the live selection keeps above the
+    /// identity's latest ledger entry, the row the migration rewrites.
+    kept: Option<(i64, String)>,
+    /// The distinct `(generation, replay key)` pairs the rows carry.
+    keys: std::collections::BTreeSet<(String, String)>,
+}
+
+/// What one stream's ledger entries record of one identity, read in position order.
+struct EntryRecordings {
+    /// The position of the identity's earliest entry.
+    first: i64,
+    /// The earliest valid-time any of the entries carries.
+    earliest: i64,
+}
+
+/// One stream's perception as [`read_derived`] reads it: the derived rows counted, and what the
+/// keyed ones and the ledger entries record of each identity.
+#[derive(Default)]
+struct DerivedRead {
+    shed: usize,
+    unkeyed: usize,
+    identities: BTreeMap<String, DerivedRecordings>,
+    entries: BTreeMap<String, EntryRecordings>,
+}
+
+/// The derived list as the owned names a maintenance statement renders.
+fn derived_types() -> Vec<String> {
+    crate::ingest::DERIVED_INDEX_TYPES
+        .map(String::from)
+        .to_vec()
+}
+
+/// THE ONE READ the migration and its read-only count share (spec 107): every row of perception
+/// `stream` holds - the derived list and the ledger entry, by type, the stream matched by its
+/// whole name - in position order. Each derived row is counted; one with no replay key, or whose
+/// key the one key parser ([`crate::ingest::derived_key_parts`]) does not cut, names no identity
+/// and is counted as unkeyed. A keyed derived row and a ledger entry name their identity alike,
+/// in their replay key, so an identity's latest recording is whichever of the two the read met
+/// last. `shed_by_the_plan` holds the positions the live selection sheds: the first derived row
+/// of an identity outside it and above the identity's latest ledger entry is the row the
+/// migration rewrites, so the rewritten entry is the identity's latest recording, of the
+/// generation that was latest before.
+fn read_derived(
+    conn: &Connection,
+    stream: &str,
+    shed_by_the_plan: &std::collections::HashSet<i64>,
+) -> Result<DerivedRead, Error> {
+    let sql = format!(
+        "SELECT position, type, {key}, valid_from FROM events
+          WHERE stream = ?1 AND type IN ({perception})
+          ORDER BY position",
+        key = key_expr(crate::ingest::META_REPLAY_KEY),
+        perception = type_list(&crate::retention::PERCEPTION_TYPES.map(String::from)),
+    );
+    let mut stmt = conn.prepare(&sql).map_err(be)?;
+    let mut rows = stmt.query(params![stream]).map_err(be)?;
+    let mut read = DerivedRead::default();
+    while let Some(row) = rows.next().map_err(be)? {
+        let position: i64 = row.get(0).map_err(be)?;
+        let type_: String = row.get(1).map_err(be)?;
+        let key: Option<String> = row.get(2).map_err(be)?;
+        let valid_from: i64 = row.get(3).map_err(be)?;
+        let named = key.as_deref().and_then(crate::ingest::derived_key_parts);
+        if type_ == crate::retention::TYPE_GENERATION_INGESTED {
+            if let Some((identity, _)) = named {
+                let entry = read
+                    .entries
+                    .entry(identity.to_string())
+                    .or_insert(EntryRecordings {
+                        first: position,
+                        earliest: valid_from,
+                    });
+                entry.earliest = entry.earliest.min(valid_from);
+                if let Some(recorded) = read.identities.get_mut(identity) {
+                    recorded.latest_is_derived = false;
+                    recorded.kept = None;
+                }
+            }
+            continue;
+        }
+        read.shed += 1;
+        let Some((identity, generation)) = named else {
+            read.unkeyed += 1;
+            continue;
+        };
+        let recorded = read
+            .identities
+            .entry(identity.to_string())
+            .or_insert(DerivedRecordings {
+                earliest: valid_from,
+                latest_is_derived: true,
+                kept: None,
+                keys: std::collections::BTreeSet::new(),
+            });
+        recorded.earliest = recorded.earliest.min(valid_from);
+        recorded.latest_is_derived = true;
+        recorded
+            .keys
+            .insert((generation.to_string(), key.clone().unwrap_or_default()));
+        if !shed_by_the_plan.contains(&position) {
+            recorded
+                .kept
+                .get_or_insert((position, generation.to_string()));
+        }
+    }
+    Ok(read)
+}
+
+/// What the live selection sets aside and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
-    /// How many covered, keyed rows the selection weighed.
-    rows: usize,
-    /// `(index into the policy's types, position)` of every row to delete.
-    deletes: Vec<(usize, i64)>,
+    /// The position of every row the selection sets aside.
+    deletes: Vec<i64>,
     /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
     /// first recorded earlier than its own valid-time.
     carries: Vec<(i64, i64)>,
-    /// How many of `deletes` record a superseded generation.
-    superseded: usize,
-}
-
-impl DerivedPrunePlan {
-    /// The deletes counted per type, in the order `types` names them, zeros included.
-    fn removed_per_type(&self, types: &[String]) -> Vec<(String, usize)> {
-        let mut counts = vec![0usize; types.len()];
-        for (t, _) in &self.deletes {
-            counts[*t] += 1;
-        }
-        types.iter().cloned().zip(counts).collect()
-    }
 }
 
 /// One re-asserted fact's valid-time as the selection walks its recordings newest first: the
@@ -695,9 +735,9 @@ fn alias_histories(
 fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
     let Some(declared) = identity.reasserting() else {
         return Err(Error::Backend(format!(
-            "prune_derived_index: the content-identity policy for {:?} has not declared which \
+            "the live selection: the content-identity policy for {:?} has not declared which \
              of its types re-assert a fact in place (ContentIdentity::with_reasserting_types). \
-             Without it a compaction cannot know whether a key's EARLIEST recorded valid-time \
+             Without it the selection cannot know whether a key's EARLIEST recorded valid-time \
              is the one the projection holds, and either default silently re-dates facts. \
              Refusing rather than guessing.",
             identity.types()
@@ -705,10 +745,10 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
     };
     if let Some(stray) = declared.iter().find(|t| !identity.covers(t)) {
         return Err(Error::Backend(format!(
-            "prune_derived_index: the content-identity policy declares {stray:?} as \
+            "the live selection: the content-identity policy declares {stray:?} as \
              re-asserting, but does not cover that type ({:?}). A declaration naming a type \
-             this policy will never prune describes some other policy, so it cannot be the \
-             partition for this one. Refusing rather than pruning against a declaration that \
+             this policy will never select describes some other policy, so it cannot be the \
+             partition for this one. Refusing rather than selecting against a declaration that \
              does not fit.",
             identity.types()
         )));
@@ -721,8 +761,8 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// The ONE selection of a derived-index compaction, shared by the prune, its read-only preview
-/// and the `rigger validate` bloat measurement: which rows go, and which surviving rows take an
+/// The ONE live selection of the derived index, shared by the rebuild's read and the migration's
+/// choice of the rows it converts: which rows are set aside, and which surviving rows take an
 /// earlier valid-time.
 ///
 /// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
@@ -784,10 +824,8 @@ fn plan_derived_prune(
     // position of a surviving re-asserting row -> (its own valid-time, its fact, its key).
     let mut survivors: Vec<(i64, i64, Fact, Key)> = Vec::new();
     let mut plan = DerivedPrunePlan {
-        rows: 0,
         deletes: Vec::new(),
         carries: Vec::new(),
-        superseded: 0,
     };
     while let Some(row) = rows.next().map_err(be)? {
         let position: i64 = row.get(0).map_err(be)?;
@@ -796,10 +834,9 @@ fn plan_derived_prune(
         let content_key: String = row.get(3).map_err(be)?;
         let valid_from: i64 = row.get(4).map_err(be)?;
         let payload: Option<Vec<u8>> = row.get(5).map_err(be)?;
-        let Some(type_index) = types.iter().position(|t| *t == type_) else {
+        if !identity.covers(&type_) {
             continue;
-        };
-        plan.rows += 1;
+        }
         let (batch, generation) = identity
             .key_parts(&content_key)
             .unwrap_or((content_key.as_str(), ""));
@@ -816,10 +853,7 @@ fn plan_derived_prune(
         let exact = (stream.clone(), type_.clone(), content_key);
         let survives = !superseded && seen.insert(exact.clone());
         if !survives {
-            plan.deletes.push((type_index, position));
-        }
-        if superseded {
-            plan.superseded += 1;
+            plan.deletes.push(position);
         }
         let fact = payload.and_then(|payload| match identity.facts() {
             Some(facts) => {
@@ -867,49 +901,11 @@ fn plan_derived_prune(
     Ok(plan)
 }
 
-/// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
-/// index key, and how many of them a compaction keeps - the read-only measurement `rigger
-/// validate`'s bloat advisory (spec 68) warns from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DerivedDuplication {
-    /// Rows in scope carrying a covered, non-null key.
-    pub rows: usize,
-    /// Of those, the rows `rigger reset --derived` keeps: the latest recording of each key of
-    /// each identity's latest generation.
-    pub kept: usize,
-}
-
-impl DerivedDuplication {
-    /// Rows per kept row: `1.0` when a compaction would shed nothing (or there are no covered
-    /// rows at all - `kept == 0` is guarded rather than divided by, since "nothing to measure" is
-    /// not evidence of bloat), rising with the log's redundancy.
-    pub fn factor(&self) -> f64 {
-        if self.kept == 0 {
-            1.0
-        } else {
-            self.rows as f64 / self.kept as f64
-        }
-    }
-}
-
-/// Total bytes the database at `db` occupies on disk: the main file plus its write-ahead log,
-/// which is where a WAL-mode database's most recent pages live until a checkpoint folds them
-/// back. Counting only the main file would report a reclamation over a log whose `-wal` had just
-/// grown by more than the file shrank.
-///
-/// A file that is not there counts as zero rather than failing: the `-wal` does not exist before
-/// the first write and is deleted on a clean close, and neither absence is an error about the
-/// space the log occupies.
-fn bytes_on_disk(db: &str) -> u64 {
-    let len = |p: &str| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    len(db) + len(&format!("{db}-wal"))
-}
-
-/// What the post-commit space reclamation did to the file, which is the only thing about it the
-/// prune cannot work out for itself.
+/// What the compacting step did to the file, which is the only thing about a reclamation its
+/// caller cannot work out for itself.
 ///
 /// Three outcomes rather than a byte count, because HOW MANY bytes the log lost is a property of
-/// the whole command (measured either side of it by [`Store::prune_derived_index`]) while WHETHER
+/// the whole command (measured either side of it, see [`Store::reclaim_space`]) while WHETHER
 /// the file was rewritten, and whether the rewrite has landed on disk yet, are properties only
 /// this step knows. Reported as a value rather than inferred by the caller from a zero, because
 /// "was not rewritten" and "was rewritten and reclaimed nothing" are different things to tell an
@@ -929,9 +925,9 @@ enum Compaction {
 /// Reclaim on disk the space the file is holding free, and report whether that reclamation has
 /// landed - or that there was none to do.
 ///
-/// Separated from the prune because it runs AFTER the commit, where a failure is a fact to report
-/// rather than an outcome to propagate: by the time this is called the deletes are durable, so its
-/// `Err` describes an un-reclaimed log rather than an un-pruned one.
+/// It runs AFTER its caller's commit, where a failure is a fact to report rather than an outcome
+/// to propagate: by the time this is called the caller's change is durable, so its `Err`
+/// describes an un-reclaimed log rather than an unchanged one.
 fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
     // WHAT THERE IS TO RECLAIM DECIDES WHETHER THE FILE IS TOUCHED - not what this pass deleted.
     // The freelist is where every delete's freed pages go and where they stay until something
@@ -946,8 +942,14 @@ fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
     if free_pages == 0 {
         return Ok(Compaction::Skipped);
     }
-    // VACUUM cannot run inside a transaction, so it follows the commit.
-    conn.execute_batch("VACUUM").map_err(be)?;
+    // VACUUM cannot run inside a transaction, so it follows the commit. THE COPY IT STAGES IS
+    // HELD IN MEMORY: `temp_store` is set on this connection first and left there for the
+    // connection's life, so the rewrite never writes a second copy of the log into the temporary
+    // directory SQLite resolves (often a far smaller filesystem than the one holding the log).
+    // The setting is the connection's own, never the process's, and a crash leaves no file
+    // behind to reap.
+    conn.execute_batch("PRAGMA temp_store = MEMORY; VACUUM")
+        .map_err(be)?;
     // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
     // later checkpoint: the reported reclamation must match what the operator sees on disk.
     //
@@ -977,41 +979,31 @@ fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
 /// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
 /// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
 ///
-/// Bounded and short on purpose: the prune's transaction has already committed and its vacuum has
+/// Bounded and short on purpose: the caller's transaction has already committed and the vacuum has
 /// already run by the time this matters, so the only thing at stake is whether the freed frames
 /// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
 /// reader out indefinitely would trade a correct, honestly-reported result for a hang.
 const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
 const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// What one [`Store::prune_derived_index`] pass removed: the rows deleted PER TYPE (in the order
-/// the caller named the types, including the types nothing was removed from), the bytes the log
-/// lost on disk, whether it was rewritten to lose them at all, whether there was a file to
-/// measure them over in the first place, and - when the reclamation failed after the deletes had
-/// committed - what went wrong with it.
+/// What one [`Store::reclaim_space`] call did to the log's file: the bytes the log lost on disk,
+/// whether it was rewritten to lose them at all, whether there was a before-size to measure them
+/// against in the first place, and - when the compacting step failed - what went wrong with it.
 ///
-/// Per type, not just a total, because that is what an operator can check a prune against: a
-/// single number cannot be compared to what the log was expected to hold. And the reclamation's
-/// failure is a FIELD rather than an error return for the same reason: the deletes are durable
-/// before the reclamation is attempted, so a prune whose reclamation failed still has counts an
-/// operator needs, and an `Err` carrying only the failure describes a log that was in fact pruned.
+/// The failure is a FIELD rather than an error return because the reclamation follows its
+/// caller's commit: the caller's change is durable before it is attempted, so an `Err` carrying
+/// only the failure would describe a log that was in fact changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PrunedDerived {
-    /// `(type, rows deleted)`, in the order the caller named the types.
-    pub removed: Vec<(String, usize)>,
-    /// How many of the deleted rows recorded a SUPERSEDED generation of their batch identity
-    /// (one that is not the latest the log records for it), as opposed to an earlier recording
-    /// of a key that survives.
-    pub superseded_generations: usize,
-    /// Bytes the LOG LOST ON DISK across this whole call, or `None` when that could not be
-    /// measured because a concurrent reader still held a write-ahead-log snapshot when the
+pub struct Reclamation {
+    /// Bytes the LOG LOST ON DISK since the before-size the caller handed in, saturating at zero,
+    /// or `None` when that could not be measured because a concurrent reader still held a write-ahead-log snapshot when the
     /// truncating checkpoint ran, because the reclamation itself failed (see
-    /// [`PrunedDerived::compaction_error`]), or because the database has no file behind it (see
-    /// [`PrunedDerived::on_disk_measured`], which is what tells those last two `None`s apart).
+    /// [`Reclamation::compaction_error`]), or because the database has no file behind it (see
+    /// [`Reclamation::on_disk_measured`], which is what tells those last two `None`s apart).
     ///
     /// MEASURED, NOT DERIVED, and measured over the pair of files an operator's own `du` would
-    /// add up: the main database plus its `-wal`, sampled before the deletes and again after the
-    /// rewrite has landed. A page-count delta is a tempting substitute and is not the same
+    /// add up: the main database plus its `-wal`, sampled by the caller before its
+    /// transaction and again here after the rewrite has landed. A page-count delta is a tempting substitute and is not the same
     /// number - it is the database's LOGICAL size, it counts pages living only in an
     /// un-checkpointed write-ahead log, and a report built from it can name a reclamation over a
     /// file that grew.
@@ -1024,7 +1016,7 @@ pub struct PrunedDerived {
     /// measurement that found nothing.
     ///
     /// ONE case is `Some(0)` and is exact: a pass over a file holding NO FREE SPACE, where the
-    /// rewrite is deliberately not run at all (see [`PrunedDerived::compaction_ran`]). There
+    /// rewrite is deliberately not run at all (see [`Reclamation::compaction_ran`]). There
     /// "zero bytes reclaimed" is the measurement rather than a measurement that could not be
     /// taken, and reporting it as `None` would send an operator looking for pages that some later
     /// checkpoint will land.
@@ -1041,17 +1033,17 @@ pub struct PrunedDerived {
     /// that has space to reclaim, which is exactly what makes re-running the command the remedy
     /// for a reclamation that failed after the deletes committed.
     pub compaction_ran: bool,
-    /// Whether the before-measurement was TAKEN AT ALL: `true` when this database has a file on
-    /// disk, so the pair of sizes the reclamation is a difference of were both sampled; `false`
-    /// for a database with no file behind it (`:memory:`, a temporary database), where there was
-    /// never anything on disk to measure.
+    /// Whether the before-measurement was TAKEN AT ALL: `true` when the caller handed in a
+    /// before-size, so the pair of sizes the reclamation is a difference of were both sampled;
+    /// `false` when it handed in none, as for a database with no file behind it (`:memory:`, a
+    /// temporary database), where there was never anything on disk to measure.
     ///
     /// It exists because `reclaimed_bytes: None` alongside `compaction_ran: true` has TWO causes
     /// and the difference is invisible in the numbers: the truncating checkpoint was declined by
     /// a concurrent reader (the bytes exist and land later), or this database has no file (there
     /// are no bytes and none ever land). A consumer told only "unmeasured" cannot tell them
     /// apart, so it either reports one cause for both - asserting a reader it was never told
-    /// about - or reports neither. Only the prune knows, so the prune carries it.
+    /// about - or reports neither. Only the reclamation knows, so it carries it.
     ///
     /// It says nothing about whether the AFTER measurement was usable: a checkpoint a reader
     /// declined leaves this `true` and the byte count `None`, which is exactly the pair that
@@ -1060,19 +1052,11 @@ pub struct PrunedDerived {
     /// Why the space reclamation did not complete, when it was attempted and failed - `None` when
     /// it succeeded, and `None` when there was no free space for it to reclaim.
     ///
-    /// It is reported rather than returned because it happens AFTER the commit: the rows are gone
-    /// from the log whatever this says, so it names a log that is pruned but not shrunk, and
-    /// re-running the prune is safe AND useful - the second pass finds nothing to delete, but the
-    /// space this one failed to reclaim is still free in the file, so the reclamation is tried
-    /// again over it.
+    /// It is reported rather than returned because it happens AFTER the caller's commit: the
+    /// caller's change stands whatever this says, so it names a log that is changed but not
+    /// shrunk, and running the command again is safe AND useful - the space this call failed to
+    /// reclaim is still free in the file, so the reclamation is tried again over it.
     pub compaction_error: Option<String>,
-}
-
-impl PrunedDerived {
-    /// Every row this pass deleted, across all types.
-    pub fn total_removed(&self) -> usize {
-        self.removed.iter().map(|(_, n)| n).sum()
-    }
 }
 
 fn be<E: std::fmt::Display>(e: E) -> Error {
@@ -1170,6 +1154,7 @@ impl EventStore for Store {
         expected: ExpectedRevision,
         events: &[Event],
     ) -> Result<Appended, Error> {
+        super::refuse_derived(events)?;
         let mut guard = self.conn.lock().unwrap();
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
         // front so a second connection (a separate process - the death courier racing
@@ -1194,7 +1179,7 @@ impl EventStore for Store {
         // only ever been written through this function: a write only ever lands at
         // `last_revision + 1`, so each new row is simultaneously the newest by position
         // AND the highest by revision, and deleting an arbitrary subset of rows (what the
-        // supported compaction, `Store::prune_derived_index`, does, leaving holes in the
+        // migration, `Store::shed_derived`, does, leaving holes in the
         // revision sequence) cannot change that relative order among whatever survives.
         // A count-derived cursor would reissue a revision the stream still holds and
         // collide on the `UNIQUE(stream, revision)` index; the position-order seek is
@@ -1509,7 +1494,7 @@ fn direction_sql(dir: Direction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{plant_free_pages, pragma_i64};
+    use crate::test_support::{file_len, insert_pre_ledger_rows, plant_free_pages, pragma_i64};
 
     #[test]
     fn passes_the_contract() {
@@ -2042,10 +2027,10 @@ mod tests {
         assert_eq!(clean[0].revision, 0);
     }
 
-    // --- Spec 60, criterion 5: the prune's POST-COMMIT half is reported, never propagated ---
+    // --- Spec 60, criterion 5: the reclamation after a commit is reported, never propagated ---
 
     /// A store holding `rounds` recordings of one derived-index replay key, in one namespaced
-    /// stream, plus a non-derived event that no prune may touch. The duplication the prune sheds.
+    /// stream, plus a non-derived event the migration never touches. The duplication the migration sheds.
     fn seeded_with_duplicated_key(path: &str, rounds: usize) -> Store {
         let mut events = vec![Event::new("RunStarted", b"{}".to_vec())];
         for _ in 0..rounds {
@@ -2054,7 +2039,7 @@ mod tests {
                 "gc/src/a.rs@h1#0",
             ));
         }
-        store_with(path, &[("run", events)])
+        pre_ledger_store_with(path, &[("run", events)])
     }
 
     /// An event of `type_` carrying the derived-index replay key `key`.
@@ -2069,6 +2054,98 @@ mod tests {
             s.append(stream, ExpectedRevision::Any, events).unwrap();
         }
         s
+    }
+
+    /// A store at `path` holding each `(stream, events)` batch as the rows of a store recorded
+    /// before the ledger, inserted in order: the derived events among them are rows this store
+    /// refuses to append.
+    fn pre_ledger_store_with(path: &str, batches: &[(&str, Vec<Event>)]) -> Store {
+        let s = Store::open(path).unwrap();
+        for (stream, events) in batches {
+            insert_pre_ledger_rows(std::path::Path::new(path), stream, events);
+        }
+        s
+    }
+
+    /// THE PRE-LEDGER ROW INSERTER writes the rows a store recorded before it refused a derived
+    /// append: each lands at the tail of its stream, at the stream's next revision and the log's
+    /// next position, and reads back through the store as the event given - its id, type,
+    /// payload, metadata and valid-time. A derived row inserted above a ledger entry of its
+    /// identity is its group's newest member, so the group lookup and the domain reader answer
+    /// it as they did before the refusal, and the store appends after the rows at the revision
+    /// they left the stream on.
+    #[test]
+    fn pre_ledger_rows_land_at_the_streams_tail_and_read_back_as_the_events_given() {
+        use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_EDGE_INFERRED as EI};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[
+                ("run", vec![Event::new("RunStarted", b"{}".to_vec())]),
+                ("other", vec![Event::new("RunStarted", b"{}".to_vec())]),
+                ("run", vec![entry_event("gc/a.rs", "h1", 1, "held", false)]),
+            ],
+        );
+        let derived = derived_at(CE, "gc/a.rs@h2#0", 40).with_meta(META_GROUP, "gc/a.rs");
+        let unkeyed = Event::new(EI, vec![7]);
+
+        let positions = insert_pre_ledger_rows(&path, "run", &[derived.clone(), unkeyed.clone()]);
+
+        assert_eq!(positions, [4, 5], "the log's next positions, in order");
+        let read: Vec<_> = s
+            .read_stream("run", 2, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                (
+                    (e.stream, e.revision, e.position),
+                    (e.id, e.type_, e.data, e.meta, e.valid_from),
+                )
+            })
+            .collect();
+        let given = |e: &Event| {
+            (
+                e.id.clone(),
+                e.type_.clone(),
+                e.data.clone(),
+                e.meta.clone(),
+                e.valid_from,
+            )
+        };
+        assert_eq!(
+            read,
+            [
+                (("run".to_string(), 2, 4), given(&derived)),
+                (("run".to_string(), 3, 5), given(&unkeyed)),
+            ]
+        );
+        assert_eq!(
+            derived.valid_from,
+            std::time::UNIX_EPOCH + Duration::from_secs(40),
+            "the valid-time read back is the one the row was given"
+        );
+        assert_eq!(
+            s.latest_in_group("run", "gc/a.rs").unwrap(),
+            Some(GroupHead {
+                position: 4,
+                type_: CE.to_string(),
+                meta: derived.meta.clone(),
+            }),
+            "a derived row above an entry is its group's newest member, as before"
+        );
+        assert_eq!(
+            crate::ingest::latest_generation(&s, "run", "gc/a.rs").unwrap(),
+            Some("h2".to_string())
+        );
+        let next = s
+            .append(
+                "run",
+                ExpectedRevision::Exact(3),
+                &[Event::new("DecisionMade", b"{}".to_vec())],
+            )
+            .expect("the store appends at the revision the rows left the stream on");
+        assert_eq!(next.last(), Some(6));
     }
 
     /// The number of rows the log holds for the seeded replay key, read through a connection of
@@ -2086,322 +2163,9 @@ mod tests {
             .unwrap()
     }
 
-    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the prune's read-only twin ---
-
-    #[test]
-    fn measure_derived_duplication_reports_rows_vs_the_rows_a_compaction_keeps() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 4);
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 4, "four recordings of the one covered key");
-        assert_eq!(measured.kept, 1, "all four share the same replay key");
-        assert_eq!(measured.factor(), 4.0);
-    }
-
-    #[test]
-    fn measure_derived_duplication_is_read_only_and_never_deletes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 3);
-        let _ = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(
-            recordings_of_the_key(path),
-            3,
-            "measuring must never delete anything - that is the prune's job, not this read"
-        );
-    }
-
-    #[test]
-    fn measure_derived_duplication_scopes_to_the_stream_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[
-                (
-                    "proj-a/run",
-                    vec![
-                        keyed(
-                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            "gc/src/a.rs@h1#0",
-                        ),
-                        keyed(
-                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            "gc/src/a.rs@h1#0",
-                        ),
-                    ],
-                ),
-                (
-                    "proj-b/run",
-                    vec![keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    )],
-                ),
-            ],
-        );
-        let measured = s
-            .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2, "only proj-a's rows are in scope");
-        assert_eq!(measured.kept, 1);
-    }
-
-    #[test]
-    fn measure_derived_duplication_on_a_clean_log_reports_no_duplication() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/b.rs@h1#0",
-                    ),
-                ],
-            )],
-        );
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2);
-        assert_eq!(measured.kept, 2);
-        assert_eq!(measured.factor(), 1.0);
-    }
-
-    #[test]
-    fn measure_derived_duplication_treats_the_same_key_under_two_covered_types_as_two_distinct_subjects(
-    ) {
-        // A prune deletes duplicates PER TYPE (`prune_derived_index_compacting_with`'s own
-        // per-type loop, `WHERE type = ?1` scoping its own `PARTITION BY stream, key`): each
-        // covered type is its own duplicate-key space, so the same replay key recorded once
-        // under TWO different types is never a duplicate to the real DELETE - each type's pass
-        // only ever sees ITS OWN one row for it. The measurement must report the same zero
-        // reclaimable count the prune actually reclaims here, never a cross-type merged
-        // overcount (spec 68 Global constraints: one measurement authority, no shadow
-        // accounting).
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(crate::contextgraph::TYPE_EDGE_INFERRED, "gc/src/a.rs@h1#0"),
-                ],
-            )],
-        );
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2, "one row of each of the two covered types");
-        assert_eq!(
-            measured.kept, 2,
-            "the same key under two DIFFERENT types is two distinct subjects to the per-type \
-             prune, not one - each type's own DELETE never sees the other type's row"
-        );
-        assert_eq!(
-            measured.factor(),
-            1.0,
-            "no row here is actually reclaimable by a real prune, so the factor must not warn"
-        );
-
-        // Cross-check against the real compaction: it must reclaim zero rows for this key,
-        // proving the measurement's factor of 1.0 matches what actually happens rather than
-        // merely being asserted.
-        let pruned = s
-            .prune_derived_index("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(
-            pruned.total_removed(),
-            0,
-            "the real per-type prune reclaims nothing for a key that appears once per type"
-        );
-    }
-
-    /// Spec 101, criterion 4: a carried valid-time never crosses a generation that dropped the
-    /// fact, however many generations before that gap asserted it. `L` is asserted at h1 (10s)
-    /// and h3 (15s), dropped at h2 (20s) and asserted again on the return to h1 (30s): the
-    /// surviving recording holds from 30s.
-    #[test]
-    fn a_carried_valid_time_stops_at_the_generation_that_dropped_the_fact() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let at = |key: &str, data: &[u8], secs: u64| {
-            Event::new(crate::contextgraph::TYPE_DOC_LINK_EXTRACTED, data.to_vec())
-                .with_meta(crate::ingest::META_REPLAY_KEY, key)
-                .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-        };
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    at("gd/docs/f.md@h1#0", b"L", 10),
-                    at("gd/docs/f.md@h3#0", b"L", 15),
-                    at("gd/docs/f.md@h2#0", b"M", 20),
-                    at("gd/docs/f.md@h1#0", b"L", 30),
-                ],
-            )],
-        );
-        s.prune_derived_index("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        let kept: Vec<(i64, i64)> = Connection::open(&path)
-            .unwrap()
-            .prepare("SELECT position, valid_from FROM events ORDER BY position")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert_eq!(
-            kept,
-            vec![(4, Duration::from_secs(30).as_nanos() as i64)],
-            "only the return's recording survives, dated from the return"
-        );
-    }
-
-    /// Spec 101, criterion 4: the measurement is the prune's own selection, so superseded
-    /// generations count as redundancy even when every key is recorded once. Three generations of
-    /// one file are three rows of which the prune keeps one: 3.0x, and the rows the measurement
-    /// calls redundant are exactly the rows the prune's preview counts.
-    #[test]
-    fn measure_derived_duplication_counts_superseded_generations_as_the_prune_selects_them() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h2#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h3#0",
-                    ),
-                ],
-            )],
-        );
-        let identity = crate::ingest::derived_index_identity();
-        let measured = s.measure_derived_duplication("", &identity).unwrap();
-        assert_eq!(measured.rows, 3);
-        assert_eq!(
-            measured.factor(),
-            3.0,
-            "three generations of which a compaction keeps only the latest"
-        );
-        let previewed: usize = s
-            .count_derived_duplicates("", &identity)
-            .unwrap()
-            .removed
-            .iter()
-            .map(|(_, n)| n)
-            .sum();
-        assert_eq!(
-            previewed, 2,
-            "the prune's own preview selects the two superseded generations"
-        );
-    }
-
-    #[test]
-    fn measure_derived_duplication_on_an_empty_log_reports_a_factor_of_one_not_a_division_by_zero()
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = Store::open(path.to_str().unwrap()).unwrap();
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 0);
-        assert_eq!(measured.kept, 0);
-        assert_eq!(
-            measured.factor(),
-            1.0,
-            "no covered rows at all is not duplication - never a NaN/inf from dividing by zero"
-        );
-    }
-
-    /// Spec 60, criterion 5: everything after the commit is a REPORT, never an error return.
-    ///
-    /// The deletes are durable the moment the transaction commits, so a failure in the space
-    /// reclamation that follows it describes a log that HAS been pruned. Propagating it hands the
-    /// operator an error and nothing else - not the per-type counts, not the fact that a prune
-    /// happened at all - which is precisely the undetectable outcome this command's design names
-    /// as the one it must never produce. So the failure is carried back beside the counts.
-    ///
-    /// The failing step is INJECTED rather than provoked, because the real triggers (a temporary
-    /// directory too small for the full copy the rewrite stages there, a writer holding the file
-    /// past the busy timeout) are properties of the machine the test runs on and would make this
-    /// pin conditional on the filesystem. That the real step can fail at all is pinned separately
-    /// by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
-    #[test]
-    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 4);
-
-        let pruned = s
-            .prune_derived_index_compacting_with(
-                "",
-                &crate::ingest::derived_index_identity(),
-                |_| Err(Error::Backend("database or disk is full".into())),
-            )
-            .expect("a compaction that failed after the deletes committed is not a failed prune");
-
-        assert_eq!(
-            pruned.total_removed(),
-            3,
-            "the report must still name what the committed transaction deleted; got {:?}",
-            pruned.removed
-        );
-        assert_eq!(
-            pruned.reclaimed_bytes, None,
-            "a reclamation whose step failed is unmeasured, not zero"
-        );
-        assert!(
-            pruned
-                .compaction_error
-                .as_deref()
-                .is_some_and(|e| e.contains("database or disk is full")),
-            "the report must NAME the failure, or an operator cannot tell a skipped compaction \
-             from a failed one; got {:?}",
-            pruned.compaction_error
-        );
-        assert_eq!(
-            recordings_of_the_key(path),
-            1,
-            "and the deletes really are committed: that is why the failure below them cannot be \
-             an error return"
-        );
-    }
-
     /// Spec 60, criterion 5: the post-commit step this store guards against failing really can
-    /// fail, so the capture above is not a defense against an imaginary error.
+    /// fail, so the capture `a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted`
+    /// pins is not a defense against an imaginary error.
     ///
     /// A file the process cannot write is the reachable shape of every trigger: the rewrite needs
     /// to write both the database and a full copy of it, and either can be refused.
@@ -2430,27 +2194,268 @@ mod tests {
         );
     }
 
-    /// Spec 60, criterion 5: THE REMEDY THE REPORT PROMISES EXISTS. When the reclamation fails
-    /// after the deletes have committed, the command tells the operator that re-running it is
-    /// safe - and [`PrunedDerived::compaction_error`] says in so many words that the second pass
-    /// "tries the reclamation again". That promise is only true if what triggers the rewrite is
-    /// the space there is to reclaim rather than the rows THIS pass deleted: the first pass
-    /// deleted them all, so a second pass deletes nothing, and a rewrite gated on its own deletes
-    /// would never run again on that log. The space would then be unreclaimable through this
-    /// command forever, with the report cheerfully telling the operator to re-run it.
+    // --- Spec 107, criterion 14: RECLAMATION STAGES IN MEMORY (`Store::reclaim_space`) ---
+
+    /// A file-backed store at `dir`/events.db holding one event and roughly `rows` blobs' worth
+    /// of free pages, with the path of its file.
+    fn store_holding_free_pages(dir: &std::path::Path, rows: u64) -> (Store, std::path::PathBuf) {
+        let path = dir.join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        plant_free_pages(&path, rows);
+        (s, path)
+    }
+
+    /// `PRAGMA temp_store` as the store's OWN connection reports it: 0 is the build's default
+    /// (a file in the temporary directory), 2 is memory.
+    fn temp_store_of(s: &Store) -> i64 {
+        s.conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA temp_store", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A file holding free pages is rewritten smaller, the bytes reported are the before-size the
+    /// CALLER handed in less what the file occupies afterwards, and the copy the rewrite stages is
+    /// held in memory: the store's own connection reports `temp_store` as memory after the call.
+    #[test]
+    fn reclaim_space_rewrites_a_file_holding_free_pages_smaller_and_stages_the_copy_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 3_000);
+        // The planted pages are folded out of the write-ahead log first, so the free space sits
+        // in the main file and the main file is what the rewrite has to shrink.
+        assert_eq!(pragma_i64(&path, "wal_checkpoint(TRUNCATE)"), 0);
+        let measured_before = s.bytes_on_disk().expect("a file-backed store has a size");
+        let main_before = file_len(&path);
+        let pages_before = pragma_i64(&path, "page_count");
+        assert_eq!(
+            temp_store_of(&s),
+            0,
+            "the connection starts on the default, so memory afterwards is this call's doing"
+        );
+        // A before that is NOT the file's own size at the call: the report must be taken against
+        // the figure handed in, never against a size the store measured again for itself.
+        let handed = measured_before + 4_096;
+
+        let reclaimed = s.reclaim_space(Some(handed));
+
+        let after = s.bytes_on_disk().expect("a file-backed store has a size");
+        assert!(
+            after < measured_before,
+            "the log must occupy less than it did: {measured_before} before, {after} after"
+        );
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: Some(handed - after),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert!(
+            file_len(&path) < main_before,
+            "the main file itself is rewritten smaller, not only its write-ahead log"
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        assert!(pragma_i64(&path, "page_count") < pages_before);
+        assert_eq!(
+            temp_store_of(&s),
+            2,
+            "the rewrite's copy is staged in memory, on the store's own connection"
+        );
+    }
+
+    /// The bytes the log lost saturate at zero: a caller whose before-size is below what the file
+    /// occupies after the rewrite is told zero, never a wrapped figure.
+    #[test]
+    fn reclaim_space_reports_zero_when_the_file_ends_larger_than_the_before_it_was_handed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 400);
+
+        let reclaimed = s.reclaim_space(Some(1));
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: Some(0),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+    }
+
+    /// A caller with no before-size (a store with no file to measure) still has its free pages
+    /// reclaimed, and is told the bytes were never measured rather than that they were zero.
+    #[test]
+    fn reclaim_space_handed_no_before_size_rewrites_and_reports_the_bytes_unmeasured() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 400);
+
+        let reclaimed = s.reclaim_space(None);
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: false,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+    }
+
+    /// A file holding no free page is left exactly as it stands: not rewritten, zero bytes
+    /// reported as the measurement whatever before-size was handed in, and the connection's
+    /// `temp_store` untouched because no copy was staged.
+    #[test]
+    fn reclaim_space_leaves_a_file_holding_no_free_pages_unrewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        let measured_before = s.bytes_on_disk().expect("a file-backed store has a size");
+        let bytes_before = std::fs::read(&path).unwrap();
+        let wal = format!("{}-wal", path.to_str().unwrap());
+        let wal_before = std::fs::read(&wal).unwrap();
+
+        let measured = s.reclaim_space(Some(measured_before + 4_096));
+        let unmeasured = s.reclaim_space(None);
+
+        assert_eq!(
+            measured,
+            Reclamation {
+                reclaimed_bytes: Some(0),
+                compaction_ran: false,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(
+            unmeasured,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: false,
+                on_disk_measured: false,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            bytes_before,
+            "the main file is byte-for-byte the file the call found"
+        );
+        assert_eq!(
+            std::fs::read(&wal).unwrap(),
+            wal_before,
+            "and nothing was written to its write-ahead log either"
+        );
+        assert_eq!(
+            temp_store_of(&s),
+            0,
+            "no rewrite ran, so no copy was staged"
+        );
+    }
+
+    /// The size a caller measures before its transaction is the main file PLUS its write-ahead
+    /// log, the pair an operator's own `du` adds up; a store with no file behind it has none.
+    #[test]
+    fn bytes_on_disk_is_the_main_file_plus_its_write_ahead_log_and_none_without_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[("run", vec![Event::new("RunStarted", b"{}".to_vec())])],
+        );
+        let main = file_len(&path);
+        let wal = file_len(std::path::Path::new(&format!(
+            "{}-wal",
+            path.to_str().unwrap()
+        )));
+        assert!(
+            main > 1 && wal > 1,
+            "both files must hold bytes, or a sum, a difference and a product could agree: \
+             main {main}, wal {wal}"
+        );
+
+        assert_eq!(s.bytes_on_disk(), Some(main + wal));
+        assert_eq!(Store::open(":memory:").unwrap().bytes_on_disk(), None);
+    }
+
+    /// Everything after a caller's commit is a REPORT, never an error return: the compacting step
+    /// that fails is named in the `Reclamation` beside what the committed transaction deleted,
+    /// which stays deleted.
     ///
-    /// So the failure is injected on the first pass and the REAL step runs on the second, over a
-    /// log whose freed pages are still sitting in the file.
+    /// The failing step is INJECTED rather than provoked, because the real triggers (too little
+    /// memory for the copy the rewrite stages, a writer holding the file past the busy timeout)
+    /// are properties of the machine the test runs on. That the real step can fail at all is
+    /// pinned separately by `the_real_compaction_step_reports_a_file_it_cannot_rewrite_as_an_error`.
+    #[test]
+    fn a_compaction_that_fails_after_the_commit_still_reports_what_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path_str = path.to_str().unwrap();
+        let s = seeded_with_duplicated_key(path_str, 4);
+        let shed = s.shed_derived("run", &|_| (String::new(), false)).unwrap();
+        assert_eq!(
+            shed,
+            ShedDerived {
+                converted: 1,
+                shed: 4,
+                unkeyed: 0,
+            }
+        );
+        plant_free_pages(&path, 400);
+        let free_before = pragma_i64(&path, "freelist_count");
+        let before = s.bytes_on_disk();
+
+        let reclaimed = s.reclaim_space_compacting_with(before, |_| {
+            Err(Error::Backend("database or disk is full".into()))
+        });
+
+        assert_eq!(
+            reclaimed,
+            Reclamation {
+                reclaimed_bytes: None,
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: Some(
+                    Error::Backend("database or disk is full".into()).to_string()
+                ),
+            },
+            "a reclamation whose step failed is unmeasured, not zero, and names the failure"
+        );
+        assert_eq!(
+            pragma_i64(&path, "freelist_count"),
+            free_before,
+            "a step that failed reclaimed nothing: the free pages are still in the file"
+        );
+        assert_eq!(
+            recordings_of_the_key(path_str),
+            0,
+            "and the committed migration stands whatever the reclamation reports"
+        );
+    }
+
+    /// THE REMEDY THE REPORT PROMISES EXISTS. What triggers the rewrite is the space the file is
+    /// holding free, never what an earlier step deleted, so the call after a failed reclamation
+    /// reclaims what that failure left behind.
+    ///
+    /// The failure is injected on the first call and the REAL step runs on the second, over a
+    /// file whose free pages are still sitting in it.
     #[test]
     fn a_rerun_reclaims_the_space_a_failed_reclamation_left_behind() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap().to_string();
-        let s = seeded_with_duplicated_key(&path_str, 4);
-        // The deletes of a handful of small rows can free no whole page at all, which would leave
-        // this asserting that nothing was reclaimed from a file with nothing in it to reclaim.
-        // Planted free pages make the reclamation a definite figure without changing what it is.
-        plant_free_pages(&path, 3_000);
+        let (s, path) = store_holding_free_pages(dir.path(), 3_000);
         let free_before = pragma_i64(&path, "freelist_count");
         let pages_before = pragma_i64(&path, "page_count");
         assert!(
@@ -2458,60 +2463,404 @@ mod tests {
             "the fixture must leave real free pages, or a reclaimed file and an untouched one \
              look identical; the freelist holds {free_before} page(s)"
         );
+        let before = s.bytes_on_disk().expect("a file-backed store has a size");
 
-        // FIRST PASS: the deletes commit, the reclamation fails.
-        let first = s
-            .prune_derived_index_compacting_with(
-                "",
-                &crate::ingest::derived_index_identity(),
-                |_| Err(Error::Backend("database or disk is full".into())),
+        let first = s.reclaim_space_compacting_with(Some(before), |_| {
+            Err(Error::Backend("database or disk is full".into()))
+        });
+        assert_eq!(
+            first.compaction_error,
+            Some(Error::Backend("database or disk is full".into()).to_string())
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), free_before);
+
+        let second = s.reclaim_space(Some(before));
+
+        let after = s.bytes_on_disk().expect("a file-backed store has a size");
+        assert!(
+            after < before,
+            "the rerun must shrink the log: {before} before, {after} after"
+        );
+        assert_eq!(
+            second,
+            Reclamation {
+                reclaimed_bytes: Some(before - after),
+                compaction_ran: true,
+                on_disk_measured: true,
+                compaction_error: None,
+            }
+        );
+        assert_eq!(pragma_i64(&path, "freelist_count"), 0);
+        assert!(pragma_i64(&path, "page_count") < pages_before);
+    }
+
+    // --- Spec 107, criterion 16: THE MIGRATION'S ONE TRANSACTION AND ITS READ-ONLY COUNT ---
+
+    /// One row of the events table, every column.
+    type Row = (i64, String, String, String, Vec<u8>, String, i64, i64, i64);
+
+    /// Every row the file at `path` holds, in position order, read through a connection of its
+    /// own.
+    fn rows_of(path: &std::path::Path) -> Vec<Row> {
+        Connection::open(path)
+            .unwrap()
+            .prepare(&format!("SELECT {COLS} FROM events ORDER BY position"))
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// A derived event of `type_` under the replay key `key`, valid from `secs`.
+    fn derived_at(type_: &str, key: &str, secs: u64) -> Event {
+        keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// The ledger entry of `identity` at `generation`, built by the shared fixtures' one entry
+    /// builder for a batch of `n` events extracted from `blob` under the flag `excluded`.
+    fn entry_event(
+        identity: &str,
+        generation: &str,
+        n: usize,
+        blob: &str,
+        excluded: bool,
+    ) -> Event {
+        let (prefix, file) =
+            crate::retention::GenerationIngested::identity_parts(identity).unwrap();
+        crate::test_support::entry_of_a_batch(prefix, file, generation, n, blob, excluded)
+    }
+
+    /// `row` as the migration leaves the row it rewrites into `entry`: its type, payload and
+    /// metadata the entry's, every other column but the valid-time, which is `secs`, its own.
+    fn rewritten(row: &Row, entry: &Event, secs: u64) -> Row {
+        (
+            row.0,
+            row.1.clone(),
+            entry.type_.clone(),
+            row.3.clone(),
+            entry.data.clone(),
+            meta_json(&entry.meta),
+            Duration::from_secs(secs).as_nanos() as i64,
+            row.7,
+            row.8,
+        )
+    }
+
+    /// `row` with its valid-time moved to `secs` and nothing else changed.
+    fn redated(row: &Row, secs: u64) -> Row {
+        let mut row = row.clone();
+        row.6 = Duration::from_secs(secs).as_nanos() as i64;
+        row
+    }
+
+    /// The blob and flag the migration's caller answers for `identity` in these tests: a blob
+    /// that names the identity, and the flag set for `gd/b.md` alone.
+    fn named_entry(identity: &str) -> (String, bool) {
+        (format!("blob-of-{identity}"), identity == "gd/b.md")
+    }
+
+    /// A store at `path` whose stream `p-run` holds, in position order: a run event (1); three
+    /// generations of `gc/a.rs` (2 to 6); a latest generation of `gd/b.md` recorded twice (7 to
+    /// 10); `gc/c.rs` with a ledger entry above its derived row (11, 12); `gc/d.rs` with a
+    /// ledger entry below its derived rows (13 to 15); an unkeyed derived event (16) and one
+    /// whose key does not parse (17); a generation of `gd/e.md` whose second recording repeats
+    /// only its first key, an alias definition between the two (18 to 21); and a decision (22).
+    /// The streams `p-run-x`, whose name starts with that stream's, and `q-run` hold one derived
+    /// row each (23, 24).
+    fn store_to_migrate(path: &std::path::Path) -> Store {
+        use crate::contextgraph::{
+            TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_DOC_CONCEPT_EXTRACTED as DC,
+            TYPE_DOC_LINK_EXTRACTED as DL, TYPE_EDGE_INFERRED as EI,
+        };
+        let at = |event: Event, secs: u64| {
+            event.with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+        };
+        pre_ledger_store_with(
+            path.to_str().unwrap(),
+            &[
+                (
+                    "p-run",
+                    vec![
+                        at(Event::new("RunStarted", b"{}".to_vec()), 1),
+                        derived_at(CE, "gc/a.rs@h1#0", 50),
+                        derived_at(CE, "gc/a.rs@h2#0", 20),
+                        derived_at(EI, "gc/a.rs@h2#1", 21),
+                        derived_at(CE, "gc/a.rs@h3#0", 60),
+                        derived_at(EI, "gc/a.rs@h3#1", 61),
+                        derived_at(DC, "gd/b.md@h1#0", 30),
+                        derived_at(DL, "gd/b.md@h1#1", 31),
+                        derived_at(DC, "gd/b.md@h1#0", 40),
+                        derived_at(DL, "gd/b.md@h1#1", 41),
+                        derived_at(CE, "gc/c.rs@h1#0", 70),
+                        at(entry_event("gc/c.rs", "h2", 1, "held", false), 80),
+                        at(entry_event("gc/d.rs", "h1", 1, "held", false), 90),
+                        derived_at(CE, "gc/d.rs@h9#0", 10),
+                        derived_at(CE, "gc/d.rs@h2#0", 85),
+                        at(Event::new(CE, b"{}".to_vec()), 5),
+                        derived_at(CE, "not a key", 6),
+                        derived_at(DC, "gd/e.md@h1#0", 100),
+                        derived_at(DL, "gd/e.md@h1#1", 101),
+                        at(
+                            Event::new(
+                                crate::contextgraph::TYPE_ALIAS_DEFINED,
+                                br#"{"alias":"x","canonical":"y"}"#.to_vec(),
+                            ),
+                            105,
+                        ),
+                        derived_at(DC, "gd/e.md@h1#0", 110),
+                        at(Event::new("DecisionMade", b"{}".to_vec()), 120),
+                    ],
+                ),
+                ("p-run-x", vec![derived_at(CE, "gc/a.rs@h0#0", 2)]),
+                ("q-run", vec![derived_at(CE, "gc/a.rs@h0#0", 3)]),
+            ],
+        )
+    }
+
+    /// The count of `store_to_migrate`'s stream: every derived row of it, the two that name no
+    /// identity, and the five identities holding one.
+    fn counted_before() -> DerivedCount {
+        DerivedCount {
+            shed: 17,
+            unkeyed: 2,
+            identities: ["gc/a.rs", "gc/c.rs", "gc/d.rs", "gd/b.md", "gd/e.md"]
+                .map(String::from)
+                .into(),
+        }
+    }
+
+    /// The read-only count answers every derived row of the one stream it is handed, the rows
+    /// naming no identity among them, and the identities holding one - never a row of a stream
+    /// whose name only starts with that stream's, never a ledger entry - and changes nothing.
+    #[test]
+    fn count_derived_counts_one_streams_derived_rows_its_unkeyed_rows_and_its_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        let before = rows_of(&path);
+
+        assert_eq!(
+            (
+                s.count_derived("p-run").unwrap(),
+                s.count_derived("p-run-x").unwrap(),
+                s.count_derived("p-").unwrap(),
+                rows_of(&path) == before,
+            ),
+            (
+                counted_before(),
+                DerivedCount {
+                    shed: 1,
+                    unkeyed: 0,
+                    identities: ["gc/a.rs".to_string()].into(),
+                },
+                DerivedCount::default(),
+                true,
             )
-            .expect("a compaction that failed after the deletes committed is not a failed prune");
-        assert!(
-            first.total_removed() > 0,
-            "the first pass must be the one that sheds the duplication; got {:?}",
-            first.removed
         );
-        assert!(
-            first.compaction_error.is_some(),
-            "the first pass's reclamation must have failed, or there is nothing for the re-run to \
-             retry; got {first:?}"
-        );
-        assert!(
-            pragma_i64(&path, "freelist_count") >= free_before,
-            "a reclamation that failed reclaimed nothing: the free pages must still be in the file"
-        );
+    }
 
-        // SECOND PASS, the one the report told the operator to run. It deletes nothing - the first
-        // pass took the duplication - and it must still reclaim the space the first pass could not.
-        let second = s
-            .prune_derived_index("", &crate::ingest::derived_index_identity())
-            .expect("the re-run the report promises is safe");
+    /// THE MIGRATION'S ONE TRANSACTION: each identity whose latest recording is derived has the
+    /// lowest row the selection keeps rewritten in place into its entry - every column a
+    /// uniqueness rule covers and its recorded-time kept - every identity's earliest surviving
+    /// recording takes the identity's earliest recorded valid-time, and every other derived row
+    /// of the stream is deleted, keyed or not. Nothing else in the file changes.
+    #[test]
+    fn shed_derived_rewrites_each_latest_derived_batch_into_its_entry_and_deletes_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        let before = rows_of(&path);
+        // `before` is in position order from 1, so the row at position `p` is `before[p - 1]`.
+        let at = |position: usize| &before[position - 1];
+
+        let shed = s.shed_derived("p-run", &named_entry).unwrap();
+
         assert_eq!(
-            second.total_removed(),
-            0,
-            "the re-run deletes nothing - that is exactly why a rewrite gated on deletes would \
-             never retry the reclamation; got {:?}",
-            second.removed
+            (shed, rows_of(&path)),
+            (
+                ShedDerived {
+                    converted: 4,
+                    shed: 17,
+                    unkeyed: 2,
+                },
+                vec![
+                    at(1).clone(),
+                    // Three generations: the entry stands at the first row of the latest batch,
+                    // counts that generation's two keys and is dated at the earliest recording,
+                    // a row of a superseded generation.
+                    rewritten(
+                        at(5),
+                        &entry_event("gc/a.rs", "h3", 2, "blob-of-gc/a.rs", false),
+                        20
+                    ),
+                    // Recorded twice: the entry stands at the first row of the second recording.
+                    rewritten(
+                        at(9),
+                        &entry_event("gd/b.md", "h1", 2, "blob-of-gd/b.md", true),
+                        30
+                    ),
+                    // An entry above derived rows: nothing is rewritten, the entry is re-dated.
+                    redated(at(12), 70),
+                    // An entry below derived rows: it is the earliest surviving recording, so
+                    // it takes the earliest valid-time and the rewritten row keeps its own.
+                    redated(at(13), 10),
+                    rewritten(
+                        at(15),
+                        &entry_event("gc/d.rs", "h2", 1, "blob-of-gc/d.rs", false),
+                        85
+                    ),
+                    // A generation whose kept rows span two recordings: the entry stands at the
+                    // lowest kept row, the second row of the first recording.
+                    rewritten(
+                        at(19),
+                        &entry_event("gd/e.md", "h1", 2, "blob-of-gd/e.md", false),
+                        100
+                    ),
+                    at(20).clone(),
+                    at(22).clone(),
+                    at(23).clone(),
+                    at(24).clone(),
+                ]
+            )
         );
+    }
+
+    /// The ledger entry of `gc/a.rs` at `generation`, its blob `held`, valid from `secs`.
+    fn entry_valid_at(generation: &str, secs: u64) -> Event {
+        entry_event("gc/a.rs", generation, 1, "held", false)
+            .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// A store whose stream `p-run` holds the rows of `events`, inserted in order, migrated: what
+    /// the migration answered and the rows it left, beside the rows as they stood before it.
+    fn migrated(events: Vec<Event>) -> (ShedDerived, Vec<Row>, Vec<Row>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = pre_ledger_store_with(path.to_str().unwrap(), &[("p-run", events)]);
+        let before = rows_of(&path);
+        let shed = s.shed_derived("p-run", &named_entry).unwrap();
+        (shed, rows_of(&path), before)
+    }
+
+    /// THE REWRITTEN ROW STANDS ABOVE THE IDENTITY'S LATEST LEDGER ENTRY, so its latest recording
+    /// is the generation it was before the migration. An identity recorded as a derived row, a
+    /// ledger entry and the same derived row again has the later row rewritten, the entry below
+    /// it keeping the earliest valid-time, its own. One recorded as a derived batch of two keys, a
+    /// ledger entry of another generation and ONE key of that batch again keeps a row of the
+    /// batch below the entry: that row is deleted and the re-recorded row rewritten, the entry
+    /// below it re-dated to the batch's earliest valid-time.
+    #[test]
+    fn shed_derived_rewrites_the_lowest_kept_row_above_the_identitys_latest_ledger_entry() {
+        let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        let (row_shed, row_after, row) = migrated(vec![
+            derived_at(ce, "gc/a.rs@h1#0", 30),
+            entry_valid_at("h1", 20),
+            derived_at(ce, "gc/a.rs@h1#0", 40),
+        ]);
+        let (batch_shed, batch_after, batch) = migrated(vec![
+            derived_at(ce, "gc/a.rs@h1#0", 30),
+            derived_at(ce, "gc/a.rs@h1#1", 31),
+            entry_valid_at("h2", 40),
+            derived_at(ce, "gc/a.rs@h1#0", 50),
+        ]);
+        let converted = |shed| ShedDerived {
+            converted: 1,
+            shed,
+            unkeyed: 0,
+        };
+        let entry_of_h1 = |keys| entry_event("gc/a.rs", "h1", keys, "blob-of-gc/a.rs", false);
+
         assert_eq!(
-            second.compaction_error, None,
-            "the re-run's reclamation must succeed; got {second:?}"
+            [(row_shed, row_after), (batch_shed, batch_after)],
+            [
+                (
+                    converted(2),
+                    vec![row[1].clone(), rewritten(&row[2], &entry_of_h1(1), 40)]
+                ),
+                (
+                    converted(3),
+                    vec![
+                        redated(&batch[2], 30),
+                        rewritten(&batch[3], &entry_of_h1(2), 50)
+                    ]
+                ),
+            ]
         );
-        assert!(
-            second.reclaimed_bytes.is_some_and(|b| b > 0),
-            "the re-run must RECLAIM the space the failed pass left behind, or the report's \
-             promise that re-running is safe is a promise that re-running is pointless; got \
-             {second:?}"
-        );
+    }
+
+    /// A store whose stream `p-run` holds one identity recorded, in position order, as a ledger
+    /// entry valid from `first`, a derived row valid from 40 and a second ledger entry valid from
+    /// `second`, migrated: what the migration answered and the rows it left, beside the two entry
+    /// rows as they stood before it.
+    fn migrated_between_two_entries(first: u64, second: u64) -> (ShedDerived, Vec<Row>, [Row; 2]) {
+        let (shed, after, before) = migrated(vec![
+            entry_valid_at("h1", first),
+            derived_at(
+                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                "gc/a.rs@h1#0",
+                40,
+            ),
+            entry_valid_at("h1", second),
+        ]);
+        (shed, after, [before[0].clone(), before[2].clone()])
+    }
+
+    /// Of two ledger entries of one identity with a derived row between them, the earliest
+    /// surviving recording is the FIRST entry in position order and the date it takes is the
+    /// EARLIEST any recording held, whichever entry held it: an earlier first entry keeps its
+    /// own date, a later one is re-dated to the second entry's, and the second entry is left as
+    /// it stands. The derived row is shed and nothing is converted.
+    #[test]
+    fn shed_derived_dates_the_first_of_two_entries_at_the_earliest_valid_time_either_holds() {
+        for (first_valid, second_valid) in [(30, 50), (50, 30)] {
+            let (shed, after, [first, second]) =
+                migrated_between_two_entries(first_valid, second_valid);
+
+            assert_eq!(
+                (shed, after),
+                (
+                    ShedDerived {
+                        converted: 0,
+                        shed: 1,
+                        unkeyed: 0,
+                    },
+                    vec![redated(&first, 30), second]
+                ),
+                "entries valid from {first_valid} then {second_valid}"
+            );
+        }
+    }
+
+    /// A migrated stream holds no derived row: the count answers nothing, and a second migration
+    /// sheds nothing, converts nothing and leaves every row as it stands.
+    #[test]
+    fn a_migrated_stream_counts_no_derived_row_and_a_second_migration_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        s.shed_derived("p-run", &named_entry).unwrap();
+        let migrated = rows_of(&path);
+
         assert_eq!(
-            pragma_i64(&path, "freelist_count"),
-            0,
-            "and the file must actually be compact afterwards: VACUUM drives the freelist to zero"
-        );
-        assert!(
-            pragma_i64(&path, "page_count") < pages_before,
-            "the re-run must shrink the file it reclaimed from: {pages_before} page(s) before"
+            (
+                s.count_derived("p-run").unwrap(),
+                s.shed_derived("p-run", &named_entry).unwrap(),
+                rows_of(&path) == migrated,
+            ),
+            (DerivedCount::default(), ShedDerived::default(), true)
         );
     }
 }

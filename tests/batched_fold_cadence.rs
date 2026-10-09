@@ -413,7 +413,8 @@ fn ingest_project_batched_hands_whole_file_batches() {
 
     // Drive the BATCHED public entry: one inner Vec per on_batch call (i.e. per file).
     let mut batches: Vec<Vec<Triple>> = Vec::new();
-    let bstats = rigger::ingest::ingest_project_batched(root, |keyed| batches.push(triples(keyed)));
+    let bstats =
+        rigger::ingest::ingest_project_batched(root, |keyed, _| batches.push(triples(keyed)));
 
     assert!(
         !batches.is_empty(),
@@ -471,7 +472,7 @@ fn ingest_project_batched_hands_whole_file_batches() {
     // Batching is width-INVARIANT: the paced entry at width 1 hands the identical batches (parse
     // width changes only the code half's parallelism, criterion 1, never the per-file batching).
     let mut serial_batches: Vec<Vec<Triple>> = Vec::new();
-    rigger::ingest::ingest_project_batched_paced(root, 1, |keyed| {
+    rigger::ingest::ingest_project_batched_paced(root, 1, |keyed, _| {
         serial_batches.push(triples(keyed))
     });
     assert_eq!(
@@ -491,7 +492,7 @@ fn light_lane_ingest_project_batched_hands_no_batches() {
     let mut calls = 0usize;
     rigger::ingest::ingest_project_batched(
         dir.path().to_str().unwrap(),
-        |_batch: &[(String, &rigger::eventstore::Event)]| calls += 1,
+        |_batch: &[(String, &rigger::eventstore::Event)], _excluded: bool| calls += 1,
     );
     assert_eq!(
         calls, 0,
@@ -612,7 +613,8 @@ fn a_folding_store_says_a_lost_fold_through_its_sink_and_a_graphless_one_stays_s
 /// A log sink that hears nothing: `append_and_fold` answers its fold to the caller instead.
 const SILENT: fn(&str) = |_| {};
 
-/// The one append-then-fold body answers a caller of `append_and_fold` and a caller of the store
+/// The append-then-fold body of every event but a ledger entry answers a caller of
+/// `append_and_fold` and a caller of the store
 /// port's `append` alike: an empty batch under `Any` appends and folds nothing through either and
 /// is reported as an absence; an unmet expectation - on an empty batch or not - is the store's
 /// conflict through either, and nothing is appended or folded.

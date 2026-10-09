@@ -14,22 +14,29 @@ fn has_tracked_project_id(root: &Path) -> bool {
     read_project_id(base).is_some()
 }
 
-/// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
-/// INTEGRATION): reads the project's own event stream - the SAME `events.db` stream every other
-/// validate advisory above reads (mirrors [`read_model_drift`]'s own store-open shape, reused, not
-/// a second courier) - and hands it to [`rigger::ingest::graph_index_lag_sample`], the one authority
-/// that both derives the bounded candidate list and compares each against a fresh re-extraction.
-/// An absent sqlite store degrades to an empty sample (nothing recorded, so nothing can lag) rather
-/// than an error, exactly like [`read_model_drift`].
+/// The `rigger validate` GRAPH INDEX LAG sample (spec 107, THE LEDGER ANSWERS THE INDEX-LAG
+/// ADVISORY): reads the log's side from `store` in ONE typed read of the perception types
+/// ([`rigger::ingest::perceived_generations`]), never the whole stream, and hands it to
+/// [`rigger::ingest::graph_index_lag_sample`], the one authority that draws the bounded candidate
+/// list from it and compares each candidate's current bytes, read under `root`, against its
+/// latest recording and against `graph`'s current generation. With no `graph` the log's side
+/// alone is compared.
 fn read_graph_index_lag(
-    path: &str,
-    project: &str,
-    root: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let sel = store_selection(None, None)?;
-    Ok(read_project_stream(path, project, conductor::STREAM, &sel)?
-        .map(|events| rigger::ingest::graph_index_lag_sample(root, &events))
-        .unwrap_or_default())
+    store: &dyn EventStore,
+    graph: Option<&dyn contextgraph::Projection>,
+    root: &Path,
+) -> Result<Vec<String>, rigger::eventstore::Error> {
+    let latest = rigger::ingest::perceived_generations(store, conductor::STREAM)?;
+    Ok(rigger::ingest::graph_index_lag_sample(root, &latest, graph))
+}
+
+/// The graph the index-lag advisory compares against: the project's `graph.db` when it stands
+/// ([`standing_graph`]) and owes no rebuild. An owed graph is not asked, nor one whose debt
+/// cannot be read: the advisory then compares the log's side alone.
+fn graph_to_compare(graph_db: &str, project: &str) -> Option<Projector> {
+    let graph = standing_graph(graph_db, project)?;
+    let owed = graph.rebuild_owed().ok()?;
+    (!owed).then_some(graph)
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -263,29 +270,39 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
-    // GRAPH INDEX LAG advisory (spec 92 criterion 1, FRESH ON EVERY INTEGRATION): warn when a
-    // bounded sample of files `graph.db` has previously recorded disagrees with their live
-    // re-extraction - staleness the integration-time reindex above is supposed to prevent,
-    // surfaced before it is felt rather than discovered by a stale `graph --show` line (Design:
-    // "validate reports index lag ... as an advisory, so staleness is visible before it is
-    // felt"). A store-read failure just skips the advisory (never fails validate), exactly like
-    // the model-drift advisory above.
-    if let Ok(lagging) = read_graph_index_lag(
-        &db_path("events.db"),
-        &project_identity(),
-        root.to_str().unwrap_or("."),
-    ) {
+    // GRAPH INDEX LAG advisory (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY): warn when
+    // a bounded sample of files the log has recorded extracts, from the bytes the tree holds
+    // now, to a generation the log's latest recording and `graph.db` do not both hold -
+    // staleness the integration-time reindex is supposed to prevent, surfaced before it is felt
+    // rather than discovered by a stale `graph --show` line. The tree is read under the ONE
+    // ROOT, the top level of the repository holding the store's `.rigger/`, which the entries'
+    // paths are relative to. An absent store has recorded nothing, and a store-read failure
+    // just skips the advisory (never fails validate), exactly like the model-drift advisory
+    // above.
+    let project = project_identity();
+    let graph = graph_to_compare(&db_path("graph.db"), &project);
+    let lagging = store_selection(None, None).and_then(|sel| {
+        with_project_store(&db_path("events.db"), &project, &sel, |store| {
+            read_graph_index_lag(
+                store,
+                graph
+                    .as_ref()
+                    .map(|graph| graph as &dyn contextgraph::Projection),
+                &tree_root(&cwd().join(RIGGER_DIR)),
+            )
+        })
+    });
+    if let Ok(Some(lagging)) = lagging {
         if let Some(advisory) = graph_index_lag_advisory(&lagging) {
             eprintln!("{advisory}");
         }
     }
-    // LOG BLOAT advisory (spec 68, VALIDATE ADVISORIES): warn when the event log's derived
-    // index is duplicated above threshold and name `rigger reset --derived`. Reuses the
-    // store's OWN aggregate ([`rigger::eventstore::sqlite::Store::measure_derived_duplication`],
-    // the same key/type/prefix authority the compaction itself uses - no shadow accounting).
-    // `None` on a server-backed project (a sqlite-only mechanic, exactly like `reset --derived`
-    // itself), on a project with no events.db yet, or on any read failure; this never fails
-    // validate and never creates a store that does not already exist.
+    // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
+    // the event log still holds a derived event and name `rigger reset --derived`, the migration
+    // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
+    // menu prints and the migration acts on. `None` on a server-backed project (the migration is
+    // a mechanic of the sqlite store), on a project with no events.db yet, or on any read
+    // failure; this never fails validate and never creates a store that does not already exist.
     if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &project_identity()) {
         eprintln!("{advisory}");
     }
@@ -485,70 +502,60 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
     )
 }
 
-/// The GRAPH INDEX LAG advisory line (spec 92 criterion 1, FRESH ON EVERY INTEGRATION), rendered
-/// from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`] found
-/// disagreeing with `graph.db`'s own last recorded generation for them. `None` when the sample is
-/// empty - nothing to warn about, not merely nothing measured (the pure formatting stays separate
-/// from the gathering, exactly like [`index_staleness_message`] above). Names every lagging file
-/// (never just a bare count) and the fix, `rigger reindex`, so the same fix that keeps the
-/// `symbols` index fresh also closes the gap this advisory reports.
+/// The GRAPH INDEX LAG advisory line (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY),
+/// rendered from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`]
+/// named: each one's current bytes extract to a generation other than its latest ledger entry's
+/// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
+/// about, not merely nothing measured (the pure formatting stays separate from the gathering,
+/// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
+/// count) and the command the line points the operator at, `rigger graph build`: the verb that
+/// re-perceives the tree, recording each lagging file's ledger entry and folding it through the
+/// one function the integration reindex also calls ([`rigger::ingest::entry_of_batch`]).
+/// `rigger reindex` refreshes the symbols index alone, so it moves neither side compared.
 fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     if lagging.is_empty() {
         return None;
     }
     Some(format!(
         "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger reindex <file>...` to refresh it.",
+         ({}). Run `rigger graph build` to refresh it.",
         lagging.len(),
         lagging.join(", "),
     ))
 }
 
-/// The derived-index duplication FACTOR (rows per row a compaction keeps) above which `rigger
-/// validate` warns of log bloat (Design: "derived-type duplication factor above threshold"). `1.5`
-/// means at least half again as many recordings as a compaction would keep sit in the log - a real
-/// redundancy signal, not the occasional legitimate re-recording (a revert, a branch switch) a
-/// small, healthy log can carry without ever being worth an operator's attention.
-const BLOAT_DUPLICATION_THRESHOLD: f64 = 1.5;
-
-/// The LOG BLOAT advisory line (spec 68, VALIDATE ADVISORIES), rendered from an already-measured
-/// [`rigger::eventstore::sqlite::DerivedDuplication`] - pure formatting, separate from the
-/// gathering in [`bloat_advisory_for`]. `None` when the measured factor does not clear
-/// [`BLOAT_DUPLICATION_THRESHOLD`].
-fn bloat_advisory(measured: &rigger::eventstore::sqlite::DerivedDuplication) -> Option<String> {
-    let factor = measured.factor();
-    if factor <= BLOAT_DUPLICATION_THRESHOLD {
-        return None;
-    }
-    Some(format!(
-        "warning: the event log's derived index is duplicated {factor:.1}x ({} row(s), of which a \
-         compaction keeps only {}); run `rigger reset --derived` to compact it.",
-        measured.rows, measured.kept
-    ))
+/// The LOG BLOAT advisory line (spec 107), rendered from an already-read
+/// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
+/// `None` for a count holding no derived event; any other names what the log still holds and
+/// `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
+/// reset menu's line asks too.
+fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
+    derived_events_held(counted).map(|held| {
+        format!(
+            "warning: the event log still holds {held}; run `rigger reset --derived` to migrate \
+             them into the ledger."
+        )
+    })
 }
 
-/// Gather + measure the LOG BLOAT advisory's input (spec 68): open the sqlite event log at
-/// `path`, scoped to `project`'s stream prefix, and run
-/// [`rigger::eventstore::sqlite::Store::measure_derived_duplication`] - the ONE read-only
-/// aggregate the compaction's own `key_expr`/`type_list` authority backs (Design: "no shadow
-/// accounting"). `None`, never an error, on every reason there is nothing honest to measure:
-/// a server-backed project (this is a sqlite-only mechanic, exactly like `reset --derived`
-/// itself refuses there - see [`cmd_reset`]), or a project with no `events.db` file YET - checked
-/// BEFORE opening anything, because [`open_sqlite_store`] (like [`Store::open`] under it) creates
-/// a missing file, and a read-only advisory must never have that side effect. Any read error
-/// after that point (a malformed store, a lock) is likewise swallowed, exactly like the model-
-/// drift and order-signature advisories above.
+/// Gather the LOG BLOAT advisory's input (spec 107): open the sqlite event log at `path` and
+/// count the derived index `project`'s run stream holds ([`Store::count_derived`]), the read
+/// the reset menu prints and the migration acts on, so the advisory never names a count
+/// `rigger reset --derived` would not shed. `None`, never an error, on every reason there is
+/// nothing to count: a server-backed project (the migration does not run there - see
+/// [`cmd_reset`]), or a project with no `events.db` file YET - checked BEFORE opening anything,
+/// because [`open_sqlite_store`] (like [`Store::open`] under it) creates a missing file, and a
+/// read-only advisory must never have that side effect. Any read error after that point (a
+/// malformed store, a lock) is likewise swallowed, exactly like the model-drift and
+/// order-signature advisories above.
 fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     let sel = store_selection(None, None).ok()?;
     if !sel.is_sqlite() || !Path::new(path).exists() {
         return None;
     }
     let store = open_sqlite_store(path).ok()?;
-    let prefix = Namespaced::prefix_for(project);
-    let measured = store
-        .measure_derived_duplication(&prefix, &rigger::ingest::derived_index_identity())
-        .ok()?;
-    bloat_advisory(&measured)
+    let counted = store.count_derived(&run_stream_of(project)).ok()?;
+    bloat_advisory(&counted)
 }
 
 /// The RETIRED CODE-ENTITY advisory line (spec 86 criterion 3, THE MIGRATION IS DELIBERATE),
@@ -573,15 +580,11 @@ fn retired_entities_advisory(n: usize) -> Option<String> {
 /// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
 /// the shape of, `Projector` is the only [`Projection`] this binary ever opens), so this needs no
 /// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
-/// report: no `graph.db` file YET - checked BEFORE opening anything, because `Projector::open`
-/// (like every store open here) creates a missing file, and a read-only advisory must never have
-/// that side effect - or any read error after that point, exactly like the log-bloat and
-/// index-staleness advisories above swallow one.
+/// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
+/// error after that point, exactly like the log-bloat and index-staleness advisories above
+/// swallow one.
 fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
-    if !Path::new(graph_db).exists() {
-        return None;
-    }
-    let graph = Projector::open(graph_db, project).ok()?;
+    let graph = standing_graph(graph_db, project)?;
     retired_entities_advisory(graph.retired_code_entity_count().ok()?)
 }
 
@@ -2081,8 +2084,8 @@ mod tests {
             "the message must name every lagging file: {msg}"
         );
         assert!(
-            msg.contains("rigger reindex"),
-            "the message must name the fix: {msg}"
+            msg.contains("Run `rigger graph build` to refresh it.") && !msg.contains("reindex"),
+            "the message must name the verb that records and folds the lagging entries: {msg}"
         );
     }
 
@@ -2091,29 +2094,92 @@ mod tests {
         assert_eq!(graph_index_lag_advisory(&[]), None);
     }
 
+    /// The advisory reads the log's side in ONE typed read of the perception types from the
+    /// stream's start and no whole-stream read (spec 107): over a log holding a run's start, a
+    /// stale ledger entry of a file the tree holds and an entry of a file it does not, it
+    /// materializes the two entries alone, and with no graph to ask names the stale file where
+    /// an extraction is compiled and nothing where none is.
     #[test]
-    fn bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it() {
-        // Exactly at the threshold: not yet a warning-worthy signal.
-        let at_threshold = rigger::eventstore::sqlite::DerivedDuplication {
-            rows: 3,
-            kept: 2, // factor 1.5 == BLOAT_DUPLICATION_THRESHOLD
-        };
-        assert_eq!(bloat_advisory(&at_threshold), None);
+    fn the_index_lag_advisory_reads_the_log_in_one_typed_read_of_the_perception_types() {
+        use crate::test_support::{generation_ingested, CountedRead, ReadCountingStore};
 
-        // Clearly above: a named warning carrying the measured factor and the fix.
-        let above_threshold = rigger::eventstore::sqlite::DerivedDuplication {
-            rows: 6,
-            kept: 1, // factor 6.0
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                conductor::STREAM,
+                ExpectedRevision::Any,
+                &[
+                    Event::new("RunStarted", b"{}".to_vec()),
+                    generation_ingested("gc", "kept.rs", "stale", "", false).event(1),
+                    generation_ingested("gc", "gone.rs", "stale", "", false).event(1),
+                ],
+            )
+            .unwrap();
+        let store = ReadCountingStore::new(&inner);
+
+        let lagging = read_graph_index_lag(&store, None, dir.path()).unwrap();
+
+        let sampled: &[&str] = if cfg!(feature = "symbols") {
+            &["kept.rs"]
+        } else {
+            &[]
         };
-        let advisory = bloat_advisory(&above_threshold).expect("must warn above threshold");
-        assert!(advisory.starts_with("warning:"), "advisory: {advisory}");
-        assert!(
-            advisory.contains("6.0"),
-            "the message must carry the measured factor: {advisory}"
+        assert_eq!(lagging, sampled);
+        assert_eq!(
+            store.reads(),
+            [CountedRead::Typed {
+                stream: conductor::STREAM.to_string(),
+                from: 0,
+                only: true,
+                types: rigger::retention::PERCEPTION_TYPES
+                    .map(String::from)
+                    .to_vec(),
+                materialized: 2,
+            }]
         );
-        assert!(
-            advisory.contains("rigger reset --derived"),
-            "the message must name the fix: {advisory}"
+    }
+
+    #[test]
+    fn bloat_advisory_is_none_for_a_count_holding_no_derived_event_and_names_any_other() {
+        assert_eq!(bloat_advisory(&DerivedCount::default()), None);
+        let one = DerivedCount {
+            shed: 1,
+            unkeyed: 0,
+            identities: ["gc/a.rs".to_string()].into(),
+        };
+        assert_eq!(
+            bloat_advisory(&one).as_deref(),
+            Some(
+                "warning: the event log still holds 1 derived events of 1 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
+        );
+        // Decided by the events alone: rows naming no identity are still derived events left.
+        let all_unkeyed = DerivedCount {
+            shed: 7,
+            unkeyed: 7,
+            identities: Default::default(),
+        };
+        assert_eq!(
+            bloat_advisory(&all_unkeyed).as_deref(),
+            Some(
+                "warning: the event log still holds 7 derived events of 0 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
+        );
+        let two_identities = DerivedCount {
+            shed: 7,
+            unkeyed: 1,
+            identities: ["gc/a.rs", "gd/a.rs"].map(String::from).into(),
+        };
+        assert_eq!(
+            bloat_advisory(&two_identities).as_deref(),
+            Some(
+                "warning: the event log still holds 7 derived events of 2 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
         );
     }
 

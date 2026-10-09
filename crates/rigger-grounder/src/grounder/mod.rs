@@ -27,6 +27,7 @@ pub mod design;
 #[cfg(feature = "symbols")]
 pub mod workflowdef;
 
+use crate::config::RIGGER_DIR;
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -116,6 +117,59 @@ where
         }
     }
     ControlFlow::Continue(())
+}
+
+/// The workflow definition's path relative to a project root, its ONE spelling: the path the
+/// workflow-definition pass reads and attributes every entity it extracts to (the `doc` attr on
+/// every folded node), and the one path [`in_walk_scope`] admits for `gw`.
+pub(crate) fn workflow_doc() -> String {
+    format!("{RIGGER_DIR}/workflow.yml")
+}
+
+/// Whether an ingest reads `path` (relative to `root`) under the identity prefix `prefix`: the
+/// ONE answer every reader of the tree asks. For `gw` it is the workflow definition's path
+/// ([`workflow_doc`]) and no other, a predicate of the path alone, since that pass reads its one
+/// file directly and the file sits under a hidden directory the walk never enters. For every
+/// other prefix it is whether [`walk_guarded_within`] over that one name visits the path, so the
+/// scope is the walk's own (the committed `.gitignore` files, the hidden entries, no symlink
+/// followed) and can never drift from it.
+///
+/// The scoped walk admits every ancestor of the name, so a regular file AT an ancestor (`a`, for
+/// the name `a/b`) is visited too: the answer is whether the walk visits the named path itself.
+pub fn in_walk_scope(root: &Path, prefix: &str, path: &str) -> bool {
+    if prefix == "gw" {
+        return path == workflow_doc();
+    }
+    let wanted = root.join(path);
+    walk_guarded_within(root, Some(&[path.to_string()]), &mut |visited| {
+        if visited == wanted {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_break()
+}
+
+/// The bytes of the file at `path` (relative to `root`) as an ingest under `prefix` reads it:
+/// the tree's ONE read rule. It hands the bytes of a regular file [`in_walk_scope`] admits that
+/// this process can read, and none for any other path - outside the scope, absent, not a regular
+/// file, or a read that fails for any reason - so no reader of the tree fails on a file: it
+/// holds the bytes or it holds none. The regular-file test comes before the read because `gw`'s
+/// scope is the path alone: a FIFO there would hold the read waiting for a writer.
+pub fn tree_bytes(root: &Path, prefix: &str, path: &str) -> Option<Vec<u8>> {
+    let file = root.join(path);
+    if !in_walk_scope(root, prefix, path) || !file.is_file() {
+        return None;
+    }
+    std::fs::read(file).ok()
+}
+
+/// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
+/// that are not UTF-8, the two inputs every half maps to its batch for no text.
+#[cfg(feature = "symbols")]
+pub(crate) fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
+    bytes.and_then(|bytes| std::str::from_utf8(bytes).ok())
 }
 
 pub use rigger_domain::grounder::{BlastRadius, Grounder, RankedRef, Ref};
@@ -300,6 +354,7 @@ fn search_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_fixtures::write_file;
 
     #[test]
     fn grep_finds_matching_lines() {
@@ -734,5 +789,268 @@ mod tests {
             !unknown.contains("turbovec") && !unknown.contains("hybrid"),
             "the unknown-name message must not advertise retired names; got: {unknown}"
         );
+    }
+
+    /// THE TREE IS READ BY ONE RULE: a regular, readable file inside the walk's scope hands its
+    /// exact bytes - text, bytes that are not UTF-8 and no bytes at all alike - under any prefix
+    /// the walk answers for.
+    #[test]
+    fn tree_bytes_hands_the_exact_bytes_of_a_regular_readable_file_in_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("src/a.rs"), b"fn a() {}\n");
+        write_file(&root.join("docs/design.md"), b"# Design\n");
+        write_file(&root.join("blob.bin"), &[0xff, 0x00, 0xfe]);
+        write_file(&root.join("empty.rs"), b"");
+
+        assert!(in_walk_scope(root, "gc", "src/a.rs"));
+        assert_eq!(
+            tree_bytes(root, "gc", "src/a.rs"),
+            Some(b"fn a() {}\n".to_vec())
+        );
+        assert!(in_walk_scope(root, "gd", "docs/design.md"));
+        assert_eq!(
+            tree_bytes(root, "gd", "docs/design.md"),
+            Some(b"# Design\n".to_vec())
+        );
+        assert_eq!(
+            tree_bytes(root, "gc", "blob.bin"),
+            Some(vec![0xff, 0x00, 0xfe])
+        );
+        assert_eq!(tree_bytes(root, "gc", "empty.rs"), Some(Vec::new()));
+    }
+
+    /// A path under a hidden directory, and a hidden file itself, is outside the walk's scope and
+    /// is handed no bytes, while the same bytes under a visible directory are handed.
+    #[test]
+    fn tree_bytes_hands_none_for_a_path_under_a_hidden_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join(".hidden/h.rs"), b"fn h() {}\n");
+        write_file(&root.join("visible/h.rs"), b"fn h() {}\n");
+        write_file(&root.join(".dotfile.rs"), b"fn d() {}\n");
+
+        assert!(!in_walk_scope(root, "gc", ".hidden/h.rs"));
+        assert_eq!(tree_bytes(root, "gc", ".hidden/h.rs"), None);
+        assert!(!in_walk_scope(root, "gd", ".hidden/h.rs"));
+        assert_eq!(tree_bytes(root, "gd", ".hidden/h.rs"), None);
+        assert!(!in_walk_scope(root, "gc", ".dotfile.rs"));
+        assert_eq!(tree_bytes(root, "gc", ".dotfile.rs"), None);
+        assert!(in_walk_scope(root, "gc", "visible/h.rs"));
+        assert_eq!(
+            tree_bytes(root, "gc", "visible/h.rs"),
+            Some(b"fn h() {}\n".to_vec())
+        );
+    }
+
+    /// A path a committed `.gitignore` names - a file, a directory's content, and a file a
+    /// nested `.gitignore` names - is outside the walk's scope and is handed no bytes, while its
+    /// unnamed siblings are handed theirs.
+    #[test]
+    fn tree_bytes_hands_none_for_a_path_a_committed_gitignore_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join(".gitignore"), b"ignored.rs\nbuild/\n");
+        write_file(&root.join("ignored.rs"), b"fn ignored() {}\n");
+        write_file(&root.join("build/out.rs"), b"fn out() {}\n");
+        write_file(&root.join("kept.rs"), b"fn kept() {}\n");
+        write_file(&root.join("sub/.gitignore"), b"secret.rs\n");
+        write_file(&root.join("sub/secret.rs"), b"fn secret() {}\n");
+        write_file(&root.join("sub/open.rs"), b"fn open() {}\n");
+
+        for named in ["ignored.rs", "build/out.rs", "sub/secret.rs"] {
+            assert!(
+                !in_walk_scope(root, "gc", named),
+                "{named} is named by a committed .gitignore"
+            );
+            assert_eq!(
+                tree_bytes(root, "gc", named),
+                None,
+                "{named} is named by a committed .gitignore"
+            );
+        }
+        assert!(in_walk_scope(root, "gc", "kept.rs"));
+        assert_eq!(
+            tree_bytes(root, "gc", "kept.rs"),
+            Some(b"fn kept() {}\n".to_vec())
+        );
+        assert!(in_walk_scope(root, "gc", "sub/open.rs"));
+        assert_eq!(
+            tree_bytes(root, "gc", "sub/open.rs"),
+            Some(b"fn open() {}\n".to_vec())
+        );
+    }
+
+    /// A path that names no regular file is handed no bytes: an absent path, a directory, a
+    /// symlink to a regular file (the walk follows none), a path below a regular file, and the
+    /// empty path. The regular file those sit beside is handed its bytes.
+    #[test]
+    fn tree_bytes_hands_none_for_a_path_that_is_absent_or_not_a_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("src/a.rs"), b"fn a() {}\n");
+        write_file(&root.join("a"), b"a regular file named a\n");
+        std::os::unix::fs::symlink(root.join("src/a.rs"), root.join("link.rs")).unwrap();
+
+        for not_a_file in ["src/missing.rs", "src", "link.rs", "a/b", ""] {
+            assert!(
+                !in_walk_scope(root, "gc", not_a_file),
+                "{not_a_file:?} names no regular file the walk visits"
+            );
+            assert_eq!(
+                tree_bytes(root, "gc", not_a_file),
+                None,
+                "{not_a_file:?} names no regular file the walk visits"
+            );
+        }
+        assert!(in_walk_scope(root, "gc", "a"));
+        assert_eq!(
+            tree_bytes(root, "gc", "a"),
+            Some(b"a regular file named a\n".to_vec())
+        );
+    }
+
+    /// A path that leaves the root is handed no bytes, relative or absolute, though the file it
+    /// reaches is there and readable.
+    #[test]
+    fn tree_bytes_hands_none_for_a_path_that_leaves_the_root() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        write_file(&outer.path().join("outside.rs"), b"fn outside() {}\n");
+        let absolute = outer.path().join("outside.rs");
+        assert_eq!(
+            std::fs::read(root.join("../outside.rs")).unwrap(),
+            b"fn outside() {}\n".to_vec(),
+            "fixture precondition: the file is readable through the path that leaves the root"
+        );
+
+        assert!(!in_walk_scope(&root, "gc", "../outside.rs"));
+        assert_eq!(tree_bytes(&root, "gc", "../outside.rs"), None);
+        assert!(!in_walk_scope(&root, "gc", absolute.to_str().unwrap()));
+        assert_eq!(tree_bytes(&root, "gc", absolute.to_str().unwrap()), None);
+    }
+
+    /// A relative path is read from the root it is given, never the working directory. Cargo
+    /// runs this crate's tests from its manifest directory, which holds `Cargo.toml` and
+    /// `src/lib.rs`: the root's own `Cargo.toml` is the one handed, and `src/lib.rs`, which only
+    /// the working directory holds, is handed none.
+    #[test]
+    fn tree_bytes_reads_a_relative_path_from_the_root_it_is_given_and_not_the_working_directory() {
+        assert!(
+            Path::new("Cargo.toml").is_file() && Path::new("src/lib.rs").is_file(),
+            "fixture precondition: the working directory holds Cargo.toml and src/lib.rs"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("Cargo.toml"), b"the root's own copy\n");
+
+        assert_eq!(
+            tree_bytes(root, "gc", "Cargo.toml"),
+            Some(b"the root's own copy\n".to_vec())
+        );
+        assert!(!in_walk_scope(root, "gc", "src/lib.rs"));
+        assert_eq!(tree_bytes(root, "gc", "src/lib.rs"), None);
+    }
+
+    /// For `gw` the scope is the workflow definition's path and no other: that path is admitted
+    /// though it sits under a hidden directory no other prefix reaches, whether or not the file
+    /// is there, and every other path is refused though the walk visits it.
+    #[test]
+    fn in_walk_scope_admits_the_workflow_definition_for_gw_and_no_other_path() {
+        assert_eq!(workflow_doc(), ".rigger/workflow.yml");
+        let workflow = workflow_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join(&workflow), b"stages: {}\n");
+        write_file(&root.join("other.yml"), b"stages: {}\n");
+
+        assert!(in_walk_scope(root, "gw", &workflow));
+        assert_eq!(
+            tree_bytes(root, "gw", &workflow),
+            Some(b"stages: {}\n".to_vec())
+        );
+        assert!(!in_walk_scope(root, "gc", &workflow));
+        assert_eq!(tree_bytes(root, "gc", &workflow), None);
+        assert!(!in_walk_scope(root, "gd", &workflow));
+        assert_eq!(tree_bytes(root, "gd", &workflow), None);
+        assert!(!in_walk_scope(root, "gw", "other.yml"));
+        assert_eq!(tree_bytes(root, "gw", "other.yml"), None);
+        assert!(in_walk_scope(root, "gc", "other.yml"));
+        assert_eq!(
+            tree_bytes(root, "gc", "other.yml"),
+            Some(b"stages: {}\n".to_vec())
+        );
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(in_walk_scope(empty.path(), "gw", &workflow));
+        assert_eq!(tree_bytes(empty.path(), "gw", &workflow), None);
+    }
+
+    /// A workflow definition's path that holds no regular file is handed no bytes: a directory,
+    /// and a FIFO, which a read would otherwise wait on for a writer that never comes.
+    #[test]
+    fn tree_bytes_hands_none_for_a_workflow_definition_that_is_not_a_regular_file() {
+        let workflow = workflow_doc();
+        let with_directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(with_directory.path().join(&workflow)).unwrap();
+        assert_eq!(tree_bytes(with_directory.path(), "gw", &workflow), None);
+
+        let with_fifo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(with_fifo.path().join(RIGGER_DIR)).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(with_fifo.path().join(&workflow))
+            .status()
+            .unwrap();
+        assert!(made.success(), "fixture precondition: mkfifo made the FIFO");
+        let fifo_root = with_fifo.path().to_path_buf();
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || answer.send(tree_bytes(&fifo_root, "gw", &workflow)));
+        assert_eq!(
+            answered.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(None),
+            "a FIFO is answered with no bytes, never waited on for a writer"
+        );
+    }
+
+    /// A symlinked workflow definition is handed its target's bytes, as the `gw` ingest reads
+    /// it: the bytes are handed exactly where an ingest reads them.
+    #[test]
+    fn tree_bytes_reads_a_symlinked_workflow_definition_as_the_ingest_does() {
+        let workflow = workflow_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("elsewhere.yml"), b"stages: {}\n");
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::os::unix::fs::symlink(root.join("elsewhere.yml"), root.join(&workflow)).unwrap();
+
+        assert_eq!(
+            tree_bytes(root, "gw", &workflow),
+            Some(b"stages: {}\n".to_vec())
+        );
+    }
+
+    /// A file of THE READ FAULT - regular, inside the walk's scope, unreadable by this uid - is
+    /// handed no bytes, where the same file handed its bytes while it could be read. Under a uid
+    /// the fault cannot be armed for, the test ends once the read still succeeds.
+    #[test]
+    fn tree_bytes_hands_none_for_a_file_of_the_read_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join("locked.rs"), b"fn locked() {}\n");
+        assert_eq!(
+            tree_bytes(root, "gc", "locked.rs"),
+            Some(b"fn locked() {}\n".to_vec())
+        );
+
+        if !crate::read_fault_fixtures::arm_read_fault(&root.join("locked.rs")) {
+            return;
+        }
+
+        assert!(
+            in_walk_scope(root, "gc", "locked.rs"),
+            "the unreadable file is still a regular file inside the walk's scope"
+        );
+        assert_eq!(tree_bytes(root, "gc", "locked.rs"), None);
     }
 }

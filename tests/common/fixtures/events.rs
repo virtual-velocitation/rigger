@@ -17,6 +17,40 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
+/// THE REFUSAL ORACLE, its reading half: the type a refused append names and the text the
+/// store says of it, or a panic naming what the append answered in its place.
+pub fn refused<T: std::fmt::Debug>(answer: Result<T, Error>) -> (String, String) {
+    match answer {
+        Err(e @ Error::DerivedAppend { .. }) => {
+            let said = e.to_string();
+            let Error::DerivedAppend { type_ } = e else {
+                unreachable!("matched above")
+            };
+            (type_, said)
+        }
+        other => panic!("a batch holding a derived event must be refused by name: {other:?}"),
+    }
+}
+
+/// THE REFUSAL ORACLE, its expected half: what [`refused`] answers for a batch whose first
+/// derived event is of `type_` - the type and the whole text the store says of it, spelled here
+/// and never read from the error, so the two stay independent.
+pub fn naming(type_: &str) -> (String, String) {
+    (
+        type_.to_string(),
+        format!(
+            "event store: append refused: {type_} is a derived event, which the tree re-derives - \
+             the log keeps the ledger entry of its generation and no event of this batch was \
+             written"
+        ),
+    )
+}
+
+/// Each event's type, in the order given.
+pub fn types_of(events: &[Event]) -> Vec<&str> {
+    events.iter().map(|e| e.type_.as_str()).collect()
+}
+
 /// How many of `events` are of type `type_`.
 pub fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
@@ -207,6 +241,80 @@ impl EventStore for SilentStore {
     }
 }
 
+/// The port methods a double REFUSES, each panicking with `$why` and what the caller tried -
+/// expanded inside that double's `impl EventStore` block, naming the methods it does not answer.
+macro_rules! refuse_event_store_calls {
+    ($why:literal: $($method:ident),+ $(,)?) => {
+        $(refuse_event_store_calls!(@ $why $method);)+
+    };
+    (@ $why:literal append) => {
+        fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
+            panic!(concat!($why, ": nothing appends"))
+        }
+    };
+    (@ $why:literal read_stream) => {
+        fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads the stream"))
+        }
+    };
+    (@ $why:literal read_all) => {
+        fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads the log"))
+        }
+    };
+    (@ $why:literal subscribe_all) => {
+        fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
+            panic!(concat!($why, ": nothing subscribes"))
+        }
+    };
+    (@ $why:literal subscribe_stream) => {
+        fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
+            panic!(concat!($why, ": nothing subscribes"))
+        }
+    };
+    (@ $why:literal last_position) => {
+        fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
+            panic!(concat!($why, ": nothing looks up a boundary"))
+        }
+    };
+    (@ $why:literal read_stream_typed) => {
+        fn read_stream_typed(
+            &self,
+            _: &str,
+            _: Revision,
+            _: TypeSelection,
+        ) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads by type"))
+        }
+    };
+    (@ $why:literal read_stream_positions) => {
+        fn read_stream_positions(
+            &self,
+            _: &str,
+            _: usize,
+            _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
+        ) -> Result<(), Error> {
+            panic!(concat!($why, ": nothing reads positions"))
+        }
+    };
+    (@ $why:literal read_stream_batched) => {
+        fn read_stream_batched(
+            &self,
+            _: &str,
+            _: Revision,
+            _: usize,
+            _: &mut EventBatchSink,
+        ) -> Result<(), Error> {
+            panic!(concat!($why, ": nothing reads the stream in batches"))
+        }
+    };
+    (@ $why:literal latest_in_group) => {
+        fn latest_in_group(&self, _: &str, _: &str) -> Result<Option<GroupHead>, Error> {
+            panic!(concat!($why, ": nothing looks up a group"))
+        }
+    };
+}
+
 /// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
 /// with one fixed answer - a newest member, no member, or a backend error - and records each
 /// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
@@ -233,55 +341,97 @@ impl GroupLookupOnly {
 }
 
 impl EventStore for GroupLookupOnly {
-    fn append(&self, _: &str, _: ExpectedRevision, _: &[Event]) -> Result<Appended, Error> {
-        panic!("only the group lookup is reachable: nothing appends")
-    }
-    fn read_stream(&self, _: &str, _: Revision, _: Direction) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads the stream")
-    }
-    fn read_all(&self, _: Position, _: Direction, _: &Filter) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads the log")
-    }
-    fn subscribe_all(&self, _: Position, _: &Filter) -> Result<Subscription, Error> {
-        panic!("only the group lookup is reachable: nothing subscribes")
-    }
-    fn subscribe_stream(&self, _: &str, _: Revision) -> Result<Subscription, Error> {
-        panic!("only the group lookup is reachable: nothing subscribes")
-    }
-    fn last_position(&self, _: &str, _: &str) -> Result<Option<Revision>, Error> {
-        panic!("only the group lookup is reachable: nothing looks up a boundary")
-    }
-    fn read_stream_typed(
-        &self,
-        _: &str,
-        _: Revision,
-        _: TypeSelection,
-    ) -> Result<Vec<Event>, Error> {
-        panic!("only the group lookup is reachable: nothing reads by type")
-    }
-    fn read_stream_positions(
-        &self,
-        _: &str,
-        _: usize,
-        _: &mut dyn FnMut(&[Position]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        panic!("only the group lookup is reachable: nothing reads positions")
-    }
-    fn read_stream_batched(
-        &self,
-        _: &str,
-        _: Revision,
-        _: usize,
-        _: &mut EventBatchSink,
-    ) -> Result<(), Error> {
-        panic!("only the group lookup is reachable: nothing reads the stream in batches")
-    }
+    refuse_event_store_calls!(
+        "only the group lookup is reachable":
+        append,
+        read_stream,
+        read_all,
+        subscribe_all,
+        subscribe_stream,
+        last_position,
+        read_stream_typed,
+        read_stream_positions,
+        read_stream_batched,
+    );
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.asked
             .lock()
             .unwrap()
             .push((stream.to_string(), group.to_string()));
         self.answer.clone().map_err(Error::Backend)
+    }
+}
+
+/// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
+/// reach: its events are stamped in the order given as the sqlite store stamps an append to an
+/// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup
+/// and the typed read answer, as the port words them. Every other method panics, and another
+/// stream holds nothing.
+pub struct HandBuiltLog {
+    stream: String,
+    events: Vec<Event>,
+}
+
+impl HandBuiltLog {
+    /// `stream` holding `events` in this order.
+    pub fn new(stream: &str, mut events: Vec<Event>) -> Self {
+        for (i, e) in events.iter_mut().enumerate() {
+            e.stream = stream.to_string();
+            e.position = (i + 1) as u64;
+            e.revision = i as Revision;
+        }
+        HandBuiltLog {
+            stream: stream.to_string(),
+            events,
+        }
+    }
+
+    /// The events of `stream`: this log's own, or none for any other stream.
+    fn of(&self, stream: &str) -> &[Event] {
+        if stream == self.stream {
+            &self.events
+        } else {
+            &[]
+        }
+    }
+}
+
+impl EventStore for HandBuiltLog {
+    refuse_event_store_calls!(
+        "only the boundary lookup and the typed read are reachable":
+        append,
+        read_stream,
+        read_all,
+        subscribe_all,
+        subscribe_stream,
+        read_stream_positions,
+        read_stream_batched,
+        latest_in_group,
+    );
+    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
+        Ok(self
+            .of(stream)
+            .iter()
+            .rev()
+            .find(|e| e.type_ == event_type)
+            .map(|e| e.revision))
+    }
+    fn read_stream_typed(
+        &self,
+        stream: &str,
+        from: Revision,
+        selection: TypeSelection,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(self
+            .of(stream)
+            .iter()
+            .filter(|e| e.revision >= from)
+            .filter(|e| match selection {
+                TypeSelection::Only(types) => types.contains(&e.type_.as_str()),
+                TypeSelection::Except(types) => !types.contains(&e.type_.as_str()),
+            })
+            .cloned()
+            .collect())
     }
 }
 
@@ -375,6 +525,18 @@ pub enum CountedRead {
         types: Vec<String>,
         materialized: usize,
     },
+}
+
+/// One group lookup of each of `identities` on `stream`, in order: what a counting store saw of
+/// a caller that asked each identity's group once and nothing else.
+pub fn one_lookup_each(stream: &str, identities: &[impl AsRef<str>]) -> Vec<CountedRead> {
+    identities
+        .iter()
+        .map(|identity| CountedRead::LatestInGroup {
+            stream: stream.to_string(),
+            group: identity.as_ref().to_string(),
+        })
+        .collect()
 }
 
 impl CountedRead {
@@ -633,24 +795,25 @@ impl EventStore for ReadCountingStore<'_> {
     }
 }
 
-/// The derived index types a one-shot fixture floods the log with - the four
-/// `ingest::DERIVED_INDEX_TYPES`, spelled out because this fixture compiles into crates that do
-/// not all see the `ingest` module (a test asserting on them compares against that constant).
-pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
+/// The perception types a read of the run refuses at the store - the five
+/// `retention::PERCEPTION_TYPES`, spelled out because this fixture compiles into crates that do
+/// not all see the `retention` module (the tests of `run::read` hold this list to that constant).
+pub const ONE_SHOT_PERCEPTION_TYPES: [&str; 5] = [
     "CodeEntityExtracted",
     "EdgeInferred",
     "DocConceptExtracted",
     "DocLinkExtracted",
+    "GenerationIngested",
 ];
 
 /// What a one-shot command may cost over [`seed_one_shot_fixture`]'s log (spec 101): the current
-/// run's own non-derived events and the carried-over knowledge of every run, and nothing else.
+/// run's own non-perception events and the carried-over knowledge of every run, and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
     pub boundary: Revision,
     /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
-    /// its finding and its two notes (never the derived events appended during it).
+    /// its finding and its two notes (never the ledger entries appended during it).
     pub run_events: usize,
     /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
     pub carry_over: usize,
@@ -664,7 +827,7 @@ impl OneShotFixture {
 
     /// The three calls ONE read of the run on `stream` makes, as the counting double records
     /// them: the boundary lookup, the carried-over knowledge by type over the whole stream, and
-    /// the run slice from the boundary with the derived types refused.
+    /// the run slice from the boundary with the perception types refused.
     pub fn read(&self, stream: &str) -> Vec<CountedRead> {
         let carry = ["DecisionMade", "LessonLearned", "ReviewFinding"];
         let names = |types: &[&str]| types.iter().map(|t| t.to_string()).collect::<Vec<_>>();
@@ -684,7 +847,7 @@ impl OneShotFixture {
                 stream: stream.to_string(),
                 from: self.boundary,
                 only: false,
-                types: names(&ONE_SHOT_DERIVED_TYPES),
+                types: names(&ONE_SHOT_PERCEPTION_TYPES),
                 materialized: self.run_events,
             },
         ]
@@ -697,7 +860,7 @@ impl OneShotFixture {
 }
 
 /// A `RunStarted` for run `run` over `criteria`, stamped with its run id as the conductor mints it.
-fn run_started(run: &str, criteria: &[&str]) -> Event {
+pub fn run_started(run: &str, criteria: &[&str]) -> Event {
     Event::new(
         "RunStarted",
         serde_json::to_vec(&serde_json::json!({"run": run, "criteria": criteria})).unwrap(),
@@ -705,23 +868,51 @@ fn run_started(run: &str, criteria: &[&str]) -> Event {
     .with_meta("run_id", run)
 }
 
-/// `n` derived index events, cycling the four [`ONE_SHOT_DERIVED_TYPES`].
-fn derived_events(n: usize) -> Vec<Event> {
+/// THE ONE BUILDER of a ledger entry for the tests that include this file: the entry of
+/// `<prefix>/<file>` at `generation`, its batch of `n` events extracted from `blob` under the
+/// walk's flag `excluded`, as the entry's one constructor builds its event.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn entry_of_a_batch(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    n: usize,
+    blob: &str,
+    excluded: bool,
+) -> Event {
+    rigger::retention::GenerationIngested {
+        prefix: prefix.to_string(),
+        file: file.to_string(),
+        generation: generation.to_string(),
+        blob: blob.to_string(),
+        excluded,
+    }
+    .event(n)
+}
+
+/// `n` ledger entries of perception, each a generation of its own of one of four files.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn flood_entries(n: usize) -> Vec<Event> {
     (0..n)
         .map(|i| {
-            ev(
-                ONE_SHOT_DERIVED_TYPES[i % 4],
-                r#"{"from":"a","rel":"CALLS","to":"b"}"#,
+            entry_of_a_batch(
+                "gc",
+                &format!("src/f{}.rs", i % 4),
+                &format!("h{i}"),
+                1,
+                "",
+                false,
             )
         })
         .collect()
 }
 
-/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 derived index
-/// events before the current run's boundary, then the current run (started over `criteria`) with
-/// derived events of its own appended during it. Each prior run left a decision, a lesson or a
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 ledger entries
+/// of perception before the current run's boundary, then the current run (started over
+/// `criteria`) with entries of its own appended during it. Each prior run left a decision, a lesson or a
 /// finding the current run carries over, and a note of its own no one-shot read carries; the
 /// current run holds a decision and a finding of its own plus two notes.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn seed_one_shot_fixture(
     store: &dyn EventStore,
     stream: &str,
@@ -749,7 +940,7 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&derived_events(10_000));
+        append(&flood_entries(10_000));
     }
     append(&[
         run_started("run-b", &["another prior campaign"]),
@@ -761,14 +952,14 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&derived_events(10_000));
+        append(&flood_entries(10_000));
     }
     append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
     let boundary = store
         .last_position(stream, "RunStarted")
         .expect("the fixture's boundary reads")
         .expect("the fixture started a run");
-    append(&derived_events(50));
+    append(&flood_entries(50));
     append(&[
         decision("d-c", "c.rs"),
         ev(
@@ -777,7 +968,7 @@ pub fn seed_one_shot_fixture(
         ),
         ev("RunNote", "{}"),
     ]);
-    append(&derived_events(50));
+    append(&flood_entries(50));
     OneShotFixture {
         boundary,
         run_events: 5,

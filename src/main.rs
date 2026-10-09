@@ -303,19 +303,18 @@ hung spawn (answered only by the step's liveness fault)\n                       
 keeps them open and is named with its remedy,\n                              \
 `rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
 the pruned copy a rebuild's stopped swap\n                              \
-left, unless a rebuild in progress holds graph.db.lock\n  \
-rigger reset --derived      compact the EVENT LOG: keep only each file's latest\n                              \
-generation of the derived index, at the latest event per\n                              \
-replay key, delete the superseded generations and\n                              \
-re-recordings, and vacuum so the file shrinks on disk.\n                              \
-Every other event survives. Sheds what edits and the\n                              \
-pre-dedup ingest accreted;\n                              \
-composes with --runs (each prunes its own accumulation).\n                              \
+left, unless another `rigger setup` or `rigger reset` holds graph.db.lock\n  \
+rigger reset --derived      migrate the EVENT LOG, once: rewrite the first row of\n                              \
+each file's latest derived batch into that generation's\n                              \
+ledger entry, in place, delete every other derived\n                              \
+event, and vacuum so the file shrinks on disk.\n                              \
+Every other event survives;\n                              \
+composes with --runs (each sheds its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \
 in-flight spawn's marker inside its wall-clock bound,\n                              \
 or a driver registration's heartbeat inside the idle\n                              \
 window), naming what is live (a dead driver's run is\n                              \
-not): compaction\n                              \
+not): the migration\n                              \
 leaves revision gaps by design, and a stale writer can\n                              \
 reissue one and reorder the log - the corruption this\n                              \
 guard exists to prevent. --force-live skips the check\n                              \

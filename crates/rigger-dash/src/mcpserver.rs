@@ -1052,8 +1052,8 @@ mod tests {
         .to_string()
     }
 
-    /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
-    /// events and two superseded runs before the boundary, every tool that reads the run -
+    /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
+    /// entries and two superseded runs before the boundary, every tool that reads the run -
     /// `rigger_peers`, `rigger_activity` and the spawn-bound `rigger_scratch` - costs exactly one
     /// read of the run's own events plus the typed carry-over per call, asserted through the
     /// counting store double, and still answers from the whole carry-over.
@@ -2190,7 +2190,7 @@ mod tests {
     /// still appends (its fold refused, the rebuild re-deriving it from the log).
     #[test]
     fn tools_that_depend_on_the_fold_refuse_a_graph_owing_its_rebuild_while_emit_appends() {
-        use crate::contextgraph::{Error as GraphError, Graph, REBUILD_OWED};
+        use crate::contextgraph::{Error as GraphError, REBUILD_OWED};
         use crate::grounder::Nop;
 
         struct Owing;
@@ -2202,15 +2202,11 @@ mod tests {
             ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
-            fn subgraph(&self, _: &[String], _: i64) -> Result<Graph, GraphError> {
-                panic!("a graph owing its rebuild is never read")
-            }
-            fn resolve(&self, _: &str) -> Result<Option<String>, GraphError> {
-                panic!("a graph owing its rebuild is never read")
-            }
+            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
+            crate::projection_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();

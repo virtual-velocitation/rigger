@@ -49,7 +49,7 @@
 //!    generation edit on disk, actually PRODUCES that sequence (the same class of gap the first
 //!    bullet above closes for round 1). The three tests below drive `build_index` /
 //!    `extract_events` / `proof_events` twice each over a real file edit, re-applying only the
-//!    ONE file that changed - mirroring what the real replay-key content-hash suppression
+//!    ONE file that changed - mirroring what the real content-generation suppression
 //!    (`crate::ingest::key_batch`, driven by `RunCtx::ingest_project_batches` in production) does,
 //!    per [`events_for_file`]'s own doc below.
 
@@ -265,9 +265,10 @@ fn root_write(root: &tempfile::TempDir, rel: &str, contents: &str) {
 /// `project_batches_paced` uses for every file (structural events, then this
 /// file's own test-origin evidence via `proof_events`), but scoped to ONE named file so a
 /// round-2 re-extraction can be simulated by feeding only the file that actually changed. That
-/// is exactly what the real replay-key content-hash suppression accomplishes in production
+/// is exactly what the real content-generation suppression accomplishes in production
 /// (`crate::ingest::key_batch` keys a file's WHOLE batch on its content hash; `RunCtx::
-/// ingest_project_batches`'s sink appends a batch only when its key set is new, so an unchanged
+/// ingest_project_batches`'s sink records a batch only when its generation is not the one the
+/// log and the graph both hold, so an unchanged
 /// file's batch is never handed to the fold again on a later run while a changed file's whole
 /// batch re-applies) - this helper reproduces that SELECTION at the test level without needing a
 /// live `RunCtx`/eventstore, while `extract_events`/`proof_events` themselves stay the real,

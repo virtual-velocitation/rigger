@@ -27,10 +27,8 @@ pub mod spawn_store;
 pub mod sqlite;
 
 // The domain modules the moved code names by their historical `crate::` paths.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_domain::ingest;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_domain::{contextgraph, progress, run};
+use rigger_domain::{contextgraph, ingest, progress, retention, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod spawn {
     /// The minimal request the spawn store's tests build, defined once with the shared fixtures.

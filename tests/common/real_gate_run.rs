@@ -127,5 +127,6 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     }
 }

@@ -2035,6 +2035,13 @@ enum SampleVerdict {
 /// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
 const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
     (
+        "crates/rigger-grounder/src/ingest.rs",
+        "answered",
+        SampleVerdict::Closed(
+            "its view of a sink answer's batch is `wire_owned`; the root sink suite's `Handed::answer` re-rolled that view as its own `typed` and now calls `wire_owned` too",
+        ),
+    ),
+    (
         "crates/rigger-domain/src/canary.rs",
         "from_event",
         SampleVerdict::NoDuplicate,
@@ -4370,7 +4377,7 @@ fn render_section_4() -> String {
 // the prose can never cite a stale count. Closing or changing a cited cluster makes the render
 // panic with the id, which is the prompt to re-cite that sentence.
 
-const PROJECT_BATCHES: &str = "dup-6fdd86ee972f";
+const PROJECT_BATCHES: &str = "dup-f2eee0c78cd6";
 
 /// The real catalog's cluster `id`, which the report's prose cites.
 fn cited(id: &str) -> &'static DupCluster {

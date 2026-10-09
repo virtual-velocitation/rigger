@@ -129,6 +129,7 @@ fn run_over(
         graph: None,
         criteria: criteria.to_vec(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     run(cfg, &deps).unwrap()
 }

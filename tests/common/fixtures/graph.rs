@@ -118,8 +118,50 @@ pub fn pair_map(pairs: &[(String, String)]) -> BTreeMap<String, String> {
     pairs.iter().cloned().collect()
 }
 
-/// The two graph reads a `Projection` double answers with nothing - an empty subgraph and an
-/// unresolved mention - expanded inside that double's `impl Projection` block.
+/// The ledger half of a `Projection` double that folds no ledger entry: it holds no generation
+/// and refuses the ledger fold. Expanded inside that double's `impl Projection` block.
+#[macro_export]
+macro_rules! projection_folds_no_entry {
+    () => {
+        fn current_generation(
+            &self,
+            _identity: &str,
+        ) -> Result<Option<String>, rigger::contextgraph::Error> {
+            Ok(None)
+        }
+        fn apply_generation(
+            &self,
+            _entry: &rigger::eventstore::Event,
+            _batch: rigger::contextgraph::EntryBatch<'_>,
+        ) -> Result<rigger::contextgraph::EntryFold, rigger::contextgraph::Error> {
+            Err(rigger::contextgraph::Error(
+                "this double folds no ledger entry".to_string(),
+            ))
+        }
+    };
+}
+
+/// The read half of a `Projection` double no test reads: asking it for a subgraph or a mention
+/// fails the test. Expanded inside that double's `impl Projection` block.
+#[macro_export]
+macro_rules! projection_is_never_read {
+    () => {
+        fn subgraph(
+            &self,
+            _seed: &[String],
+            _depth: i64,
+        ) -> Result<rigger::contextgraph::Graph, rigger::contextgraph::Error> {
+            panic!("this double is never read")
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
+            panic!("this double is never read")
+        }
+    };
+}
+
+/// What a `Projection` double answers with nothing - an empty subgraph, an unresolved mention and
+/// no rebuild owed - with the ledger half of a double that folds no entry
+/// (`projection_folds_no_entry`), expanded inside that double's `impl Projection` block.
 #[macro_export]
 macro_rules! projection_reads_nothing {
     () => {
@@ -136,6 +178,7 @@ macro_rules! projection_reads_nothing {
         fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
             Ok(false)
         }
+        $crate::projection_folds_no_entry!();
     };
 }
 

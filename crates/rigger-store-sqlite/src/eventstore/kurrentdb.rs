@@ -760,14 +760,17 @@ impl Store {
 }
 
 impl EventStore for Store {
-    /// An append holding a grouped event gives every event its id ([`with_ids`]) and runs the
-    /// group-link protocol ([`append_linked`]) around the write; any other is written as is.
+    /// A batch holding a derived event is refused before anything is written, a group link
+    /// included ([`super::refuse_derived`]). An append holding a grouped event gives every event
+    /// its id ([`with_ids`]) and runs the group-link protocol ([`append_linked`]) around the
+    /// write; any other is written as is.
     fn append(
         &self,
         stream: &str,
         expected: ExpectedRevision,
         events: &[Event],
     ) -> Result<Appended, Error> {
+        super::refuse_derived(events)?;
         if events.iter().any(|e| e.meta.contains_key(META_GROUP)) {
             let events = with_ids(events);
             append_linked(

@@ -330,6 +330,7 @@ pub fn bare_deps<'a>(
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     }
 }
 

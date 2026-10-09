@@ -42,8 +42,8 @@ fn split(key: &str) -> Option<(&str, &str)> {
     Some((&key[identity], &key[generation]))
 }
 
-/// An event of `type_` carrying `key` in the replay-key metadata slot: the exact recorded shape
-/// both ingest sinks append, built through the crate's public `Event` API.
+/// An event of `type_` carrying `key` in the replay-key metadata slot: the recorded shape
+/// `rigger graph build` appends, built through the crate's public `Event` API.
 fn keyed(type_: &str, key: &str) -> Event {
     Event::new(type_, b"payload".to_vec()).with_meta(META_REPLAY_KEY, key)
 }

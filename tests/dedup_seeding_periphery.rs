@@ -18,8 +18,8 @@
 //!    "suppresses nothing" and the log resumes growing without bound. These tests round-trip REAL
 //!    minted keys - including for paths that carry the key format's own `@` separator, a shape
 //!    only a real walk over a real tree can prove the writer ever mints.
-//! 3. `cmd_graph_build` - the SECOND dedup sink, which this criterion owns alongside the run's -
-//!    now seeds from that same predicate. Its type-first behaviour is only observable end to end,
+//! 3. `cmd_graph_build` - the cold build's sink - decides type-first, as that predicate does. Its
+//!    type-first behaviour is only observable end to end,
 //!    through the built binary and a store the test seeds.
 //! 4. The replay-key METADATA NAME is now owned by `rigger::ingest` and RE-EXPORTED as
 //!    `rigger::conductor::META_REPLAY_KEY`, which every existing caller names. A stamping half and
@@ -44,9 +44,10 @@ use rigger::eventstore::Event;
 use rigger::ingest::{is_derived_index_type, DERIVED_INDEX_TYPES};
 use std::collections::BTreeSet;
 
-/// An event of `type_` carrying `key` in the replay-key metadata slot - the exact shape both ingest
-/// sinks stamp on what they append, built here through the crate's public `Event` API so the test
-/// pins the recorded form rather than an in-crate helper. The slot is addressed through
+/// An event of `type_` carrying `key` in the replay-key metadata slot - the slot `rigger graph
+/// build` stamps on each keyed derived event it appends, and the run's sink on its one ledger
+/// entry - built here through the crate's public `Event` API so the test pins the recorded form
+/// rather than an in-crate helper. The slot is addressed through
 /// `rigger::conductor::META_REPLAY_KEY`, the spelling every existing caller of the crate uses;
 /// that it is the SAME name the owning `rigger::ingest` module publishes, and therefore the same
 /// slot the predicate reads, is itself pinned below rather than assumed here.
@@ -189,8 +190,8 @@ fn the_predicate_is_a_pure_function_of_the_recorded_stream() {
 /// CONTRACT: a RUN BOUNDARY in the stream is not a boundary to this predicate - it is what
 /// PROJECT-scoped means, stated at the public API every consumer reaches it through.
 ///
-/// Both sinks hand this function a WHOLE multi-run stream and take its answer as "what is already
-/// recorded". The word that makes that safe is project-scoped: a file's content hash does not
+/// This reference is handed a WHOLE multi-run stream, and its answer - "what is already
+/// recorded" - is what the group lookup each sink asks is held to. The word that makes that safe is project-scoped: a file's content hash does not
 /// change because a new run started, so a `RunStarted` and the lifecycle facts that follow it must
 /// leave the answer exactly as it was. The regression this guards is not hypothetical - it is the
 /// PRIOR behaviour this criterion removes, in which the derived keys were scoped to the current
@@ -394,7 +395,7 @@ fn minted_keys(root: &std::path::Path) -> BTreeSet<String> {
 }
 
 /// The recorded events, replayed as a sink would see them: each minted key stamped onto an event of
-/// the type it was minted for - byte-for-byte the shape both sinks append (`with_meta(replay_key)`).
+/// the type it was minted for - the shape `rigger graph build` appends (`with_meta(replay_key)`).
 #[cfg(feature = "symbols")]
 fn as_recorded(minted: &[(String, String)]) -> Vec<Event> {
     minted.iter().map(|(k, t)| keyed(t, k)).collect()
@@ -594,16 +595,16 @@ use common::cli::run_stream_identity;
 #[cfg(feature = "symbols")]
 use common::fixtures::minted_events;
 use common::fixtures::reference_replay_keys;
+#[cfg(feature = "symbols")]
+use common::fixtures::{latest_recorded_keys, recorded_entry_keys, walked_entry_keys};
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
-/// seeding are two processes that must agree, and this criterion makes them agree by sharing ONE
-/// predicate. Prove the agreement without driving a run: after the SHIPPED build records the tree,
-/// the predicate over the resulting log returns EXACTLY the key set the walk mints for that tree -
-/// so a run seeding from that same log would find every one of its own emits already suppressed and
-/// append nothing. A second build then appends nothing either, at both halves of the index.
-///
-/// The pre-existing cold-build test counts one event type across a re-build; this pins the WHOLE
-/// derived index and the seeding equivalence that makes the two sinks interchangeable.
+/// sink are two processes that must agree, and they agree by recording through ONE function over
+/// ONE walk. Prove the agreement without driving a run: after the SHIPPED build records the tree,
+/// the latest-generation reference over the resulting log returns EXACTLY the entry keys the
+/// walk's batches name for that tree - so a run reading that same log would find every one of its
+/// own batches already recorded and record nothing. A second build then records nothing either,
+/// at both halves of the index.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
@@ -618,33 +619,30 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
     );
 
     let log = read_run_events(root);
-    let suppressed: BTreeSet<String> = reference_replay_keys(&log);
+    let recorded = recorded_entry_keys(&log);
     assert_eq!(
-        suppressed,
-        minted_keys(root),
-        "the shared predicate over the log a cold build wrote must return exactly the keys the walk \
-         mints for that tree - that equality IS the build/run seeding equivalence, and it is what \
-         lets a run inherit a cold build's work instead of re-appending the whole index"
+        (recorded.clone(), latest_recorded_keys(&log)),
+        (
+            walked_entry_keys(root),
+            walked_entry_keys(root).into_iter().collect()
+        ),
+        "the log a cold build wrote holds exactly one ledger entry per batch the walk mints for \
+         that tree, each its identity's latest recording - that equality IS the build/run \
+         equivalence, and it is what lets a run inherit a cold build's work instead of recording \
+         the whole index again"
     );
 
-    let derived_before = log
-        .iter()
-        .filter(|e| is_derived_index_type(&e.type_))
-        .count();
     let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
     assert!(ok2, "a second graph build must succeed; stderr: {err2}");
     assert_eq!(
         ingested_count(&out2),
         0,
-        "a re-build over a byte-identical tree must append NOTHING; got:\n{out2}"
+        "a re-build over a byte-identical tree must record NOTHING; got:\n{out2}"
     );
     assert_eq!(
-        read_run_events(root)
-            .iter()
-            .filter(|e| is_derived_index_type(&e.type_))
-            .count(),
-        derived_before,
-        "the whole derived-index slice of the log must be unchanged by the second build"
+        recorded_entry_keys(&read_run_events(root)),
+        recorded,
+        "the ledger must be unchanged by the second build"
     );
 }
 
@@ -656,10 +654,11 @@ fn a_cold_build_leaves_the_shared_seeding_with_nothing_left_to_ingest() {
 /// spelled like a content key would make the build skip that file's batch entirely - silently
 /// losing a file from the graph, with a clean exit and a truthful-looking "ingested 0".
 ///
-/// The proof pre-claims a not-yet-ingested file's REAL keys with domain events (the keys are taken
-/// from the shipped walk, so they are exactly what the build is about to mint), then runs the build
-/// and asserts the file was ingested anyway and its entities are readable back through the shipped
-/// inspector. Under a type-blind seen-set this reddens: the build reports 0 and `beta.rs` is absent.
+/// The proof pre-claims a not-yet-ingested file's REAL entry key with a domain event grouped under
+/// the file's batch identity (the key names the batch the shipped walk mints, so it is exactly
+/// what the build is about to record), then runs the build and asserts the file was recorded
+/// anyway and its entities are readable back through the shipped inspector. Under a type-blind
+/// lookup this reddens: the build reports 0 and `beta.rs` is absent.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
@@ -678,22 +677,29 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
         "pub fn beta_helper() {}\npub fn beta_caller() { beta_helper(); }\n",
     )
     .unwrap();
-    let beta: Vec<(String, String)> = minted(root)
+    let beta: Vec<String> = walked_entry_keys(root)
         .into_iter()
-        .filter(|(k, _)| k.contains("beta.rs"))
+        .filter(|key| key.contains("beta.rs"))
         .collect();
-    assert!(
-        !beta.is_empty(),
-        "sanity: the new source file must mint content keys of its own"
+    assert_eq!(
+        beta.len(),
+        1,
+        "sanity: the new source file mints one batch, and so one entry key, of its own"
     );
 
-    // Pre-claim every one of beta's keys with a DOMAIN event. Only the type test stands between
-    // this residue and a lost file.
+    // Pre-claim beta's entry key with a DOMAIN event grouped under beta's identity, so the group
+    // lookup answers it. Only the type test stands between this residue and a lost file.
     let residue: Vec<Event> = beta
         .iter()
-        .map(|(k, _)| keyed(TYPE_REVIEW_FINDING, k))
+        .map(|key| {
+            let (identity, _) = rigger::ingest::derived_key_parts(key).unwrap();
+            Event::new(TYPE_REVIEW_FINDING, Vec::new())
+                .with_meta(rigger::ingest::META_REPLAY_KEY, key)
+                .with_meta(rigger::eventstore::META_GROUP, identity)
+        })
         .collect();
     seed_run_stream(root, &residue);
+    let before = recorded_entry_keys(&read_run_events(root));
 
     let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
     assert!(
@@ -702,19 +708,12 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
     );
     assert!(
         ingested_count(&out2) > 0,
-        "the new file must be ingested despite domain events pre-claiming its content keys; got:\n{out2}"
+        "the new file must be ingested despite a domain event pre-claiming its entry key; got:\n{out2}"
     );
-
-    let recorded: BTreeSet<String> = read_run_events(root)
-        .iter()
-        .filter(|e| is_derived_index_type(&e.type_))
-        .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
-        .collect();
-    let beta_keys: BTreeSet<String> = beta.iter().map(|(k, _)| k.clone()).collect();
-    assert!(
-        beta_keys.is_subset(&recorded),
-        "every one of the new file's content keys must be recorded on a DERIVED event; missing {:?}",
-        beta_keys.difference(&recorded).collect::<Vec<_>>()
+    assert_eq!(
+        recorded_entry_keys(&read_run_events(root)),
+        [before, beta].concat(),
+        "the build records the new file's ledger entry, and no other"
     );
 
     // And it is readable back through the shipped inspector, so the file really reached the graph.
@@ -729,31 +728,6 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
     );
 }
 
-/// Every `<prefix>/<file>@<hash>#<i>` key the log has EVER recorded on a derived-index event under
-/// `root` - across generations, so a superseded generation is still in here. This is deliberately
-/// NOT `project_scoped_latest_generations`: that returns the LIVE set (each file's latest generation
-/// only), and the difference between the two is exactly what "only what changed is re-emitted"
-/// and "the log holds the latest generation in full" are claims about.
-#[cfg(feature = "symbols")]
-fn recorded_derived_keys(root: &std::path::Path) -> BTreeSet<String> {
-    read_run_events(root)
-        .iter()
-        .filter(|e| is_derived_index_type(&e.type_))
-        .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
-        .collect()
-}
-
-/// How many derived-index EVENTS the log under `root` carries - counted, not deduplicated by key.
-/// A re-append of a key the log already holds is invisible to the key SET and visible only here, so
-/// "only what changed is re-emitted" has to be measured against this and not against the set.
-#[cfg(feature = "symbols")]
-fn recorded_derived_events(root: &std::path::Path) -> usize {
-    read_run_events(root)
-        .iter()
-        .filter(|e| is_derived_index_type(&e.type_))
-        .count()
-}
-
 /// INTEGRATION through the SHIPPED binary, over a MIX of skipping and re-ingest - the one shape
 /// this criterion's net contract is stated against and the one shape nothing drove.
 ///
@@ -765,11 +739,11 @@ fn recorded_derived_events(root: &std::path::Path) -> usize {
 /// here and the qualifier is satisfied trivially - it is carried because the three sites state it,
 /// not because this test distinguishes the two.
 /// Every other test here sees a single content generation per file - a fresh build, a re-build over
-/// a byte-identical tree, or keys pre-claimed before their file was ever ingested - so the half of
+/// a byte-identical tree, or a key pre-claimed before its file was ever ingested - so the half of
 /// the predicate that RETIRES a file's earlier generation when a later one is recorded is driven
 /// only by hand-spelled keys in the unit layer. That is precisely the boundary this test crosses:
-/// real keys the shipped walk minted, over a tree where one file moved generation and another did
-/// not, read back through the shipped binary's own store.
+/// the ledger entries the shipped build recorded, over a tree where one file moved generation and
+/// another did not, read back through the shipped binary's own store.
 ///
 /// Both halves fail SILENTLY without it. If the predicate stopped retiring an earlier generation
 /// (it returned every key ever recorded rather than the latest per file), the live set would grow a
@@ -801,25 +775,33 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
         ingested_count(&out) > 0,
         "sanity: the first build over a fresh tree must ingest the derived index; got:\n{out}"
     );
-    let recorded_before = recorded_derived_keys(root);
-    let events_before = recorded_derived_events(root);
+    let recorded_before = recorded_entry_keys(&read_run_events(root));
     assert_eq!(
         recorded_before,
-        minted_keys(root),
-        "sanity: before the edit the log holds exactly the tree's one generation"
+        walked_entry_keys(root),
+        "sanity: before the edit the log holds exactly the tree's one generation, one entry a batch"
     );
 
     // Move exactly ONE file's content generation. `beta.rs` and the design doc are untouched, so
-    // their batches must be skipped while `alpha.rs`'s must be re-emitted whole.
+    // their batches must be skipped while `alpha.rs`'s must be recorded again.
     std::fs::write(
         root.join("src/alpha.rs"),
         "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\npub fn alpha_extra() { alpha_caller(); }\n",
     )
     .unwrap();
-    let tree_now = minted_keys(root);
-    assert_ne!(
-        tree_now, recorded_before,
-        "sanity: the edit must move a content generation, else there is no mix to drive"
+    let tree_now = walked_entry_keys(root);
+    let moved: Vec<String> = tree_now
+        .iter()
+        .filter(|key| !recorded_before.contains(key))
+        .cloned()
+        .collect();
+    assert_eq!(
+        moved
+            .iter()
+            .map(|key| key.contains("alpha.rs"))
+            .collect::<Vec<_>>(),
+        [true],
+        "sanity: the edit moves the generation of the edited file's one batch, and no other"
     );
 
     let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
@@ -829,50 +811,29 @@ fn a_mixed_build_holds_every_files_latest_generation_and_re_emits_only_what_chan
     );
     assert!(
         ingested_count(&out2) > 0,
-        "the edited file's batch must be re-emitted, so the build cannot report nothing; got:\n{out2}"
+        "the edited file's batch must be recorded, so the build cannot report nothing; got:\n{out2}"
     );
 
-    // HALF ONE - only what changed was re-emitted. Every key this build ADDED to the
-    // log must belong to the file that moved; a key appended for an unchanged file would mean the
-    // skip did not happen and the log grows on every build, which is the defect this criterion ends.
-    let recorded_after = recorded_derived_keys(root);
-    let appended: BTreeSet<&String> = recorded_after.difference(&recorded_before).collect();
-    assert!(
-        !appended.is_empty(),
-        "the edited file's new generation must reach the log"
-    );
-    assert!(
-        appended.iter().all(|k| k.contains("alpha.rs")),
-        "only the file whose content changed may be re-emitted; these keys were appended for \
-         unchanged files: {:?}",
-        appended
-            .iter()
-            .filter(|k| !k.contains("alpha.rs"))
-            .collect::<Vec<_>>()
-    );
-    // Measured by EVENT COUNT, because a re-append of a key the log already holds does not change
-    // the key SET at all: an unchanged file whose whole batch is re-appended is invisible to the
-    // assertion above and visible only here. The log may grow by exactly the events carrying keys
-    // it did not already hold, and by nothing else.
+    // HALF ONE - only what changed was recorded. The log grew by exactly the one entry of the
+    // batch that moved; an entry recorded for an unchanged file would mean the skip did not happen
+    // and the log grows on every build, which is the defect this criterion ends. Compared as the
+    // whole ordered list, so an entry recorded twice is seen too.
+    let log = read_run_events(root);
     assert_eq!(
-        recorded_derived_events(root) - events_before,
-        appended.len(),
-        "the log may grow ONLY by the keys it did not already hold; it grew by {} derived events \
-         while only {} of them carry a key the log was missing, so a batch already wholly recorded \
-         was re-appended",
-        recorded_derived_events(root) - events_before,
-        appended.len()
+        recorded_entry_keys(&log),
+        [recorded_before, moved].concat(),
+        "the log may grow ONLY by the entry of the batch whose generation moved"
     );
 
-    // HALF TWO - the log holds each file's LATEST generation in full, and holds no earlier one as
-    // live. The predicate over the log is the shipped read of "what is already recorded", so this
+    // HALF TWO - the log holds each file's LATEST generation, and holds no earlier one as live.
+    // The reference over the log is the shipped read of "what is already recorded", so this
     // equality is the net contract itself: the edited file's superseded generation is retired, the
-    // skipped files' generations are still there whole, and nothing else is live.
-    let live: BTreeSet<String> = reference_replay_keys(&read_run_events(root));
+    // skipped files' generations are still there, and nothing else is live.
     assert_eq!(
-        live, tree_now,
-        "after a mix of skipping and re-ingest the live suppression set must be exactly the tree's \
-         latest generation - no retired generation left live, no skipped file's keys dropped"
+        latest_recorded_keys(&log),
+        tree_now.into_iter().collect(),
+        "after a mix of skipping and re-ingest the live recordings must be exactly the tree's \
+         latest generation - no retired generation left live, no skipped file's entry dropped"
     );
 
     // And the mix settles: a further build over the now-unchanged tree appends nothing at all, so

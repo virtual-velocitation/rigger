@@ -63,6 +63,9 @@ pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
 pub use rigger_domain::progress;
+/// The classes of event (spec 107): the perception and episodic type lists and the ledger entry.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_domain::retention;
 /// The review verdict and the spec critique (spec 112): its prompt, finding lines and record.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::review;

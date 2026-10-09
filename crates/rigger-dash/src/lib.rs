@@ -17,6 +17,8 @@ use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_console::console;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::retention;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{blocker, ledger, metrics, progress, run};

@@ -4,30 +4,32 @@
 //! Before this criterion, `rigger reset` with no mode flag refused
 //! ("expected at least one mode: rigger reset --runs ... and/or rigger reset --derived ...").
 //! Now it exits 0 and prints one line per prunable accumulation (`--runs`'s dead-run context-graph
-//! nodes/edges, `--derived`'s duplicate derived-index events), each with a MEASURED count and the
-//! flag that acts on it - read-only, so running the bare command never prunes anything itself.
+//! nodes/edges, `--derived`'s derived events and the file identities holding them), each with a
+//! MEASURED count and the flag that acts on it - read-only, so running the bare command never
+//! prunes anything itself.
 //!
 //! What this file OWNS (criterion 3) and what it deliberately does not:
 //!
 //!   - OWNS: the bare-menu's exit code, its per-mode measured counts on an empty AND a populated
-//!     store, that the menu never mutates the store, and that its numbers agree with what a real
-//!     flagged prune actually removes.
-//!   - NOT OWNED: the flagged `--runs`/`--derived` prune behavior itself (already pinned by
-//!     `tests/cli.rs` and `tests/reset_derived_compaction.rs`, both untouched by this criterion -
-//!     that is what "flagged behavior is byte-for-byte unchanged" means and what leaving those
-//!     suites passing proves); the per-backend honesty branch for `--derived` on a non-sqlite
-//!     backend, which needs no live server to exercise (`StoreSelection` is a `main.rs`-private
-//!     type) and is instead pinned by an in-crate unit test beside `derived_menu_line`.
+//!     store, and that the menu never mutates the store.
+//!   - NOT OWNED: the flagged `--runs`/`--derived` behavior itself (pinned by `tests/cli.rs`,
+//!     which also holds the menu's agreement with what `--derived` then sheds, and
+//!     `tests/reset_derived_compaction.rs`); the per-backend honesty branch for `--derived` on a
+//!     non-sqlite backend, which needs no live server to exercise (`StoreSelection` is a
+//!     `main.rs`-private type) and is instead pinned by an in-crate unit test beside
+//!     `derived_menu_line`.
 
 mod common;
 
+use common::cli::derived_menu_line_naming;
+use common::cli::derived_menu_lines;
 use common::cli::emit;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
-use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::DUP_ROUNDS;
+use common::cli::with_pre_ledger_run_store;
+use common::cli::NOTHING_TO_SHED_MENU_LINE;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
@@ -89,63 +91,42 @@ fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
         out.contains("--runs: 0 dead-run node(s)"),
         "the --runs line must report zero prunable on an empty store; got: {out:?}"
     );
-    assert!(
-        out.contains("--derived: 0 redundant derived-index event(s)"),
-        "the --derived line must report zero prunable on an empty store; got: {out:?}"
+    assert_eq!(
+        derived_menu_lines(&out),
+        [NOTHING_TO_SHED_MENU_LINE],
+        "the --derived line must say an empty store holds no derived event to shed"
     );
 }
 
+/// Given a store whose only derived events name no file identity - one with no replay key and
+/// one whose replay key does not parse - when the operator runs bare `rigger reset`, then the
+/// `--derived` line still names the two events and the flag, of zero file identities, and never
+/// says there is nothing to shed.
 #[test]
-fn bare_reset_on_a_populated_store_reports_measured_counts_matching_a_real_prune_and_mutates_nothing(
-) {
+fn bare_reset_names_the_derived_events_of_a_store_whose_rows_name_no_file_identity() {
     let dir = temp_store_project();
     let root = dir.path();
-    seed_one_dead_run_node(root);
-    seed_derived_duplicates(root);
-
-    let before = store_row_counts(root);
+    let entity = common::cli::code_entity;
+    let type_ = rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+    with_pre_ledger_run_store(root, |store| {
+        store
+            .append(
+                rigger::conductor::STREAM,
+                rigger::eventstore::ExpectedRevision::Any,
+                &[
+                    rigger::eventstore::Event::new(type_, entity()),
+                    common::cli::keyed(type_, entity(), "gc/src/odd.rs", 10),
+                ],
+            )
+            .unwrap();
+    });
 
     let (out, err, ok) = run_rigger(root, &["reset"]);
-    assert!(
-        ok,
-        "a bare `rigger reset` on a populated store must exit 0; stderr: {err}"
-    );
-    assert!(
-        out.contains("--runs: 1 dead-run node(s)"),
-        "the --runs line must report the one dead-run node the fixture seeds; got: {out:?}"
-    );
-    assert!(
-        out.contains(&format!(
-            "--derived: {} redundant derived-index event(s)",
-            DUP_ROUNDS - 1
-        )),
-        "the --derived line must report the {} prunable duplicates the fixture seeds; got: {out:?}",
-        DUP_ROUNDS - 1
-    );
-
-    // READ-ONLY: the bare menu must never prune anything itself.
-    let after = store_row_counts(root);
+    assert!(ok, "bare reset must exit 0; stderr: {err}");
     assert_eq!(
-        before, after,
-        "a bare `rigger reset` must not mutate the event log or the context graph"
-    );
-
-    // HONEST: the previewed counts must agree with what a REAL flagged prune actually removes.
-    let (out2, err2, ok2) = run_rigger(root, &["reset", "--runs", "--derived"]);
-    assert!(
-        ok2,
-        "reset --runs --derived must succeed; stderr: {err2}\n{out2}"
-    );
-    assert!(
-        out2.contains("pruned 1 dead-run"),
-        "the real --runs prune must remove exactly the node the menu previewed; got: {out2:?}"
-    );
-    assert!(
-        out2.contains(&format!(
-            "CodeEntityExtracted {}",
-            DUP_ROUNDS - 1
-        )),
-        "the real --derived prune must remove exactly the duplicates the menu previewed; got: {out2:?}"
+        derived_menu_lines(&out),
+        [derived_menu_line_naming(2, 0)],
+        "two derived events naming no file identity are still events `--derived` sheds"
     );
 }
 

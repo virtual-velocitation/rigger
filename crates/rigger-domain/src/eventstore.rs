@@ -297,20 +297,21 @@ impl Appended {
     }
 }
 
-/// The content-identity policy the store's derived-index maintenance (measurement and
-/// compaction) runs under: WHICH event types carry content identity and WHERE an event
-/// carries its content key.
+/// The content-identity policy the store's LIVE SELECTION runs under - the rows of a log's
+/// derived index a rebuild folds, and the measurements read off that selection: WHICH event
+/// types carry content identity and WHERE an event carries its content key.
 ///
-/// This is CONFIGURATION, injected at the composition root, never vocabulary the store
-/// owns: the event types whose payload is a re-derivable index of the project's own
-/// sources are knowledge of the layer that derives them, and the store is the lower
-/// port. Handing the policy in keeps the store free of any dependency on that layer.
+/// This is CONFIGURATION, injected at the composition root: it configures the live selection a
+/// rebuild folds. The migration that sheds the derived index and the store's refusal of a
+/// derived append do not read it - they read the class table the domain owns (`retention`), the
+/// derived list itself, so what is shed and what is refused can never be narrowed by a policy a
+/// caller handed in.
 ///
-/// The policy also carries the VALID-TIME PARTITION a compaction needs
+/// The policy also carries the VALID-TIME PARTITION the selection needs
 /// ([`with_reasserting_types`](Self::with_reasserting_types)) - which of the covered
 /// types re-assert a fact in place rather than superseding the subject's prior
 /// recording. That belongs here, on the one injected value, and not as a second
-/// positional list beside it: a compaction that deletes a key's earlier recordings has
+/// positional list beside it: a selection that passes over a key's earlier recordings has
 /// to know whether the earliest recorded valid-time is the one the projection holds,
 /// and a per-type rule expressed twice can be handed in the wrong order and can drift a
 /// call site at a time. It is still injected knowledge, still just type names, so the
@@ -525,6 +526,14 @@ pub enum Error {
         attempted: Revision,
         recorded: Revision,
     },
+    /// Spec 107 - THE STORE REFUSES A DERIVED APPEND. The batch handed to the store holds an
+    /// event of the derived type `type_`, which the tree re-derives and the log keeps only as
+    /// its generation's ledger entry. The whole batch is refused and none of it is written.
+    #[error(
+        "event store: append refused: {type_} is a derived event, which the tree re-derives - \
+         the log keeps the ledger entry of its generation and no event of this batch was written"
+    )]
+    DerivedAppend { type_: String },
     #[error("event store: {0}")]
     Backend(String),
 }
@@ -691,6 +700,12 @@ pub trait EventStore: Send + Sync {
     /// A store may write FEWER events than it was handed when it recognises an event as
     /// already recorded; the suppressed events report `None` and consume no per-stream
     /// revision, so the stream advances by exactly the events written.
+    ///
+    /// A batch holding an event of a derived type is refused WHOLE with
+    /// [`Error::DerivedAppend`], naming the first such type in batch order, and nothing of it
+    /// is written: no event, no group member, no position and no revision. The tree
+    /// re-derives a derived event, so the log keeps only the ledger entry of its generation.
+    /// A PORT obligation every adapter owes, pinned by the backend-agnostic contract suite.
     fn append(
         &self,
         stream: &str,

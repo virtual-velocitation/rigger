@@ -1,8 +1,8 @@
-//! The ingest fold rules: the replay-key vocabulary of the derived index, the group stamp every
-//! keyed derived event carries, and the latest-generation lookup both ingest sinks seed from. The
+//! The ingest fold rules: the replay-key vocabulary of the derived index and the
+//! latest-generation lookup both ingest sinks ask. The
 //! walk that builds the keys lives in the root crate's `ingest` module.
 
-use crate::eventstore::{Error, Event, EventStore, META_GROUP};
+use crate::eventstore::{Error, Event, EventStore};
 
 /// The metadata key under which an event carries its deterministic REPLAY KEY (spec 04, criterion
 /// 4): the name a content key is STAMPED under and read back from, so this module owns the wire
@@ -10,15 +10,16 @@ use crate::eventstore::{Error, Event, EventStore, META_GROUP};
 ///
 /// The key itself is a pure function of what it identifies - for a derived index event, the batch's
 /// own bytes; for a run's lifecycle events, the run structure (unit id, phase or gate token,
-/// remediation attempt) - never wall clock or randomness. An event stamped with one is appended AT
-/// MOST ONCE against whatever key set its sink seeds from, so two processes computing the identical
-/// key for the identical event let the second recognize the first's as a replay. Folds and
+/// remediation attempt) - never wall clock or randomness. A lifecycle event stamped with one is
+/// appended AT MOST ONCE against the key set its run seeds, so two processes computing the identical
+/// key for the identical event let the second recognize the first's as a replay; a key of
+/// perception names a generation and is unique to nothing (spec 107). Folds and
 /// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
 ///
 /// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
 /// [`project_scoped_latest_generations`] which parses it back, rather than in the orchestrator that also
-/// stamps it. That predicate is the shared suppression authority BOTH a live run and a cold
-/// `rigger graph build` call, so reading the name out of `crate::conductor` would point this module
+/// stamps it. That predicate is the reference the group lookup BOTH a live run's sink and a cold
+/// `rigger graph build` ask is held to, so reading the name out of `crate::conductor` would point this module
 /// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
 /// fact the orchestrator does not own. `conductor::META_REPLAY_KEY` re-exports this constant, so
 /// there is exactly one name and no second spelling to drift.
@@ -28,9 +29,11 @@ pub const META_REPLAY_KEY: &str = "replay_key";
 /// [`key_batch`] above keys, and the ONLY types eligible for project-scoped suppression.
 ///
 /// This is a code-owned discriminator, not a string convention, and it is what makes the
-/// fail-safe direction a property of the code: an event of any OTHER type never reaches the key
-/// comparison below, so no domain event can be dropped by that path however its replay key
-/// happens to look. Domain events legitimately repeat (two identical review findings mean the
+/// fail-safe direction a property of the code: a reader's key comparison is reached only by an
+/// event of a type on the list that reader names - these four, or
+/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES), which adds the ledger entry that
+/// stands for a batch of them - so no domain event can be dropped by that path however its replay
+/// key happens to look. Domain events legitimately repeat (two identical review findings mean the
 /// finding was raised twice); these four do not - a file's content hash does not change because a
 /// new run started, so re-recording an unchanged file's batch records nothing new.
 pub const DERIVED_INDEX_TYPES: [&str; 4] = [
@@ -67,10 +70,7 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// The identity range ends BEFORE the `@` that separates it from the generation: the identity
 /// STARTS the key and every key naming this batch begins with it.
 pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
-    let (prefix, remainder) = key.split_once('/')?;
-    if prefix.is_empty() {
-        return None;
-    }
+    let (prefix, remainder) = crate::retention::GenerationIngested::identity_parts(key)?;
     let (head, index) = remainder.rsplit_once('#')?;
     if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -111,22 +111,11 @@ pub fn derived_generation(e: &Event) -> Option<(&str, &str)> {
     derived_key_parts(e.meta.get(META_REPLAY_KEY)?)
 }
 
-/// A KEYED DERIVED EVENT (spec 101): `event` stamped with its replay `key` and, when the key is the
-/// content-key shape, with the batch identity [`derived_key_parts`] cuts from it as its
-/// [`META_GROUP`]. The one builder both ingest sinks record a derived event through, so every
-/// recording carries the group [`latest_generation`] is answered from. A key that is not the
-/// content-key shape names no identity, so its event carries no group and is never answered.
-pub fn keyed_derived_event(event: Event, key: &str) -> Event {
-    let event = event.with_meta(META_REPLAY_KEY, key);
-    match derived_key_parts(key) {
-        Some((identity, _)) => event.with_meta(META_GROUP, identity),
-        None => event,
-    }
-}
-
 /// THE LATEST RECORDED GENERATION of the batch identity `identity` on `stream` (spec 101), answered
 /// by the store's group lookup ([`EventStore::latest_in_group`]) - never by reading the stream.
-/// TYPE FIRST: a newest match outside [`DERIVED_INDEX_TYPES`] answers no generation, as does one
+/// A recording is a keyed derived row or the ledger entry that stands for a batch (spec 107), and
+/// either names its generation in its replay key. TYPE FIRST: a newest match outside
+/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) answers no generation, as does one
 /// whose replay key does not parse - the fail-safe direction, since a batch with no recorded
 /// generation re-emits.
 pub fn latest_generation(
@@ -137,7 +126,7 @@ pub fn latest_generation(
     let Some(head) = store.latest_in_group(stream, identity)? else {
         return Ok(None);
     };
-    if !is_derived_index_type(&head.type_) {
+    if !crate::retention::PERCEPTION_TYPES.contains(&head.type_.as_str()) {
         return Ok(None);
     }
     Ok(head
@@ -147,44 +136,51 @@ pub fn latest_generation(
         .map(|(_, generation)| generation.to_string()))
 }
 
-/// FIRST-SIGHT SEEDING (spec 101): whether the keyed batch `keyed` - one file's whole batch, every
-/// key sharing one identity and one generation - is already its identity's latest recorded
-/// generation on `stream`. Both ingest sinks ask this the first time they meet an identity in a
-/// process: `true` means the batch's keys ARE the recorded ones (a key is a pure function of the
-/// batch's bytes), so the sink installs them and the batch appends nothing; `false` - a changed
-/// file, a reverted one, a never-recorded one, or a batch whose key does not parse - means it
-/// appends.
-pub fn batch_is_latest_recorded(
-    store: &dyn EventStore,
-    stream: &str,
-    keyed: &[(String, &Event)],
-) -> Result<bool, Error> {
-    let Some((identity, generation)) = keyed.first().and_then(|(key, _)| derived_key_parts(key))
-    else {
-        return Ok(false);
-    };
-    Ok(latest_generation(store, stream, identity)?.as_deref() == Some(generation))
+/// The graph's side of [`batch_is_current`] (spec 107): what `graph.db` answers for an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphSide<'a> {
+    /// The graph owes its rebuild, so its answer is not asked.
+    Owed,
+    /// The identity's current generation in the graph, none when it holds none.
+    Holds(Option<&'a str>),
+}
+
+/// Whether a batch is CURRENT (spec 107): a pure predicate over the log's latest generation of
+/// the batch's identity (`logged`), the graph's side (`graph`) and the batch's own `generation`,
+/// true only when both sides hold that generation. A graph that owes its rebuild is answered
+/// from the log side alone. A batch that is current records no ledger entry; this alone decides
+/// the ledger write.
+pub fn batch_is_current(logged: Option<&str>, graph: GraphSide, generation: &str) -> bool {
+    let holds = |side: Option<&str>| side == Some(generation);
+    holds(logged)
+        && match graph {
+            GraphSide::Owed => true,
+            GraphSide::Holds(current) => holds(current),
+        }
 }
 
 /// WHERE A WALK HANDS ITS BATCHES (spec 101): a sink taking one file's WHOLE keyed batch at a
-/// time. Every walk entry takes one, and [`sink_walked_batches`] hands one to the walk it drives,
-/// so the shape is spelled once. Any closure over a batch is one.
-pub trait BatchSink: FnMut(&[(String, &Event)]) {}
+/// time, with the batch's flag (spec 107) - whether the walk excluded the batch's identity as an
+/// out-of-line test module's. Every walk entry takes one, and [`sink_walked_batches`] hands one
+/// to the walk it drives, so the shape is spelled once. Any closure over a batch and its flag is
+/// one. The walk answers the flag; a sink never computes it.
+pub trait BatchSink: FnMut(&[(String, &Event)], bool) {}
 
-impl<F: FnMut(&[(String, &Event)]) + ?Sized> BatchSink for F {}
+impl<F: FnMut(&[(String, &Event)], bool) + ?Sized> BatchSink for F {}
 
-/// A WALK INTO A FALLIBLE SINK (spec 101): drive `walk`, handing each batch it produces to `sink`,
-/// and answer the FIRST error the sink returned. A failed batch never stops the walk - every batch
-/// after it still reaches the sink - and its error is never swallowed. The one policy both ingest
-/// sinks walk under, the run's keyed emit and a cold `rigger graph build`, so a batch whose lookup
+/// A WALK INTO A FALLIBLE SINK (spec 101): drive `walk`, handing each batch it produces to `sink`
+/// with the flag the walk handed it, and answer the FIRST error the sink returned. A failed batch
+/// never stops the walk - every batch after it still reaches the sink - and its error is never
+/// swallowed. The one policy both ingest
+/// sinks walk under, the run's sink and a cold `rigger graph build`, so a batch whose lookup
 /// or append failed is answered the same way by both: the walk fails.
 pub fn sink_walked_batches<E>(
     walk: impl FnOnce(&mut dyn BatchSink),
-    mut sink: impl FnMut(&[(String, &Event)]) -> Result<(), E>,
+    mut sink: impl FnMut(&[(String, &Event)], bool) -> Result<(), E>,
 ) -> Result<(), E> {
     let mut first = None;
-    walk(&mut |keyed| {
-        if let Err(e) = sink(keyed) {
+    walk(&mut |keyed, excluded| {
+        if let Err(e) = sink(keyed, excluded) {
             first.get_or_insert(e);
         }
     });
@@ -229,62 +225,95 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
         .collect()
 }
 
-/// The project-scoped suppression predicate as a PURE REFERENCE over a slice of the log:
-/// `identity -> (that identity's latest recorded generation hash, the keys of that generation)`,
-/// derived from the events handed in.
+/// The log's side of perception as a PURE REFERENCE over a slice of the log: each batch
+/// identity with its latest recorded generation, derived from the events handed in.
 ///
-/// Neither ingest sink reads a slice to seed itself (spec 101): both ask
-/// [`batch_is_latest_recorded`], answered by the store's group lookup. This is the reference that
+/// Neither ingest sink reads a slice to decide what it records (spec 101): both ask
+/// [`latest_generation`], answered by the store's group lookup. This is the reference that
 /// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
-/// log - and the reader `rigger validate`'s index-lag sample uses. The rule, in the order it is
-/// applied:
+/// log - and what [`perceived_generations`] answers over its one typed read. The rule, in the
+/// order it is applied:
 ///
-/// 1. **Type first.** Only the four [`DERIVED_INDEX_TYPES`] are eligible. Every other event is
-///    passed over whatever its replay key looks like, so a unit or stage whose id happened to read
-///    like an ingest prefix could never have its lifecycle key mistaken for a project fact.
-/// 2. **Then the whole key.** A derived event's key is parsed for its batch identity and content
+/// 1. **Type first.** Only a recording of perception is eligible
+///    ([`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES)): a keyed derived row or the
+///    ledger entry that stands for a batch of them. Every other event is passed over whatever its
+///    replay key looks like, so a unit or stage whose id happened to read like an ingest prefix
+///    could never have its lifecycle key mistaken for a project fact.
+/// 2. **Then the whole key.** A recording's key is parsed for its batch identity and content
 ///    generation ([`derived_key_parts`]); a key that is not that shape names no generation and is
 ///    passed over (the fail-safe direction - it re-emits).
-/// 3. **Latest per file, never ever-recorded.** Only the keys of each identity's LATEST recorded
-///    generation are kept. A file's earlier generations are deliberately absent: content REVERTED
-///    to a generation the file has since moved past differs from its latest recorded batch, so it
-///    must re-emit. An ever-recorded key set would match the old records, re-emit nothing, and
-///    strand the graph on a superseded version of that file forever. Whether the
-///    re-emitted batch then RETIRES the newer generation's facts is the FOLD's business, not this
-///    predicate's ([`derived_generation`]).
+/// 3. **Latest per file, never ever-recorded.** The stream is read in append order, so the last
+///    generation seen is the identity's latest recording. A file's earlier generations are
+///    deliberately absent: content REVERTED to a generation the file has since moved past differs
+///    from its latest recording, so it must record again.
 ///
-/// This is project-scoped ON PURPOSE: derived index facts are facts about the project's files, not
-/// about a run, so a NEW run inherits them and an unchanged file appends nothing on every
-/// subsequent run forever.
+/// This is project-scoped ON PURPOSE: perception is of the project's files, not of a run, so a
+/// NEW run inherits it and an unchanged file records nothing on every subsequent run forever.
 pub fn project_scoped_latest_generations(
     prior: &[Event],
-) -> std::collections::HashMap<String, (String, Vec<String>)> {
-    // identity -> (that identity's latest recorded generation, the keys of that generation)
-    let mut latest: std::collections::HashMap<String, (String, Vec<String>)> =
-        std::collections::HashMap::new();
-    for e in prior {
-        // TYPE first: a non-derived event never reaches the key comparison at all.
-        if !is_derived_index_type(&e.type_) {
-            continue;
-        }
-        let Some(key) = e.meta.get(META_REPLAY_KEY) else {
-            continue;
-        };
-        let Some((identity, hash)) = derived_key_parts(key) else {
-            continue;
-        };
-        let slot = latest
-            .entry(identity.to_string())
-            .or_insert_with(|| (hash.to_string(), Vec::new()));
-        // A later generation of the same file RETIRES the keys of every earlier one: the stream is
-        // read in append order, so the last generation seen is the file's latest recorded batch.
-        if slot.0 != hash {
-            slot.0 = hash.to_string();
-            slot.1.clear();
-        }
-        slot.1.push(key.clone());
+) -> std::collections::HashMap<String, String> {
+    prior
+        .iter()
+        // TYPE first: an event that is no recording never reaches the key parse at all.
+        .filter(|e| crate::retention::PERCEPTION_TYPES.contains(&e.type_.as_str()))
+        .filter_map(|e| derived_key_parts(e.meta.get(META_REPLAY_KEY)?))
+        .map(|(identity, generation)| (identity.to_string(), generation.to_string()))
+        .collect()
+}
+
+/// THE LOG SIDE OF PERCEPTION (spec 107): each identity's latest recorded generation on
+/// `stream`, a ledger entry's or a keyed derived row's alike, as
+/// [`project_scoped_latest_generations`] answers it over ONE typed read of
+/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) from the stream's start. The
+/// generation is cut from each row's replay key, never looked up by group, so a keyed derived row
+/// recorded with no group is seen. On a store whose derived rows are not yet shed the read holds
+/// every one of them at once.
+pub fn perceived_generations(
+    store: &dyn EventStore,
+    stream: &str,
+) -> Result<std::collections::HashMap<String, String>, Error> {
+    let recorded = store.read_stream_typed(
+        stream,
+        0,
+        crate::eventstore::TypeSelection::Only(&crate::retention::PERCEPTION_TYPES),
+    )?;
+    Ok(project_scoped_latest_generations(&recorded))
+}
+
+/// [`batch_is_current`]'s whole truth table: the log's latest generation and the graph's side
+/// against one batch generation.
+#[cfg(test)]
+mod current_tests {
+    use super::{batch_is_current, GraphSide};
+
+    #[test]
+    fn a_batch_is_current_only_when_the_log_and_the_graph_both_hold_its_generation() {
+        let cases = [
+            (Some("g1"), GraphSide::Holds(Some("g1")), true),
+            (Some("g0"), GraphSide::Holds(Some("g1")), false),
+            (Some("g1"), GraphSide::Holds(Some("g0")), false),
+            (Some("g0"), GraphSide::Holds(Some("g0")), false),
+            (None, GraphSide::Holds(Some("g1")), false),
+            (Some("g1"), GraphSide::Holds(None), false),
+            (None, GraphSide::Holds(None), false),
+        ];
+        assert_eq!(
+            cases.map(|(logged, graph, _)| batch_is_current(logged, graph, "g1")),
+            cases.map(|(_, _, current)| current)
+        );
     }
-    latest
+
+    #[test]
+    fn an_owed_graph_is_answered_from_the_log_side_alone() {
+        assert_eq!(
+            [Some("g1"), Some("g0"), None].map(|logged| batch_is_current(
+                logged,
+                GraphSide::Owed,
+                "g1"
+            )),
+            [true, false, false]
+        );
+    }
 }
 
 /// The suppression predicate's OWN contract, at the unit level: which recorded keys it hands a
@@ -354,6 +383,45 @@ mod dedup_tests {
             reference_replay_keys(&[]).is_empty(),
             "an empty stream suppresses nothing"
         );
+    }
+
+    /// The reference reads the recordings of perception and nothing else (spec 107): a ledger
+    /// entry is a recording like a keyed derived row, so an identity's latest generation is that
+    /// of whichever was appended last - the entry after a derived row, the derived row after an
+    /// entry, the later of two entries, a revert to an earlier generation included - while an
+    /// event of another type, a recording with no replay key and one whose key is no content key
+    /// name no generation.
+    #[test]
+    fn the_reference_answers_each_identitys_latest_recorded_generation() {
+        use crate::ingest::project_scoped_latest_generations;
+        use crate::retention::TYPE_GENERATION_INGESTED;
+        use std::collections::HashMap;
+
+        let stream = vec![
+            keyed(TYPE_CODE_ENTITY_EXTRACTED, "gc/src/a.rs@h1#0"),
+            keyed(TYPE_GENERATION_INGESTED, "gc/src/a.rs@h9#3"),
+            keyed(TYPE_GENERATION_INGESTED, "gd/docs/a.md@h4#1"),
+            keyed(TYPE_GENERATION_INGESTED, "gd/docs/a.md@h5#1"),
+            keyed(TYPE_GENERATION_INGESTED, "gd/docs/a.md@h4#1"),
+            keyed(TYPE_GENERATION_INGESTED, "gc/src/c.rs@h2#1"),
+            keyed(TYPE_EDGE_INFERRED, "gc/src/c.rs@h3#0"),
+            keyed(TYPE_REVIEW_FINDING, "gc/src/b.rs@h1#0"),
+            keyed(TYPE_GENERATION_INGESTED, "gc/src/d.rs"),
+            Event::new(TYPE_GENERATION_INGESTED, Vec::new()),
+        ];
+
+        assert_eq!(
+            project_scoped_latest_generations(&stream),
+            HashMap::from(
+                [
+                    ("gc/src/a.rs", "h9"),
+                    ("gd/docs/a.md", "h4"),
+                    ("gc/src/c.rs", "h3"),
+                ]
+                .map(|(identity, generation)| (identity.to_string(), generation.to_string()))
+            )
+        );
+        assert_eq!(project_scoped_latest_generations(&[]), HashMap::new());
     }
 
     #[test]
@@ -437,18 +505,15 @@ mod dedup_tests {
     }
 }
 
-/// THE GROUP STAMP AND THE LATEST-GENERATION READER (spec 101), at the unit level: what a keyed
-/// derived event carries, and which generation the one domain reader cuts from the store's group
-/// answer. The store's own answer is pinned per backend by the contract suite; here the store is a
-/// double answering one fixed head, so every arm of the reader is driven directly.
+/// THE LATEST-GENERATION READER (spec 101), at the unit level: which generation the one domain
+/// reader cuts from the store's group answer, a derived row's or a ledger entry's (spec 107). The
+/// store's own answer is pinned per backend by the contract suite; here the store is a double
+/// answering one fixed head, so every arm of the reader is driven directly.
 #[cfg(test)]
 mod group_lookup_tests {
-    use super::{
-        batch_is_latest_recorded, keyed_derived_event, latest_generation, sink_walked_batches,
-        BatchSink, META_REPLAY_KEY,
-    };
+    use super::{latest_generation, sink_walked_batches, BatchSink, META_REPLAY_KEY};
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
-    use crate::eventstore::{Event, GroupHead, META_GROUP};
+    use crate::eventstore::{Event, GroupHead};
     use crate::test_support::GroupLookupOnly;
     use std::collections::BTreeMap;
 
@@ -470,40 +535,6 @@ mod group_lookup_tests {
     }
 
     #[test]
-    fn a_keyed_derived_event_carries_its_replay_key_and_its_batch_identity_as_its_group() {
-        let event = keyed_derived_event(
-            Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()),
-            "gc/vendor/pkg@1.2.3/a.rs@h1#4",
-        );
-        assert_eq!(
-            event.meta,
-            BTreeMap::from([
-                (
-                    META_GROUP.to_string(),
-                    "gc/vendor/pkg@1.2.3/a.rs".to_string()
-                ),
-                (
-                    META_REPLAY_KEY.to_string(),
-                    "gc/vendor/pkg@1.2.3/a.rs@h1#4".to_string()
-                ),
-            ]),
-            "the group is the whole `<prefix>/<file>` span the key parser cuts"
-        );
-        assert_eq!(event.type_, TYPE_CODE_ENTITY_EXTRACTED);
-        assert_eq!(event.data, b"{}".to_vec(), "the payload is untouched");
-    }
-
-    #[test]
-    fn a_key_that_is_not_the_content_key_shape_stamps_no_group() {
-        let event = keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]), "gc/a.rs");
-        assert_eq!(
-            event.meta,
-            BTreeMap::from([(META_REPLAY_KEY.to_string(), "gc/a.rs".to_string())]),
-            "no identity, so no group: the event is never answered by a group lookup"
-        );
-    }
-
-    #[test]
     fn the_latest_generation_is_cut_from_the_newest_group_members_replay_key() {
         let store = answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#3"))));
         assert_eq!(
@@ -517,13 +548,40 @@ mod group_lookup_tests {
         );
     }
 
+    /// A ledger entry is a recording (spec 107): the newest member being a hand-built
+    /// `GenerationIngested` answers the generation its replay key names, with the one lookup a
+    /// derived row costs.
     #[test]
-    fn no_recorded_member_a_non_derived_member_or_an_unparseable_key_answers_no_generation() {
+    fn the_latest_generation_of_an_identity_whose_newest_member_is_a_ledger_entry_is_the_entrys() {
+        let store = answering(Some(head(
+            crate::retention::TYPE_GENERATION_INGESTED,
+            Some("gc/a.rs@h9#3"),
+        )));
+        assert_eq!(
+            latest_generation(&store, "rigger", "gc/a.rs").unwrap(),
+            Some("h9".to_string())
+        );
+        assert_eq!(
+            store.asked(),
+            [("rigger".to_string(), "gc/a.rs".to_string())],
+            "one group lookup of that identity on that stream, and nothing else"
+        );
+    }
+
+    #[test]
+    fn no_recorded_member_a_non_perception_member_or_an_unparseable_key_answers_no_generation() {
         for (store, why) in [
             (answering(None), "a never-recorded identity"),
             (
                 answering(Some(head(TYPE_REVIEW_FINDING, Some("gc/a.rs@h2#0")))),
-                "a newest member outside the derived types (type first)",
+                "a newest member outside the perception types (type first)",
+            ),
+            (
+                answering(Some(head(
+                    crate::retention::TYPE_GENERATION_INGESTED,
+                    Some("gc/a.rs"),
+                ))),
+                "a newest ledger entry whose key does not parse",
             ),
             (
                 answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs")))),
@@ -543,64 +601,23 @@ mod group_lookup_tests {
     }
 
     #[test]
-    fn a_batch_is_the_latest_recorded_only_when_its_generation_is_the_recorded_one() {
-        let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
-        let batch = |generation: &str| -> Vec<(String, &Event)> {
-            (0..2)
-                .map(|i| (format!("gc/a.rs@{generation}#{i}"), &ev))
-                .collect()
-        };
-        let store = answering(Some(head(TYPE_CODE_ENTITY_EXTRACTED, Some("gc/a.rs@h2#1"))));
-        assert!(
-            batch_is_latest_recorded(&store, "rigger", &batch("h2")).unwrap(),
-            "the recorded generation: its keys are the recorded ones, it appends nothing"
-        );
-        assert!(
-            !batch_is_latest_recorded(&store, "rigger", &batch("h1")).unwrap(),
-            "another generation (a change or a revert) appends"
-        );
-        assert_eq!(
-            store.asked(),
-            [
-                ("rigger".to_string(), "gc/a.rs".to_string()),
-                ("rigger".to_string(), "gc/a.rs".to_string())
-            ],
-            "each question is one lookup of the batch's identity"
-        );
-        let empty = answering(None);
-        assert!(
-            !batch_is_latest_recorded(&empty, "rigger", &batch("h2")).unwrap(),
-            "a never-recorded identity appends"
-        );
-        assert!(
-            !batch_is_latest_recorded(&store, "rigger", &[("gc/a.rs".to_string(), &ev)]).unwrap()
-                && !batch_is_latest_recorded(&store, "rigger", &[]).unwrap(),
-            "an unparseable or empty batch appends"
-        );
-        assert_eq!(
-            store.asked().len(),
-            2,
-            "a batch that names no identity asks the store nothing"
-        );
-    }
-
-    #[test]
     fn a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error() {
         let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
-        let batches: Vec<Vec<(String, &Event)>> = ["a", "b", "c", "d"]
-            .iter()
-            .map(|file| vec![(format!("gc/{file}.rs@h#0"), &ev)])
-            .collect();
+        let batches: Vec<(Vec<(String, &Event)>, bool)> =
+            [("a", true), ("b", false), ("c", false), ("d", true)]
+                .iter()
+                .map(|(file, excluded)| (vec![(format!("gc/{file}.rs@h#0"), &ev)], *excluded))
+                .collect();
         let walk = |sink: &mut dyn BatchSink| {
-            for batch in &batches {
-                sink(batch);
+            for (batch, excluded) in &batches {
+                sink(batch, *excluded);
             }
         };
 
         let mut sunk = Vec::new();
-        let answer = sink_walked_batches(walk, |keyed| {
+        let answer = sink_walked_batches(walk, |keyed, excluded| {
             let key = keyed[0].0.clone();
-            sunk.push(key.clone());
+            sunk.push((key.clone(), excluded));
             if key.starts_with("gc/b") || key.starts_with("gc/d") {
                 Err(key)
             } else {
@@ -614,12 +631,18 @@ mod group_lookup_tests {
         );
         assert_eq!(
             sunk,
-            ["gc/a.rs@h#0", "gc/b.rs@h#0", "gc/c.rs@h#0", "gc/d.rs@h#0"],
-            "a failed batch never stops the walk: every batch reaches the sink, in walk order"
+            [
+                ("gc/a.rs@h#0".to_string(), true),
+                ("gc/b.rs@h#0".to_string(), false),
+                ("gc/c.rs@h#0".to_string(), false),
+                ("gc/d.rs@h#0".to_string(), true),
+            ],
+            "a failed batch never stops the walk: every batch reaches the sink, in walk order, \
+             with the flag the walk handed it"
         );
 
         assert_eq!(
-            sink_walked_batches(walk, |_| Ok::<(), String>(())),
+            sink_walked_batches(walk, |_, _| Ok::<(), String>(())),
             Ok(()),
             "a walk whose every batch lands answers Ok"
         );

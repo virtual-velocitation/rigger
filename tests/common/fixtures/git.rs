@@ -104,6 +104,13 @@ pub fn git_answer(dir: impl AsRef<Path>, args: &[&str]) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The object id git computes for the file at `path` under `dir` (`git hash-object`), the file
+/// also written to the repository's object database as a loose object when `write`.
+pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String {
+    let flag: &[&str] = if write { &["-w"] } else { &[] };
+    git_out(dir, &[&["hash-object"], flag, &[path]].concat())
+}
+
 /// Stage everything in the repository at `dir` and commit it as `msg`, asserting both succeed.
 pub fn git_commit_all(dir: impl AsRef<Path>, msg: &str) {
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
@@ -137,4 +144,16 @@ pub fn commit_at_fixed_date(dir: impl AsRef<Path>, message: &str) -> Output {
 /// to sit inside a git work tree.
 pub fn git_init_quiet(root: &Path) {
     run_git(root, &["init", "-q"]);
+}
+
+/// The object file of the loose object `id` in the repository at `root`, made writable so a test
+/// can cut or corrupt it (git writes object files read-only).
+pub fn loose_object(root: &Path, id: &str) -> std::path::PathBuf {
+    let path = root
+        .join(".git")
+        .join("objects")
+        .join(&id[..2])
+        .join(&id[2..]);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    path
 }

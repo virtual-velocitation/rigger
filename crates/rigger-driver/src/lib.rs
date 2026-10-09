@@ -21,6 +21,8 @@ pub mod sidecar;
 use rigger_domain::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::contextgraph;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{agent, failure, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]

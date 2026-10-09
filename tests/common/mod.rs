@@ -471,7 +471,7 @@ pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
 pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
     rigger::grounder::symbols::events::project_batches(root)
         .into_iter()
-        .flat_map(|(_, batch)| batch)
+        .flat_map(|(_, batch, _)| batch)
         .collect()
 }
 

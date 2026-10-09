@@ -55,7 +55,6 @@ use common::git::run_git;
 use common::cli::ingested_count;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
-use common::fixtures::reference_replay_keys;
 
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
 /// letting a non-zero exit read as a zero-ingest.
@@ -96,41 +95,39 @@ fn temp_churn_project() -> tempfile::TempDir {
     dir
 }
 
-/// The LIVE suppression set the shipped predicate returns over the log the binary wrote: each
-/// file's latest recorded generation only, which is exactly what the next build will skip.
-fn live_suppression_set(root: &std::path::Path) -> BTreeSet<String> {
-    reference_replay_keys(&read_run_events(root))
+/// The LIVE recordings the shipped reference answers over the log the binary wrote: the replay
+/// keys of each identity's latest recorded generation only, read over the perception types, which
+/// is exactly what the next build will find recorded.
+fn live_recordings(root: &std::path::Path) -> BTreeSet<String> {
+    common::fixtures::latest_recorded_keys(&read_run_events(root))
 }
 
-/// The derived-index replay keys the recorded stream carries FOR ONE FILE, in append order.
+/// The replay keys of the ledger entries the recorded stream carries FOR ONE FILE, in append
+/// order, the stream holding no derived-index event: the build records perception as ledger
+/// entries alone.
 ///
 /// The marker is `/<file>@`, the writer's own trailing separator, so a key is attributed to the
 /// file whose whole `<prefix>/<file>` span it names and never to a file that merely shares a
-/// prefix with it. Order is preserved because "re-emits its whole batch" is a claim about the
-/// walk's own sequence, not about a set.
+/// prefix with it. Order is preserved because "records the generation again" is a claim about the
+/// log's own sequence, not about a set.
 #[cfg(feature = "symbols")]
 fn keys_for(events: &[rigger::eventstore::Event], file: &str) -> Vec<String> {
     let marker = format!("/{file}@");
-    events
-        .iter()
-        .filter(|e| rigger::ingest::is_derived_index_type(&e.type_))
-        .filter_map(|e| e.meta.get(rigger::conductor::META_REPLAY_KEY).cloned())
+    common::fixtures::recorded_entry_keys(events)
+        .into_iter()
         .filter(|k| k.contains(&marker))
         .collect()
 }
 
-/// Every content key the SHIPPED walk mints for the tree at `root`, as a set. This is the WRITER
-/// half: the same public entry both sinks drive, so these are the keys the log will carry and
-/// never a spelling this test invented.
+/// The replay key of every ledger entry a build records for the tree at `root` as it stands and
+/// nothing recorded, as a set. This is the WRITER half: the keys name the batches of the same
+/// public walk both sinks drive, so these are the keys the log will carry and never a spelling
+/// this test invented.
 #[cfg(feature = "symbols")]
 fn minted_keys(root: &std::path::Path) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch| {
-        for (key, _) in batch {
-            out.insert(key.clone());
-        }
-    });
-    out
+    common::fixtures::walked_entry_keys(root)
+        .into_iter()
+        .collect()
 }
 
 /// What a READER gets from the shipped inspector around `seed`: the `node <id> <kind>` pairs and
@@ -198,8 +195,8 @@ fn reached_entities(root: &std::path::Path, file: &str) -> BTreeSet<String> {
 // ---------------------------------------------------------------------------------------------
 
 /// INTEGRATION, through the SHIPPED BINARY and an on-disk store: a file driven BACK to content it
-/// held at an earlier RECORDED generation re-ingests, appending that generation's whole batch
-/// under its own already-recorded keys, while every untouched file still appends nothing.
+/// held at an earlier RECORDED generation re-ingests, recording that generation's ledger entry
+/// again under its own already-recorded key, while every untouched file still records nothing.
 ///
 /// This is the discrimination the in-crate proof makes against a hand-composed stack and this one
 /// makes against the stack that ships. Every key the revert appends was ALREADY in the log before
@@ -211,7 +208,7 @@ fn reached_entities(root: &std::path::Path, file: &str) -> BTreeSet<String> {
 /// stands, so the assertion cannot drift from what the extraction pass actually extracts.
 #[cfg(feature = "symbols")]
 #[test]
-fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_keys() {
+fn a_revert_through_the_shipped_build_records_the_earlier_generations_entry_again() {
     let dir = temp_churn_project();
     let root = dir.path();
 
@@ -247,7 +244,7 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
     );
     let retired: BTreeSet<String> = gen_a_keys.iter().cloned().collect();
     assert!(
-        live_suppression_set(root).is_disjoint(&retired),
+        live_recordings(root).is_disjoint(&retired),
         "sanity: generation A must have been RETIRED from the live suppression set by generation \
          B, because that retirement is the only reason the revert below is allowed to append"
     );
@@ -271,9 +268,9 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
     let churn_after_three = keys_for(&after_three, "src/churn.rs");
     let re_emitted = &churn_after_three[churn_after_two.len()..];
     assert_eq!(
-        re_emitted, gen_a_keys,
-        "the revert must re-emit generation A's WHOLE batch under its own keys, in the walk's own \
-         order; it emitted {re_emitted:?} against generation A's {gen_a_keys:?}"
+        (re_emitted, gen_a_keys.len()),
+        (gen_a_keys.as_slice(), 1),
+        "the revert must record generation A's one entry again under its own key"
     );
 
     // The keys really were already recorded before this build ran, and the log now carries each of
@@ -311,7 +308,7 @@ fn a_revert_through_the_shipped_build_re_emits_the_earlier_generations_recorded_
     // And the sequence SETTLES: the live suppression set is exactly the tree's current generation,
     // so a further build appends nothing at all.
     assert_eq!(
-        live_suppression_set(root),
+        live_recordings(root),
         minted_keys(root),
         "after a change and a revert the live suppression set must be exactly the tree's current \
          generation - no retired generation left live, no untouched file's keys dropped"
@@ -461,9 +458,9 @@ fn after_a_change_and_after_a_revert_the_shipped_graph_equals_a_cold_build_of_th
 
 /// The LIGHT LANE's own boundary claim, so this file is not silently absent from that lane.
 ///
-/// Without the extraction pass there is no walk, so `graph build` mints no content key and appends
-/// no derived-index event. That makes criterion 3 vacuous here - but vacuous BY CONSTRUCTION is a
-/// claim, not an assumption. If this lane ever began appending keyed derived events, the change
+/// Without the extraction pass there is no walk, so `graph build` mints no content key and records
+/// no perception. That makes criterion 3 vacuous here - but vacuous BY CONSTRUCTION is a
+/// claim, not an assumption. If this lane ever began recording perception, the change
 /// and revert rules would start to govern it while nothing proved they held, and the first symptom
 /// would be a reader stranded on a superseded generation with no test in either lane watching.
 ///
@@ -500,9 +497,9 @@ fn the_light_lane_mints_no_content_key_so_a_change_and_a_revert_have_nothing_to_
     );
 
     assert!(
-        live_suppression_set(root).is_empty(),
+        live_recordings(root).is_empty(),
         "the shared predicate must return no suppression key at all over a log this lane wrote; \
          it returned {:?}",
-        live_suppression_set(root)
+        live_recordings(root)
     );
 }

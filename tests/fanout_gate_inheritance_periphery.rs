@@ -118,6 +118,7 @@ fn proposal_integrates_verified_by(proposals: &[&[&str]], output: &'static str, 
         graph: None,
         criteria: vec![CRITERION.to_string()],
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     let rs = run(&cfg, &deps).unwrap();
 

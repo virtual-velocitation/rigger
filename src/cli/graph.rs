@@ -464,38 +464,36 @@ fn locate_definition_extent(
 }
 
 /// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
-/// (spec 45): no run, no `RunStarted`, no event beyond the code-ingest events the fold already
-/// emits, so the graph exists on any repo the tool has merely cloned - not only ones a run has
-/// driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
+/// (spec 45): no run, no `RunStarted`, and the build records no event beyond one ledger entry
+/// per batch it records, so the graph exists on any repo the tool has merely cloned - not only
+/// ones a run has driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
 /// the live run uses; only this standalone entry is new, so a build and a run can never fork the
-/// key an event is deduped under.
+/// generation a batch is recorded under.
 ///
 /// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
 /// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
 /// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally through the ONE first-sight helper
-/// ([`rigger::ingest::batch_is_latest_recorded`]) the live run's keyed sink also calls: each batch
-/// is weighed against its identity's LATEST recorded generation, answered by the store's group
-/// lookup, never by reading the log - one walk hands this command each batch identity (`gc`/`gd`
-/// per file) exactly once and this command walks once. So an unchanged file's batch
-/// is already wholly recorded and re-ingests nothing, while a file whose content AS THE WALK LOWERED
-/// IT differs from its latest recorded batch re-emits every event the walk extracted for it. That
-/// includes a file REVERTED to content it held at an earlier generation - its keys are byte-identical
-/// to records the log still carries, and it re-emits precisely because those records are no longer
-/// that file's latest generation. The qualifier is load-bearing and the two halves differ on it: the
-/// design half reads the LIVE tree, while the code half lowers from the PERSISTED symbols index when
-/// the project has one, so on such a project the decision is taken against what that index holds.
-/// Both halves of that are claims about what this command APPENDS, over the files the walk emits a
-/// batch for: a file the walk hands over NO batch for - one the walk no longer sees, or one whose
-/// extraction the walk lowered to nothing - reaches no suppression decision here at all and retires
-/// nothing, whereas a path the tree has DELETED that the persisted index still lists IS handed over
-/// and does reach one. And a batch whose append lands but whose fold does not leaves the log right
-/// and the graph behind (`FoldingStore::append_and_fold` folds best-effort by contract). What a re-emitted batch RETIRES is the FOLD's doing and reaches the code half only:
-/// a code batch carries a `fresh` head whose 29a mechanism supersedes that file's prior structural
-/// edges, while a design batch sets no `fresh` head, so re-emitting one adds edges without retiring
-/// the ones its earlier generation left live. The light lane compiles no extraction pass, so
-/// `graph build` there degrades to an empty graph (it still creates the store) and exits 0, never
-/// an error.
+/// store it refreshes incrementally, and what it records is PERCEPTION AS A LEDGER ENTRY (spec
+/// 107): one `GenerationIngested` for a batch, never a derived event. One walk hands this command
+/// each batch identity (`gc`/`gd` per file, `gw` for the workflow definition) exactly once, and
+/// each batch is weighed by the one function both ingest sinks ask
+/// ([`rigger::ingest::entry_of_batch`]) against its identity's LATEST recorded generation -
+/// answered by the store's group lookup, never by reading the log - and against the generation
+/// `graph.db` holds. So an unchanged file's batch is current on both sides and records nothing,
+/// while a file whose bytes extract to any other generation records one entry: a changed file, a
+/// never-recorded one, one REVERTED to content it held at an earlier generation - its key names a
+/// generation the log still carries, and it records precisely because that generation is no
+/// longer the file's latest - and one a rebuild of `graph.db` left behind, which the log holds
+/// and the graph does not. What an entry records is the extraction of the bytes this command
+/// READS, hashed by git, never the batch the walk handed: the code half lowers from the
+/// PERSISTED symbols index when the project has one, so a lowering that lags the file records
+/// the generation of the file's bytes. A file the walk hands over NO batch for - one the walk no
+/// longer sees, or one whose extraction the walk lowered to nothing - reaches no decision here
+/// and retires nothing, whereas a path the tree has DELETED that the persisted index still lists
+/// IS handed over and does reach one. An entry whose append lands but whose fold does not leaves
+/// the log right and the graph behind, and this command's line names the first fold it lost.
+/// The light lane compiles no extraction pass, so `graph build` there records nothing, degrades
+/// to an empty graph (it still creates the store) and exits 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
     // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.
@@ -517,67 +515,121 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         }
     };
 
-    let (appended, fold) = ingest_tree(&store, &graph, &root)?;
+    let (counted, fold) = ingest_tree(&store, &graph, &root)?;
     println!(
-        "graph build: ingested {appended} code-ingest event(s) into {}{}",
+        "graph build: ingested {counted} code-ingest event(s) into {}{}",
         db_path("graph.db"),
         fold_loss_clause(&fold)
     );
     Ok(())
 }
 
-/// The walk of the tree at `root` into `store` and `graph`, answering how many events it appended.
+/// The walk of the tree at `root` into `store` and `graph`, answering the N of the build's line
+/// and the first fold it lost.
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
-/// this each batch identity (`gc`/`gd` per file) exactly once, so each batch asks the store, through
-/// the group lookup, whether it is already its identity's latest recorded generation
-/// ([`rigger::ingest::batch_is_latest_recorded`], the one first-sight helper the run's keyed sink
-/// also calls). An unchanged file's batch is, and appends nothing; a changed, reverted or
-/// never-recorded file's batch is not, and appends whole - a revert re-emits because the records its
-/// keys match are no longer the file's latest generation.
+/// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
+/// asks the store one group lookup for it. A batch that records nothing counts nothing.
 ///
-/// Each appended event is built by the one keyed derived-event builder
-/// ([`rigger::ingest::keyed_derived_event`]), so it carries its replay key and its group, and the
-/// batch is appended and folded in ONE store append and ONE graph transaction through the shared
-/// batched append-and-fold authority (spec 49), exactly as the run's keyed sink does. There is no
-/// run to stamp, so the events carry no run id.
+/// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
+/// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
+/// An entry that folded as a re-recording, the graph already holding its generation, moved no
+/// fact and is not counted. The fold answered is the FIRST one this build could not make: a
+/// lost fold marks a current graph owed, so every entry after it is refused for that debt, and
+/// the first names the cause.
 ///
 /// The walk runs under the one walk policy both ingest sinks share
 /// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
 /// append the store refuses, records nothing, the walk goes on, and the first such error is the
 /// build's - an unanswered lookup is not an answer in either direction, and a refused append is not
-/// a skipped batch.
+/// a skipped batch. The error is answered as its maker said it: a batch's own failure in its own
+/// text, a store's refusal as the store's.
 fn ingest_tree(
     store: &dyn EventStore,
     graph: &dyn Projection,
     root: &str,
-) -> Result<(usize, contextgraph::Fold), rigger::eventstore::Error> {
-    let mut appended = 0usize;
-    // The first fold this build could not make, if any: a lost fold marks a current graph owed,
-    // so every batch after it is refused for the same debt - the first names the cause.
-    let mut fold = contextgraph::Fold::Folded;
-    let folding = rigger::ingest::folding_into(store, Some(graph), &stderr_line);
+) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
+    let mut counted = 0usize;
+    let mut first_lost = contextgraph::Fold::Folded;
     rigger::ingest::sink_walked_batches(
         |sink| {
             rigger::ingest::ingest_project_batched(root, sink);
         },
-        |keyed| {
-            if rigger::ingest::batch_is_latest_recorded(store, conductor::STREAM, keyed)? {
-                return Ok(());
-            }
-            let batch: Vec<Event> = keyed
-                .iter()
-                .map(|(key, ev)| rigger::ingest::keyed_derived_event((*ev).clone(), key))
-                .collect();
-            let done = folding.append_and_fold(conductor::STREAM, ExpectedRevision::Any, &batch)?;
-            appended += batch.len();
-            if fold == contextgraph::Fold::Folded {
-                fold = done.fold;
+        |keyed, excluded| {
+            let Some((events, fold)) = record_batch(store, graph, root, keyed, excluded)? else {
+                return Ok::<(), Box<dyn std::error::Error>>(());
+            };
+            counted += events;
+            if first_lost == contextgraph::Fold::Folded {
+                first_lost = fold;
             }
             Ok(())
         },
     )?;
-    Ok((appended, fold))
+    Ok((counted, first_lost))
+}
+
+/// WHAT `rigger graph build` RECORDS FOR ONE BATCH (spec 107): the batch `keyed`, as the walk
+/// handed it with its flag `excluded`, recorded as one ledger entry of perception and no derived
+/// event. It answers how many batch events the entry adds to the build line's N and what became
+/// of its fold, or nothing when the batch records nothing.
+///
+/// What is recorded is decided by [`rigger::ingest::entry_of_batch`], the one function both
+/// ingest sinks call. This sink hands it what differs from the run's: the log side read from the
+/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and the one hash
+/// function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
+/// constructor and carries no run id, there being no run, and it is appended and folded with its
+/// extraction through the ledger form of the folding store, in ONE store append and ONE graph
+/// transaction. A batch whose key names no identity, and a failed read of either side, of the
+/// bytes or of the hash, fails with that failure's text and records nothing, as a refused append
+/// does. A lost fold is answered, never said here: the build's line names it.
+///
+/// An entry counts its batch's events unless the ledger form reports it a re-recording.
+#[cfg(feature = "symbols")]
+fn record_batch(
+    store: &dyn EventStore,
+    graph: &dyn Projection,
+    root: &str,
+    keyed: &[(String, &Event)],
+    excluded: bool,
+) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
+    let recorded = rigger::ingest::entry_of_batch(
+        Path::new(root),
+        keyed,
+        excluded,
+        |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
+        graph,
+        &hash_blob_in(root),
+    )?;
+    let Some(recorded) = recorded else {
+        return Ok(None);
+    };
+    let events = recorded.batch.len();
+    let done = rigger::ingest::folding_into(store, Some(graph), &stderr_line)
+        .append_entry_and_fold(
+            conductor::STREAM,
+            &recorded.entry.event(events),
+            recorded.batch,
+        )?;
+    let counted = if done.outcome == Some(contextgraph::EntryFold::ReRecording) {
+        0
+    } else {
+        events
+    };
+    Ok(Some((counted, done.fold)))
+}
+
+/// The light lane compiles no extraction pass: its walk hands the build's sink no batch, so
+/// there is nothing to record.
+#[cfg(not(feature = "symbols"))]
+fn record_batch(
+    _store: &dyn EventStore,
+    _graph: &dyn Projection,
+    _root: &str,
+    _keyed: &[(String, &Event)],
+    _excluded: bool,
+) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
+    Ok(None)
 }
 
 /// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
@@ -969,14 +1021,389 @@ mod tests {
     #[cfg(feature = "symbols")]
     mod walk {
         use super::super::*;
-        use crate::test_support::{FailAppendMetaContaining, GroupLookupOnly, MinimalProjection};
-        use rigger::eventstore::Error;
+        use crate::test_support::{
+            entry_records, fixture_entry_events, generation_ingested, git_hash_object,
+            handed_by_the_walk, held_generations, one_lookup_each, owe_a_rebuild,
+            planted_extraction_tree, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
+            source_with, walked_generations, walked_identities, write_file, EntryRecord,
+            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, PreLedgerStore,
+            ReadCountingStore, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
+        };
+        use rigger::contextgraph::Fold;
 
-        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS with
-        /// that error rather than skipping the batch and reporting success - an unanswered lookup is
-        /// never read as "already recorded", the fail-unsafe direction.
+        /// What the run stream of `store` holds: its ledger entries, in log order, and how many
+        /// events it holds in all. The two agree only when the stream holds no other event, and
+        /// so no derived event.
+        fn recorded(store: &dyn EventStore) -> (Vec<EntryRecord>, usize) {
+            let events = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap();
+            (entry_records(&events), events.len())
+        }
+
+        /// A stream holding `entries` and nothing else, as [`recorded`] answers it.
+        fn only(entries: Vec<EntryRecord>) -> (Vec<EntryRecord>, usize) {
+            let held = entries.len();
+            (entries, held)
+        }
+
+        /// The entry of `<prefix>/<path>` at `generation` standing for `events` batch events, its
+        /// blob the id `git hash-object` gives the bytes the tree at `root` holds at the path.
+        fn entry_from_the_tree(
+            root: &Path,
+            prefix: &str,
+            path: &str,
+            generation: &str,
+            excluded: bool,
+            events: usize,
+        ) -> EntryRecord {
+            let blob = git_hash_object(root, path, false);
+            let entry = generation_ingested(prefix, path, generation, &blob, excluded);
+            entry_records(&[entry.event(events)]).remove(0)
+        }
+
+        /// The entry a build records for each batch a walk of the extraction tree at `root`
+        /// hands it, in walk order, its blob the id `git hash-object` gives the file's bytes.
+        fn walked_entries(root: &Path) -> Vec<EntryRecord> {
+            entry_records(&fixture_entry_events(|path| {
+                git_hash_object(root, path, false)
+            }))
+        }
+
+        /// The entry a build records for the source file's code batch from the bytes the tree at
+        /// `root` holds now, its generation the one the shipped walk keys those bytes under.
+        fn source_entry_now(root: &Path) -> EntryRecord {
+            let handed = handed_by_the_walk(root.to_str().unwrap(), SOURCE);
+            entry_from_the_tree(
+                root,
+                "gc",
+                SOURCE_PATH,
+                &handed.generation(),
+                handed.excluded,
+                handed.keyed.len(),
+            )
+        }
+
+        /// Why [`LosesEveryFold`] loses its first ledger fold, and why it loses each later one.
+        const FIRST_LOSS: &str = "the first fold failed";
+        const LATER_LOSS: &str = "refused after the first";
+
+        /// A graph double that reads as the minimal projection does - it owes no rebuild and holds
+        /// no generation - unless `unread` names why an identity's generation cannot be read,
+        /// and that loses every ledger fold: the first for [`FIRST_LOSS`] and each later one for
+        /// [`LATER_LOSS`], as a graph a failed fold left owing refuses what follows. It counts
+        /// the folds it was asked.
+        #[derive(Default)]
+        struct LosesEveryFold {
+            unread: Option<&'static str>,
+            folds: std::sync::atomic::AtomicUsize,
+        }
+
+        impl Projection for LosesEveryFold {
+            fn apply(
+                &self,
+                _e: &Event,
+                _access: contextgraph::FoldAccess,
+            ) -> Result<(), contextgraph::Error> {
+                Ok(())
+            }
+            crate::projection_is_never_read!();
+            fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
+                MinimalProjection.rebuild_owed()
+            }
+            fn current_generation(
+                &self,
+                identity: &str,
+            ) -> Result<Option<String>, contextgraph::Error> {
+                match self.unread {
+                    Some(why) => Err(contextgraph::Error(why.to_string())),
+                    None => MinimalProjection.current_generation(identity),
+                }
+            }
+            fn apply_generation(
+                &self,
+                _entry: &Event,
+                _batch: contextgraph::EntryBatch<'_>,
+            ) -> Result<contextgraph::EntryFold, contextgraph::Error> {
+                let asked = self.folds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(contextgraph::Error(
+                    [FIRST_LOSS, LATER_LOSS][asked.min(1)].to_string(),
+                ))
+            }
+        }
+
+        /// THE BUILD ANSWERS THE FIRST FOLD IT LOST (SINK OUTCOMES rows 15 then 14).
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph whose first ledger fold fails
+        /// and whose every later one is refused for another reason,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per batch, asks the graph one fold per entry, counts every
+        /// batch event, and answers the first loss as the fold it lost, never a later one.
         #[test]
-        fn a_build_whose_recorded_generation_is_unreadable_fails_with_that_error() {
+        fn a_build_that_loses_every_fold_answers_the_first_fold_it_lost() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = LosesEveryFold::default();
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (18, Fold::NotFolded(format!("graph: {FIRST_LOSS}"))));
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 6);
+        }
+
+        /// Spec 107, criterion 12: perception is a ledger entry at `rigger graph build`'s sink.
+        ///
+        /// GIVEN the extraction tree, an empty store and an empty graph,
+        /// WHEN the build's sink walks the tree,
+        /// THEN the store holds one ledger entry per batch the walk hands and no other event -
+        /// each entry's generation its batch's, its blob the id git gives the file's bytes, its
+        /// flag the walk's - the sink having asked the store one group lookup per identity, the
+        /// graph holds each identity's generation, and the build counts every batch event;
+        /// AND WHEN it walks the unchanged tree again, THEN it asks each lookup once more,
+        /// records nothing and counts nothing.
+        #[test]
+        fn a_build_records_each_batch_as_one_ledger_entry_and_an_unchanged_tree_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let graph = Projector::open(":memory:", "test").unwrap();
+            let identities = walked_identities();
+            let lookups = one_lookup_each(conductor::STREAM, &identities);
+
+            let built = ingest_tree(&counted, &graph, root).unwrap();
+
+            assert_eq!(built, (18, Fold::Folded));
+            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
+            assert_eq!(counted.reads(), lookups);
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
+
+            let again = ingest_tree(&counted, &graph, root).unwrap();
+
+            assert_eq!(again, (0, Fold::Folded));
+            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
+            assert_eq!(counted.reads(), [lookups.clone(), lookups].concat());
+        }
+
+        /// GIVEN a store and a graph a build recorded the extraction tree into,
+        /// WHEN the source file's code changes and the build's sink walks the tree,
+        /// THEN it records exactly one more event, the ledger entry of the file's code batch at
+        /// the generation and under the blob of the bytes the tree holds now, counts that
+        /// batch's four events, and the graph holds the new generation.
+        #[test]
+        fn a_changed_file_records_one_entry_with_the_generation_and_blob_of_the_bytes_read() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            assert_eq!(
+                ingest_tree(&store, &graph, root).unwrap(),
+                (18, Fold::Folded),
+                "premise: the first build records and folds the whole tree"
+            );
+            let walked_once = walked_entries(tree.path());
+            write_file(
+                &tree.path().join(SOURCE_PATH),
+                source_with(MOVED).as_bytes(),
+            );
+            let moved = source_entry_now(tree.path());
+            assert_ne!(
+                (&moved.0.generation, &moved.0.blob),
+                (&walked_once[1].0.generation, &walked_once[1].0.blob),
+                "premise: the moved body has its own generation and its own blob"
+            );
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(
+                recorded(&store),
+                only([walked_once, vec![moved.clone()]].concat())
+            );
+            assert_eq!(
+                graph.current_generation(SOURCE).unwrap(),
+                Some(moved.0.generation)
+            );
+        }
+
+        /// SINK OUTCOMES rows 9 then 13.
+        ///
+        /// GIVEN a store recorded before the ledger and before the group stamp, so the group
+        /// lookup answers no generation for any identity while the graph holds each one's,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per identity after the pre-ledger rows, each folding as a
+        /// re-recording that leaves the graph's generation where it stood, and counts none of
+        /// them.
+        #[test]
+        fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_the_build_does_not_count(
+        ) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let log = tempfile::tempdir().unwrap();
+            let db = log.path().join("events.db");
+            let store = Store::open(db.to_str().unwrap()).unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            let pre_ledger = PreLedgerStore {
+                db: &db,
+                inner: &store,
+            };
+            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
+            let identities = walked_identities();
+            assert_eq!(
+                (recorded(&store), held_generations(&graph, &identities)),
+                ((Vec::new(), 18), walked_generations()),
+                "premise: eighteen derived rows, no entry, and the graph holds each generation"
+            );
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (0, Fold::Folded));
+            assert_eq!(recorded(&store), (walked_entries(tree.path()), 18 + 6));
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
+        }
+
+        /// The graph build line's N counts each SINK OUTCOMES row that counts, and no other.
+        ///
+        /// GIVEN the pre-ledger store of row 13's fixture and a source file whose code has since
+        /// changed,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per identity and counts the four events of the changed
+        /// batch alone: the one entry the graph folded is counted, the five re-recordings are
+        /// not.
+        #[test]
+        fn a_build_counts_the_batch_the_graph_folds_and_not_the_re_recordings_beside_it() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let log = tempfile::tempdir().unwrap();
+            let db = log.path().join("events.db");
+            let store = Store::open(db.to_str().unwrap()).unwrap();
+            let graph = Projector::open(":memory:", "test").unwrap();
+            let pre_ledger = PreLedgerStore {
+                db: &db,
+                inner: &store,
+            };
+            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
+            write_file(
+                &tree.path().join(SOURCE_PATH),
+                source_with(MOVED).as_bytes(),
+            );
+            let mut entries = walked_entries(tree.path());
+            entries[1] = source_entry_now(tree.path());
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(recorded(&store), (entries, 18 + 6));
+        }
+
+        /// SINK OUTCOMES row 14, then row 4.
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph that owes its rebuild,
+        /// WHEN the build's sink walks the tree,
+        /// THEN it records one entry per batch, counts every batch event, and answers the
+        /// refusal as the fold it lost, which the build line's fold-loss clause names; the graph
+        /// takes no generation;
+        /// AND WHEN it walks the unchanged tree again, THEN the log side alone answers: it
+        /// records nothing, counts nothing and loses no fold.
+        #[test]
+        fn an_entry_a_graph_that_owes_its_rebuild_refuses_is_recorded_counted_and_named_as_lost() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph =
+                Projector::open(graph_dir.path().join("graph.db").to_str().unwrap(), "test")
+                    .unwrap();
+            owe_a_rebuild(&graph);
+            let identities = walked_identities();
+
+            let (counted, fold) = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(
+                (counted, fold_loss_clause(&fold)),
+                (
+                    18,
+                    format!(
+                        "; not folded into the context graph: graph: {}",
+                        contextgraph::REBUILD_OWED
+                    )
+                )
+            );
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+            assert_eq!(
+                held_generations(&graph, &identities),
+                vec![None; identities.len()]
+            );
+
+            let again = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(again, (0, Fold::Folded));
+            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
+        }
+
+        /// THE NEXT BUILD RESTORES AN IDENTITY A REBUILD LEFT BEHIND.
+        ///
+        /// GIVEN a store and a `graph.db` a build recorded the extraction tree into, and a
+        /// rebuild of `graph.db`, made while the source file held another body, that could
+        /// resolve no source for the file's code entry and so left its identity behind,
+        /// WHEN the file is back at its recorded body and the build's sink walks the tree,
+        /// THEN it records the file's code entry again, though the log's latest generation of
+        /// the identity is the batch's, counts its four events, and the graph holds the
+        /// identity's generation again; no other identity records anything.
+        #[test]
+        fn an_identity_a_rebuild_left_behind_is_recorded_again_and_restored_by_the_next_build() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let store = Store::open(":memory:").unwrap();
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            assert_eq!(
+                ingest_tree(&store, &graph, root).unwrap(),
+                (18, Fold::Folded),
+                "premise: the first build records and folds the whole tree"
+            );
+            let walked_once = walked_entries(tree.path());
+            let identities = walked_identities();
+
+            write_file(&file, source_with(MOVED).as_bytes());
+            let log = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap();
+            rebuild_from_the_tree(&graph_db, &log, tree.path());
+            assert_eq!(
+                held_generations(&graph, &identities),
+                WALKED
+                    .iter()
+                    .map(|batch| {
+                        Some(batch.generation.to_string())
+                            .filter(|_| (batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                    })
+                    .collect::<Vec<_>>(),
+                "premise: the rebuild left the source file's code identity behind, and no other"
+            );
+            write_file(&file, SOURCE_BODY.as_bytes());
+
+            let built = ingest_tree(&store, &graph, root).unwrap();
+
+            assert_eq!(built, (4, Fold::Folded));
+            assert_eq!(
+                recorded(&store),
+                only([walked_once.clone(), vec![walked_once[1].clone()]].concat())
+            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
+        }
+
+        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS,
+        /// naming the read that failed, rather than skipping the batch and reporting success - an
+        /// unanswered lookup is never read as "already recorded", the fail-unsafe direction. The
+        /// failure is the sink's own text: it names the store's error once, where the store
+        /// failed, and carries no store prefix of its own.
+        #[test]
+        fn a_build_whose_recorded_generation_is_unreadable_fails_naming_that_read() {
             let tree = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(tree.path().join("src")).unwrap();
             std::fs::write(
@@ -985,10 +1412,13 @@ mod tests {
             )
             .unwrap();
             let store = GroupLookupOnly::new(Err("group index unreadable".into()));
-            match ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()) {
-                Err(Error::Backend(msg)) => assert_eq!(msg, "group index unreadable"),
-                other => panic!("the lookup's failure is the build's, got {other:?}"),
-            }
+            let failure =
+                ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()).unwrap_err();
+            assert_eq!(
+                failure.to_string(),
+                "the log's latest generation of gc/src/lib.rs could not be read: \
+                 event store: group index unreadable"
+            );
             assert_eq!(
                 store.asked(),
                 [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
@@ -996,47 +1426,67 @@ mod tests {
             );
         }
 
+        /// A FAILURE NO STORE MADE IS NOT SAID AS A STORE'S (SINK OUTCOMES row 2).
+        ///
+        /// GIVEN the extraction tree, an empty store and a graph whose generation cannot be read,
+        /// WHEN the build's sink walks the tree,
+        /// THEN the build fails with the first batch's failure, which names the graph's read
+        /// and the graph's error and no event store, and it records nothing.
+        #[test]
+        fn a_build_whose_graph_cannot_be_read_fails_naming_the_graph_and_no_store() {
+            let tree = planted_extraction_tree(write_file);
+            let store = Store::open(":memory:").unwrap();
+            let graph = LosesEveryFold {
+                unread: Some("the generation could not be read"),
+                ..LosesEveryFold::default()
+            };
+
+            let failure = ingest_tree(&store, &graph, tree.path().to_str().unwrap()).unwrap_err();
+
+            assert_eq!(
+                failure.to_string(),
+                "graph.db's current generation of gc/src/checks.rs could not be read: \
+                 graph: the generation could not be read"
+            );
+            assert_eq!(recorded(&store), only(Vec::new()));
+            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+
         /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
         /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
-        /// than reporting success over a batch it never recorded, and still appends every other batch.
+        /// than reporting success over a batch it never recorded, and still records every other batch.
         #[test]
-        fn a_build_whose_append_fails_fails_with_that_error_and_appends_every_other_batch() {
+        fn a_build_whose_append_fails_fails_with_that_error_and_records_every_other_batch() {
             let tree = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(tree.path().join("src")).unwrap();
             std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
             std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
             let root = tree.path().to_str().unwrap();
-            let mut walked: Vec<Vec<String>> = Vec::new();
-            rigger::ingest::ingest_project_batched(root, |keyed| {
-                walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
-            });
-            assert_eq!(
-                walked.len(),
-                2,
-                "sanity: one batch per file; walked {walked:?}"
-            );
+            let other = handed_by_the_walk(root, "gc/src/b.rs");
 
             let inner = Store::open(":memory:").unwrap();
             let store = FailAppendMetaContaining {
                 inner: &inner,
                 needle: "gc/src/a.rs",
             };
-            match ingest_tree(&store, &MinimalProjection, root) {
-                Err(Error::Backend(msg)) => assert_eq!(
-                    msg,
-                    "simulated store failure appending an event whose metadata contains \"gc/src/a.rs\""
-                ),
-                other => panic!("the append's failure is the build's, got {other:?}"),
-            }
-            let recorded: Vec<String> = inner
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .unwrap()
-                .iter()
-                .map(|e| e.meta[rigger::ingest::META_REPLAY_KEY].clone())
-                .collect();
+            let graph = Projector::open(":memory:", "test").unwrap();
             assert_eq!(
-                recorded, walked[1],
-                "the refused batch records nothing and the other appends whole"
+                ingest_tree(&store, &graph, root).unwrap_err().to_string(),
+                "event store: simulated store failure appending an event whose metadata contains \
+                 \"gc/src/a.rs\"",
+                "the append's failure is the build's, said as the store's"
+            );
+            assert_eq!(
+                recorded(&inner),
+                only(vec![entry_from_the_tree(
+                    tree.path(),
+                    "gc",
+                    "src/b.rs",
+                    &other.generation(),
+                    false,
+                    other.keyed.len()
+                )]),
+                "the refused batch records nothing and the other records its entry"
             );
         }
     }

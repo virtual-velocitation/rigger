@@ -226,15 +226,17 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::Direction;
-    use crate::ingest::DERIVED_INDEX_TYPES;
     use crate::run::read::CARRY_OVER_TYPES;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
-    use crate::test_support::{ev, seed_one_shot_fixture, ReadCountingStore};
+    use crate::test_support::{
+        ev, insert_pre_ledger_rows, seed_one_shot_fixture, ReadCountingStore,
+    };
+    use rigger_domain::retention::PERCEPTION_TYPES;
 
-    /// ONE-SHOT COMMANDS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
-    /// events and two superseded runs before the boundary, one read of the run costs exactly the
+    /// ONE-SHOT COMMANDS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
+    /// entries and two superseded runs before the boundary, one read of the run costs exactly the
     /// boundary lookup, the carried-over knowledge by type and the run slice from the boundary
-    /// with the derived types refused at the store - and a fold over it sees the current run
+    /// with the perception types refused at the store - and a fold over it sees the current run
     /// exactly, each event once and in revision order, with every run's carried-over knowledge.
     #[test]
     fn read_run_costs_the_runs_own_events_plus_the_typed_carry_over() {
@@ -275,8 +277,8 @@ mod tests {
     /// A READ OF THE RUN IS A LOG PREFIX (spec 101): a writer that appends a decision and then a
     /// spawn result between the read's two typed reads leaves the read holding both (the
     /// decision is never missing beside the later result), and one that appends after the read's
-    /// last call leaves it holding neither - either way the read is every non-derived event of the
-    /// run up to one head, in log order.
+    /// last call leaves it holding neither - either way the read is every non-perception event of
+    /// the run up to one head, in log order.
     #[test]
     fn read_run_is_a_log_prefix_whatever_a_concurrent_writer_appends_between_its_reads() {
         let late = || {
@@ -359,22 +361,22 @@ mod tests {
     }
 
     /// With no run started the whole stream is the run: one typed read from revision 0 refusing
-    /// only the derived types, after the boundary lookup found nothing.
+    /// only the perception types, after the boundary lookup found nothing.
     #[test]
-    fn read_run_with_no_run_started_reads_every_non_derived_event() {
-        let inner = Store::open(":memory:").unwrap();
-        inner
-            .append(
-                STREAM,
-                ExpectedRevision::NoStream,
-                &[
-                    ev("UnitStarted", "{}"),
-                    ev("EdgeInferred", "{}"),
-                    ev("DecisionMade", "{}"),
-                    ev("CodeEntityExtracted", "{}"),
-                ],
-            )
-            .unwrap();
+    fn read_run_with_no_run_started_reads_every_non_perception_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let inner = Store::open(db.to_str().unwrap()).unwrap();
+        insert_pre_ledger_rows(
+            &db,
+            STREAM,
+            &[
+                ev("UnitStarted", "{}"),
+                ev("EdgeInferred", "{}"),
+                ev("DecisionMade", "{}"),
+                ev("CodeEntityExtracted", "{}"),
+            ],
+        );
         let store = ReadCountingStore::new(&inner);
         let types: Vec<String> = read_run(&store, STREAM)
             .unwrap()
@@ -393,7 +395,7 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: false,
-                    types: DERIVED_INDEX_TYPES.iter().map(|t| t.to_string()).collect(),
+                    types: PERCEPTION_TYPES.iter().map(|t| t.to_string()).collect(),
                     materialized: 2,
                 },
             ]
@@ -435,7 +437,7 @@ mod tests {
                 [("Note", 1005), ("Note", 1001)]
             ),
             [0, 1, 1005, 1001],
-            "no boundary: the whole non-derived stream, in log order"
+            "no boundary: the whole non-perception stream, in log order"
         );
         assert_eq!(
             revisions_read(

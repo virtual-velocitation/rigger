@@ -145,6 +145,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         graph: graph.map(|g| g as _),
         criteria: Vec::new(),
         log: &|_| {},
+        hash_blob: &|_| Ok(String::new()),
     };
     // The radius is recorded before the spawn, so the run's terminal disposition is irrelevant.
     let _ = run(&cfg, &deps);

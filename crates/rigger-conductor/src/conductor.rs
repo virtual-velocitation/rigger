@@ -68,17 +68,21 @@ pub use crate::run::STREAM;
 /// complete, just never more than MAX_CONCURRENCY at once.
 pub const MAX_CONCURRENCY: usize = 4;
 
-/// Gate-autonomy ratchet events: a gate's trust moving up or down.
-pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
-pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
-/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8).
-pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
+/// Gate-autonomy ratchet events: a gate's trust moving up or down. The strings live in the
+/// ledger as the single source and these are re-exports.
+pub const TYPE_GATE_PROMOTED: &str = ledger::TYPE_GATE_PROMOTED;
+pub const TYPE_GATE_DEMOTED: &str = ledger::TYPE_GATE_DEMOTED;
+/// A proposed unit with no spec criterion - refused (anti-fragmentation, §8). A re-export of
+/// `ledger::TYPE_SCOPE_CREEP`, the single source of the string.
+pub const TYPE_SCOPE_CREEP: &str = ledger::TYPE_SCOPE_CREEP;
 pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;
 /// The run is halting because the plan left a spec criterion uncovered - the
-/// coverage gap is a spec defect, not something to silently deviate around (§4.4).
-pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
-/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4).
-pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
+/// coverage gap is a spec defect, not something to silently deviate around (§4.4). A re-export
+/// of `ledger::TYPE_SPEC_DEFECT`, the single source of the string.
+pub const TYPE_SPEC_DEFECT: &str = ledger::TYPE_SPEC_DEFECT;
+/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4). A re-export
+/// of `ledger::TYPE_TASK_ABORTED`, the single source of the string.
+pub const TYPE_TASK_ABORTED: &str = ledger::TYPE_TASK_ABORTED;
 /// A Manual-autonomy gate pauses its unit awaiting human review (§4.3). The ledger folds
 /// it into `RunState::manual_review` (the action-needed inbox), so the string lives there
 /// as the single source and this is a re-export. Kept in sync with
@@ -100,9 +104,9 @@ const GROUNDED_SEED_K: usize = 8;
 
 /// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion 4),
 /// RE-EXPORTED from [`crate::ingest`], which owns it: that module builds the
-/// `<prefix>/<file>@<hash>#<i>` content key and parses it back in the suppression predicate both
-/// this conductor and a cold `rigger graph build` share, so the name lives beside the key
-/// authority and this module borrows it rather than the other way round. One constant, one
+/// `<prefix>/<file>@<hash>#<i>` content key and parses it back to the identity and generation
+/// both this conductor's sink and a cold `rigger graph build` record under, so the name lives
+/// beside the key authority and this module borrows it rather than the other way round. One constant, one
 /// spelling, no direction of dependency from the key authority up into its orchestrator.
 ///
 /// What it buys HERE: a stepwise/replay run re-executes [`run`] over recorded history on EVERY
@@ -1848,13 +1852,22 @@ pub struct Deps<'a> {
     /// Where the run says what the operator must hear that is not an event: a fold into the
     /// wired graph it could not make. The composition root wires it to stderr.
     pub log: &'a (dyn Fn(&str) + Sync),
+    /// THE ONE HASH FUNCTION (spec 107): a file's bytes to the object id git gives them, which
+    /// the run's ingest sink names in each ledger entry it records. Injected so the conductor
+    /// spawns no process: the composition root binds it to `git hash-object` in the run's tree.
+    pub hash_blob: &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync),
 }
 
 impl<'a> Deps<'a> {
     /// The store every event the run appends goes through: [`Deps::store`], folding each append
     /// into [`Deps::graph`] after it is on the log and saying through [`Deps::log`] a fold it could
     /// not make - the one folding store every other writer of a verb uses too.
-    fn folding(&self) -> impl EventStore + 'a {
+    fn folding(
+        &self,
+    ) -> crate::ingest::FoldingStore<
+        'a,
+        impl Fn() -> Result<&'a dyn Projection, contextgraph::Error> + Send + Sync + 'a,
+    > {
         crate::ingest::folding_into(self.store, self.graph, self.log)
     }
     /// Whether a step over these dependencies ingests the project into the graph: there is a
@@ -1973,25 +1986,16 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // history re-appends none of the keyed unit-lifecycle events it already emitted, and
     // re-reaching an already-run gate replays its recorded verdict.
     //
-    // The set is a PARTITION over two scopes, decided BY EVENT TYPE FIRST (spec 60):
-    //
-    // - RUN-SCOPED (this seed): unit lifecycle, gate verdicts, breaker trips - every key whose
-    //   recurrence is a property of THIS run. Seeded from the current run's slice, so a prior run's
-    //   residue can never suppress this run's own keyed emit (the Gap 11 zombie boundary).
-    // - PROJECT-SCOPED: the derived index the project-ingest pass re-derives. A file's content hash
-    //   does not change because a new run started, so those keys are not seeded here at all: the
-    //   ingest sink asks the store for each identity's latest recorded generation the FIRST time it
-    //   meets that identity in this process (spec 101, [`crate::ingest::batch_is_latest_recorded`]
-    //   over the group lookup), so no step reads a derived event to seed them.
-    //
-    // The type test comes first, so the partition is a property of the code rather than of the
-    // key's spelling: a derived event is excluded here even if its key looks like a lifecycle key.
-    // `prior_events` is the read of the run this function already took - no extra store round-trip.
-    let replayed_keys: HashSet<String> = prior_events
-        .iter()
-        .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
-        .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
-        .collect();
+    // The set holds RUN-SCOPED keys only: unit lifecycle, gate verdicts, breaker trips - every
+    // key whose recurrence is a property of THIS run. It is seeded from the current run's slice,
+    // so a prior run's residue can never suppress this run's own keyed emit (the Gap 11 zombie
+    // boundary). Perception is never seeded (spec 107): the type test comes first
+    // ([`crate::replay_keys::ReplayKeys::seeded`]), so neither a derived event's key nor a ledger
+    // entry's enters the set even if it looks like a lifecycle key, and the ingest sink asks no
+    // key set what to record - it asks the store and the graph for each batch
+    // ([`crate::ingest::entry_of_batch`]). `prior_events` is the read of the run this function
+    // already took - no extra store round-trip.
+    let replayed_keys = crate::replay_keys::ReplayKeys::seeded(prior_events);
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
     // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
@@ -2157,11 +2161,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         budget_halted: std::sync::atomic::AtomicBool::new(false),
         #[cfg(feature = "symbols")]
         ingested: std::sync::atomic::AtomicBool::new(false),
+        #[cfg(feature = "symbols")]
+        logged_generations: Default::default(),
         prior_status,
         prior_attempts,
         prior_resume_bound,
         prior_failure,
-        replayed_keys: crate::replay_keys::ReplayKeys::seeded(replayed_keys),
+        replayed_keys,
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         compensations: Mutex::new(pending_compensations),
@@ -2932,26 +2938,25 @@ struct RunCtx<'a> {
     /// Set the first time this process ingests the live project into the unified graph
     /// (spec 29c criterion 5): the grounding path walks and extracts the tree at most ONCE
     /// per process, so a run whose step builds many prompts pays the walk once, not per
-    /// prompt. Durable per-file idempotence (a re-ingest on a later step re-emits only
-    /// changed files) rests on the keyed emit authority, not this flag.
-    ///
-    /// Within a process the bound is NOT merely a throughput saving, so do not read it as one.
-    /// `ingest_project_into_graph` is reached from `build_prompt_with_failure` - a PER-PROMPT path -
-    /// and [`replayed_keys`](RunCtx::replayed_keys) is EXTENDED by every key the ingest sink appends,
-    /// so a SECOND walk in one process would be weighed against that extended set rather than the
-    /// run-start SEED. Concretely: the seed holds `{A}`, walk 1 emits generation `B` and extends the
-    /// set to `{A, B}`, the tree reverts to `A`, and an unbounded walk 2 finds `A` present and
-    /// suppresses the revert - stranding the graph on `B`, the exact failure the
-    /// latest-generation-per-file seed exists to prevent. Holding the walk to ONE per process is what
-    /// keeps every suppression decision a run takes weighed against the seed.
-    ///
-    /// Process-local is nonetheless right: a fresh process RE-SEEDS latest-generation-per-file from
-    /// the log, so the guarantee is rebuilt rather than carried, and the flag need not survive a
-    /// process (the log + graph already do). Exists only in
-    /// the `symbols` lane - the light lane compiles no extraction pass to ingest, so its no-op
-    /// `ingest_project_into_graph` reads no guard.
+    /// prompt. The bound is for throughput alone (spec 107): what a walk records is decided for
+    /// each batch against the log's latest generation and the graph's current one, never against
+    /// a set of keys this process extends. The log's side is asked of the store once per identity
+    /// and remembered ([`logged_generations`](RunCtx::logged_generations)) while the run
+    /// stream's ledger head stands, so a second walk in one process records what a fresh
+    /// process's walk would. Process-local: nothing is carried between processes. Exists
+    /// only in the `symbols` lane - the light lane compiles no extraction pass to ingest, so its
+    /// no-op `ingest_project_into_graph` reads no guard.
     #[cfg(feature = "symbols")]
     ingested: std::sync::atomic::AtomicBool,
+    /// THE LOG SIDE AS THIS PROCESS LEARNED IT (spec 107): the log's latest generation of each
+    /// identity the ingest sink ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)) has asked the
+    /// store's group lookup about, or recorded an entry for, beside the run stream's ledger head
+    /// those answers are current at. The sink asks the store for an identity once and answers
+    /// its later batches from here while that head stands. Process-local and a memo only:
+    /// nothing is carried between processes, and the graph's side is never remembered. Exists
+    /// only in the `symbols` lane, as the sink does.
+    #[cfg(feature = "symbols")]
+    logged_generations: crate::logged_generations::LoggedGenerations,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
     /// a non-integrated, non-terminal unit that ran in a prior window has a status
     /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
@@ -3006,57 +3011,15 @@ struct RunCtx<'a> {
     /// re-enters through a FRESH `run()` call next step, which re-seeds from the by-then-
     /// updated log exactly like every other `prior_*` field.
     integrate_attempted: HashSet<String>,
-    /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
-    /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
-    /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
-    /// are NEVER removed. The project-scoped half now can be: the per-identity generations
-    /// [`ReplayKeys`](crate::replay_keys::ReplayKeys) tracks beside it (spec 86 criterion 3)
-    /// retire a stale generation's keys when [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets
-    /// a fresh one, and a failed append forgets the keys it installed.
-    ///
-    /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
-    /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
-    /// process emits, so membership means "already emitted in THIS run".
+    /// The set of REPLAY KEYS a keyed lifecycle emit may be suppressed against (spec 04,
+    /// criterion 4): every NON-perception key, seeded at run start from THIS run's slice of the
+    /// prior log's [`META_REPLAY_KEY`] metadata and extended as this process emits, so membership
+    /// means "already emitted in THIS run". A key, once inserted, is never removed.
     /// [`emit_keyed`](RunCtx::emit_keyed) consults it so a step re-running the conductor over
     /// recorded history appends each keyed unit-lifecycle event AT MOST ONCE - the log stays free
     /// of duplicate UnitStarted/green/verified/reviewed/ManualReview events no matter how many
-    /// step processes replay it.
-    ///
-    /// The PROJECT-SCOPED half is the four derived index types' content keys, and it has a
-    /// TWO-PHASE life that must be read as two phases:
-    ///
-    /// 1. SEEDED per identity at FIRST SIGHT (spec 101): the first time
-    ///    [`emit_keyed_batch`](RunCtx::emit_keyed_batch) meets a batch identity in this process it
-    ///    asks the store's group lookup ([`crate::ingest::batch_is_latest_recorded`]) whether the
-    ///    batch is that identity's LATEST recorded generation, and installs the batch's keys when it
-    ///    is. In that phase membership means "already recorded for this project by ANY run", so it
-    ///    names keys this run has not itself emitted - the opposite of the run-scoped half's
-    ///    meaning, and the phase every suppression decision is made in.
-    /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
-    ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
-    ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
-    ///    identity is seen - see [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install). From
-    ///    the first batch onward the half is therefore "latest generation as of run start, PLUS
-    ///    everything this process has emitted for a generation it currently tracks as live",
-    ///    which is neither latest-generation-per-file nor a this-run-only fact, but no longer
-    ///    grows without bound either: an identity re-emitted with a changed generation drops its
-    ///    prior one's keys in the same step it adds the new one's.
-    ///
-    /// Which phase a read lands in is what matters. On the RUN path the seed governs: the walk is
-    /// bounded to once per process by
-    /// [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph), which swaps a flag and
-    /// returns, and that one walk hands the sink each batch identity (`gc`/`gd` per file) exactly
-    /// once - so no suppression decision a run takes is ever weighed against a key phase 2 added.
-    /// The walk-and-emit half [`ingest_project_batches`](RunCtx::ingest_project_batches) carries NO
-    /// such guard, so a direct second (or third, or fourth) call in the same process (what the unit
-    /// tests drive, and what a long-lived conductor process crosses many times over a run's many
-    /// review/rework rounds) IS weighed against the extended-and-retired set, which is not the set
-    /// a later step would seed from the log. Nothing may read this half as a this-run fact, and
-    /// nothing may read it once the ingest sink has run as a latest-generation-as-of-run-start
-    /// fact - but within one process it IS latest-generation-as-tracked-by-`ReplayKeys`,
-    /// which is what closes the identical-key-across-two-exclusions collision
-    /// (`adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`) without
-    /// requiring a fresh process between rounds.
+    /// step processes replay it. It holds no key of perception (spec 107): the ingest sink
+    /// ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)) neither reads nor extends it.
     replayed_keys: crate::replay_keys::ReplayKeys,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
@@ -3187,11 +3150,13 @@ impl<'a> RunCtx<'a> {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -3215,17 +3180,20 @@ impl RunCtx<'_> {
         self.emit_with_actor("", type_, payload)
     }
 
-    /// The conductor's SINGLE event-mutation authority: append one already-built event
-    /// to the run stream and fold it into the live graph (so later agents read it). Both
-    /// emit paths - the actor-tagged [`emit_with_actor`](RunCtx::emit_with_actor) and the
-    /// replay-keyed [`emit_keyed`](RunCtx::emit_keyed) - route through here, so the
+    /// The conductor's event-mutation authority for every event but a ledger entry: append one
+    /// already-built event to the run stream and fold it into the live graph (so later agents
+    /// read it). Both emit paths - the actor-tagged [`emit_with_actor`](RunCtx::emit_with_actor)
+    /// and the replay-keyed [`emit_keyed`](RunCtx::emit_keyed) - route through here, so the
     /// expected-revision handling, the position stamp, and the post-append graph fold
     /// live in ONE place and can never silently diverge (finding
-    /// arch-emit-keyed-dup-authority).
+    /// arch-emit-keyed-dup-authority). The one other path is the ingest sink's
+    /// ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)): a ledger entry folds only with its batch,
+    /// so the sink appends and folds it through the folding store's ledger form, stamped by the
+    /// same [`stamped`](RunCtx::stamped) and its lost fold said by the same folding store.
     fn append_and_fold(&self, ev: Event) -> Result<u64, Error> {
         // A single event is the one-event case of the batched authority, so run-id stamping, the
         // append, and the graph fold live in exactly ONE place (finding arch-emit-keyed-dup-authority
-        // stays closed - there is no second append+fold path to drift). The returned position is the
+        // stays closed - no event but a ledger entry has a second append+fold path to drift). The returned position is the
         // appended log position a caller may CITE later (the content-address cache's green-verdict
         // provenance, spec 12 unit 1); the un-citing emit wrappers discard it.
         //
@@ -3242,10 +3210,11 @@ impl RunCtx<'_> {
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
     /// events to the run stream in ONE append and fold them into the live graph in ONE transaction
     /// (spec 49's batched-fold cadence - one transaction per file's batch, not per event, since the
-    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping stays the one
-    /// chokepoint here (spec 06, unit 1), and the batched append-and-fold + position assignment is
+    /// measured cold-build throughput was transaction-cadence bound). Run-id stamping is
+    /// [`stamped`](RunCtx::stamped) (spec 06, unit 1), which this and the ingest sink's ledger
+    /// entry both go through, and the batched append-and-fold + position assignment is
     /// the shared [`crate::ingest::FoldingStore`]'s, whose fold is the one a cold `rigger graph
-    /// build` also uses, so the run and a cold build can never fold a file's batch differently.
+    /// build` also uses, so a run's event and a cold build's batch can never fold differently.
     /// [`append_and_fold`](RunCtx::append_and_fold) is the one-event case; returns the store's own
     /// report - one slot per event handed in, `None` where nothing was written (an empty batch, or
     /// a store that recognised every event as already recorded) - never a fabricated `0`.
@@ -3253,18 +3222,11 @@ impl RunCtx<'_> {
         if events.is_empty() {
             return Ok(Appended::default());
         }
-        // Stamp the run id on every event (spec 06, unit 1) - the one chokepoint every emit path
-        // routes through, so unit/status/gate-verdict/spec-defect events are all attributable to
-        // their run. Skipped only when the run id is empty (the pure-helper test context, which
+        // Stamp the run id on every event (spec 06, unit 1) through the one stamp every event this
+        // run appends takes - here and at the ingest sink's ledger entry - so
+        // unit/status/gate-verdict/spec-defect events are all attributable to their run. Skipped only when the run id is empty (the pure-helper test context, which
         // appends nothing meaningful).
-        let stamped: Vec<Event> = if self.run_id.is_empty() {
-            events.to_vec()
-        } else {
-            events
-                .iter()
-                .map(|e| e.clone().with_meta(crate::run::META_RUN_ID, &self.run_id))
-                .collect()
-        };
+        let stamped: Vec<Event> = events.iter().map(|e| self.stamped(e)).collect();
         // The events are on the log whatever became of the fold; a fold into a wired graph that
         // it could not make is said through the injected log, never swallowed. A run wired to no
         // graph - an offline replay's isolated re-drive - folds nothing by design and has nothing
@@ -3274,6 +3236,17 @@ impl RunCtx<'_> {
             crate::eventstore::ExpectedRevision::Any,
             &stamped,
         )?)
+    }
+
+    /// `event` as this run appends it: stamped with the run id, or as it is when the run id is
+    /// empty. The one stamp every append of the run carries, a ledger entry's included.
+    fn stamped(&self, event: &Event) -> Event {
+        if self.run_id.is_empty() {
+            return event.clone();
+        }
+        event
+            .clone()
+            .with_meta(crate::run::META_RUN_ID, &self.run_id)
     }
 
     /// Emit an event, optionally stamping the acting agent in its metadata (the
@@ -3355,53 +3328,87 @@ impl RunCtx<'_> {
         self.append_and_fold(ev).map(|_| ())
     }
 
-    /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
-    /// drop the events whose key is already in [`replayed_keys`](RunCtx::replayed_keys) (the replay
-    /// dedup - an already-seen key appends nothing) and INSERT every key it keeps; then append the
-    /// SURVIVORS in ONE transaction and fold them in ONE graph transaction via
-    /// [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file cadence). Each
-    /// survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying the replay key,
-    /// its payload round-tripped through the same serialize path - and an event whose data is not
-    /// JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its key is
-    /// recorded), so batching changes transaction CADENCE only, never event content, order, or the
-    /// dedup contract.
+    /// THE RUN'S INGEST SINK (spec 107): record one file's batch, as a walk handed it with its
+    /// flag `excluded`, as a LEDGER ENTRY of perception - one `GenerationIngested` - and never a
+    /// derived event.
     ///
-    /// What survives is decided by [`ReplayKeys::install`](crate::replay_keys::ReplayKeys::install),
-    /// the one owner of the replay keys and the per-identity generations: the first-sight group
-    /// lookup (spec 101, [`crate::ingest::batch_is_latest_recorded`]), the retirement of a stale
-    /// generation's keys (spec 86 criterion 3), and the dedup itself, under that type's fixed lock
-    /// order. Its locks are released before the append, so concurrent units in a wave still append
-    /// their own keyed events in parallel. A failed append hands the survivors' keys and the
-    /// install's ticket to [`ReplayKeys::forget`](crate::replay_keys::ReplayKeys::forget), which
-    /// forgets only what this call installed, so the next sight asks the store afresh instead of
-    /// reading the unrecorded batch as appended.
+    /// What is recorded is decided by [`crate::ingest::entry_of_batch`], the one function both
+    /// ingest sinks call: it asks this sink for the log's latest generation of the batch's
+    /// identity and this run's graph for its side, records nothing for a batch both hold, and
+    /// otherwise reads the file's bytes under the run's tree ([`Deps::repo`]), extracts them and
+    /// hashes them through [`Deps::hash_blob`]. A batch whose key names no identity, and a failed
+    /// read of either side, of the bytes or of the hash, fails the emit and records nothing.
     ///
-    /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
+    /// The log side is MEMOIZED for the process
+    /// ([`logged_generations`](RunCtx::logged_generations)): the store's group lookup
+    /// ([`crate::ingest::latest_generation`]) is asked for an identity once, and every later
+    /// batch of that identity is answered from the memo while the memo is provably current. The
+    /// memo takes a lookup's answer when the lookup succeeds - a failed one is asked again by the
+    /// next batch - and the entry's generation once its append succeeds; a failed append leaves
+    /// it on the looked-up answer. Its proof is the run stream's ledger head: every batch reads
+    /// the revision of the stream's newest ledger entry
+    /// ([`last_position`](crate::eventstore::EventStore::last_position)), and a
+    /// head other than the one the memo was taken at - an entry another process recorded -
+    /// empties the memo, so a stale answer never suppresses a recording. After its own append
+    /// the sink reads the entries above the memo's head and follows the head only when they are
+    /// that entry alone. The graph's side is read on every batch and never remembered, so a
+    /// long-lived run records again an identity a rebuild of `graph.db` left behind the next
+    /// time a walk hands its batch.
+    ///
+    /// The entry is built by its one constructor, stamped with the run id as every event this run
+    /// appends is, and appended and folded with its extraction through the ledger form of the
+    /// folding store, in ONE store append and ONE graph transaction. Everything slow happened
+    /// before the append: the fold only moves the extraction in. A failed append fails the emit;
+    /// a fold that could not be made - the graph owes its rebuild, or refused the write - leaves
+    /// the entry on the log and is said through [`Deps::log`], as every lost fold of the run is.
+    /// A run wired to no graph has no graph side to read, so the emit fails; its callers walk
+    /// nothing there ([`Deps::ingests`]).
+    ///
+    /// Symbols-gated: its only callers are the ingest walks, which the light lane compiles out.
     #[cfg(feature = "symbols")]
-    fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
-        let (survivors, ticket) = self.replayed_keys.install(
+    fn emit_keyed_batch(&self, keyed: &[(String, &Event)], excluded: bool) -> Result<(), Error> {
+        let graph = contextgraph::wired(self.deps.graph).map_err(|e| Error(e.to_string()))?;
+        let recorded = crate::ingest::entry_of_batch(
+            std::path::Path::new(&self.deps.repo),
             keyed,
-            || crate::ingest::batch_is_latest_recorded(self.deps.store, STREAM, keyed),
-            |key, ev| {
-                // A non-JSON event neither appends nor records its key, exactly as the
-                // per-event sink skips it (`if let Ok(payload) = from_slice { emit_keyed(..) }`).
-                let payload: Value = serde_json::from_slice(&ev.data).ok()?;
-                let data = serde_json::to_vec(&payload).ok()?;
-                Some(crate::ingest::keyed_derived_event(
-                    Event::new(&ev.type_, data),
-                    key,
-                ))
+            excluded,
+            |identity| {
+                self.logged_generations.latest(
+                    identity,
+                    || {
+                        self.deps
+                            .store
+                            .last_position(STREAM, crate::retention::TYPE_GENERATION_INGESTED)
+                    },
+                    || crate::ingest::latest_generation(self.deps.store, STREAM, identity),
+                )
             },
-        )?;
-        let (kept, survivors): (Vec<String>, Vec<Event>) = survivors.into_iter().unzip();
-        let appended = self.append_and_fold_batch(&survivors);
-        if appended.is_err() {
-            // A FAILED APPEND RECORDED NOTHING (spec 101), so nothing this call installed may read
-            // as appended: see `ReplayKeys::forget` for what it forgets, and the in-flight window
-            // it leaves.
-            self.replayed_keys.forget(&ticket, &kept);
-        }
-        appended.map(|_| ())
+            graph,
+            self.deps.hash_blob,
+        )
+        .map_err(|e| Error(e.0))?;
+        let Some(recorded) = recorded else {
+            return Ok(());
+        };
+        let entry = self.stamped(&recorded.entry.event(recorded.batch.len()));
+        let folding = self.deps.folding();
+        let done = folding.append_entry_and_fold(STREAM, &entry, recorded.batch)?;
+        self.logged_generations.record(
+            &recorded.entry.identity(),
+            &recorded.entry.generation,
+            done.appended.last(),
+            |from| {
+                self.deps.store.read_stream_typed(
+                    STREAM,
+                    from,
+                    crate::eventstore::TypeSelection::Only(&[
+                        crate::retention::TYPE_GENERATION_INGESTED,
+                    ]),
+                )
+            },
+        );
+        folding.say_fold_lost(1, &done.fold);
+        Ok(())
     }
 
     /// The requested model ALIAS an agent is spawned with for `attempt` - the cascade rung
@@ -11204,17 +11211,12 @@ impl RunCtx<'_> {
     /// Spec 29c criterion 5: populate the unified graph from the LIVE project, guarded so the
     /// tree is walked at most ONCE per process. The first prompt a process builds triggers the
     /// walk; later prompts in the same process skip it (the graph already reflects the tree). The
-    /// per-file idempotence a re-ingest on a LATER step relies on lives in the keyed emit
-    /// authority, not this flag - this bounds the walk to once per process so a step that
-    /// builds many prompts does not re-walk per prompt. That bound is load-bearing, not just a
-    /// saving: it is what keeps a run's suppression decisions weighed against the run-start SEED
-    /// rather than the set the ingest sink extends as it emits (see
-    /// [`ingested`](RunCtx::ingested) for the two-walk sequence that would otherwise suppress a
-    /// revert).
+    /// bound is for throughput: what a walk records is decided for each batch by the ingest sink,
+    /// against the log and the graph, not by this flag.
     ///
-    /// A walk that fails (a batch's group lookup went unanswered) reopens the guard before it returns
-    /// the error, so the graph is never taken as reflecting a tree whose walk did not complete: the
-    /// next prompt walks again.
+    /// A walk that fails (a batch's emit failed) reopens the guard before it returns the error,
+    /// so the graph is never taken as reflecting a tree whose walk did not complete: the next
+    /// prompt walks again.
     #[cfg(feature = "symbols")]
     fn ingest_project_into_graph(&self) -> Result<(), Error> {
         if self
@@ -11231,76 +11233,40 @@ impl RunCtx<'_> {
 
     /// The walk-and-emit half of [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)
     /// WITHOUT the once-per-process guard, so a re-ingest of a changed file can be driven directly.
-    /// Emits every file's code (29a) and design-intent (29b) extraction batch through the ONE keyed
-    /// emit authority. Ingestion is OFF when there is no project tree to read (`repo` empty) or no
-    /// graph to fold into - the shipped non-repo / graph-less paths stay byte-for-byte unchanged.
+    /// Hands every file's code (29a), design-intent (29b) and workflow-definition batch, with its
+    /// flag, to the ONE ingest sink ([`emit_keyed_batch`](RunCtx::emit_keyed_batch)). Ingestion is
+    /// OFF when there is no project tree to read (`repo` empty) or no graph to fold into - the
+    /// shipped non-repo / graph-less paths stay byte-for-byte unchanged.
     ///
     /// The walk runs under the one walk policy both ingest sinks share
-    /// ([`crate::ingest::sink_walked_batches`]): a batch whose group lookup goes unanswered, or
-    /// whose append fails, appends nothing, the walk goes on, and the first such error is returned
-    /// once the walk ends - an unanswered lookup is never read as "nothing to append".
+    /// ([`crate::ingest::sink_walked_batches`]): a batch whose emit fails records nothing, the
+    /// walk goes on, and the first such error is returned once the walk ends - a failed read is
+    /// never taken as "nothing to record".
     #[cfg(feature = "symbols")]
     fn ingest_project_batches(&self) -> Result<(), Error> {
         if !self.deps.ingests() {
             return Ok(());
         }
         let root = self.deps.repo.clone();
-        // The walk over the project's per-file extraction batches AND their `<prefix>/<file>@<hash>#<i>`
-        // content key are the shared ingest authority ([`crate::ingest::ingest_project_batched`]) - the
-        // SAME walk and keying a standalone `rigger graph build` uses, so the two can never fork the
-        // key an event is deduped under. The run's emit SINK is its replay-keyed, concurrency-safe
-        // [`emit_keyed_batch`](RunCtx::emit_keyed_batch): a file's WHOLE batch is appended-and-folded
-        // through the single mutation authority in ONE store transaction and ONE graph transaction
-        // (spec 49's batched-fold cadence, since the measured cold-build throughput was
-        // transaction-cadence bound).
-        //
-        // WHAT A RE-INGEST APPENDS is decided by `replayed_keys`, which is a PARTITION over two
-        // scopes, not one seed (spec 60): every NON-derived key is seeded from THIS run's slice,
-        // because its recurrence is a property of one run, while the four derived index types are
-        // seeded per identity at first sight from the store's group lookup
-        // ([`crate::ingest::batch_is_latest_recorded`]), because a file's content hash does not
-        // change because a new run started. That half is SEEDED latest-generation-per-file and then
-        // EXTENDED with every key this process emits (see [`replayed_keys`](RunCtx::replayed_keys)),
-        // so what a run suppresses is decided by the SEED - the run reaches this walk at most once
-        // per process through `ingest_project_into_graph`'s guard, which THIS function deliberately
-        // does not carry, so a caller that drives it twice is weighed against the extended set:
-        //
-        // - an UNCHANGED file re-hashes to exactly that generation's keys, so its whole batch is
-        //   already recorded and it appends NOTHING - on this run and on every later run, forever;
-        // - a file whose content AS THE WALK LOWERED IT differs from its latest recorded batch
-        //   re-emits WHATEVER BATCH THE WALK HANDED THIS SINK, whole. That INCLUDES a file REVERTED
-        //   to content it held at an earlier generation, whose keys are byte-identical to records the
-        //   log still carries: it re-emits not because its keys are new but because those records are
-        //   no longer the file's latest generation. Seeding from every key ever recorded would strand
-        //   the graph on the superseded version instead. The qualifier is load-bearing: the design
-        //   half reads the live tree, but the code half lowers from the PERSISTED symbols index when
-        //   the project has one, so on such a project the decision is taken against what that index
-        //   holds rather than against the file on disk.
-        //
-        // Both bullets are claims about what this sink APPENDS, and nothing more. What a re-emitted
-        // batch RETIRES belongs to the FOLD and covers only the code half: a code batch carries a
-        // `fresh` head and 29a's fresh-head mechanism retires that file's prior structural edges as
-        // the fold applies it, while a design batch sets no `fresh` head at all, so re-emitting one
-        // adds its edges without retiring the ones its earlier generation left live. The two bullets
-        // also reach only files the walk emits a batch for, measured on WHAT THE WALK LOWERED. A file
-        // the walk lowered to NOTHING (an ordinary edit removing its last definition and reference,
-        // on a walk that saw that edit) is dropped before this sink sees it: no batch means no
-        // supersede, so its prior entities and edges stay live and no skip decision was involved. The
-        // converse holds too and is not symmetric between the halves: the design half reads the live
-        // tree, so a path that is gone is gone to it, while the code half lowers from the persisted
-        // symbols index - so a path the tree has DELETED, or one an edit emptied, still arrives here
-        // as a NON-empty batch and does reach a skip decision while that index lists it. And whether
-        // an appended batch then FOLDS is
-        // `FoldingStore::append_and_fold`'s best-effort contract, not this partition's - a lost fold leaves
-        // the log right and the graph behind.
-        //
-        // The dedup lock is held only around the key set (released before the append), so a concurrent
-        // unit in the wave still appends its own keyed events in parallel.
+        // The walk over the project's per-file extraction batches and their
+        // `<prefix>/<file>@<hash>#<i>` content key are the shared ingest authority
+        // ([`crate::ingest::ingest_project_batched`]) - the SAME walk and keying a standalone
+        // `rigger graph build` uses. What a walked batch RECORDS is the sink's to decide (spec
+        // 107): an unchanged file, whose generation the log and the graph both hold, records
+        // nothing, on this run and on every later one; any other records one ledger entry of the
+        // bytes the sink reads, a file reverted to content it held earlier included, because that
+        // content is no longer the generation both sides hold. The code half lowers from the
+        // PERSISTED symbols index when the project has one, so a batch the walk hands can lag the
+        // file's bytes: the sink records the bytes' generation, never the walk's. A file the walk
+        // lowers to nothing hands no batch and reaches no decision, while a path the tree has
+        // deleted still arrives from the code half as its batch for no bytes while that index
+        // lists it. Whether a recorded entry then FOLDS is the folding store's best-effort
+        // contract - a lost fold leaves the log right and the graph behind.
         crate::ingest::sink_walked_batches(
             |sink| {
                 crate::ingest::ingest_project_batched(&root, sink);
             },
-            |keyed| self.emit_keyed_batch(keyed),
+            |keyed, excluded| self.emit_keyed_batch(keyed, excluded),
         )
     }
 
@@ -11317,13 +11283,11 @@ impl RunCtx<'_> {
     /// right after every landed merge, right alongside the grounder's own (pre-existing) reindex.
     /// Bounded by `files` - the merge's OWN touched-file list - never a whole-project walk, so an
     /// integration that touches hundreds of files stays bounded by that count, not the project's.
-    /// Reuses the SAME scoped extraction and keyed-emit sink `ingest_project_batches` uses for the
-    /// whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) - never a
-    /// second lowering or dedup path - so a file's scoped generation here is byte-identical to what
-    /// a full walk would have produced for it. Off (a no-op) when there is no graph to fold into,
-    /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
-    /// A batch whose group lookup goes unanswered fails the reindex, exactly as it fails the whole-
-    /// tree walk.
+    /// Reuses the SAME scoped extraction and the SAME ingest sink `ingest_project_batches` uses for
+    /// the whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) -
+    /// never a second lowering or recording path. Off (a no-op) when there is no graph to fold
+    /// into, mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own
+    /// guard. A batch whose emit fails fails the reindex, exactly as it fails the whole-tree walk.
     #[cfg(feature = "symbols")]
     fn ingest_files_into_graph(&self, files: &[String]) -> Result<(), Error> {
         if !self.deps.ingests() || files.is_empty() {
@@ -11334,7 +11298,7 @@ impl RunCtx<'_> {
             |sink| {
                 crate::ingest::ingest_files_batched(&root, files, sink);
             },
-            |keyed| self.emit_keyed_batch(keyed),
+            |keyed, excluded| self.emit_keyed_batch(keyed, excluded),
         )
     }
 
@@ -14314,6 +14278,7 @@ mod tests {
                 graph: None,
                 criteria,
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             }
         }
 
@@ -14374,13 +14339,15 @@ mod tests {
         }
 
         /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
-        /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
-        /// mention.
+        /// per-BATCH fold (`apply_batch`) and of the batch every LEDGER fold asks for
+        /// (`apply_generation`), serves `graph` as every subgraph, resolves no mention and holds
+        /// no generation.
         #[derive(Default)]
         pub(super) struct SpyGraph {
             pub(super) graph: Graph,
             pub(super) per_event: AtomicU32,
             pub(super) batch_folds: Mutex<Vec<usize>>,
+            pub(super) entry_folds: Mutex<Vec<usize>>,
         }
 
         impl Projection for SpyGraph {
@@ -14408,6 +14375,21 @@ mod tests {
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
+            }
+            fn apply_generation(
+                &self,
+                _entry: &Event,
+                batch: crate::contextgraph::EntryBatch<'_>,
+            ) -> Result<crate::contextgraph::EntryFold, contextgraph::Error> {
+                let batch = batch()?.map_or(0, |events| events.len());
+                self.entry_folds.lock().unwrap().push(batch);
+                Ok(crate::contextgraph::EntryFold::BatchAsked)
+            }
+            fn current_generation(
+                &self,
+                _identity: &str,
+            ) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
             }
         }
     }
@@ -16435,6 +16417,7 @@ mod tests {
                 "the feature is implemented".into(),
             ],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -16785,6 +16768,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -19187,6 +19171,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -19258,6 +19243,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec![criterion.trim().to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -19387,6 +19373,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -19488,6 +19475,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -20040,6 +20028,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -20219,6 +20208,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20397,6 +20387,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20439,9 +20430,9 @@ mod tests {
 
     /// Spec 29c criterion 5 (production ingestion - the extraction pass RUNS in a live run and
     /// populates the graph). Exercising the actual grounding path (`build_prompt_with_failure`)
-    /// causes the run to extract the project's REAL source (29a) and design docs (29b) into
-    /// `CodeEntityExtracted` / `EdgeInferred` / `DocConcept` / `DocLink` events that fold into the
-    /// unified graph, so a seeded traversal returns REAL nodes the run itself ingested - closing the
+    /// causes the run to extract the project's REAL source (29a) and design docs (29b), record
+    /// one ledger entry per file's batch and fold each batch into the unified graph, so a seeded
+    /// traversal returns REAL nodes the run itself ingested - closing the
     /// "green tests, empty prod graph" gap 29a/29b left (their extraction had no live caller).
     ///
     /// The project tree is ACTUAL rigger source: a genuine source file and a genuine spec/design doc
@@ -20498,6 +20489,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20518,25 +20510,25 @@ mod tests {
             )
             .unwrap();
 
-        // (1) The RUN emitted all four extraction event types into the store - it ingested the
-        // project itself, closing the empty-prod-graph gap.
+        // (1) The RUN recorded one ledger entry per batch the walk extracts from the tree, code and
+        // design halves both, and no derived event - it ingested the project itself, closing the
+        // empty-prod-graph gap.
         let emitted = st_store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            count_of_type(&emitted, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0,
-            "the run must extract the real source's definitions into CodeEntityExtracted events"
+        let walked = walk_entries(&root_str);
+        let halves: BTreeSet<(&str, &str)> = walked
+            .iter()
+            .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
+            .collect();
+        assert_eq!(
+            halves,
+            BTreeSet::from([
+                ("gc", "src/run.rs"),
+                ("gd", "specs/29c-unified-traversal-tiers.md"),
+            ]),
+            "sanity: the tree extracts under both halves"
         );
-        assert!(
-            count_of_type(&emitted, contextgraph::TYPE_EDGE_INFERRED) > 0,
-            "the run must infer the real source's references into EdgeInferred events"
-        );
-        assert!(
-            count_of_type(&emitted, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0,
-            "the run must ingest the real design doc into DocConcept events"
-        );
-        assert!(
-            count_of_type(&emitted, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
-            "the run must ingest the real design doc's links into DocLink events"
-        );
+        assert_eq!(crate::test_support::entry_records(&emitted), walked);
+        assert_eq!(crate::test_support::derived_count(&emitted), 0);
 
         // (2) A seeded traversal returns REAL code-entity nodes the run ingested: every reached
         // entity name is an ACTUAL definition of the real file, and the stable `current_run` is
@@ -20573,16 +20565,9 @@ mod tests {
     }
 
     /// Spec 29c criterion 5 (re-extraction / freshness): a re-ingest on a later grounding pass
-    /// RE-EMITS a CHANGED file's whole batch (its `fresh` batch head superseding its prior edges by
-    /// 29a's mechanism) and leaves an UNCHANGED file alone. The walk itself re-lowers every file it
-    /// sees; what the content key decides is what is APPENDED, so "re-extracts" here means "re-emits".
-    ///
-    /// The rule that decides it is LATEST-GENERATION-per-file over a set SEEDED from the log, never
-    /// "recorded at any time": a file REVERTED to an earlier generation re-emits too, which is
-    /// criterion 3's proof to own and which nothing here exercises. This test drives ONE process and
-    /// re-enters the walk-and-emit half directly, so the set it weighs against is the IN-MEMORY set
-    /// this process EXTENDED rather than a log seed - see the body comment at the second ingest for
-    /// why the two agree on this fixture.
+    /// RECORDS a CHANGED file's new generation (its batch superseding the file's prior facts) and
+    /// records nothing for an UNCHANGED file. The walk itself re-lowers every file it sees; what
+    /// the log's latest generation and the graph's current one decide is what is RECORDED.
     #[cfg(feature = "symbols")]
     #[test]
     fn re_ingesting_re_extracts_a_changed_file_and_skips_unchanged_ones() {
@@ -20608,35 +20593,31 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
 
-        // The definitions the store recorded for a file, in the order they were emitted.
-        let code_names_for = |file: &str| -> Vec<String> {
-            st_store
-                .read_stream(STREAM, 0, Direction::Forward)
-                .unwrap()
-                .iter()
-                .filter(|e| e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
-                .filter_map(|e| serde_json::from_slice::<Value>(&e.data).ok())
-                .filter(|v| v.get("file").and_then(Value::as_str) == Some(file))
-                .filter_map(|v| v.get("name").and_then(Value::as_str).map(String::from))
-                .collect()
+        let log = || st_store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let reached = |file: &str| spec60_reached_entities(&graph, file);
+        let names = |names: &[&str]| -> BTreeSet<String> {
+            names.iter().map(|name| name.to_string()).collect()
         };
 
-        // First ingest: both files extract into the graph and the store.
+        // First ingest: one entry per file, and both files' symbols in the graph.
+        let first = walk_entries(&root_str);
+        assert_eq!(
+            first
+                .iter()
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([("gc", "src/churn.rs"), ("gc", "src/stable.rs")]),
+            "sanity: the tree extracts one code batch per file"
+        );
         ctx.ingest_project_batches().unwrap();
-        assert_eq!(
-            code_names_for("src/stable.rs"),
-            vec!["stable_symbol".to_string()],
-            "the first ingest records the unchanged file's symbol once"
-        );
-        assert_eq!(
-            code_names_for("src/churn.rs"),
-            vec!["original_symbol".to_string()],
-            "the first ingest records the churn file's original symbol"
-        );
+        assert_eq!(crate::test_support::entry_records(&log()), first);
+        assert_eq!(reached("src/stable.rs"), names(&["stable_symbol"]));
+        assert_eq!(reached("src/churn.rs"), names(&["original_symbol"]));
 
         // Change ONLY churn.rs; leave stable.rs byte-identical.
         std::fs::write(
@@ -20644,37 +20625,29 @@ mod tests {
             "pub fn replacement_symbol() {}\n",
         )
         .unwrap();
+        let churned: Vec<_> = walk_entries(&root_str)
+            .into_iter()
+            .filter(|(e, ..)| e.file == "src/churn.rs")
+            .collect();
+        assert_eq!(churned.len(), 1);
+        assert!(
+            !first.contains(&churned[0]),
+            "sanity: the change moved the file's generation"
+        );
 
-        // Re-ingest on the SAME ctx: its replay-key set carries the first pass's keys, so the
-        // unchanged file is skipped and the changed file re-emits. That set is the IN-MEMORY one
-        // this process EXTENDED, which is NOT the set a later step seeds from the log: a log-seeded
-        // set holds each file's latest generation only, this one holds every key the process
-        // emitted. The two agree here because churn.rs moves FORWARD to a generation neither set
-        // holds; they differ on a REVERT, which criterion 3's proof owns and which nothing in this
-        // test exercises.
+        // Re-ingest on the SAME ctx: the unchanged file records nothing, the changed file one
+        // entry of its new generation, and no derived event is recorded by either pass.
         ctx.ingest_project_batches().unwrap();
-
-        // Unchanged file: NOT re-ingested - its recorded symbol is still emitted exactly once.
         assert_eq!(
-            code_names_for("src/stable.rs"),
-            vec!["stable_symbol".to_string()],
-            "an unchanged file must not be re-ingested on a second grounding pass"
+            crate::test_support::entry_records(&log()),
+            [first, churned].concat()
         );
-        // Changed file: re-extracted - the new symbol is emitted (its fresh head supersedes the
-        // prior edges by 29a's mechanism).
-        assert!(
-            code_names_for("src/churn.rs").contains(&"replacement_symbol".to_string()),
-            "a changed file must re-extract its new symbol; churn events were {:?}",
-            code_names_for("src/churn.rs")
-        );
-        // The supersede lands in the graph: a seeded traversal reaches the NEW symbol the re-ingest
-        // folded (not only the store log).
-        let g = graph.subgraph(&["src/churn.rs".to_string()], 2).unwrap();
-        assert!(
-            g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
-                && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
-            "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
-        );
+        assert_eq!(crate::test_support::derived_count(&log()), 0);
+
+        // The new generation superseded the old in the graph: the traversal reaches the new
+        // symbol and no longer the one it replaced, and the unchanged file's is as it stood.
+        assert_eq!(reached("src/churn.rs"), names(&["replacement_symbol"]));
+        assert_eq!(reached("src/stable.rs"), names(&["stable_symbol"]));
     }
 
     /// Spec 92 criterion 1 (FRESH ON EVERY INTEGRATION): [`RunCtx::ingest_files_into_graph`] is
@@ -20713,6 +20686,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -20801,26 +20775,16 @@ mod tests {
         },
     }
 
-    /// What [`FirstLookup`] does with one armed append: when `hold` is set, signal its sender on
-    /// entry and wait on its receiver (or [`SIGNAL_WAIT`]); then refuse with [`APPEND_REFUSED`]
-    /// when `refuse` is set, and forward otherwise.
-    #[cfg(feature = "symbols")]
-    struct AppendPlay {
-        hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
-        refuse: bool,
-    }
-
-    /// A store double for the run sink's first-sight lookup (spec 101): every method forwards to
-    /// `inner`, except that the FIRST `latest_in_group` call - of `group` when one is named, of any
-    /// group otherwise - plays `first` before it forwards (or, refused, instead of forwarding), and
-    /// each append plays the next [`AppendPlay`] armed on it, in arming order. It counts nothing: a
-    /// test counts the lookups by wrapping it in the shared `ReadCountingStore`.
+    /// A store double for the run sink's log-side lookup: every method forwards to `inner`, except
+    /// that the FIRST `latest_in_group` call - of `group` when one is named, of any group
+    /// otherwise - plays `first` before it forwards (or, refused, instead of forwarding), and an
+    /// append is refused with [`APPEND_REFUSED`] once for each refusal armed on it.
     #[cfg(feature = "symbols")]
     struct FirstLookup<'a> {
         inner: &'a dyn EventStore,
         group: Option<&'static str>,
         first: Mutex<Option<FirstLookupPlay>>,
-        appends: Mutex<std::collections::VecDeque<AppendPlay>>,
+        refusals: Mutex<usize>,
     }
 
     #[cfg(feature = "symbols")]
@@ -20830,7 +20794,7 @@ mod tests {
                 inner,
                 group: None,
                 first: Mutex::new(Some(first)),
-                appends: Mutex::default(),
+                refusals: Mutex::default(),
             }
         }
 
@@ -20840,7 +20804,7 @@ mod tests {
                 inner,
                 group: None,
                 first: Mutex::new(None),
-                appends: Mutex::default(),
+                refusals: Mutex::default(),
             }
         }
 
@@ -20852,26 +20816,9 @@ mod tests {
             }
         }
 
-        /// Refuse the next unplayed append with [`APPEND_REFUSED`], once.
+        /// Refuse the next append with [`APPEND_REFUSED`], once.
         fn refuse_next_append(&self) {
-            self.appends.lock().unwrap().push_back(AppendPlay {
-                hold: None,
-                refuse: true,
-            });
-        }
-
-        /// Hold the next unplayed append: signal `entered` on entry, wait for `release`, then refuse
-        /// it when `refuse` is set and forward it otherwise.
-        fn hold_next_append(
-            &self,
-            entered: std::sync::mpsc::Sender<()>,
-            release: std::sync::mpsc::Receiver<()>,
-            refuse: bool,
-        ) {
-            self.appends.lock().unwrap().push_back(AppendPlay {
-                hold: Some((entered, release)),
-                refuse,
-            });
+            *self.refusals.lock().unwrap() += 1;
         }
     }
 
@@ -20883,16 +20830,12 @@ mod tests {
             expected: ExpectedRevision,
             events: &[Event],
         ) -> Result<Appended, crate::eventstore::Error> {
-            let play = self.appends.lock().unwrap().pop_front();
-            if let Some(AppendPlay { hold, refuse }) = play {
-                if let Some((entered, release)) = hold {
-                    let _ = entered.send(());
-                    let _ = release.recv_timeout(SIGNAL_WAIT);
-                }
-                if refuse {
-                    return Err(crate::eventstore::Error::Backend(APPEND_REFUSED.into()));
-                }
+            let mut armed = self.refusals.lock().unwrap();
+            if *armed > 0 {
+                *armed -= 1;
+                return Err(crate::eventstore::Error::Backend(APPEND_REFUSED.into()));
             }
+            drop(armed);
             self.inner.append(stream, expected, events)
         }
         crate::delegate_event_store_reads!(stream);
@@ -20917,495 +20860,1596 @@ mod tests {
         }
     }
 
-    /// The replay keys of every derived index event `store` holds on the run stream, in log order.
+    /// THE RUN'S SINK RECORDS PERCEPTION AS A LEDGER ENTRY (spec 107 criterion 10): what
+    /// [`RunCtx::emit_keyed_batch`] records, read back from the store it recorded into.
     #[cfg(feature = "symbols")]
-    fn derived_keys(store: &dyn EventStore) -> Vec<String> {
-        store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .unwrap()
-            .iter()
-            .filter(|e| crate::ingest::is_derived_index_type(&e.type_))
-            .map(|e| e.meta.get(META_REPLAY_KEY).cloned().unwrap_or_default())
-            .collect()
-    }
-
-    /// A project tree holding one source file whose batch carries a definition and a reference to
-    /// it, and every key the shipped walk emits for it, in walk order.
-    #[cfg(feature = "symbols")]
-    fn one_file_tree() -> (tempfile::TempDir, String, Vec<String>) {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(
-            dir.path().join("src/a.rs"),
-            "pub fn a() {}\npub fn b() { a(); }\n",
-        )
-        .unwrap();
-        let root = dir.path().to_str().unwrap().to_string();
-        let mut walked = Vec::new();
-        crate::ingest::ingest_project_batched(&root, |keyed| {
-            walked.extend(keyed.iter().map(|(key, _)| key.clone()));
-        });
-        (dir, root, walked)
-    }
-
-    /// Spec 101 (the run sink's seeding): GIVEN a tree whose one file the store never recorded,
-    /// over a store whose group lookup goes unanswered the first time it is asked, WHEN the run's
-    /// whole-tree ingest walks it, THEN the ingest fails naming the store's error and appends
-    /// nothing for that batch - an unanswered lookup is never read as "nothing to append" - and
-    /// the once-per-process guard stays open, so the next prompt walks again, its lookup answers,
-    /// and the batch appends whole.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_run_ingest_whose_group_lookup_is_unanswered_fails_appends_nothing_and_walks_again() {
-        let (_dir, root, walked) = one_file_tree();
-        assert_eq!(
-            walked.len(),
-            4,
-            "sanity: the file's batch is its two definitions, their file and the reference; \
-             walked {walked:?}"
-        );
-        let inner = Store::open(":memory:").unwrap();
-        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: root,
-            grounder: None,
-            graph: Some(&graph),
-            criteria: Vec::new(),
-            log: &|_| {},
+    mod run_sink {
+        use super::*;
+        use crate::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+        use crate::test_support::{
+            arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
+            git_hash_object, group_lookups, handed_by_the_walk, held_generations, ledger_head_read,
+            logged_generations, one_lookup_each, owe_a_rebuild, planted_extraction_tree,
+            rebuild_from_the_tree, seed_generations_on_another_stream, source_with,
+            walked_generations, walked_identities, write_file, CountedRead, Handed,
+            ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY,
+            SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
         };
-        let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
 
-        let unanswered = format!("{:?}", ctx.ingest_project_into_graph());
-        assert!(
-            unanswered.starts_with("Err(") && unanswered.contains(LOOKUP_REFUSED),
-            "an ingest whose lookup goes unanswered fails with the store's error; got {unanswered}"
-        );
-        assert_eq!(
-            derived_keys(&inner),
-            Vec::<String>::new(),
-            "the batch whose lookup went unanswered appends nothing"
-        );
+        /// The hash function as a run is handed it.
+        type Hash<'a> = &'a (dyn Fn(&[u8]) -> Result<String, worktree::Error> + Sync);
 
-        assert_eq!(format!("{:?}", ctx.ingest_project_into_graph()), "Ok(())");
-        assert_eq!(
-            derived_keys(&inner),
-            walked,
-            "the next ingest walks again and, its lookup answered, appends the batch whole"
-        );
-    }
+        /// What the run stream records, in log order: each ledger entry parsed, and the type of
+        /// any other event.
+        type Recorded = Vec<Result<GenerationIngested, String>>;
 
-    /// Spec 101 (the run sink's seeding): GIVEN a store whose group lookup goes unanswered, WHEN
-    /// an integration reindexes the file it landed, THEN the reindex fails naming the store's
-    /// error and appends nothing for that file's batch.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn an_integration_reindex_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
-        let (_dir, root, _walked) = one_file_tree();
-        let inner = Store::open(":memory:").unwrap();
-        let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: root,
-            grounder: None,
-            graph: Some(&graph),
-            criteria: Vec::new(),
-            log: &|_| {},
-        };
-        let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
+        /// A second body for the source file, and a third.
+        const BODY_B: &str = "fn second_body() {}\n";
+        const BODY_C: &str = "fn third_body() {}\n";
 
-        let unanswered = format!(
-            "{:?}",
-            ctx.ingest_files_into_graph(&["src/a.rs".to_string()])
-        );
-        assert!(
-            unanswered.starts_with("Err(") && unanswered.contains(LOOKUP_REFUSED),
-            "a reindex whose lookup goes unanswered fails with the store's error; got {unanswered}"
-        );
-        assert_eq!(derived_keys(&inner), Vec::<String>::new());
-    }
+        /// The object id [`sized_hash`] answers for `bytes`.
+        fn sized(bytes: &[u8]) -> String {
+            format!("blob-of-{}-bytes", bytes.len())
+        }
 
-    /// Spec 101 (FIRST SIGHT IS ATOMIC): GIVEN a store recording `h1` as a file's latest
-    /// generation, WHEN one stage (a whole-tree ingest reading `h1`) is inside its first-sight
-    /// lookup while another (a post-merge ingest reading `h2`) meets the same identity, THEN the
-    /// second waits for the first to install what it looked up, appends `h2` once, and the process
-    /// ends tracking `h2` - the generation the store holds - so a later in-process revert to `h1`
-    /// appends, and a later `h2` appends again only after that revert.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_first_sight_lookup_racing_a_newer_generation_leaves_the_process_on_the_stored_generation()
-    {
-        const IDENTITY: &str = "gc/src/a.rs";
-        let (h1_key, h2_key) = (format!("{IDENTITY}@h1#0"), format!("{IDENTITY}@h2#0"));
-        let ev = |name: &str| {
-            Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&json!({"file": "src/a.rs", "name": name})).unwrap(),
-            )
-        };
-        let (ev1, ev2) = (ev("first"), ev("second"));
-        let h1 = [(h1_key.clone(), &ev1)];
-        let h2 = [(h2_key.clone(), &ev2)];
+        /// A hash that answers an id naming how many bytes it was handed.
+        fn sized_hash(bytes: &[u8]) -> Result<String, worktree::Error> {
+            Ok(sized(bytes))
+        }
 
-        let inner = Store::open(":memory:").unwrap();
-        inner
-            .append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[crate::ingest::keyed_derived_event(ev1.clone(), &h1_key)],
-            )
-            .unwrap();
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let held = FirstLookup::new(
-            &inner,
-            FirstLookupPlay::Hold {
-                entered: entered_tx,
-                release: release_rx,
-            },
-        );
-        let store = crate::test_support::ReadCountingStore::new(&held);
-        let driver = Stub::new();
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
-        };
-        let cfg = Config::default();
-        let ctx = &RunCtx::for_test(&cfg, &deps);
-        // Building the context reads the run's log; everything after it is the emits' own cost.
-        let built = store.reads().len();
+        /// A hash that fails.
+        fn failing_hash(_bytes: &[u8]) -> Result<String, worktree::Error> {
+            Err(worktree::Error("git could not start".to_string()))
+        }
 
-        std::thread::scope(|s| {
-            let whole_tree = s.spawn(|| ctx.emit_keyed_batch(&h1));
-            entered_rx.recv_timeout(SIGNAL_WAIT).unwrap_or_else(|_| {
-                panic!("the whole-tree stage never made its first-sight group lookup of {IDENTITY}")
-            });
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let newer = &h2;
-            let post_merge = s.spawn(move || {
-                let emitted = ctx.emit_keyed_batch(newer);
-                done_tx.send(()).unwrap();
-                emitted
-            });
-            // Give the post-merge stage every chance to run its whole emit while the whole-tree
-            // stage still holds its lookup's answer uninstalled.
-            let _ = done_rx.recv_timeout(std::time::Duration::from_millis(500));
-            release_tx.send(()).unwrap();
-            whole_tree.join().unwrap().unwrap();
-            post_merge.join().unwrap().unwrap();
-        });
+        /// The conductor's ports for a run that ingests the tree at `repo` into `graph`.
+        fn sink_deps<'a>(
+            store: &'a dyn EventStore,
+            driver: &'a dyn AgentDriver,
+            graph: &'a dyn Projection,
+            repo: &str,
+            hash_blob: Hash<'a>,
+        ) -> Deps<'a> {
+            Deps {
+                repo: repo.to_string(),
+                graph: Some(graph),
+                hash_blob,
+                ..stub_deps(store, driver, Vec::new())
+            }
+        }
 
-        assert_eq!(
-            derived_keys(&inner),
-            vec![h1_key.clone(), h2_key.clone()],
-            "the recorded h1 appends nothing and the newer h2 appends once"
-        );
-        assert_eq!(
-            crate::ingest::latest_generation(&inner, STREAM, IDENTITY).unwrap(),
-            Some("h2".to_string())
-        );
-        assert_eq!(
-            ctx.replayed_keys
-                .tracked(IDENTITY)
-                .map(|(generation, _)| generation),
-            Some("h2".to_string()),
-            "the process tracks the generation the store holds"
-        );
+        /// [`Recorded`] of `store`: a comparison against entries alone proves no other event,
+        /// and so no derived event, was recorded.
+        fn recorded(store: &dyn EventStore) -> Recorded {
+            store
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    if e.type_ == TYPE_GENERATION_INGESTED {
+                        Ok(GenerationIngested::parse(&e.data).unwrap())
+                    } else {
+                        Err(e.type_.clone())
+                    }
+                })
+                .collect()
+        }
 
-        ctx.emit_keyed_batch(&h1).unwrap();
-        ctx.emit_keyed_batch(&h2).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
-            vec![h1_key.clone(), h2_key.clone(), h1_key, h2_key],
-            "an in-process revert to h1 appends, and h2 after it appends again"
-        );
-        assert_eq!(
-            store.reads()[built..],
-            [crate::test_support::CountedRead::LatestInGroup {
-                stream: STREAM.to_string(),
-                group: IDENTITY.to_string(),
-            }],
-            "the identity is looked up once, at first sight, however many stages and generations \
-             meet it after - and nothing else is read"
-        );
-    }
+        /// `entries` as the store records them.
+        fn entries(entries: &[GenerationIngested]) -> Recorded {
+            entries.iter().cloned().map(Ok).collect()
+        }
 
-    /// The one batch identity the refused-append tests drive the run sink with.
-    #[cfg(feature = "symbols")]
-    const FIRST_SIGHT_IDENTITY: &str = "gc/src/a.rs";
-
-    /// The two keyed events of [`FIRST_SIGHT_IDENTITY`]'s batch at `generation`.
-    #[cfg(feature = "symbols")]
-    fn first_sight_batch(generation: &str) -> Vec<(String, Event)> {
-        (0..2)
-            .map(|i| {
-                (
-                    format!("{FIRST_SIGHT_IDENTITY}@{generation}#{i}"),
-                    Event::new(
-                        contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        serde_json::to_vec(
-                            &json!({"file": "src/a.rs", "name": generation, "i": i}),
-                        )
-                        .unwrap(),
-                    ),
-                )
-            })
-            .collect()
-    }
-
-    /// `batch` as the run sink takes it.
-    #[cfg(feature = "symbols")]
-    fn as_keyed(batch: &[(String, Event)]) -> Vec<(String, &Event)> {
-        batch.iter().map(|(key, ev)| (key.clone(), ev)).collect()
-    }
-
-    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a store that never recorded a file, WHEN the
-    /// run sink's append of that file's batch is refused, THEN the emit fails and records nothing,
-    /// and the next sight of the same batch asks the store afresh and appends it whole - the refused
-    /// batch left no key or generation behind that would read as already appended.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_batch_whose_append_is_refused_at_first_sight_appends_whole_on_the_next_sight() {
-        let h1 = first_sight_batch("h1");
-        let inner = Store::open(":memory:").unwrap();
-        let held = FirstLookup::forwarding(&inner);
-        let store = crate::test_support::ReadCountingStore::new(&held);
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let built = store.reads().len();
-
-        held.refuse_next_append();
-        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&h1)));
-        assert!(
-            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
-            "a refused append is the emit's error; got {refused}"
-        );
-        assert_eq!(derived_keys(&inner), Vec::<String>::new());
-
-        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
-            [h1[0].0.clone(), h1[1].0.clone()],
-            "the next sight appends the refused batch whole"
-        );
-        let lookup = crate::test_support::CountedRead::LatestInGroup {
-            stream: STREAM.to_string(),
-            group: FIRST_SIGHT_IDENTITY.to_string(),
-        };
-        assert_eq!(
-            store.reads()[built..],
-            [lookup.clone(), lookup],
-            "the refused batch left no slot behind, so its next sight asks the store afresh"
-        );
-    }
-
-    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a store recording `h1` as a file's latest
-    /// generation, which the process has seen, WHEN the append of the file's changed `h2` batch is
-    /// refused, THEN the process falls back to what the store holds: a later `h1` (the tree reverted
-    /// before the retry) appends nothing, because `h1` is still the recorded generation, and a later
-    /// `h2` appends once.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_generation_whose_append_is_refused_leaves_the_process_on_the_recorded_generation() {
-        let (h1, h2) = (first_sight_batch("h1"), first_sight_batch("h2"));
-        let inner = Store::open(":memory:").unwrap();
-        let recorded: Vec<Event> = h1
-            .iter()
-            .map(|(key, ev)| crate::ingest::keyed_derived_event(ev.clone(), key))
-            .collect();
-        inner
-            .append(STREAM, ExpectedRevision::Any, &recorded)
-            .unwrap();
-        let held = FirstLookup::forwarding(&inner);
-        let store = crate::test_support::ReadCountingStore::new(&held);
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let built = store.reads().len();
-        let h1_keys = [h1[0].0.clone(), h1[1].0.clone()];
-
-        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
-            h1_keys,
-            "the recorded h1 appends nothing"
-        );
-
-        held.refuse_next_append();
-        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&h2)));
-        assert!(
-            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
-            "a refused append is the emit's error; got {refused}"
-        );
-
-        ctx.emit_keyed_batch(&as_keyed(&h1)).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
-            h1_keys,
-            "h1 is still the recorded generation, so the reverted batch appends nothing"
-        );
-        ctx.emit_keyed_batch(&as_keyed(&h2)).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
+        /// The body the extraction tree plants at `path`.
+        fn planted_body(path: &str) -> &'static str {
             [
-                h1_keys[0].clone(),
-                h1_keys[1].clone(),
-                h2[0].0.clone(),
-                h2[1].0.clone()
-            ],
-            "the changed h2 appends once its append lands"
-        );
-        let lookup = crate::test_support::CountedRead::LatestInGroup {
-            stream: STREAM.to_string(),
-            group: FIRST_SIGHT_IDENTITY.to_string(),
-        };
-        assert_eq!(
-            store.reads()[built..],
-            [lookup.clone(), lookup],
-            "the identity is looked up at first sight and again after the refused append"
-        );
-    }
+                (SOURCE_PATH, SOURCE_BODY),
+                (TEST_MODULE_PATH, TEST_MODULE_BODY),
+                (DOCUMENT_PATH, DOCUMENT_BODY),
+                (WORKFLOW_PATH, WORKFLOW_BODY),
+            ]
+            .into_iter()
+            .find(|(planted, _)| *planted == path)
+            .expect("the extraction tree plants the path")
+            .1
+        }
 
-    /// The generation the run sink tracks for `identity`, with that generation's keys in order -
-    /// `None` when the identity has no slot.
-    #[cfg(feature = "symbols")]
-    fn tracked(ctx: &RunCtx, identity: &str) -> Option<(String, Vec<String>)> {
-        ctx.replayed_keys.tracked(identity)
-    }
+        /// The entry the sink records for each batch a walk of the extraction tree hands it, in
+        /// walk order, its blob [`sized`] of the file's planted bytes.
+        fn walked_entries() -> Vec<GenerationIngested> {
+            entry_records(&fixture_entry_events(|path| {
+                sized(planted_body(path).as_bytes())
+            }))
+            .into_iter()
+            .map(|(entry, ..)| entry)
+            .collect()
+        }
 
-    /// Spec 101 (A REFUSED APPEND FORGETS ONLY ITS OWN): GIVEN stage A's append of a file's `h2`
-    /// batch in flight, WHEN stage C meets the file's newer `h3`, moves the process to it and is
-    /// still appending it as A's append is refused, THEN A forgets only what it installed: the
-    /// process still tracks `h3` with C's keys, a third sight of `h3` before C's append lands
-    /// appends nothing and asks the store nothing, and `h3` is appended exactly once.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_refused_append_leaves_a_concurrent_newer_generation_tracked_and_appended_once() {
-        let (h2, h3) = (first_sight_batch("h2"), first_sight_batch("h3"));
-        let (h2_keyed, h3_keyed) = (as_keyed(&h2), as_keyed(&h3));
-        let h3_keys = vec![h3[0].0.clone(), h3[1].0.clone()];
-        let inner = Store::open(":memory:").unwrap();
-        let held = FirstLookup::forwarding(&inner);
-        let store = crate::test_support::ReadCountingStore::new(&held);
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let cfg = Config::default();
-        let ctx = &RunCtx::for_test(&cfg, &deps);
-        let built = store.reads().len();
-        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
-        let (a_release_tx, a_release_rx) = std::sync::mpsc::channel();
-        let (c_entered_tx, c_entered_rx) = std::sync::mpsc::channel();
-        let (c_release_tx, c_release_rx) = std::sync::mpsc::channel();
-        held.hold_next_append(a_entered_tx, a_release_rx, true);
-        held.hold_next_append(c_entered_tx, c_release_rx, false);
+        impl Handed {
+            /// Hand the batch to the run's sink, answering the emit's failure as its text.
+            fn emit(&self, ctx: &RunCtx) -> Result<(), String> {
+                ctx.emit_keyed_batch(&self.as_keyed(), self.excluded)
+                    .map_err(|e| e.0)
+            }
+        }
 
-        let (refused, after_refusal, third_sight) = std::thread::scope(|s| {
-            let stage_a = s.spawn(|| ctx.emit_keyed_batch(&h2_keyed));
-            a_entered_rx
-                .recv_timeout(SIGNAL_WAIT)
-                .expect("stage A never reached its append of h2");
-            let stage_c = s.spawn(|| ctx.emit_keyed_batch(&h3_keyed));
-            c_entered_rx
-                .recv_timeout(SIGNAL_WAIT)
-                .expect("stage C never reached its append of h3");
-            a_release_tx.send(()).unwrap();
-            let refused = format!("{:?}", stage_a.join().unwrap());
-            let after_refusal = tracked(ctx, FIRST_SIGHT_IDENTITY);
-            let third_sight = format!("{:?}", ctx.emit_keyed_batch(&h3_keyed));
-            c_release_tx.send(()).unwrap();
-            stage_c.join().unwrap().unwrap();
-            (refused, after_refusal, third_sight)
-        });
+        /// The batch an integration reindex of `root` naming `file` hands for `identity`.
+        fn reindexed(root: &str, file: &str, identity: &str) -> Handed {
+            Handed::by(
+                |sink| {
+                    crate::ingest::ingest_files_batched(root, &[file.to_string()], sink);
+                },
+                identity,
+            )
+        }
 
-        assert!(
-            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
-            "stage A's refused append is its emit's error; got {refused}"
-        );
-        assert_eq!(
-            after_refusal,
-            Some(("h3".to_string(), h3_keys.clone())),
-            "A's refused append leaves C's slot and keys as C installed them"
-        );
-        assert_eq!(third_sight, "Ok(())");
-        assert_eq!(
-            derived_keys(&inner),
-            h3_keys,
-            "h2 is never recorded and h3 is appended exactly once"
-        );
-        assert_eq!(
-            store.reads()[built..],
-            [crate::test_support::CountedRead::LatestInGroup {
-                stream: STREAM.to_string(),
-                group: FIRST_SIGHT_IDENTITY.to_string(),
-            }],
-            "the identity is looked up once, at A's first sight"
-        );
-    }
+        /// The names of the live code entities the graph reaches from the source file.
+        fn live_names(graph: &dyn Projection) -> Vec<String> {
+            let mut names: Vec<String> = graph
+                .subgraph(&[SOURCE_PATH.to_string()], 2)
+                .unwrap()
+                .nodes
+                .iter()
+                .filter(|n| n.kind == contextgraph::KIND_CODE_ENTITY)
+                .filter_map(|n| n.attrs.get("name").cloned())
+                .collect();
+            names.sort();
+            names
+        }
 
-    /// Spec 101 (A REFUSED APPEND IS RETRIED): GIVEN a batch whose keys are not the per-file key
-    /// shape - it names no identity, so the process tracks no generation for it and asks the store
-    /// nothing - WHEN its append is refused, THEN the next emit of it appends it whole.
-    #[cfg(feature = "symbols")]
-    #[test]
-    fn a_batch_naming_no_identity_whose_append_is_refused_appends_whole_on_the_next_emit() {
-        let batch: Vec<(String, Event)> = (0..2)
-            .map(|i| {
-                (
-                    format!("unshaped#{i}"),
-                    Event::new(
-                        contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        serde_json::to_vec(&json!({"file": "src/a.rs", "i": i})).unwrap(),
-                    ),
+        /// A graph double over a real one: it forwards every read and fold, but for the one named
+        /// in `fails`, which answers an error carrying [`GRAPH_REFUSED`].
+        struct FailingGraph<'a> {
+            inner: &'a dyn Projection,
+            fails: GraphCall,
+        }
+
+        /// The one call a [`FailingGraph`] fails.
+        #[derive(Clone, Copy, PartialEq)]
+        enum GraphCall {
+            Owed,
+            Current,
+            Fold,
+        }
+
+        /// The message a [`FailingGraph`] fails its call with.
+        const GRAPH_REFUSED: &str = "the graph file is locked";
+
+        impl FailingGraph<'_> {
+            /// `answer`, or the failure when `call` is the one this double fails.
+            fn unless<T>(
+                &self,
+                call: GraphCall,
+                answer: impl FnOnce() -> Result<T, contextgraph::Error>,
+            ) -> Result<T, contextgraph::Error> {
+                if self.fails == call {
+                    return Err(contextgraph::Error(GRAPH_REFUSED.to_string()));
+                }
+                answer()
+            }
+        }
+
+        impl Projection for FailingGraph<'_> {
+            fn apply(
+                &self,
+                _e: &Event,
+                _access: contextgraph::FoldAccess,
+            ) -> Result<(), contextgraph::Error> {
+                panic!("the run's sink folds an entry only through the ledger fold")
+            }
+            fn apply_generation(
+                &self,
+                entry: &Event,
+                batch: contextgraph::EntryBatch<'_>,
+            ) -> Result<contextgraph::EntryFold, contextgraph::Error> {
+                self.unless(GraphCall::Fold, || {
+                    self.inner.apply_generation(entry, batch)
+                })
+            }
+            fn current_generation(
+                &self,
+                identity: &str,
+            ) -> Result<Option<String>, contextgraph::Error> {
+                self.unless(GraphCall::Current, || {
+                    self.inner.current_generation(identity)
+                })
+            }
+            fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
+                self.unless(GraphCall::Owed, || self.inner.rebuild_owed())
+            }
+            fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, contextgraph::Error> {
+                self.inner.subgraph(seed, depth)
+            }
+            fn resolve(&self, mention: &str) -> Result<Option<String>, contextgraph::Error> {
+                self.inner.resolve(mention)
+            }
+        }
+
+        /// GIVEN a tree holding a source file, the out-of-line test module it declares, a design
+        /// document and the workflow definition, none recorded, WHEN the run's whole-tree walk
+        /// hands each batch to the sink, THEN the store holds one ledger entry per batch and no
+        /// other event - each entry's generation the batch's, its blob that of the file's bytes,
+        /// its flag the walk's, the test module's entry at its boundary batch's generation with
+        /// its flag set - under its identity as the group and its generation and event count in
+        /// the replay key, and the graph holds each generation. A second walk of the unchanged
+        /// tree records nothing.
+        #[test]
+        fn a_whole_tree_walk_records_one_ledger_entry_per_file_from_its_bytes_and_no_derived_event()
+        {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            ctx.ingest_project_batches().unwrap();
+
+            let expected = walked_entries();
+            assert_eq!(recorded(&st), entries(&expected));
+            assert_eq!(
+                expected[0],
+                generation_ingested(
+                    "gc",
+                    TEST_MODULE_PATH,
+                    "878ec204b714de6b",
+                    &sized(TEST_MODULE_BODY.as_bytes()),
+                    true
+                ),
+                "the out-of-line test module's entry records its boundary batch and its flag"
+            );
+            let stamps: Vec<(Option<String>, Option<String>, Option<String>)> = st
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    (
+                        e.meta.get(crate::eventstore::META_GROUP).cloned(),
+                        e.meta.get(META_REPLAY_KEY).cloned(),
+                        e.meta.get(crate::run::META_RUN_ID).cloned(),
+                    )
+                })
+                .collect();
+            let identities = walked_identities();
+            assert_eq!(
+                stamps,
+                identities
+                    .iter()
+                    .zip(&WALKED)
+                    .map(|(identity, batch)| {
+                        (
+                            Some(identity.clone()),
+                            Some(format!(
+                                "{identity}@{}#{}",
+                                batch.generation,
+                                batch.events.len()
+                            )),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
+            assert_eq!(live_names(&graph), ["helper", "product"]);
+
+            ctx.ingest_project_batches().unwrap();
+            assert_eq!(
+                recorded(&st),
+                entries(&expected),
+                "an unchanged tree records nothing"
+            );
+        }
+
+        /// The run's sink stamps the run id on an entry, as it stamps every event the run
+        /// appends.
+        #[test]
+        fn an_entry_recorded_by_a_run_carries_the_runs_id() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let mut ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.run_id = "run-7".to_string();
+
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
+
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|e| (
+                        e.type_.as_str(),
+                        e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
+                    ))
+                    .collect::<Vec<_>>(),
+                [(TYPE_GENERATION_INGESTED, Some("run-7"))]
+            );
+        }
+
+        /// GIVEN an out-of-line test module's file no recording names, WHEN an integration
+        /// reindex names it, THEN its code entry records its boundary batch's generation with
+        /// its flag set, beside its design entry with the flag clear.
+        #[test]
+        fn an_integration_reindex_naming_an_out_of_line_test_module_records_its_flag_set() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            ctx.ingest_files_into_graph(&[TEST_MODULE_PATH.to_string()])
+                .unwrap();
+
+            let blob = sized(TEST_MODULE_BODY.as_bytes());
+            assert_eq!(
+                recorded(&st),
+                entries(&[
+                    generation_ingested("gc", TEST_MODULE_PATH, "878ec204b714de6b", &blob, true),
+                    generation_ingested("gd", TEST_MODULE_PATH, "8c6020acb1774c78", &blob, false),
+                ])
+            );
+        }
+
+        /// GIVEN a log that holds every file's generation and a graph that holds none of them (a
+        /// graph a rebuild left behind), WHEN a run walks the unchanged tree, THEN every file is
+        /// recorded again and the graph takes each generation.
+        #[test]
+        fn a_file_whose_generation_the_log_holds_and_the_graph_does_not_is_recorded_again() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let cfg = Config::default();
+            let first = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let deps = sink_deps(&st, &driver, &first, root, &sized_hash);
+            RunCtx::for_test(&cfg, &deps)
+                .ingest_project_batches()
+                .unwrap();
+            let once = walked_entries();
+            assert_eq!(recorded(&st), entries(&once));
+
+            let behind = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            assert_eq!(behind.current_generation(SOURCE).unwrap(), None);
+            let deps = sink_deps(&st, &driver, &behind, root, &sized_hash);
+            RunCtx::for_test(&cfg, &deps)
+                .ingest_project_batches()
+                .unwrap();
+
+            assert_eq!(recorded(&st), entries(&[once.clone(), once].concat()));
+            assert_eq!(
+                behind.current_generation(SOURCE).unwrap().as_deref(),
+                Some("f81a57a5c4f55f52")
+            );
+            assert_eq!(live_names(&behind), ["helper", "product"]);
+        }
+
+        /// GIVEN a recorded source file the tree then deletes, and in another tree one a
+        /// committed `.gitignore` names, WHEN an integration reindex names the file, THEN each
+        /// records an entry of the code half's batch for no bytes with no blob, the hash is not
+        /// asked, and the deleted file's definitions leave the graph.
+        #[test]
+        fn a_deleted_gc_file_and_one_outside_the_walks_scope_each_record_an_entry_with_no_blob() {
+            let cfg = Config::default();
+            let driver = Stub::new();
+            let hashed: Mutex<Vec<usize>> = Mutex::default();
+            let counting = |bytes: &[u8]| {
+                hashed.lock().unwrap().push(bytes.len());
+                sized_hash(bytes)
+            };
+
+            // Deleted after a walk recorded it.
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let deps = sink_deps(&st, &driver, &graph, root, &counting);
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.ingest_project_batches().unwrap();
+            let walked_hashes = hashed.lock().unwrap().len();
+            assert_eq!(walked_hashes, 6);
+            std::fs::remove_file(tree.path().join(SOURCE_PATH)).unwrap();
+            let no_bytes = reindexed(root, SOURCE_PATH, SOURCE).generation();
+            assert_ne!(no_bytes, "f81a57a5c4f55f52");
+
+            ctx.ingest_files_into_graph(&[SOURCE_PATH.to_string()])
+                .unwrap();
+
+            let gone = generation_ingested("gc", SOURCE_PATH, &no_bytes, "", false);
+            assert_eq!(
+                recorded(&st),
+                entries(&[walked_entries(), vec![gone.clone()]].concat())
+            );
+            assert_eq!(hashed.lock().unwrap().len(), walked_hashes);
+            assert_eq!(live_names(&graph), Vec::<String>::new());
+
+            // Outside the walk's scope, holding a readable file.
+            let ignored = planted_extraction_tree(write_file);
+            write_file(&ignored.path().join(".gitignore"), b"src/lib.rs\n");
+            let root = ignored.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let deps = sink_deps(&st, &driver, &graph, root, &failing_hash);
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            ctx.ingest_files_into_graph(&[SOURCE_PATH.to_string()])
+                .unwrap();
+
+            assert_eq!(recorded(&st), entries(&[gone]));
+        }
+
+        /// GIVEN an index lowering that lags the file's bytes - the walk hands the batch of an
+        /// earlier body - at a generation neither side holds, WHEN the sink is handed it, THEN
+        /// the entry records the generation and blob of the bytes the sink read, never the
+        /// walk's; and handed the same lagging batch once both sides hold the bytes' generation,
+        /// the sink records nothing and the emit succeeds.
+        #[test]
+        fn a_lagging_lowering_records_the_bytes_generation_and_nothing_once_both_sides_hold_it() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            // Both sides hold the generation of a first body.
+            write_file(&file, BODY_B.as_bytes());
+            let first = handed_by_the_walk(root, SOURCE);
+            first.emit(&ctx).unwrap();
+            // The walk lowers a second body, and the tree moves on to a third before the sink
+            // reads it.
+            write_file(&file, BODY_C.as_bytes());
+            let lagging = handed_by_the_walk(root, SOURCE);
+            write_file(&file, SOURCE_BODY.as_bytes());
+            let generations = [first.generation(), lagging.generation()];
+            assert_ne!(generations[0], generations[1]);
+            assert!(!generations.contains(&"f81a57a5c4f55f52".to_string()));
+
+            assert_eq!(lagging.emit(&ctx), Ok(()));
+
+            let recorded_twice = entries(&[
+                generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    &generations[0],
+                    &sized(BODY_B.as_bytes()),
+                    false,
+                ),
+                generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    "f81a57a5c4f55f52",
+                    &sized(SOURCE_BODY.as_bytes()),
+                    false,
+                ),
+            ]);
+            assert_eq!(recorded(&st), recorded_twice);
+            assert_eq!(live_names(&graph), ["helper", "product"]);
+
+            assert_eq!(lagging.emit(&ctx), Ok(()));
+            assert_eq!(recorded(&st), recorded_twice);
+        }
+
+        /// GIVEN a tree that is not a git repository and a run bound to the production hash,
+        /// WHEN the sink records a file, THEN the entry's blob is the object id
+        /// `git hash-object` gives the file.
+        #[test]
+        fn a_tree_that_is_not_a_git_repository_records_the_blob_id_git_hash_object_gives() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            assert_eq!(
+                git_answer(tree.path(), &["rev-parse", "--git-dir"]),
+                None,
+                "the tree is outside any repository"
+            );
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let hash = |bytes: &[u8]| worktree::hash_blob(tree.path(), bytes);
+            let deps = sink_deps(&st, &driver, &graph, root, &hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
+
+            let blob = git_hash_object(tree.path(), SOURCE_PATH, false);
+            assert_eq!(blob.len(), 40);
+            assert_eq!(
+                recorded(&st),
+                entries(&[generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    "f81a57a5c4f55f52",
+                    &blob,
+                    false
+                )])
+            );
+        }
+
+        /// A batch whose key names no identity - a key of another shape, and no key at all -
+        /// fails the emit, naming the key, and records nothing.
+        #[test]
+        fn a_batch_whose_key_names_no_identity_fails_the_emit_and_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let event = Event::new(contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec());
+
+            assert_eq!(
+                [
+                    ctx.emit_keyed_batch(&[("unshaped#0".to_string(), &event)], false),
+                    ctx.emit_keyed_batch(&[], false),
+                ]
+                .map(|emitted| emitted.map_err(|e| e.0)),
+                [
+                    Err("the batch key \"unshaped#0\" names no identity".to_string()),
+                    Err("the batch key \"\" names no identity".to_string()),
+                ]
+            );
+            assert_eq!(recorded(&st), Recorded::new());
+        }
+
+        /// A failing hash function fails the emit, naming the hash, and records nothing.
+        #[test]
+        fn a_failing_hash_function_fails_the_emit_and_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &failing_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            assert_eq!(
+                handed_by_the_walk(root, SOURCE).emit(&ctx),
+                Err(
+                    "the bytes of gc/src/lib.rs could not be hashed: worktree: git could not \
+                     start"
+                        .to_string()
                 )
-            })
-            .collect();
-        let inner = Store::open(":memory:").unwrap();
-        let held = FirstLookup::forwarding(&inner);
-        let store = crate::test_support::ReadCountingStore::new(&held);
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let built = store.reads().len();
+            );
+            assert_eq!(recorded(&st), Recorded::new());
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+        }
 
-        held.refuse_next_append();
-        let refused = format!("{:?}", ctx.emit_keyed_batch(&as_keyed(&batch)));
-        assert!(
-            refused.starts_with("Err(") && refused.contains(APPEND_REFUSED),
-            "a refused append is the emit's error; got {refused}"
-        );
-        assert_eq!(derived_keys(&inner), Vec::<String>::new());
+        /// THE READ FAULT: a regular in-scope file the run cannot read fails the emit, naming
+        /// the read, and records nothing.
+        #[test]
+        fn a_read_failing_for_a_reason_other_than_absence_fails_the_emit_and_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let handed = handed_by_the_walk(root, SOURCE);
+            if !arm_read_fault(&file) {
+                return;
+            }
+            let refused = std::fs::read(&file).unwrap_err();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
 
-        ctx.emit_keyed_batch(&as_keyed(&batch)).unwrap();
-        assert_eq!(
-            derived_keys(&inner),
-            ["unshaped#0", "unshaped#1"],
-            "the next emit appends the refused batch whole"
-        );
-        assert_eq!(
-            store.reads()[built..],
-            [],
-            "a batch naming no identity asks the store nothing"
-        );
+            assert_eq!(
+                handed.emit(&ctx),
+                Err(format!("{} could not be read: {refused}", file.display()))
+            );
+            assert_eq!(recorded(&st), Recorded::new());
+        }
+
+        /// A failing read of the log side, and one of either read of the graph side, fails the
+        /// emit, naming the read, and records nothing.
+        #[test]
+        fn a_failing_read_of_the_log_side_or_of_the_graph_side_fails_the_emit_and_records_nothing()
+        {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let handed = handed_by_the_walk(root, SOURCE);
+            let driver = Stub::new();
+            let cfg = Config::default();
+
+            let inner = Store::open(":memory:").unwrap();
+            let unanswered = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let deps = sink_deps(&unanswered, &driver, &graph, root, &sized_hash);
+            assert_eq!(
+                handed.emit(&RunCtx::for_test(&cfg, &deps)),
+                Err(format!(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: {LOOKUP_REFUSED}"
+                ))
+            );
+            assert_eq!(recorded(&inner), Recorded::new());
+
+            for (fails, said) in [
+                (
+                    GraphCall::Owed,
+                    "whether graph.db owes its rebuild could not be read",
+                ),
+                (
+                    GraphCall::Current,
+                    "graph.db's current generation of gc/src/lib.rs could not be read",
+                ),
+            ] {
+                let st = Store::open(":memory:").unwrap();
+                let failing = FailingGraph {
+                    inner: &graph,
+                    fails,
+                };
+                let deps = sink_deps(&st, &driver, &failing, root, &sized_hash);
+                assert_eq!(
+                    handed.emit(&RunCtx::for_test(&cfg, &deps)),
+                    Err(format!("{said}: graph: {GRAPH_REFUSED}"))
+                );
+                assert_eq!(recorded(&st), Recorded::new());
+            }
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+        }
+
+        /// A run wired to no graph has no graph side to read: the emit fails and records
+        /// nothing.
+        #[test]
+        fn an_emit_wired_to_no_graph_fails_and_records_nothing() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: root.to_string(),
+                hash_blob: &sized_hash,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            assert_eq!(
+                handed_by_the_walk(root, SOURCE).emit(&ctx),
+                Err("graph: no context graph is wired".to_string())
+            );
+            assert_eq!(recorded(&st), Recorded::new());
+        }
+
+        /// GIVEN a source file whose rationale line the walk lowered into a design batch, WHEN
+        /// the file is emptied of it before the sink reads it, THEN its own extraction is the
+        /// empty batch: nothing is recorded and the emit succeeds.
+        #[test]
+        fn a_gd_file_emptied_after_the_walk_records_nothing_and_the_emit_succeeds() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &failing_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let handed = handed_by_the_walk(root, "gd/src/lib.rs");
+            assert_eq!(handed.generation(), "88eadaf4024b4a86");
+            write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(recorded(&st), Recorded::new());
+        }
+
+        /// GIVEN a graph that owes its rebuild, WHEN the sink is handed a file's batch twice and
+        /// then the batch of its next body twice, THEN it records one entry per generation - the
+        /// log side alone answers - each emit succeeds, each refused fold is said through the
+        /// run's log, and the owed graph takes neither generation.
+        #[test]
+        fn a_graph_that_owes_its_rebuild_records_one_entry_per_generation() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_path = graph_dir.path().join("graph.db");
+            let graph = contextgraph::sqlite::Projector::open(graph_path.to_str().unwrap(), "test")
+                .unwrap();
+            owe_a_rebuild(&graph);
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let said: Mutex<Vec<String>> = Mutex::default();
+            let log = |line: &str| said.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                log: &log,
+                ..sink_deps(&st, &driver, &graph, root, &sized_hash)
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            let first = handed_by_the_walk(root, SOURCE);
+            assert_eq!([first.emit(&ctx), first.emit(&ctx)], [Ok(()), Ok(())]);
+            write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
+            let second = handed_by_the_walk(root, SOURCE);
+            assert_eq!([second.emit(&ctx), second.emit(&ctx)], [Ok(()), Ok(())]);
+
+            assert_eq!(
+                recorded(&st),
+                entries(&[
+                    generation_ingested(
+                        "gc",
+                        SOURCE_PATH,
+                        "f81a57a5c4f55f52",
+                        &sized(SOURCE_BODY.as_bytes()),
+                        false
+                    ),
+                    generation_ingested(
+                        "gc",
+                        SOURCE_PATH,
+                        &second.generation(),
+                        &sized(BODY_B.as_bytes()),
+                        false
+                    ),
+                ])
+            );
+            let refused = format!(
+                "rigger: recorded 1 run event(s); not folded into the context graph: graph: {}",
+                contextgraph::REBUILD_OWED
+            );
+            assert_eq!(*said.lock().unwrap(), [refused.clone(), refused]);
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+        }
+
+        /// GIVEN a graph whose ledger fold fails, WHEN the sink records a file, THEN the entry is
+        /// on the log, the emit succeeds and the lost fold is said through the run's log.
+        #[test]
+        fn an_entry_whose_ledger_fold_fails_is_recorded_and_the_lost_fold_is_said() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let failing = FailingGraph {
+                inner: &graph,
+                fails: GraphCall::Fold,
+            };
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let said: Mutex<Vec<String>> = Mutex::default();
+            let log = |line: &str| said.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                log: &log,
+                ..sink_deps(&st, &driver, &failing, root, &sized_hash)
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            assert_eq!(handed_by_the_walk(root, SOURCE).emit(&ctx), Ok(()));
+
+            assert_eq!(
+                recorded(&st),
+                entries(&[generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    "f81a57a5c4f55f52",
+                    &sized(SOURCE_BODY.as_bytes()),
+                    false
+                )])
+            );
+            assert_eq!(
+                *said.lock().unwrap(),
+                [format!(
+                    "rigger: recorded 1 run event(s); not folded into the context graph: \
+                     graph: {GRAPH_REFUSED}"
+                )]
+            );
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+        }
+
+        /// GIVEN a file at body A, then B, then A again, each walked and handed to the sink,
+        /// THEN the store holds three entries, the first and third under one replay key, and
+        /// the graph ends on A's facts.
+        #[test]
+        fn a_revert_a_b_a_records_three_entries_and_leaves_as_facts() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let st = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&st, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
+            assert_eq!(live_names(&graph), ["helper", "product"]);
+            write_file(&file, BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+            b.emit(&ctx).unwrap();
+            assert_eq!(live_names(&graph), ["second_body"]);
+            write_file(&file, SOURCE_BODY.as_bytes());
+            handed_by_the_walk(root, SOURCE).emit(&ctx).unwrap();
+
+            let a = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+            let b = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            assert_ne!(a.generation, b.generation);
+            assert_eq!(recorded(&st), entries(&[a.clone(), b.clone(), a]));
+            let keys: Vec<Option<String>> = st
+                .read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .iter()
+                .map(|e| e.meta.get(META_REPLAY_KEY).cloned())
+                .collect();
+            let a_key = Some("gc/src/lib.rs@f81a57a5c4f55f52#4".to_string());
+            assert_eq!(
+                keys,
+                [
+                    a_key.clone(),
+                    Some(format!("gc/src/lib.rs@{}#2", b.generation)),
+                    a_key
+                ]
+            );
+            assert_eq!(live_names(&graph), ["helper", "product"]);
+            assert_eq!(
+                graph.current_generation(SOURCE).unwrap().as_deref(),
+                Some("f81a57a5c4f55f52")
+            );
+        }
+
+        /// SINK OUTCOMES row 16: GIVEN a store that never recorded a file, WHEN the append of
+        /// its entry is refused, THEN the emit fails with the store's error and records nothing,
+        /// and the next emit of the same batch records its entry.
+        #[test]
+        fn a_batch_whose_append_is_refused_at_first_sight_appends_whole_on_the_next_sight() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let held = FirstLookup::forwarding(&inner);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&held, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let handed = handed_by_the_walk(root, SOURCE);
+
+            held.refuse_next_append();
+            assert_eq!(
+                handed.emit(&ctx),
+                Err(format!("event store: {APPEND_REFUSED}"))
+            );
+            assert_eq!(recorded(&inner), Recorded::new());
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(
+                recorded(&inner),
+                entries(&[generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    "f81a57a5c4f55f52",
+                    &sized(SOURCE_BODY.as_bytes()),
+                    false
+                )])
+            );
+        }
+
+        /// SINK OUTCOMES row 16: GIVEN both sides holding a file's generation A, WHEN the append
+        /// of the entry of its changed body B is refused, THEN the emit fails and neither side
+        /// moves: the file reverted to A records nothing, because A is still the recorded
+        /// generation, and B records once its append lands.
+        #[test]
+        fn a_generation_whose_append_is_refused_leaves_the_process_on_the_recorded_generation() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let inner = Store::open(":memory:").unwrap();
+            let held = FirstLookup::forwarding(&inner);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&held, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let a = handed_by_the_walk(root, SOURCE);
+            a.emit(&ctx).unwrap();
+            let a_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+            assert_eq!(recorded(&inner), entries(std::slice::from_ref(&a_entry)));
+
+            write_file(&file, BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+            held.refuse_next_append();
+            assert_eq!(b.emit(&ctx), Err(format!("event store: {APPEND_REFUSED}")));
+
+            write_file(&file, SOURCE_BODY.as_bytes());
+            assert_eq!(a.emit(&ctx), Ok(()));
+            assert_eq!(
+                recorded(&inner),
+                entries(std::slice::from_ref(&a_entry)),
+                "A is still the recorded generation, so the reverted file records nothing"
+            );
+
+            write_file(&file, BODY_B.as_bytes());
+            assert_eq!(b.emit(&ctx), Ok(()));
+            assert_eq!(
+                recorded(&inner),
+                entries(&[
+                    a_entry,
+                    generation_ingested(
+                        "gc",
+                        SOURCE_PATH,
+                        &b.generation(),
+                        &sized(BODY_B.as_bytes()),
+                        false
+                    )
+                ])
+            );
+            assert_eq!(
+                graph.current_generation(SOURCE).unwrap(),
+                Some(b.generation())
+            );
+        }
+
+        /// GIVEN both sides holding a file's generation A and the tree moved on to B, WHEN one
+        /// stage is still inside its log-side lookup, holding the answer A, while another
+        /// records B, THEN the first, released, reads the bytes and records B again - a
+        /// re-recording, since its looked-up answer no longer names the stored generation - and
+        /// the process ends on the generation the store holds: a later batch of B records
+        /// nothing.
+        #[test]
+        fn a_first_sight_lookup_racing_a_newer_generation_leaves_the_process_on_the_stored_generation(
+        ) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let cfg = Config::default();
+            let a = handed_by_the_walk(root, SOURCE);
+            {
+                let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+                a.emit(&RunCtx::for_test(&cfg, &deps)).unwrap();
+            }
+            write_file(&tree.path().join(SOURCE_PATH), BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let held = FirstLookup::new(
+                &inner,
+                FirstLookupPlay::Hold {
+                    entered: entered_tx,
+                    release: release_rx,
+                },
+            );
+            let deps = sink_deps(&held, &driver, &graph, root, &sized_hash);
+            let ctx = &RunCtx::for_test(&cfg, &deps);
+
+            std::thread::scope(|s| {
+                let whole_tree = s.spawn(|| a.emit(ctx));
+                entered_rx.recv_timeout(SIGNAL_WAIT).unwrap_or_else(|_| {
+                    panic!("the whole-tree stage never made its log-side lookup of {SOURCE}")
+                });
+                assert_eq!(s.spawn(|| b.emit(ctx)).join().unwrap(), Ok(()));
+                release_tx.send(()).unwrap();
+                assert_eq!(whole_tree.join().unwrap(), Ok(()));
+            });
+
+            let b_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            let raced = entries(&[
+                generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    "f81a57a5c4f55f52",
+                    &sized(SOURCE_BODY.as_bytes()),
+                    false,
+                ),
+                b_entry.clone(),
+                b_entry,
+            ]);
+            assert_eq!(recorded(&inner), raced);
+            assert_eq!(
+                (
+                    crate::ingest::latest_generation(&inner, STREAM, SOURCE).unwrap(),
+                    graph.current_generation(SOURCE).unwrap()
+                ),
+                (Some(b.generation()), Some(b.generation()))
+            );
+            assert_eq!(live_names(&graph), ["second_body"]);
+
+            assert_eq!(b.emit(ctx), Ok(()));
+            assert_eq!(recorded(&inner), raced);
+        }
+
+        /// GIVEN a tree whose one file the store never recorded, over a store whose group lookup
+        /// goes unanswered the first time it is asked, WHEN the run's whole-tree ingest walks
+        /// it, THEN the ingest fails naming the read and records nothing for that batch, and the
+        /// once-per-process guard stays open: the next prompt walks again and records the entry.
+        #[test]
+        fn a_run_ingest_whose_group_lookup_is_unanswered_fails_appends_nothing_and_walks_again() {
+            let dir = tempfile::tempdir().unwrap();
+            write_file(&dir.path().join(SOURCE_PATH), BODY_B.as_bytes());
+            let root = dir.path().to_str().unwrap();
+            let handed = handed_by_the_walk(root, SOURCE);
+            let inner = Store::open(":memory:").unwrap();
+            let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&store, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            assert_eq!(
+                ctx.ingest_project_into_graph().map_err(|e| e.0),
+                Err(format!(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: {LOOKUP_REFUSED}"
+                ))
+            );
+            assert_eq!(recorded(&inner), Recorded::new());
+
+            assert_eq!(ctx.ingest_project_into_graph().map_err(|e| e.0), Ok(()));
+            assert_eq!(
+                recorded(&inner),
+                entries(&[generation_ingested(
+                    "gc",
+                    SOURCE_PATH,
+                    &handed.generation(),
+                    &sized(BODY_B.as_bytes()),
+                    false
+                )])
+            );
+        }
+
+        /// GIVEN a store whose group lookup goes unanswered, WHEN an integration reindexes the
+        /// file it landed, THEN the reindex fails naming the read and records nothing.
+        #[test]
+        fn an_integration_reindex_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
+            let dir = tempfile::tempdir().unwrap();
+            write_file(&dir.path().join(SOURCE_PATH), BODY_B.as_bytes());
+            let root = dir.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let store = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&store, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+
+            assert_eq!(
+                ctx.ingest_files_into_graph(&[SOURCE_PATH.to_string()])
+                    .map_err(|e| e.0),
+                Err(format!(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: {LOOKUP_REFUSED}"
+                ))
+            );
+            assert_eq!(recorded(&inner), Recorded::new());
+        }
+
+        // THE RUN'S SINK MEMOIZES THE LOG SIDE (spec 107 criterion 11): the group lookups the
+        // sink makes, counted at the store it was handed past the reads that built the run.
+
+        /// GIVEN a file whose generation the log and the graph both hold, recorded by an earlier
+        /// process, WHEN one process's sink is handed its current batch twice, THEN it asks the
+        /// store's group lookup for the identity once, the second batch being answered from the
+        /// process's own memo, and records nothing.
+        #[test]
+        fn a_current_batch_handed_twice_makes_one_group_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let cfg = Config::default();
+            let handed = handed_by_the_walk(root, SOURCE);
+            {
+                let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+                handed.emit(&RunCtx::for_test(&cfg, &deps)).unwrap();
+            }
+            let once = recorded(&inner);
+            assert_eq!(once.len(), 1);
+            let counted = ReadCountingStore::new(&inner);
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(
+                counted.reads()[built..],
+                [
+                    ledger_head_read(STREAM),
+                    one_lookup_each(STREAM, &[SOURCE]).remove(0)
+                ]
+            );
+            assert_eq!(handed.emit(&ctx), Ok(()));
+
+            assert_eq!(
+                counted.reads()[built..],
+                [
+                    ledger_head_read(STREAM),
+                    one_lookup_each(STREAM, &[SOURCE]).remove(0),
+                    ledger_head_read(STREAM)
+                ],
+                "the second batch reads the ledger head alone: the memo answers the log side"
+            );
+            assert_eq!(recorded(&inner), once);
+        }
+
+        /// GIVEN a file no recording names, WHEN one process's sink is handed its batch, the same
+        /// batch again, the batch of its next body and then the first batch over the reverted
+        /// file, THEN the store's group lookup is asked for the identity once, at the first
+        /// batch: each later batch is answered from the generation of the entry the process last
+        /// recorded - the unchanged batch records nothing, and the moved and the reverted body
+        /// each record their entry - while another identity is asked for on its own.
+        #[test]
+        fn an_identity_is_looked_up_once_and_its_later_batches_answer_from_the_entry_recorded() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let a = handed_by_the_walk(root, SOURCE);
+            let a_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+
+            assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
+            assert_eq!(recorded(&inner), entries(std::slice::from_ref(&a_entry)));
+            write_file(&file, BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+            assert_eq!([b.emit(&ctx), b.emit(&ctx)], [Ok(()), Ok(())]);
+            write_file(&file, SOURCE_BODY.as_bytes());
+            assert_eq!([a.emit(&ctx), a.emit(&ctx)], [Ok(()), Ok(())]);
+
+            let b_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            assert_eq!(
+                recorded(&inner),
+                entries(&[a_entry.clone(), b_entry, a_entry])
+            );
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE])
+            );
+
+            assert_eq!(handed_by_the_walk(root, "gd/src/lib.rs").emit(&ctx), Ok(()));
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE, "gd/src/lib.rs"])
+            );
+        }
+
+        /// GIVEN a store whose group lookup goes unanswered the first time it is asked, WHEN one
+        /// process's sink is handed a batch three times, THEN the first emit fails and memoizes
+        /// nothing, so the second asks the store again and records the entry, and the third,
+        /// answered from the memo, asks nothing: two group lookups in all.
+        #[test]
+        fn a_batch_whose_group_lookup_failed_handed_again_makes_a_second_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let unanswered = FirstLookup::new(&inner, FirstLookupPlay::Refuse);
+            let counted = ReadCountingStore::new(&unanswered);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let handed = handed_by_the_walk(root, SOURCE);
+
+            assert_eq!(
+                handed.emit(&ctx),
+                Err(format!(
+                    "the log's latest generation of gc/src/lib.rs could not be read: event \
+                     store: {LOOKUP_REFUSED}"
+                ))
+            );
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE])
+            );
+            assert_eq!(recorded(&inner), Recorded::new());
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE, SOURCE])
+            );
+            let once = entries(&[generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                "f81a57a5c4f55f52",
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            )]);
+            assert_eq!(recorded(&inner), once);
+
+            assert_eq!(handed.emit(&ctx), Ok(()));
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &[SOURCE, SOURCE])
+            );
+            assert_eq!(recorded(&inner), once);
+        }
+
+        /// Hand `handed` twice to the sink of one run over an empty store, `graph` and `hash`:
+        /// both answers, what the store then holds, and the group lookups the store was asked
+        /// past the reads that built the run.
+        fn handed_twice_over_an_empty_store(
+            root: &str,
+            handed: &Handed,
+            graph: &dyn Projection,
+            hash: Hash<'_>,
+        ) -> ([Result<(), String>; 2], Recorded, Vec<CountedRead>) {
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, graph, root, hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            let answers = [handed.emit(&ctx), handed.emit(&ctx)];
+            (
+                answers,
+                recorded(&inner),
+                group_lookups(&counted.reads()[built..]),
+            )
+        }
+
+        /// `answer` given twice, nothing recorded, and one group lookup of `identity`.
+        fn the_same_answer_twice_from_one_lookup(
+            answer: Result<(), String>,
+            identity: &str,
+        ) -> ([Result<(), String>; 2], Recorded, Vec<CountedRead>) {
+            (
+                [answer.clone(), answer],
+                Recorded::new(),
+                one_lookup_each(STREAM, &[identity]),
+            )
+        }
+
+        /// GIVEN a store that holds no recording of an identity, so its group lookup answers no
+        /// generation, WHEN one process's sink is handed the identity's batch twice and the batch
+        /// records nothing either time - its hash fails (SINK OUTCOMES row 8), its own extraction
+        /// is empty (row 7), a read of the graph's side fails after the lookup answered (row 2's
+        /// graph cases), or the file cannot be read (row 5) - THEN each handing gives the same
+        /// answer, nothing is recorded, and the store's group lookup is asked once: the memo
+        /// holds the lookup's empty answer as it holds a found generation, and holds it although
+        /// the graph's side then failed.
+        #[test]
+        fn an_identity_the_log_holds_no_recording_of_is_still_looked_up_once_when_its_batch_records_nothing(
+        ) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let source = handed_by_the_walk(root, SOURCE);
+            let design = handed_by_the_walk(root, "gd/src/lib.rs");
+
+            // Row 8: the hash of an extraction the sink would record fails.
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &source, &graph, &failing_hash),
+                the_same_answer_twice_from_one_lookup(
+                    Err(
+                        "the bytes of gc/src/lib.rs could not be hashed: worktree: git could not \
+                         start"
+                            .to_string()
+                    ),
+                    SOURCE
+                )
+            );
+            // Row 2, the graph's side: the lookup answered, then a read of the graph fails.
+            for (fails, said) in [
+                (
+                    GraphCall::Owed,
+                    "whether graph.db owes its rebuild could not be read",
+                ),
+                (
+                    GraphCall::Current,
+                    "graph.db's current generation of gc/src/lib.rs could not be read",
+                ),
+            ] {
+                let failing = FailingGraph {
+                    inner: &graph,
+                    fails,
+                };
+                assert_eq!(
+                    handed_twice_over_an_empty_store(root, &source, &failing, &sized_hash),
+                    the_same_answer_twice_from_one_lookup(
+                        Err(format!("{said}: graph: {GRAPH_REFUSED}")),
+                        SOURCE
+                    )
+                );
+            }
+            // Row 7: the file's own design extraction is empty once its rationale line is gone.
+            write_file(&file, BODY_B.as_bytes());
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &design, &graph, &failing_hash),
+                the_same_answer_twice_from_one_lookup(Ok(()), "gd/src/lib.rs")
+            );
+            assert_eq!(graph.current_generation(SOURCE).unwrap(), None);
+            // Row 5, THE READ FAULT: asserted wherever this uid can be refused a read.
+            if !arm_read_fault(&file) {
+                return;
+            }
+            let refused = std::fs::read(&file).unwrap_err();
+            assert_eq!(
+                handed_twice_over_an_empty_store(root, &source, &graph, &sized_hash),
+                the_same_answer_twice_from_one_lookup(
+                    Err(format!("{} could not be read: {refused}", file.display())),
+                    SOURCE
+                )
+            );
+        }
+
+        /// SINK OUTCOMES row 13's state in one process.
+        ///
+        /// GIVEN a graph holding each identity's generation and a run stream that never
+        /// recorded one, so the group lookup answers no generation for any identity - what a
+        /// store recorded before the ledger and before the group stamp leaves, reached here
+        /// through entries on another stream, since no store accepts a derived row,
+        /// WHEN one process walks the tree twice,
+        /// THEN the first walk asks the group lookup once per identity, in walk order, and
+        /// records one entry per identity; the memo takes each entry's generation in place of
+        /// the lookup's empty answer, so the second walk makes no group lookup and records
+        /// nothing.
+        #[test]
+        fn a_pre_ledger_identity_takes_its_entrys_generation_so_its_second_walk_asks_no_lookup() {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            seed_generations_on_another_stream(tree.path(), &inner, &graph, "elsewhere");
+            let identities = walked_identities();
+            assert_eq!(
+                (
+                    recorded(&inner),
+                    logged_generations(&inner, STREAM, &identities),
+                    held_generations(&graph, &identities)
+                ),
+                (
+                    Vec::new(),
+                    vec![None; identities.len()],
+                    walked_generations()
+                ),
+                "premise: the run stream holds nothing and the graph holds each generation"
+            );
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+
+            ctx.ingest_project_batches().unwrap();
+
+            let first_walk = entries(&walked_entries());
+            assert_eq!(recorded(&inner), first_walk);
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &identities)
+            );
+
+            ctx.ingest_project_batches().unwrap();
+
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &identities)
+            );
+            assert_eq!(recorded(&inner), first_walk);
+        }
+
+        /// A LONG-LIVED RUN RESTORES AN IDENTITY A REBUILD LEFT BEHIND.
+        ///
+        /// GIVEN one process whose whole-tree walk recorded every file, its memo holding each
+        /// identity's generation, and a rebuild of `graph.db`, made while the source file held
+        /// another body, that could resolve no source for the file's code entry and so left its
+        /// identity behind,
+        /// WHEN the same process's next integration reindex names the file, back at its recorded
+        /// body,
+        /// THEN the sink makes no group lookup - the memo answers the log side - and still
+        /// records the file's code entry again, because the graph's side is read on every batch;
+        /// the graph holds the identity's generation and facts again, and the file's design
+        /// identity, which the rebuild resolved, records nothing.
+        #[test]
+        fn a_long_lived_run_restores_an_identity_a_rebuild_left_behind_at_its_next_reindex() {
+            use crate::contextgraph::sqlite::Projector;
+
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let counted = ReadCountingStore::new(&inner);
+            let driver = Stub::new();
+            let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let built = counted.reads().len();
+            ctx.ingest_project_batches().unwrap();
+            let identities = walked_identities();
+            let walked_once = entries(&walked_entries());
+            assert_eq!(recorded(&inner), walked_once);
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &identities)
+            );
+
+            // The rebuild: every entry re-extracted from the tree, no object database to ask.
+            write_file(&file, source_with(MOVED).as_bytes());
+            let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            rebuild_from_the_tree(&graph_db, &log, tree.path());
+            assert_eq!(
+                held_generations(&graph, &identities),
+                WALKED
+                    .iter()
+                    .map(|batch| {
+                        Some(batch.generation.to_string())
+                            .filter(|_| (batch.prefix, batch.path) != ("gc", SOURCE_PATH))
+                    })
+                    .collect::<Vec<_>>(),
+                "premise: the rebuild left the source file's code identity behind, and no other"
+            );
+            assert_eq!(live_names(&graph), Vec::<String>::new());
+            write_file(&file, SOURCE_BODY.as_bytes());
+
+            ctx.ingest_files_into_graph(&[SOURCE_PATH.to_string()])
+                .unwrap();
+
+            assert_eq!(
+                group_lookups(&counted.reads()[built..]),
+                one_lookup_each(STREAM, &identities),
+                "the reindex asks the store nothing: the memo answers the log side"
+            );
+            assert_eq!(
+                recorded(&inner),
+                [
+                    walked_once,
+                    entries(&[generation_ingested(
+                        "gc",
+                        SOURCE_PATH,
+                        "f81a57a5c4f55f52",
+                        &sized(SOURCE_BODY.as_bytes()),
+                        false
+                    )])
+                ]
+                .concat()
+            );
+            assert_eq!(held_generations(&graph, &identities), walked_generations());
+            assert_eq!(live_names(&graph), ["helper", "product"]);
+        }
+
+        /// What the graph's side shows after another process recorded and folded the moved body.
+        enum AfterAnotherProcess {
+            /// The graph comes to owe its rebuild, so its side is not asked.
+            Owes,
+            /// A rebuild from the tree, back at the first body, leaves the graph holding it.
+            RebuiltAtTheFirstBody,
+        }
+
+        /// A MEMO ANOTHER PROCESS STALED NEVER SUPPRESSES A RECORDING.
+        ///
+        /// GIVEN a long-lived process whose sink recorded the source file at its first body, A,
+        /// and another process that then recorded and folded the moved body, B, followed by
+        /// `after`,
+        /// WHEN the file returns to A and the long-lived process's sink is handed A's batch,
+        /// THEN it records A again - the log's latest generation of the file is B, so A is not
+        /// current - although its memo still holds A.
+        fn a_revert_after_another_process_recorded_is_recorded(after: AfterAnotherProcess) {
+            let tree = planted_extraction_tree(write_file);
+            let root = tree.path().to_str().unwrap();
+            let file = tree.path().join(SOURCE_PATH);
+            let graph_dir = tempfile::tempdir().unwrap();
+            let graph_db = graph_dir.path().join("graph.db");
+            let graph =
+                contextgraph::sqlite::Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
+            let inner = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+            let cfg = Config::default();
+            let long_lived = RunCtx::for_test(&cfg, &deps);
+            let a = handed_by_the_walk(root, SOURCE);
+            assert_eq!(a.emit(&long_lived), Ok(()));
+            write_file(&file, BODY_B.as_bytes());
+            let b = handed_by_the_walk(root, SOURCE);
+            {
+                let other = sink_deps(&inner, &driver, &graph, root, &sized_hash);
+                assert_eq!(b.emit(&RunCtx::for_test(&cfg, &other)), Ok(()));
+            }
+            write_file(&file, SOURCE_BODY.as_bytes());
+            match after {
+                AfterAnotherProcess::Owes => owe_a_rebuild(&graph),
+                AfterAnotherProcess::RebuiltAtTheFirstBody => {
+                    let log = inner.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                    rebuild_from_the_tree(&graph_db, &log, tree.path());
+                    assert_eq!(
+                        graph.current_generation(SOURCE).unwrap(),
+                        Some(a.generation()),
+                        "premise: the rebuilt graph holds the first body"
+                    );
+                }
+            }
+
+            assert_eq!(a.emit(&long_lived), Ok(()));
+
+            let a_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &a.generation(),
+                &sized(SOURCE_BODY.as_bytes()),
+                false,
+            );
+            let b_entry = generation_ingested(
+                "gc",
+                SOURCE_PATH,
+                &b.generation(),
+                &sized(BODY_B.as_bytes()),
+                false,
+            );
+            assert_eq!(
+                recorded(&inner),
+                entries(&[a_entry.clone(), b_entry, a_entry])
+            );
+            assert_eq!(
+                logged_generations(&inner, STREAM, &[SOURCE]),
+                [Some(a.generation())]
+            );
+        }
+
+        #[test]
+        fn a_revert_another_process_staled_is_recorded_over_a_graph_that_owes_its_rebuild() {
+            a_revert_after_another_process_recorded_is_recorded(AfterAnotherProcess::Owes);
+        }
+
+        #[test]
+        fn a_revert_another_process_staled_is_recorded_over_a_graph_rebuilt_at_that_generation() {
+            a_revert_after_another_process_recorded_is_recorded(
+                AfterAnotherProcess::RebuiltAtTheFirstBody,
+            );
+        }
     }
 
     /// Spec 101 (A REINDEX THAT FAILS AFTER LANDING RE-EMITS NOTHING ON RESUME): GIVEN a merging
@@ -21617,21 +22661,19 @@ mod tests {
 
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
     /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
-    /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
-    /// key as its first exclusion. Unless `emit_keyed_batch` retires a stale generation's own
-    /// keys before the ordinary per-key dedup runs, the second exclusion's boundary event is
-    /// silently dropped as an already-seen key, stranding whatever entity the file's MIDDLE
-    /// (real) generation defined live in the graph forever - falsifying criterion 3's own
-    /// Done-when on a re-exclusion within one process, exactly the review/rework-round shape
-    /// this very run puts every unit through.
+    /// re-excluding the SAME file within one long-lived process extracts to the IDENTICAL
+    /// generation as its first exclusion. The sink asks the log's LATEST generation and the
+    /// graph's current one, never whether a generation was recorded at any time, so the second
+    /// exclusion is recorded again and retires whatever entity the file's MIDDLE (real)
+    /// generation defined - a re-exclusion within one process is exactly the review/rework-round
+    /// shape a run puts every unit through.
     ///
     /// Four generations on ONE `RunCtx`: real (defines `target_symbol`), excluded (an in-file
     /// `#[cfg(test)]` module wraps it - the structural sentinel, boundary-only), real again with
     /// a DIFFERENT symbol name (`target_symbol_v2` - not a byte-identical revert to generation
-    /// 1, so this is not the already-known content-revert collision), excluded again (the SAME
-    /// constant sentinel bytes, and so the SAME replay key, as generation 2). The fix must retire
-    /// `target_symbol_v2`'s structural edges on this fourth ingest even though its own boundary
-    /// event's key collides with generation 2's.
+    /// 1, so this is not a content revert), excluded again (the SAME constant sentinel bytes,
+    /// and so the SAME generation, as generation 2). The fourth ingest must retire
+    /// `target_symbol_v2`'s structural edges even though the log already records its generation.
     #[cfg(feature = "symbols")]
     #[test]
     fn re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation() {
@@ -21656,6 +22698,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -21695,8 +22738,8 @@ mod tests {
         assert!(is_live("target_symbol_v2"), "gen 3 must fold live");
 
         // Generation 4: excluded again - the SAME constant sentinel bytes (and so the SAME
-        // replay key) as generation 2. Without the fix this key collides with generation 2's,
-        // silently drops, and gen 3's entity stays live forever.
+        // generation) as generation 2. A sink that skipped a generation recorded at any time
+        // would leave gen 3's entity live forever.
         std::fs::write(
             &target,
             "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol_v2() {}\n}\n",
@@ -21705,9 +22748,8 @@ mod tests {
         ctx.ingest_project_batches().unwrap();
         assert!(
             !is_live("target_symbol_v2"),
-            "gen 4's exclusion must retire gen 3's entity even though its own boundary event's \
-             replay key collides with generation 2's - this is exactly the defect \
-             adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle names"
+            "gen 4's exclusion must retire gen 3's entity even though the log already records its \
+             generation, from generation 2"
         );
         assert_eq!(
             graph.retired_code_entity_count().unwrap(),
@@ -21717,15 +22759,12 @@ mod tests {
         );
     }
 
-    /// Spec 60 criterion 1 (UNCHANGED-TREE RUNS APPEND NOTHING): the derived index is a PROJECT
-    /// fact, not a run fact - a file's content hash does not change because a new run started. So a
-    /// SECOND run, under its own fresh `RunStarted` (whose current-run slice carries none of the
-    /// first run's ingest keys), over a BYTE-IDENTICAL tree must append ZERO derived-index events.
-    /// Before the seeding fix the run seeded `replayed_keys` from `current_run(&all_prior)` alone,
-    /// so a new run saw an empty ingest-key set and re-appended the WHOLE derived index - the
-    /// measured payload duplication that grew the log without bound. The proof drives the REAL
-    /// [`run`] entry twice rather than a hand-built context, because the seam under test IS that
-    /// entry's seeding.
+    /// Spec 60 criterion 1 (UNCHANGED-TREE RUNS APPEND NOTHING): perception is a PROJECT fact, not
+    /// a run fact - a file's bytes do not change because a new run started. So a SECOND run, under
+    /// its own fresh `RunStarted`, over a BYTE-IDENTICAL tree records NO ledger entry: the log's
+    /// latest generation of each file and the graph's current one are both the one its bytes
+    /// extract to. The proof drives the REAL [`run`] entry twice rather than a hand-built context,
+    /// because what a run records is decided against what earlier runs left in the log.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_second_run_over_an_unchanged_tree_appends_no_derived_index_event() {
@@ -21752,22 +22791,6 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let driver = Stub::new();
-        // The four derived index types, named here from the graph's own constants rather than
-        // through the production predicate under test - a proof must not inherit the bug it hunts.
-        let derived = |events: &[Event]| -> usize {
-            events
-                .iter()
-                .filter(|e| {
-                    matches!(
-                        e.type_.as_str(),
-                        t if t == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
-                            || t == contextgraph::TYPE_EDGE_INFERRED
-                            || t == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
-                            || t == contextgraph::TYPE_DOC_LINK_EXTRACTED
-                    )
-                })
-                .count()
-        };
         let campaign = |unit: &str, criterion: &str| -> Config {
             let mut cfg = Config::default();
             cfg.agents.insert("a".into(), agent("a"));
@@ -21783,7 +22806,7 @@ mod tests {
             cfg
         };
 
-        // Campaign one: the first run walks the tree and records the whole derived index.
+        // Campaign one: the first run walks the tree and records one entry per batch.
         let cfg1 = campaign("s1", "first criterion");
         let deps1 = Deps {
             store: &st,
@@ -21794,26 +22817,32 @@ mod tests {
             graph: Some(&graph),
             criteria: vec!["first criterion".into()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
         let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            count_of_type(&after_one, contextgraph::TYPE_CODE_ENTITY_EXTRACTED) > 0
-                && count_of_type(&after_one, contextgraph::TYPE_EDGE_INFERRED) > 0,
-            "sanity: the first run ingests the code half of the derived index"
+        let first = walk_entries(&repo_path);
+        assert_eq!(
+            first
+                .iter()
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("gc", "src/run.rs"),
+                ("gd", "specs/29c-unified-traversal-tiers.md"),
+            ]),
+            "sanity: the tree extracts under both halves"
         );
-        assert!(
-            count_of_type(&after_one, contextgraph::TYPE_DOC_CONCEPT_EXTRACTED) > 0
-                && count_of_type(&after_one, contextgraph::TYPE_DOC_LINK_EXTRACTED) > 0,
-            "sanity: the first run ingests the design half of the derived index"
+        assert_eq!(
+            crate::test_support::entry_records(&after_one),
+            first,
+            "the first run records one entry per batch the walk extracts"
         );
-        let first_derived = derived(&after_one);
 
         // Campaign two over the SAME store and the SAME (untouched) tree. Different criteria, so
         // `run::ensure_started` MINTS a fresh `RunStarted` instead of adopting - the second run's
-        // current-run slice therefore carries none of the first run's ingest keys, which is exactly
-        // the condition the old run-scoped seeding got wrong.
+        // current-run slice therefore carries none of the first run's entries.
         let cfg2 = campaign("s2", "second criterion");
         let deps2 = Deps {
             store: &st,
@@ -21824,6 +22853,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec!["second criterion".into()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -21833,54 +22863,50 @@ mod tests {
             2,
             "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
-        let second_slice = crate::run::current_run(&after_two);
         assert_eq!(
-            derived(second_slice),
-            0,
-            "an unchanged tree must append ZERO derived-index events on a second run; it appended \
-             {} of them (the first run recorded {first_derived})",
-            derived(second_slice)
+            crate::test_support::entry_records(crate::run::current_run(&after_two)),
+            Vec::new(),
+            "an unchanged tree records no entry on a second run"
         );
-        // And the log did not grow by the index: the derived slice is exactly what run one recorded.
-        assert_eq!(
-            derived(&after_two),
-            first_derived,
-            "the whole log's derived-index slice must be unchanged by the second run"
-        );
+        // And the log did not grow by any perception: its entries are exactly run one's, and
+        // neither run recorded a derived event.
+        assert_eq!(crate::test_support::entry_records(&after_two), first);
+        assert_eq!(crate::test_support::derived_count(&after_two), 0);
     }
 
     // ---- Spec 60 criterion 3 (THE CHANGE PATH, AND THE REVERT THAT IS ONE) ----
     //
-    // What a re-ingest APPENDS when the tree moved, and what the graph then holds - proved over the
-    // real run, with criterion 1's sink rule in place. A revert the sink swallowed would leave the
-    // log looking right and strand the graph on a superseded generation of that file with no
-    // recovery - re-folding the log replays the same suppression.
-    //
-    // This criterion adds NO production code. The rule it pins belongs to criterion 1; the helpers
-    // below are the fixture that puts it in front of one run.
+    // What a re-ingest RECORDS when the tree moved, and what the graph then holds - proved over the
+    // real run. A revert the sink swallowed would strand the graph on a superseded generation of
+    // that file.
+
+    /// The entry a run records for each batch a whole-tree walk of `root` extracts from the tree
+    /// AS IT STANDS, in walk order, under the empty blob id the fixtures' hash function answers.
+    #[cfg(feature = "symbols")]
+    fn walk_entries(root: &str) -> Vec<crate::test_support::EntryRecord> {
+        crate::test_support::walked_entry_records(std::path::Path::new(root), |_| String::new())
+    }
 
     /// A COLD REBUILD of the graph from the tree AS IT STANDS: a fresh log and a fresh projection,
-    /// fed by the SAME walk / content-key / append-and-fold authority `rigger graph build` runs on an
-    /// empty store, with an empty seen-set because nothing is recorded yet. This is the reference
-    /// Global constraint 4 names - whatever mix of dedup and re-ingest the live graph went through,
-    /// it must equal this.
+    /// fed by the run's own walk and sink, with nothing recorded yet. This is the reference Global
+    /// constraint 4 names - whatever mix of skipped and re-recorded generations the live graph
+    /// went through, it must equal this.
     #[cfg(feature = "symbols")]
     fn spec60_cold_rebuild(root: &str) -> (Store, crate::contextgraph::sqlite::Projector) {
         let store = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut seen: HashSet<String> = HashSet::new();
-        crate::ingest::ingest_project_batched(root, |keyed| {
-            let survivors: Vec<Event> = keyed
-                .iter()
-                .filter(|(key, _)| seen.insert(key.clone()))
-                .map(|(key, ev)| (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str()))
-                .collect();
-            let done =
-                crate::ingest::folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
-                    .append_and_fold(STREAM, crate::eventstore::ExpectedRevision::Any, &survivors)
-                    .unwrap();
-            assert_eq!(done.fold, crate::contextgraph::Fold::Folded);
-        });
+        {
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: root.to_string(),
+                graph: Some(&graph),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let cfg = Config::default();
+            RunCtx::for_test(&cfg, &deps)
+                .ingest_project_batches()
+                .unwrap();
+        }
         (store, graph)
     }
 
@@ -21942,17 +22968,15 @@ mod tests {
             .collect()
     }
 
-    /// Spec 60 criterion 3, first half (THE CHANGE PATH): editing ONE file between runs re-emits
-    /// exactly THAT file's whole batch and supersedes its prior structural edges, while every
-    /// untouched file still appends nothing.
+    /// Spec 60 criterion 3, first half (THE CHANGE PATH): editing ONE file between runs records
+    /// exactly THAT file's new generation, whose batch supersedes its prior structural edges, while
+    /// every untouched file still records nothing.
     ///
-    /// It drives the REAL [`run`] entry twice over one store, because a run's suppression decisions
-    /// are taken against a seed read from the LOG at run start - a second walk inside one process is
-    /// weighed against the set that process extended instead, which is a different question.
+    /// It drives the REAL [`run`] entry twice over one store, because what a run records is decided
+    /// against the log's latest generation of each file, which an earlier RUN left there.
     ///
-    /// "Exactly that file's whole batch" is not hand-listed: the expected key set is what a COLD
-    /// REBUILD of the current tree records for that file, so the assertion cannot drift from what the
-    /// walk actually extracts.
+    /// The expected entries are not hand-listed: they are what a walk of the current tree extracts
+    /// for that file, so the assertion cannot drift from what the walk actually extracts.
     #[cfg(feature = "symbols")]
     #[test]
     fn editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges() {
@@ -21986,23 +23010,12 @@ mod tests {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let driver = Stub::new();
 
-        // The four derived index types named from the GRAPH's own constants, never through the
-        // predicate under test - a proof must not inherit the bug it hunts.
-        let is_derived = |e: &Event| -> bool {
-            e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
-                || e.type_ == contextgraph::TYPE_EDGE_INFERRED
-                || e.type_ == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
-                || e.type_ == contextgraph::TYPE_DOC_LINK_EXTRACTED
-        };
-        // The derived-index replay keys a slice of the log carries for one file, in append order.
-        let keys_for = |events: &[Event], file: &str| -> Vec<String> {
-            let marker = format!("/{file}@");
-            events
-                .iter()
-                .filter(|e| is_derived(e))
-                .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
-                .filter(|k| k.contains(&marker))
-                .collect()
+        // The entries a slice of the log, or a walk, carries for one file, in order.
+        let of_file = |entries: Vec<crate::test_support::EntryRecord>, file: &str| {
+            entries
+                .into_iter()
+                .filter(|(e, ..)| e.file == file)
+                .collect::<Vec<_>>()
         };
         let campaign = |unit: &str, criterion: &str| -> Config {
             let mut cfg = Config::default();
@@ -22027,23 +23040,31 @@ mod tests {
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
 
         // Run one records generation A of both files and the design doc.
+        let walked_a = walk_entries(&repo_path);
+        assert_eq!(
+            walked_a
+                .iter()
+                .map(|(e, ..)| (e.prefix.as_str(), e.file.as_str()))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("gc", "src/churn.rs"),
+                ("gc", "src/stable.rs"),
+                ("gd", "specs/29c-unified-traversal-tiers.md"),
+            ]),
+            "sanity: the tree extracts a batch for both code files and the design doc, else there \
+             is nothing for a change to leave alone"
+        );
         run_isolated(
             &campaign("s1", "first criterion"),
             &deps_for("first criterion"),
         )
         .unwrap();
         let after_one = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let stable_gen_a = keys_for(&after_one, "src/stable.rs");
-        let churn_gen_a = keys_for(&after_one, "src/churn.rs");
-        let doc_gen_a = keys_for(&after_one, "specs/29c-unified-traversal-tiers.md");
-        assert!(
-            !stable_gen_a.is_empty() && !churn_gen_a.is_empty() && !doc_gen_a.is_empty(),
-            "sanity: run one must record a derived-index batch for both code files and the design \
-             doc, else there is nothing for a change to leave alone"
-        );
+        assert_eq!(crate::test_support::entry_records(&after_one), walked_a);
         assert!(
             spec60_reached_entities(&graph, "src/churn.rs").contains("alpha_symbol"),
             "sanity: run one's graph must reach the churn file's generation-A definition"
@@ -22056,7 +23077,14 @@ mod tests {
         )
         .unwrap();
 
-        // Run two: a FRESH `RunStarted`, so its ingest keys come from the log, not from this run.
+        // Run two: a FRESH `RunStarted`, so what it records is decided against the log.
+        let churn_b = of_file(walk_entries(&repo_path), "src/churn.rs");
+        assert_eq!(churn_b.len(), 1);
+        assert!(
+            !walked_a.contains(&churn_b[0]),
+            "sanity: generation B must differ from generation A, else the fixture never changed \
+             the file's content"
+        );
         run_isolated(
             &campaign("s2", "second criterion"),
             &deps_for("second criterion"),
@@ -22064,51 +23092,19 @@ mod tests {
         .unwrap();
         let after_two = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(
-            after_two
-                .iter()
-                .filter(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
-                .count(),
+            count_of_type(&after_two, crate::run::TYPE_RUN_STARTED),
             2,
             "the second campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
-        let second_slice = crate::run::current_run(&after_two);
 
-        // The untouched files append NOTHING - in either ingest half.
-        assert!(
-            keys_for(second_slice, "src/stable.rs").is_empty(),
-            "an untouched code file must append no derived-index event on a later run; it appended \
-             {:?}",
-            keys_for(second_slice, "src/stable.rs")
-        );
-        assert!(
-            keys_for(second_slice, "specs/29c-unified-traversal-tiers.md").is_empty(),
-            "an untouched design doc must append no derived-index event on a later run; it \
-             appended {:?}",
-            keys_for(second_slice, "specs/29c-unified-traversal-tiers.md")
-        );
-
-        // The changed file re-emits its WHOLE batch: exactly the keys a cold rebuild of the tree as
-        // it now stands records for it - no more (nothing spurious) and no fewer (no half-landed
-        // batch).
-        let (cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
-        let cold_log = cold_store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .unwrap();
-        let expected: Vec<String> = keys_for(&cold_log, "src/churn.rs");
-        let re_emitted: Vec<String> = keys_for(second_slice, "src/churn.rs");
-        assert!(
-            !expected.is_empty(),
-            "sanity: a cold rebuild must record a batch for the changed file"
-        );
+        // The changed file records exactly its new generation, and the untouched files - in
+        // either ingest half - record nothing; no run recorded a derived event.
         assert_eq!(
-            re_emitted, expected,
-            "a changed file must re-emit exactly its whole batch, in the walk's own order"
+            crate::test_support::entry_records(crate::run::current_run(&after_two)),
+            churn_b
         );
-        assert_ne!(
-            re_emitted, churn_gen_a,
-            "sanity: generation B's keys must differ from generation A's, else the fixture never \
-             changed the file's content"
-        );
+        assert_eq!(crate::test_support::derived_count(&after_two), 0);
+        let (_cold_store, cold_graph) = spec60_cold_rebuild(&repo_path);
 
         // The re-emitted batch SUPERSEDED the file's prior structural edges: a traversal from the
         // file now reaches generation B's definition and no longer reaches generation A's.
@@ -22141,11 +23137,10 @@ mod tests {
     /// at an earlier RECORDED generation re-ingests, and the live graph then equals a cold rebuild
     /// from the current tree.
     ///
-    /// This is the case an EVER-RECORDED suppression test wedges. The reverted file's content keys
-    /// are BYTE-IDENTICAL to records the log still carries from its first generation, so a set
-    /// seeded with every key ever recorded matches them and emits nothing. The graph then stays on
-    /// the SUPERSEDED generation forever - re-folding the log replays the same suppression, so there
-    /// is no recovery - which is exactly the outcome Global constraint 4 forbids.
+    /// This is the case an EVER-RECORDED suppression test wedges: the reverted file's generation is
+    /// one the log still carries an entry of, so a rule that asked "recorded at any time" would
+    /// record nothing and leave the graph on the SUPERSEDED generation. The rule asks the log's
+    /// LATEST generation, so the revert records a third entry.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild() {
@@ -22167,19 +23162,11 @@ mod tests {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let driver = Stub::new();
 
-        let is_derived = |e: &Event| -> bool {
-            e.type_ == contextgraph::TYPE_CODE_ENTITY_EXTRACTED
-                || e.type_ == contextgraph::TYPE_EDGE_INFERRED
-                || e.type_ == contextgraph::TYPE_DOC_CONCEPT_EXTRACTED
-                || e.type_ == contextgraph::TYPE_DOC_LINK_EXTRACTED
-        };
-        let keys_for = |events: &[Event], file: &str| -> Vec<String> {
-            let marker = format!("/{file}@");
-            events
-                .iter()
-                .filter(|e| is_derived(e))
-                .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
-                .filter(|k| k.contains(&marker))
+        // The entries a slice of the log carries for the reverted file, in log order.
+        let churn_entries = |events: &[Event]| -> Vec<crate::test_support::EntryRecord> {
+            crate::test_support::entry_records(events)
+                .into_iter()
+                .filter(|(e, ..)| e.file == "src/churn.rs")
                 .collect()
         };
         let campaign = |unit: &str, criterion: &str| -> Config {
@@ -22205,6 +23192,7 @@ mod tests {
             graph: Some(&graph),
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -22215,74 +23203,51 @@ mod tests {
         };
 
         // Generation A, recorded.
+        let walked_a = walk_entries(&repo_path);
         let after_one = run_over_the_tree("first criterion");
-        let gen_a_keys = keys_for(&after_one, "src/churn.rs");
-        assert!(
-            !gen_a_keys.is_empty(),
+        assert_eq!(crate::test_support::entry_records(&after_one), walked_a);
+        let gen_a = churn_entries(&after_one);
+        assert_eq!(
+            gen_a.len(),
+            1,
             "sanity: run one must record generation A of the file to be reverted to"
         );
 
         // Generation B: the file moves forward, and A stops being its latest recorded generation.
         std::fs::write(root.join("src/churn.rs"), GEN_B).unwrap();
         let after_two = run_over_the_tree("second criterion");
-        let gen_b_keys = keys_for(crate::run::current_run(&after_two), "src/churn.rs");
-        assert!(
-            !gen_b_keys.is_empty() && gen_b_keys != gen_a_keys,
-            "sanity: run two must record a DIFFERENT generation of the file; it recorded \
-             {gen_b_keys:?} against generation A's {gen_a_keys:?}"
+        let gen_b = churn_entries(crate::run::current_run(&after_two));
+        assert_eq!(gen_b.len(), 1);
+        assert_ne!(
+            gen_b, gen_a,
+            "sanity: run two must record a DIFFERENT generation of the file"
         );
         assert!(
             spec60_reached_entities(&graph, "src/churn.rs").contains("beta_symbol"),
             "sanity: the graph must be on generation B before the revert"
         );
 
-        // THE REVERT: byte-identical to generation A, whose every key the log still carries.
+        // THE REVERT: byte-identical to generation A, an entry of which the log still carries.
         std::fs::write(root.join("src/churn.rs"), GEN_A).unwrap();
         let after_three = run_over_the_tree("third criterion");
         assert_eq!(
-            after_three
-                .iter()
-                .filter(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
-                .count(),
+            count_of_type(&after_three, crate::run::TYPE_RUN_STARTED),
             3,
             "each campaign must mint its OWN fresh RunStarted (else the test proves nothing)"
         );
-        let third_slice = crate::run::current_run(&after_three);
-        let re_emitted = keys_for(third_slice, "src/churn.rs");
 
-        // The revert re-emitted the WHOLE batch, under generation A's own keys - which is the
-        // discrimination: every one of them was ALREADY recorded, so an ever-recorded test at either
-        // layer would have emitted nothing here.
+        // The revert recorded generation A AGAIN and nothing else: the untouched file records
+        // nothing on the run that re-records a reverted one, and the log carries the file's three
+        // generations in the order the tree took them.
         assert_eq!(
-            re_emitted, gen_a_keys,
-            "a file reverted to an earlier recorded generation must re-emit that generation's whole \
-             batch; it emitted {re_emitted:?} against generation A's {gen_a_keys:?}"
+            crate::test_support::entry_records(crate::run::current_run(&after_three)),
+            gen_a
         );
-        // The keys really were already recorded before this run - the fixture is not quietly proving
-        // something easier than the revert case.
-        let before_third: usize = after_two.len();
-        for key in &gen_a_keys {
-            assert!(
-                after_two[..before_third]
-                    .iter()
-                    .any(|e| e.meta.get(META_REPLAY_KEY) == Some(key)),
-                "the fixture is vacuous unless {key} was already recorded before the revert"
-            );
-            assert_eq!(
-                after_three
-                    .iter()
-                    .filter(|e| e.meta.get(META_REPLAY_KEY) == Some(key))
-                    .count(),
-                2,
-                "a reverted generation's key must get through - the log must \
-                 carry {key} once from generation A and once from the revert"
-            );
-        }
-        // The untouched file still appends nothing across all of it.
-        assert!(
-            keys_for(third_slice, "src/stable.rs").is_empty(),
-            "an untouched file must still append nothing on the run that re-ingests a reverted one"
+        assert_eq!(
+            churn_entries(&after_three),
+            [gen_a.clone(), gen_b, gen_a].concat()
         );
+        assert_eq!(crate::test_support::derived_count(&after_three), 0);
 
         // The graph came BACK: generation A's definition is reachable again and generation B's is
         // superseded - not left live beside it.
@@ -22309,7 +23274,7 @@ mod tests {
 
     /// Spec 60 criterion 2 (RUN-SCOPING SURVIVES): the seeding above turned `replayed_keys` into a
     /// PARTITION over two scopes, and this pins the half criterion 1 widened nothing in - the
-    /// RUN-SCOPED half every non-derived key still lives in. A prior run's non-ingest replay key
+    /// RUN-SCOPED half every non-perception key still lives in. A prior run's non-ingest replay key
     /// must NEVER suppress this run's own keyed emit: that is the Gap 11 zombie boundary, and
     /// widening it to the whole stream would silently delete a new run's unit lifecycle (its
     /// `UnitStarted` would be read as a replay of the PREVIOUS campaign's, so the run would record
@@ -22454,14 +23419,12 @@ mod tests {
         );
     }
 
-    /// Spec 49 criterion 2 (BATCHED FOLD CADENCE): the run's ingest sink appends each file's WHOLE
-    /// batch in ONE store append and folds it in ONE graph transaction - NOT one append and one
-    /// fold per event. The measured cold-build throughput (69 events/s) was transaction-cadence
-    /// bound, so this is the load-bearing fix: a K-file fixture where every file yields a
-    /// MULTI-EVENT batch (a def plus a reference to it = a `CodeEntityExtracted` AND an
-    /// `EdgeInferred`) must produce one append and one `apply_batch` PER FILE, and never a per-event
-    /// `apply`. This criterion owns the batching only; it does not assert parallelism (criterion 1),
-    /// so it drives the sink at the default width and asserts nothing about worker engagement.
+    /// Spec 49 criterion 2 (BATCHED FOLD CADENCE): the run's ingest sink records each file's batch
+    /// in ONE store append - of its one ledger entry - and folds the file's WHOLE batch in ONE
+    /// ledger fold, NOT one fold per event. A K-file fixture where every file yields a MULTI-EVENT
+    /// batch (a def plus a reference to it) must produce one append and one ledger fold PER FILE,
+    /// the fold handed the whole batch, and never a per-event or per-batch derived fold. This
+    /// criterion owns the cadence only; it asserts nothing about worker engagement.
     #[cfg(feature = "symbols")]
     #[test]
     fn the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event() {
@@ -22486,9 +23449,9 @@ mod tests {
             crate::delegate_event_store_reads!();
         }
 
-        // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
-        // references it (an EdgeInferred). So a file's batch carries >1 event and "one transaction
-        // for the whole batch" is observably different from "one transaction per event".
+        // K source files, each a MULTI-EVENT batch: `defN` and `useN`, which references it. So a
+        // file's batch carries more than one event and "one fold for the whole batch" is observably
+        // different from "one fold per event".
         const K: usize = 4;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -22501,6 +23464,16 @@ mod tests {
             .unwrap();
         }
         let root_str = root.to_str().unwrap().to_string();
+        // The size of each batch the walk extracts, in walk order.
+        let mut batch_sizes = Vec::new();
+        crate::ingest::ingest_project_batched(&root_str, |keyed: &[(String, &Event)], _: bool| {
+            batch_sizes.push(keyed.len());
+        });
+        assert_eq!(batch_sizes.len(), K, "sanity: one batch per file");
+        assert!(
+            batch_sizes.iter().all(|&n| n >= 2),
+            "sanity: every file's batch carries more than one event; got {batch_sizes:?}"
+        );
 
         let inner = Store::open(":memory:").unwrap();
         let store = CountingStore {
@@ -22521,39 +23494,22 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         ctx.ingest_project_batches().unwrap();
 
-        let appends = store.appends.lock().unwrap().clone();
-        let batch_folds = graph.batch_folds.lock().unwrap().clone();
-        let per_event = graph.per_event.load(Ordering::SeqCst);
-
-        // One append per file batch: exactly K appends (each code file is one batch; this pure-source
-        // fixture carries no design docs, so the design half emits nothing).
+        // One append per file, of its one ledger entry.
+        assert_eq!(store.appends.lock().unwrap().clone(), vec![1; K]);
+        // One ledger fold per file, handed the file's WHOLE batch, and no fold made any other way.
+        assert_eq!(graph.entry_folds.lock().unwrap().clone(), batch_sizes);
         assert_eq!(
-            appends.len(),
-            K,
-            "one append per file batch: {K} files => {K} appends; got sizes {appends:?}"
+            graph.batch_folds.lock().unwrap().clone(),
+            Vec::<usize>::new()
         );
-        // Each file's whole batch appended as a UNIT: at least one append carried more than one event
-        // (a def and its reference), so this is not a disguised per-event append of size 1.
-        assert!(
-            appends.iter().any(|&n| n >= 2),
-            "a file's multi-event batch (def + reference) must append as one unit; got {appends:?}"
-        );
-        // The fold cadence matches the append cadence exactly: one `apply_batch` per append, carrying
-        // the SAME events, and NEVER a per-event `apply`.
-        assert_eq!(
-            batch_folds, appends,
-            "each file batch folds in exactly one apply_batch of the same size it appended in"
-        );
-        assert_eq!(
-            per_event, 0,
-            "the batched fold must never fold one event at a time (apply); got {per_event} apply calls"
-        );
+        assert_eq!(graph.per_event.load(Ordering::SeqCst), 0);
     }
 
     /// Spec 29c criterion 3 (design-intent grounding BY TRAVERSAL - the highest-value new
@@ -22671,6 +23627,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -24599,6 +25556,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
         };
@@ -24656,6 +25614,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -24775,6 +25734,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).map(|_| ())
         };
@@ -25076,11 +26036,13 @@ mod tests {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -25686,6 +26648,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -26186,6 +27149,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -26460,6 +27424,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -26858,6 +27823,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -27122,6 +28088,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -27458,6 +28425,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -29017,6 +29985,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -31972,6 +32941,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -32069,11 +33039,13 @@ mod tests {
             budget_halted: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "symbols")]
             ingested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "symbols")]
+            logged_generations: Default::default(),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
-            replayed_keys: crate::replay_keys::ReplayKeys::seeded(HashSet::new()),
+            replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -32734,6 +33706,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -34888,6 +35861,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -35070,6 +36044,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -35313,7 +36288,7 @@ mod tests {
     }
 
     /// A `rigger step` THAT DOES NOT INGEST READS FROM THE BOUNDARY (spec 101): over a log
-    /// holding 200,000 derived events and two superseded runs before the boundary, a step that
+    /// holding 200,000 ledger entries and two superseded runs before the boundary, a step that
     /// adopts the current run and finds nothing to do costs exactly the run's own events plus the
     /// typed carry-over per read of the run, and never reads the stream any other way - asserted
     /// through the counting store double.
@@ -35384,7 +36359,7 @@ mod tests {
                 "{why}: every read is a read of the run from the boundary"
             );
             // The most any one read of the run can hand back: every event from the boundary that
-            // is not derived, plus every carried-over event before it.
+            // is not perception, plus every carried-over event before it.
             let bound = crate::run::read::read_run(&inner, STREAM).unwrap().len();
             assert!(
                 store.reads().iter().all(|r| r.materialized() <= bound),
@@ -35408,7 +36383,7 @@ mod tests {
     /// criterion adoption (spec 88) is decided across runs, so it reads every run's LIFECYCLE
     /// events by type - one `Only(ADOPTION_TYPES)` read from 0 materializing exactly the runs'
     /// boundaries and unit starts - and every other read the step makes is a read of the run
-    /// from the boundary with the carried-over knowledge by type, over the 200,000-derived-event
+    /// from the boundary with the carried-over knowledge by type, over the 200,000-ledger-entry
     /// fixture; asserted through the counting store double.
     #[test]
     fn a_step_that_starts_a_criterion_unit_in_a_repo_reads_adoption_by_lifecycle_type() {
@@ -35474,20 +36449,22 @@ mod tests {
         );
     }
 
-    /// A `rigger step` THAT INGESTS SEEDS BY GROUP LOOKUP (spec 101 criterion 3): over the
-    /// 200,000-derived-event one-shot fixture, a project whose `unchanged.rs` still holds its
-    /// recorded generation, whose `changed.rs` moved to a new one and whose `reverted.rs` went back
-    /// to a generation it has since left, a step that parks a stage's spawn - and so walks and
-    /// ingests the tree - materializes no derived event: every read it makes is exactly the read
-    /// a twin step that does NOT ingest makes over the same fixture (the run's events plus the typed
-    /// carry-over), plus one `latest_in_group` lookup per identity the walk emits. And it appends
-    /// exactly the changed and reverted files' batches, each keyed and grouped. Asserted through the
-    /// counting store double.
+    /// A `rigger step` THAT INGESTS ASKS THE GROUP LOOKUP (spec 101 criterion 3, spec 107): over
+    /// the 200,000-ledger-entry one-shot fixture, a project whose `unchanged.rs` still holds the
+    /// generation the log and the graph hold, whose `changed.rs` moved to a new one and whose
+    /// `reverted.rs` went back to a generation it has since left, a step that parks a stage's
+    /// spawn - and so walks and ingests the tree - materializes no derived event: every read it
+    /// makes is exactly the read a twin step that does NOT ingest makes over the same fixture (the
+    /// run's events plus the typed carry-over), plus one `latest_in_group` lookup per identity
+    /// the walk emits and the reads the run's memo proves itself current by: one read of the
+    /// ledger head per batch and one read of the entries above it per entry. And it records exactly one ledger entry for each of the changed and the
+    /// reverted file, keyed and grouped, and no derived event. Asserted through the counting store
+    /// double.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_step_that_ingests_seeds_each_identity_by_group_lookup_and_appends_only_what_moved() {
         use crate::test_support::{
-            git_commit_all, seed_one_shot_fixture, CountedRead, ReadCountingStore,
+            git_commit_all, ledger_head_read, seed_one_shot_fixture, CountedRead, ReadCountingStore,
         };
 
         let repo = temp_git_project_with_commit();
@@ -35519,7 +36496,7 @@ mod tests {
         // What the walk of the tree as it stands emits: each batch's identity and keys, in order.
         let walk = || -> Vec<(String, Vec<String>)> {
             let mut batches = Vec::new();
-            crate::ingest::ingest_project_batched(&root_str, |keyed| {
+            crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
                 let identity = crate::ingest::derived_key_parts(&keyed[0].0).unwrap().0;
                 batches.push((
                     identity.to_string(),
@@ -35528,9 +36505,10 @@ mod tests {
             });
             batches
         };
+        // The graph the project's earlier ingests folded into, and the ingesting step folds into.
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         // One earlier process's ingest of the tree as it stands, recorded in `inner`.
         let record = || {
-            let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
             let driver = Stub::new();
             let deps = Deps {
                 repo: root_str.clone(),
@@ -35565,21 +36543,20 @@ mod tests {
             .unwrap()
             .len();
 
-        let step = |store: &dyn EventStore, ingests: bool| -> Vec<CountedRead> {
-            let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let step = |store: &dyn EventStore, graph: Option<&dyn Projection>| -> Vec<CountedRead> {
             let counted = ReadCountingStore::new(store);
             let driver = crate::driver::replay::ReplayDriver::new(&counted, "");
             let deps = Deps {
                 repo: root_str.clone(),
-                graph: ingests.then_some(&graph as &dyn Projection),
+                graph,
                 ..stub_deps(&counted, &driver, Vec::new())
             };
             let rs = run_isolated(&cfg, &deps).expect("the step runs");
             assert_eq!(rs.units["s"].status, ledger::Status::Grounding);
             counted.reads()
         };
-        let ingesting = step(&inner, true);
-        let not_ingesting = step(&twin, false);
+        let ingesting = step(&inner, Some(&graph));
+        let not_ingesting = step(&twin, None);
 
         // The twin reads only the run from its boundary and the carry-over by type ...
         let one_read: Vec<CountedRead> = fixture
@@ -35596,13 +36573,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             "the step that does not ingest reads the run and the typed carry-over alone"
         );
-        // ... and the ingesting step reads exactly that, event for event, plus the lookups.
-        let (lookups, reads): (Vec<CountedRead>, Vec<CountedRead>) = ingesting
+        // ... and the ingesting step reads exactly that, event for event, plus the lookups and
+        // the reads its memo proves itself current by: the ledger head once per batch, and the
+        // entries above it once per entry appended.
+        let head = ledger_head_read(STREAM);
+        let is_tail = |r: &CountedRead| {
+            matches!(r, CountedRead::Typed { stream, only: true, types, .. }
+                if stream == STREAM && *types == [crate::retention::TYPE_GENERATION_INGESTED])
+        };
+        let (memo, rest): (Vec<CountedRead>, Vec<CountedRead>) = ingesting
+            .into_iter()
+            .partition(|r| *r == head || is_tail(r));
+        let (lookups, reads): (Vec<CountedRead>, Vec<CountedRead>) = rest
             .into_iter()
             .partition(|r| matches!(r, CountedRead::LatestInGroup { .. }));
         assert_eq!(
             reads, not_ingesting,
             "a step that ingests costs exactly the reads of one that does not"
+        );
+        assert_eq!(
+            (
+                memo.iter().filter(|r| **r == head).count(),
+                memo.iter().filter(|r| is_tail(r)).count()
+            ),
+            (now.len(), 2),
+            "one head read per batch the walk hands and one tail read per entry appended"
         );
         assert_eq!(
             lookups,
@@ -35620,8 +36615,9 @@ mod tests {
             "the unchanged file is walked, so its lookup is what spares its batch"
         );
 
-        // It appended exactly the changed and reverted files' batches, keyed and grouped.
-        let appended: Vec<Event> = inner
+        // It recorded exactly one ledger entry for each of the changed and the reverted file,
+        // keyed and grouped, and no derived event.
+        let appended: Vec<(String, Option<String>, Option<String>)> = inner
             .read_stream(
                 STREAM,
                 recorded_before as crate::eventstore::Revision,
@@ -35629,46 +36625,57 @@ mod tests {
             )
             .unwrap()
             .into_iter()
-            .filter(|e| crate::ingest::is_derived_index_type(&e.type_))
+            .filter(|e| crate::retention::PERCEPTION_TYPES.contains(&e.type_.as_str()))
+            .map(|e| {
+                (
+                    e.type_.clone(),
+                    e.meta.get(crate::eventstore::META_GROUP).cloned(),
+                    e.meta.get(META_REPLAY_KEY).cloned(),
+                )
+            })
             .collect();
-        let moved: Vec<String> = now
+        let moved: Vec<(String, Option<String>, Option<String>)> = now
             .iter()
             .filter(|(identity, _)| {
                 identity == "gc/src/changed.rs" || identity == "gc/src/reverted.rs"
             })
-            .flat_map(|(_, keys)| keys.clone())
+            .map(|(identity, keys)| {
+                let (_, generation) = crate::ingest::derived_key_parts(&keys[0]).unwrap();
+                (
+                    crate::retention::TYPE_GENERATION_INGESTED.to_string(),
+                    Some(identity.clone()),
+                    Some(format!("{identity}@{generation}#{}", keys.len())),
+                )
+            })
             .collect();
         assert_eq!(
-            appended
-                .iter()
-                .map(|e| e.meta[META_REPLAY_KEY].clone())
-                .collect::<Vec<_>>(),
-            moved,
-            "the changed and reverted batches, whole, and no other"
+            moved.len(),
+            2,
+            "the walk emits the changed and the reverted file"
         );
-        assert!(
-            moved.iter().any(|k| first_reverted.contains(k)),
-            "the reverted batch re-emits keys the log already records, because they are no \
-             longer its latest generation"
+        assert_eq!(
+            appended, moved,
+            "one entry for the changed file and one for the reverted, and no other perception"
         );
-        assert!(
-            appended.iter().all(|e| {
-                let (identity, _) =
-                    crate::ingest::derived_key_parts(&e.meta[META_REPLAY_KEY]).unwrap();
-                e.meta
-                    .get(crate::eventstore::META_GROUP)
-                    .map(String::as_str)
-                    == Some(identity)
-            }),
-            "every appended event carries its batch identity as its group"
+        let reverted_generation = crate::ingest::derived_key_parts(&first_reverted[0])
+            .unwrap()
+            .1;
+        assert_eq!(
+            moved[1].2,
+            Some(format!(
+                "gc/src/reverted.rs@{reverted_generation}#{}",
+                first_reverted.len()
+            )),
+            "the reverted file records a generation the log already holds, because it is no \
+             longer its latest"
         );
     }
 
     /// A `rigger step` WHOSE GROUP LOOKUP GOES UNANSWERED FAILS (spec 101): a step that parks a
     /// stage's spawn walks and ingests the tree, and when the store cannot answer the first batch's
     /// lookup the step fails with the store's error - an unanswered lookup is never read as
-    /// "nothing to append" - appends nothing for that batch, and appends every batch whose lookup
-    /// answered, whole and in walk order.
+    /// "nothing to record" - records nothing for that batch, and records the entry of every batch
+    /// whose lookup answered, in walk order.
     #[cfg(feature = "symbols")]
     #[test]
     fn a_step_whose_group_lookup_goes_unanswered_fails_and_appends_nothing_for_that_batch() {
@@ -35682,7 +36689,7 @@ mod tests {
         std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n").unwrap();
         git_commit_all(root, "tree");
         let mut walked: Vec<Vec<String>> = Vec::new();
-        crate::ingest::ingest_project_batched(&root_str, |keyed| {
+        crate::ingest::ingest_project_batched(&root_str, |keyed, _| {
             walked.push(keyed.iter().map(|(key, _)| key.clone()).collect());
         });
         assert_eq!(
@@ -35715,10 +36722,21 @@ mod tests {
             step.starts_with("Err(") && step.contains(LOOKUP_REFUSED),
             "a step whose lookup goes unanswered fails with the store's error; got {step}"
         );
+        let (identity, generation) = crate::ingest::derived_key_parts(&walked[1][0]).unwrap();
+        let perceived: Vec<(String, Option<String>)> = inner
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .filter(|e| crate::retention::PERCEPTION_TYPES.contains(&e.type_.as_str()))
+            .map(|e| (e.type_.clone(), e.meta.get(META_REPLAY_KEY).cloned()))
+            .collect();
         assert_eq!(
-            derived_keys(&inner),
-            walked[1],
-            "the unanswered batch appends nothing and the answered one appends whole"
+            perceived,
+            [(
+                crate::retention::TYPE_GENERATION_INGESTED.to_string(),
+                Some(format!("{identity}@{generation}#{}", walked[1].len()))
+            )],
+            "the unanswered batch records nothing and the answered one records its entry"
         );
     }
 
@@ -35899,6 +36917,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -36541,6 +37560,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -36660,6 +37680,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -37070,6 +38091,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -37300,6 +38322,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
         // rerun to give, the first one halts the step.
@@ -37380,6 +38403,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             // An infra outage halts the step (F3) and a flaky failure escalates: either way the
             // run ends, and only the gate runs and the ratchet are under test here.
@@ -38234,6 +39258,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
 
         let rs = run_isolated(&cfg, &deps).unwrap();
@@ -38358,6 +39383,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -38638,6 +39664,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -38685,6 +39712,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -38867,6 +39895,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -38887,6 +39916,7 @@ mod tests {
             graph: Some(&graph),
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -39323,6 +40353,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -39789,6 +40820,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -39823,6 +40855,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -39953,6 +40986,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -40111,6 +41145,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -40774,6 +41809,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -42879,6 +43915,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -42927,6 +43964,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -42958,6 +43996,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -43029,6 +44068,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -43138,6 +44178,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -43274,6 +44315,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -43311,6 +44353,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -43382,6 +44425,7 @@ mod tests {
                 graph: None,
                 criteria: Vec::new(),
                 log: &|_| {},
+                hash_blob: &|_| Ok(String::new()),
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -43572,6 +44616,7 @@ mod tests {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -44661,6 +45706,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44752,14 +45798,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit.to_string()],
-            log: &|_| {},
+            ..stub_deps(&st, &driver, vec![crit.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44796,14 +45836,8 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let deps = Deps {
-            store: &st,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
             grounder: Some(&grep),
-            graph: None,
-            criteria: vec![crit_a.to_string(), crit_b.to_string()],
-            log: &|_| {},
+            ..stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()])
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44893,6 +45927,7 @@ mod tests {
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -44934,6 +45969,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
         driver
@@ -45295,6 +46331,7 @@ mod tests {
             graph: None,
             criteria: vec![crit.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -45317,6 +46354,7 @@ mod tests {
             graph: None,
             criteria: vec![crit.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -46224,6 +47262,7 @@ mod tests {
             graph: None,
             criteria: vec![crit_a.to_string(), crit_b.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -46286,6 +47325,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         let _ = run_isolated(&cfg, &deps).unwrap();
 
@@ -46432,6 +47472,7 @@ mod tests {
             graph: None,
             criteria: vec![criterion.to_string()],
             log: &|_| {},
+            hash_blob: &|_| Ok(String::new()),
         };
         run_isolated(&cfg, &deps).unwrap();
 

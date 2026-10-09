@@ -386,20 +386,20 @@ mod tests {
     /// never a read of the whole stream.
     #[test]
     fn record_result_if_absent_records_past_a_derived_head_reading_only_the_run_and_the_results() {
-        use crate::test_support::{ev, CountedRead, ReadCountingStore};
+        use crate::test_support::{ev, insert_pre_ledger_rows, CountedRead, ReadCountingStore};
 
-        let inner = Store::open(":memory:").unwrap();
-        inner
-            .append(
-                STREAM,
-                ExpectedRevision::NoStream,
-                &[
-                    ev("UnitStarted", r#"{"id":"u"}"#),
-                    ev("EdgeInferred", "{}"),
-                    ev("EdgeInferred", "{}"),
-                ],
-            )
-            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("events.db");
+        let inner = Store::open(db.to_str().unwrap()).unwrap();
+        insert_pre_ledger_rows(
+            &db,
+            STREAM,
+            &[
+                ev("UnitStarted", r#"{"id":"u"}"#),
+                ev("EdgeInferred", "{}"),
+                ev("EdgeInferred", "{}"),
+            ],
+        );
         let store = ReadCountingStore::new(&inner);
         let pos =
             record_result_if_absent(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
@@ -416,7 +416,7 @@ mod tests {
                     stream: STREAM.to_string(),
                     from: 0,
                     only: false,
-                    types: names(&crate::ingest::DERIVED_INDEX_TYPES),
+                    types: names(&rigger_domain::retention::PERCEPTION_TYPES),
                     materialized: 1,
                 },
                 CountedRead::Typed {

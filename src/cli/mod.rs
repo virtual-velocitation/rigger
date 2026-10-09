@@ -22,7 +22,7 @@ use rigger::driver::cli;
 use rigger::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
-    sqlite::{DerivedPreview, PrunedDerived, Store},
+    sqlite::{DerivedCount, Store},
     Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
@@ -420,6 +420,14 @@ pub(crate) fn stderr_line(line: &str) {
     eprintln!("{line}");
 }
 
+/// THE ONE HASH FUNCTION as a run is handed it ([`conductor::Deps::hash_blob`]) at this
+/// composition root: `git hash-object` under `root`, the run's tree.
+pub(crate) fn hash_blob_in(
+    root: &str,
+) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
+    move |bytes| rigger::worktree::hash_blob(std::path::Path::new(root), bytes)
+}
+
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
 /// the local identity migration - which needs the concrete [`Store`] for its stream-rename
@@ -445,18 +453,23 @@ fn open_graph(
     Ok(graph)
 }
 
+/// The project's `graph.db` as a read-only surface opens it: none when no file stands - checked
+/// BEFORE opening anything, because `Projector::open` creates a missing file, and a read-only
+/// surface must never have that side effect - and none when the file does not open. The open
+/// writes nothing to a file that owes its rebuild.
+fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
+    if !Path::new(graph_db).exists() {
+        return None;
+    }
+    Projector::open(graph_db, project).ok()
+}
+
 /// What a read-only surface (graph inspection, `rigger validate`, the dashboard) says when this
 /// project's `graph.db` owes its rebuild (spec 101): it answers from the projection as it stands,
 /// and names the command that pays the rebuild. `None` when there is no file (never creating
 /// one), when it owes nothing, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    if !Path::new(graph_db).exists() {
-        return None;
-    }
-    let owed = Projector::open(graph_db, project)
-        .ok()?
-        .rebuild_owed()
-        .ok()?;
+    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
     owed.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",
@@ -1357,6 +1370,13 @@ fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, 
     ))
 }
 
+/// The whole name the run stream of the project `identity` scopes has in the store's file - the
+/// one spelling a read below the namespacing port ([`Namespaced`]) names it by: the identity's
+/// prefix, then [`conductor::STREAM`].
+fn run_stream_of(identity: &str) -> String {
+    format!("{}{}", Namespaced::prefix_for(identity), conductor::STREAM)
+}
+
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
 /// `reported`) must see it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
@@ -1389,6 +1409,12 @@ impl StoreLocation {
     /// `&str` the sqlite `Store` / `Projector` opens.
     fn file(&self, name: &str) -> String {
         store_file(&self.dir, name)
+    }
+
+    /// The whole name this project's run stream has in the store's file: [`run_stream_of`] this
+    /// store's [`identity`](Self::identity).
+    fn run_stream(&self) -> String {
+        run_stream_of(&self.identity())
     }
 
     /// The identity scoping this store's namespaced streams, bound to the store's OWNING
@@ -2553,6 +2579,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
         let driver = ReplayDriver::new(&iso, "");
+        // A replay walks no tree (`repo` is empty), so its hash is never asked.
+        let hash_blob = hash_blob_in("");
         let deps = Deps {
             store: &iso,
             driver: &driver,
@@ -2562,6 +2590,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             graph: None,
             criteria,
             log: &stderr_line,
+            hash_blob: &hash_blob,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 
@@ -5094,6 +5123,19 @@ fn git_repo_at(root: &Path) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+/// THE ONE ROOT every path a ledger entry of perception records is relative to (spec 107), for
+/// the store at `store_dir` (its `.rigger/`): the git top-level of the directory holding that
+/// `.rigger/`, else - outside a repository - that directory. Every reader of the tree takes its
+/// root from here, so a store in a subdirectory of a repository reads the repository's tree,
+/// never the working directory's.
+fn tree_root(store_dir: &Path) -> PathBuf {
+    let holder = store_dir.parent().unwrap_or(store_dir);
+    match git_repo_at(holder) {
+        top_level if top_level.is_empty() => holder.to_path_buf(),
+        top_level => PathBuf::from(top_level),
+    }
 }
 
 /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
@@ -11727,7 +11769,7 @@ mod tests {
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
     /// alike) fold exactly one read of the run - [`runscope::read::read_current_run`] - and over a log holding
-    /// 200,000 derived events and two superseded runs before the boundary it costs exactly the
+    /// 200,000 ledger entries and two superseded runs before the boundary it costs exactly the
     /// run's own events plus the typed carry-over, asserted through the counting store double,
     /// and hands back the current run's slice and id.
     #[test]
@@ -12137,11 +12179,7 @@ mod tests {
         // `append_refuses_a_stream_whose_position_order_and_revision_order_already_
         // disagree` (src/eventstore/sqlite.rs). The reissued row now sits AFTER the boundary
         // in the log, so the run the poll reads holds it where the log recorded it.
-        let scoped_run_stream = format!(
-            "{}{}",
-            rigger::eventstore::namespace::Namespaced::prefix_for(&identity),
-            conductor::STREAM
-        );
+        let scoped_run_stream = loc.run_stream();
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute(
@@ -12295,6 +12333,33 @@ mod tests {
         assert!(
             anomalies.is_empty(),
             "a marker naming a real serving dash must report no anomaly: {anomalies:?}"
+        );
+    }
+
+    /// THE ONE ROOT (spec 107): the tree a store's entries are relative to is the git top-level
+    /// of the directory holding the store's `.rigger/` - from the top level itself and from a
+    /// subdirectory of the repository alike - and that directory itself outside a repository.
+    #[test]
+    fn tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory() {
+        let repo = tempfile::tempdir().unwrap();
+        git_init_quiet(repo.path());
+        let top = repo.path().canonicalize().unwrap();
+        let sub = top.join("nested").join("deeper");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(tree_root(&top.join(RIGGER_DIR)), top);
+        assert_eq!(
+            tree_root(&sub.join(RIGGER_DIR)),
+            top,
+            "a store in a subdirectory is rooted at the repository's top level"
+        );
+
+        let bare = tempfile::tempdir().unwrap();
+        let holder = bare.path().join("project");
+        std::fs::create_dir_all(&holder).unwrap();
+        assert_eq!(
+            tree_root(&holder.join(RIGGER_DIR)),
+            holder,
+            "outside a repository the root is the directory holding the store"
         );
     }
 }

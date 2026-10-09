@@ -427,9 +427,23 @@ pub const TYPE_UNIT_ESCALATED: &str = "UnitEscalated";
 /// replanning the whole spec. Body: `{unit, attempts_granted, by: "operator"}`.
 pub const TYPE_UNIT_RESUMED: &str = "UnitResumed";
 pub const TYPE_UNIT_INTEGRATED: &str = "UnitIntegrated";
-/// The conductor's SpecDefect event (kept in sync with `conductor::TYPE_SPEC_DEFECT`):
-/// an uncovered criterion the run flagged rather than deviating around (§4.4).
+/// The conductor's gate-autonomy ratchet events (the conductor re-exports these as
+/// `conductor::TYPE_GATE_PROMOTED` and `conductor::TYPE_GATE_DEMOTED`, the single source of each
+/// string): a gate's trust moving up or down.
+pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
+pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
+/// The conductor's ScopeCreep event (the conductor re-exports this as
+/// `conductor::TYPE_SCOPE_CREEP`, the single source of the string): a proposed unit with no spec
+/// criterion - refused (anti-fragmentation, §8).
+pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
+/// The conductor's SpecDefect event (the conductor re-exports this as
+/// `conductor::TYPE_SPEC_DEFECT`, the single source of the string): an uncovered criterion the
+/// run flagged rather than deviating around (§4.4).
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
+/// The conductor's TaskAborted event (the conductor re-exports this as
+/// `conductor::TYPE_TASK_ABORTED`, the single source of the string): the run aborted, with
+/// un-integrated work dropped and integrated work kept (§4.4).
+pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
 /// The conductor's DeferredGateFailed event (kept in sync with
 /// `conductor::TYPE_DEFERRED_GATE_FAILED`): a deferred gate that failed when it ran
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates

@@ -20,6 +20,11 @@ pub fn write_file(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Write `content` at `rel` under `root`, creating parent directories.
+pub fn write_text(root: &Path, rel: &str, content: &str) {
+    write_file(&root.join(rel), content.as_bytes());
+}
+
 /// Every entry of `dir` whose name starts with `prefix` - every entry, for an empty one - with its
 /// bytes (`None` for a directory), sorted by name: the snapshot a test compares to prove a step
 /// left the directory exactly as it found it.

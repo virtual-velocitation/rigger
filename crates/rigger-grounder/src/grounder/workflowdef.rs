@@ -9,9 +9,10 @@
 //! why the two are never unioned). This is the emit half; the fold half lives in
 //! `contextgraph::sqlite` and stays compiled in both lanes.
 
+use super::workflow_doc;
 #[cfg(test)]
 use crate::config;
-use crate::config::{push_reviewers, ReviewPanel, Stage, Workflow, RIGGER_DIR};
+use crate::config::{push_reviewers, ReviewPanel, Stage, Workflow};
 use crate::config_store;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
@@ -21,13 +22,6 @@ use crate::eventstore::Event;
 use rigger_domain::wave::reviews_through_panel;
 use std::collections::BTreeSet;
 use std::path::Path;
-
-/// The one relative path every entity/edge this pass extracts is attributed to (the `doc` attr on
-/// every folded node): `.rigger/workflow.yml` is ALWAYS the source, so it is derived here, never a
-/// parameter threaded through every call.
-fn workflow_doc() -> String {
-    format!("{RIGGER_DIR}/workflow.yml")
-}
 
 fn stage_id(name: &str) -> String {
     format!("stage:{name}")
@@ -216,6 +210,19 @@ pub fn project_events(root: &str) -> Vec<Event> {
         Ok(wf) => extract_events(&wf),
         Err(_) => Vec::new(),
     }
+}
+
+/// The `gw` batch of the workflow definition holding `bytes` (spec 107), total over its input:
+/// the batch the walk lowers from that file - [`extract_events`] over the workflow
+/// [`config_store::parse_workflow`] reads from UTF-8 bytes, and the empty batch for no bytes, for
+/// bytes that are not UTF-8 and for text that parse refuses, as [`project_events`] answers a
+/// definition it cannot load. The definition has one path, and the walk's flag changes no `gw`
+/// batch, so neither is read.
+pub fn bytes_batch(_path: &str, bytes: Option<&[u8]>, _excluded: bool) -> Vec<Event> {
+    super::text_of(bytes)
+        .and_then(|text| config_store::parse_workflow(text).ok())
+        .map(|workflow| extract_events(&workflow))
+        .unwrap_or_default()
 }
 
 /// [`project_events`] as ONE keyed file batch (`.rigger/workflow.yml`, its events) - the shape
@@ -618,5 +625,43 @@ run: cargo fmt --check\n";
         };
         assert!(has_concept(KIND_STAGE, "stage:implement"));
         assert!(has_concept(KIND_AGENT, "agent:rust-engineer"));
+    }
+
+    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over the workflow
+    /// definition's UTF-8 bytes answers the batch the walk lowers from that file, whatever the
+    /// flag says, and the empty batch for no bytes, for bytes that are not UTF-8 and for text
+    /// the workflow parse refuses.
+    #[test]
+    fn bytes_batch_answers_the_walks_batch_for_a_parsed_definition_and_the_empty_batch_otherwise() {
+        use crate::extraction_tree::{walked_batch, WORKFLOW_BODY, WORKFLOW_PATH};
+        use crate::test_support::wire;
+
+        let expected = walked_batch("gw", WORKFLOW_PATH).to_vec();
+        for excluded in [false, true] {
+            assert_eq!(
+                wire(&bytes_batch(
+                    WORKFLOW_PATH,
+                    Some(WORKFLOW_BODY.as_bytes()),
+                    excluded
+                )),
+                expected,
+                "excluded {excluded}"
+            );
+        }
+        let not_utf8 = [WORKFLOW_BODY.as_bytes(), &[0xff]].concat();
+        let unknown_key = format!("{WORKFLOW_BODY}\nnot_a_key: 1\n");
+        assert_eq!(wire(&bytes_batch(WORKFLOW_PATH, None, false)), vec![]);
+        assert_eq!(
+            wire(&bytes_batch(WORKFLOW_PATH, Some(&not_utf8), false)),
+            vec![]
+        );
+        assert_eq!(
+            wire(&bytes_batch(
+                WORKFLOW_PATH,
+                Some(unknown_key.as_bytes()),
+                false
+            )),
+            vec![]
+        );
     }
 }

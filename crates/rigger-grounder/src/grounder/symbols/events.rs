@@ -20,11 +20,13 @@ use std::collections::BTreeSet;
 /// out-of-line target's OWN items are never marked `is_test` themselves - that flag is set by a
 /// LOCAL `#[cfg(test)]` attribute stack inside the SAME file, and being the resolved target of an
 /// EXTERNAL declaration elsewhere is invisible to a per-file parse - so hollowing here, at the ONE
-/// place both callers already compute the excluded set, is what lets `extract_events`'s own
-/// existing "nothing survived" branch return the empty-boundary sentinel for it, exactly as it
+/// place every lowering of a file passes through ([`lower_file`]), is what lets
+/// `extract_events`'s own existing "nothing survived" branch return the empty-boundary sentinel
+/// for it, exactly as it
 /// already does for a whole `tests/`-dir file or an in-file `#[cfg(test)]` re-wrap - never a
 /// second, bespoke sentinel-construction path for a third shape. `Cow` so the overwhelmingly
-/// common (non-excluded) path borrows `fs` unchanged rather than cloning it.
+/// common (non-excluded) path borrows `fs` unchanged rather than cloning it. [`lower_file`] is
+/// its one caller.
 fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
     if excluded {
         Cow::Owned(FileSymbols {
@@ -46,14 +48,15 @@ fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
 /// falls back to a fresh [`build_index`](crate::grounder::symbols::build_index) otherwise. Each
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
-/// single file's. Returns `(file, events)` per file in the index's sorted path order; EVERY file -
+/// single file's. Returns `(file, events, excluded)` per file in the index's sorted path order,
+/// `excluded` the flag [`project_batches_paced`] answers; EVERY file -
 /// an out-of-line test-module target ([`for_extraction`]-hollowed) included, round 5 - contributes
 /// a batch, and that batch is NEVER empty ([`extract_events`] itself never returns empty, spec 86
 /// criterion 3: it stamps its own boundary-only sentinel when nothing real survives, so a file
 /// whose structural set is empty still contributes at least one boundary event). The caller keys
 /// each batch on its content, so an unchanged file is not re-ingested and a changed one
 /// re-extracts.
-pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
+pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>, bool)> {
     project_batches_paced(root, crate::parallel::default_workers()).0
 }
 
@@ -65,67 +68,101 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 /// test-module target ([`for_extraction`]-hollowed, round 5,
 /// adj-u86c3-r4-out-of-line-exclusion-still-unmigrated) included - is lowered through the ONE
 /// [`extract_events`] authority (never a second parallel copy), which never returns empty (spec 86
-/// criterion 3), so every file's own batch is never empty. [`proof_events`] runs alongside it for a
-/// non-excluded file only, mirroring [`file_batches`]' identical composition - see
-/// [`proof_events`]'s disclosed gap. Returns `(batches, workers_engaged)`.
-pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Event>)>, usize) {
-    let idx = crate::grounder::symbols::store::load(root)
-        .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
-    let excluded = out_of_line_test_module_files(&idx);
+/// criterion 3), so every file's own batch is never empty. Each file is lowered by [`lower_file`],
+/// the one composition [`file_batches`] lowers a named file by, over the index and the exclusions
+/// [`walk_exclusions`](crate::ingest::walk_exclusions) answers, and answered beside its batch
+/// with its flag (spec 107): whether those exclusions name the file's `gc` identity, the one
+/// answer its lowering takes too. Returns `(batches, workers_engaged)`, each batch
+/// `(file, events, excluded)`.
+pub fn project_batches_paced(
+    root: &str,
+    workers: usize,
+) -> (Vec<(String, Vec<Event>, bool)>, usize) {
+    let (idx, excluded) = crate::ingest::walk_exclusions(root);
     let files: Vec<(&String, &FileSymbols)> = idx.files().iter().collect();
     // Parse/lower per file in parallel; `map_ordered` returns the per-file results in the input
     // (sorted-path) order, so the emit sequence is independent of which worker finished first.
     crate::parallel::map_ordered(&files, workers, |&(path, fs)| {
-        let is_excluded = excluded.contains(path.as_str());
-        let mut events = extract_events(path, &for_extraction(fs, is_excluded));
-        // Spec 86 criterion 2: this file's test-origin evidence, alongside its structural
-        // events - see [`proof_events`]'s doc. Never
-        // empty (round 3) when run, so a non-excluded file's batch is never dropped; skipped for
-        // an out-of-line-excluded file (see this module's [`for_extraction`] doc).
-        if !is_excluded {
-            events.extend(proof_events(path, fs));
-        }
-        (path.clone(), events)
+        let excluded = names_code_identity(&excluded, path);
+        (path.clone(), lower_file(path, fs, excluded), excluded)
     })
 }
 
 /// Scoped counterpart to [`project_batches`]/[`project_batches_paced`] (spec 92, FRESH ON EVERY
 /// INTEGRATION): extract only the NAMED `files`' events, rather than walking the whole persisted
 /// index - the property an integration's own reindex needs, bounded by the merge's own file list
-/// (Design/Constraints Walk) rather than the project's total file count. Reuses the SAME persisted-
-/// index load, exclusion computation, and `extract_events`/`proof_events` authority as
+/// (Design/Constraints Walk) rather than the project's total file count. Reuses the SAME index and
+/// exclusions ([`walk_exclusions`](crate::ingest::walk_exclusions)) and the SAME [`lower_file`] as
 /// `project_batches_paced` - never a second lowering path - so a named file's scoped batch is
-/// byte-identical to what a full walk would produce for it. Returns `(file, events)` pairs in the
-/// SAME order `files` was given, one pair per named file (never fewer): a file the index holds no
+/// byte-identical to what a full walk would produce for it. Returns `(file, events, excluded)`
+/// triples in the SAME order `files` was given, one per named file (never fewer), `excluded` the
+/// batch's flag (spec 107), whether the exclusions name the file's `gc` identity, answered for
+/// every named file by that one question: a file the index holds no
 /// entry for (deleted since the index was last built, or never source) still contributes exactly
 /// [`empty_structural_boundary_event`]'s single-event batch - the SAME boundary sentinel a file that
 /// "extracts to nothing" stamps (spec 86 criterion 3) - so its prior structural edges retire through
 /// the existing supersession rather than dangling forever, mirroring `extract_events`'s own "never
 /// returns empty" contract for the whole-project walk.
-pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>)> {
-    let idx = crate::grounder::symbols::store::load(root)
-        .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
-    let excluded = out_of_line_test_module_files(&idx);
+pub fn file_batches(root: &str, files: &[String]) -> Vec<(String, Vec<Event>, bool)> {
+    let (idx, excluded) = crate::ingest::walk_exclusions(root);
     files
         .iter()
         .map(|file| {
+            let excluded = names_code_identity(&excluded, file);
             let events = match idx.files().get(file) {
-                Some(fs) => {
-                    let is_excluded = excluded.contains(file.as_str());
-                    let mut events = extract_events(file, &for_extraction(fs, is_excluded));
-                    if !is_excluded {
-                        events.extend(proof_events(file, fs));
-                    }
-                    events
-                }
+                Some(fs) => lower_file(file, fs, excluded),
                 // Absent from the index: deleted or unreadable since the index was last freshened
-                // (or never source at all). `lang` is immaterial here - the fold's supersede keys
-                // on `file` alone - so this never has to guess or re-derive it.
-                None => vec![empty_structural_boundary_event(file, "unknown", false)],
+                // (or never source at all).
+                None => unparsed_batch(file),
             };
-            (file.clone(), events)
+            (file.clone(), events, excluded)
         })
         .collect()
+}
+
+/// The `gc` batch of a path that holds nothing a grammar parsed: exactly the one structural
+/// boundary event, of an unknown language. `lang` is immaterial there - the fold's supersede keys
+/// on the file alone - so it is never guessed or re-derived.
+fn unparsed_batch(path: &str) -> Vec<Event> {
+    vec![empty_structural_boundary_event(path, "unknown", false)]
+}
+
+/// The `gc` batch of the file at `path` holding `bytes` (spec 107), total over its input: the
+/// batch the walk lowers from that file. UTF-8 bytes that extract under the grammar the path
+/// resolves, as every production caller of the index resolves it - the symbols
+/// [`extracted`](crate::grounder::symbols::extracted) answers, the ones the index holds for that
+/// text - yield [`lower_file`] over them under `excluded`; every other input - no bytes, bytes
+/// that are not UTF-8, a path with no grammar, a failed extraction - yields [`unparsed_batch`], as
+/// [`file_batches`] gives a path the index lacks. `excluded` changes only a parsed batch. Never empty.
+pub fn bytes_batch(path: &str, bytes: Option<&[u8]>, excluded: bool) -> Vec<Event> {
+    let text = || crate::grounder::text_of(bytes);
+    let symbols = crate::grounder::symbols::extracted(path, text, None)
+        .flatten()
+        .map(|(_, symbols)| symbols);
+    match symbols {
+        Some(symbols) => lower_file(path, &symbols, excluded),
+        None => unparsed_batch(path),
+    }
+}
+
+/// Whether `excluded`, the identities [`walk_exclusions`](crate::ingest::walk_exclusions)
+/// answers, names the `gc` identity of `path`.
+fn names_code_identity(excluded: &BTreeSet<String>, path: &str) -> bool {
+    excluded.contains(&crate::ingest::code_identity(path))
+}
+
+/// The batch the walk lowers from one file's `symbols` (spec 107): its structural events
+/// ([`extract_events`]) over the symbols [`for_extraction`] leaves it, hollowed when `excluded`,
+/// and after them, unless `excluded`, its test-origin evidence ([`proof_events`], spec 86
+/// criterion 2, never empty when run). `excluded` says the file is the resolved target of an
+/// out-of-line test module declaration elsewhere; such a file's batch is the one boundary event
+/// and carries no evidence. Never empty, as neither part is.
+fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
+    let mut events = extract_events(path, &for_extraction(symbols, excluded));
+    if !excluded {
+        events.extend(proof_events(path, symbols));
+    }
+    events
 }
 
 /// Emit one file's extracted symbols as events: one `CodeEntityExtracted` per definition, then
@@ -344,7 +381,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// marking the boundary of THIS file's own evidence batch. Re-extraction supersession is
 /// criterion 2's OWN mechanism for evidence (`contextgraph::sqlite::supersede_file_proof`),
 /// distinct from `extract_events`'s structural boundary on the SAME event list
-/// (`project_batches_paced` concatenates both, so a file can carry two independent boundaries - one
+/// ([`lower_file`] concatenates both, so a file can carry two independent boundaries - one
 /// per concern) - without it, editing a test file (adding an unrelated test, fixing a comment)
 /// re-extracts the whole file and re-records every unchanged is_test reference as brand-new
 /// evidence, permanently inflating `proven_by`.
@@ -355,7 +392,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// used to return an empty `Vec` here, so this function stamped no boundary. That was fine for a
 /// file that NEVER had evidence, but silently wrong for one TRANSITIONING from evidence to none: a
 /// file's WHOLE batch (`extract_events` alongside this function, concatenated by
-/// `project_batches_paced`) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
+/// [`lower_file`]) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
 /// empty - so the file's batch was dropped entirely and `fold_test_evidence`/`supersede_file_proof`
 /// never even ran, stranding this file's own prior `proof_evidence` contribution on whichever
 /// entities it named, forever. Mirroring criterion 3's own already-established empty-after-
@@ -373,23 +410,22 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
 /// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
 /// ([`out_of_line_test_module_files`]) still contributes a STRUCTURAL batch since round 5
-/// (`extract_events` runs on it hollowed, via `project_batches_paced`'s own
-/// [`for_extraction`] - see either function's doc), but this function is deliberately never called
+/// (`extract_events` runs on it hollowed, via [`lower_file`], the composition that hollows it
+/// through [`for_extraction`] - see either function's doc), but this function is deliberately
+/// never called
 /// for it (its own references carry no `is_test` marking of their own - the attribute lives on the
 /// DECLARING file's side, invisible to this per-file view, per [`out_of_line_test_module_files`]'s
 /// own doc), so a test-only file reached only that way contributes no evidence. Not named by spec
 /// 86's Design/Done-when text, which is written in terms of a `tests/` directory and
 /// `#[cfg(test)]`/`#[test]` regions.
 ///
-/// Disclosed, non-blocking, SHARED limitation (not this criterion's alone to close): like
-/// criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload is a
-/// CONSTANT per `(file, lang)` with no generation-distinguishing field, so within one long-lived
-/// process the ingest replay-key dedup (`crate::ingest::key_batch`, content-hashing a file's WHOLE
-/// batch) can treat a LATER occurrence of an all-empty batch as a replay of an EARLIER one and
-/// silently drop it. This is the same collision class already tracked against criterion 3's own
-/// sentinel (a peer finding on that unit); fixing it belongs to `key_batch`/`emit_keyed_batch`
-/// (shared ingest infrastructure both sentinels ride), not to a bespoke, duplicated workaround in
-/// either criterion's own emit function.
+/// Like criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload
+/// is a CONSTANT per `(file, lang)` with no generation-distinguishing field, so a LATER occurrence
+/// of an all-empty batch extracts to the SAME generation (`crate::ingest::key_batch`,
+/// content-hashing a file's WHOLE batch) as an EARLIER one. Neither ingest sink drops it for that:
+/// each weighs a batch against its identity's LATEST recorded generation, the run's sink against
+/// the graph's current one too, never against every generation ever recorded, so a later
+/// occurrence is recorded again whenever another generation came between.
 pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let whole_file_test = is_under_tests_dir(file);
     let lang = lang_str(fs.lang);
@@ -775,7 +811,7 @@ mod tests {
     fn project_events(root: &str) -> Vec<crate::eventstore::Event> {
         super::project_batches(root)
             .into_iter()
-            .flat_map(|(_, batch)| batch)
+            .flat_map(|(_, batch, _)| batch)
             .collect()
     }
 
@@ -1631,7 +1667,10 @@ fn an_integration_test() {
 
         let batches = super::file_batches(root, &["a.rs".to_string()]);
         assert_eq!(
-            batches.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
+            batches
+                .iter()
+                .map(|(f, _, _)| f.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.rs"],
             "only the named file gets a batch, never an untouched sibling; got {batches:?}"
         );
@@ -1729,13 +1768,14 @@ fn an_integration_test() {
     }
 
     /// [`file_batches`] EXTENDS an ordinary (non-excluded) file's batch with its
-    /// [`proof_events`] - the polarity of `if !is_excluded { events.extend(proof_events(..)) }`
+    /// [`proof_events`] - the polarity of `if !excluded { events.extend(proof_events(..)) }`
+    /// inside [`lower_file`]
     /// pinned directly: `product.rs` here is not an out-of-line test-module target
-    /// (`out_of_line_test_module_files` returns it empty), so `is_excluded` is false and the
+    /// (`out_of_line_test_module_files` returns it empty), so `excluded` is false and the
     /// extension MUST happen. `extract_events` filters every `is_test` def/ref OUT (see its own
     /// doc); `proof_events` is the ONLY emitter of `is_test: true` events, so their presence in
     /// the batch is observable only through this extension - a flipped polarity (`if
-    /// is_excluded` instead) would extend the WRONG files and this batch would carry none.
+    /// excluded` instead) would extend the WRONG files and this batch would carry none.
     #[test]
     fn file_batches_extends_a_non_excluded_files_batch_with_its_proof_events() {
         let dir = tempfile::tempdir().unwrap();
@@ -1772,9 +1812,202 @@ mod tests {
             proof_names,
             vec!["product_fn".to_string()],
             "an ordinary file's batch must carry its proof_events test-evidence edge \
-             (`is_test: true`, naming the referenced product entity); a `!is_excluded` polarity \
-             flip drops it entirely. got batch: {:?}",
+             (`is_test: true`, naming the referenced product entity); a polarity flip of \
+             `if !excluded` inside `lower_file` drops it entirely. got batch: {:?}",
             batches[0].1
         );
+    }
+
+    /// THE EXTRACTION READS BYTES (spec 107): `lower_file` answers, for each `gc` file of the
+    /// extraction tree, the batch the whole walk and the named walk lower from it - the
+    /// out-of-line test module hollowed to its one boundary event, the source file carrying its
+    /// definitions, its reference and the evidence of its in-file test module.
+    #[test]
+    fn lower_file_answers_the_batch_both_walks_lower_from_each_file_of_the_extraction_tree() {
+        use crate::extraction_tree::{
+            planted_extraction_tree, walked_batch, SOURCE_PATH, TEST_MODULE_PATH,
+        };
+        use crate::test_support::wire;
+
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+        let idx = crate::grounder::symbols::build_index(root, None);
+        let files = [TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()];
+
+        let walked = super::project_batches_paced(root, 1).0;
+        let named = super::file_batches(root, &files);
+        let paths = |batches: &[(String, Vec<crate::eventstore::Event>, bool)]| -> Vec<String> {
+            batches.iter().map(|(file, _, _)| file.clone()).collect()
+        };
+        assert_eq!(paths(&walked), files.to_vec());
+        assert_eq!(paths(&named), files.to_vec());
+
+        for (i, (path, excluded)) in [(TEST_MODULE_PATH, true), (SOURCE_PATH, false)]
+            .into_iter()
+            .enumerate()
+        {
+            let expected = walked_batch("gc", path).to_vec();
+            let lowered = super::lower_file(path, &idx.files()[path], excluded);
+            assert_eq!(wire(&lowered), expected, "lower_file over {path}");
+            assert_eq!(wire(&walked[i].1), expected, "the whole walk over {path}");
+            assert_eq!(wire(&named[i].1), expected, "the named walk over {path}");
+        }
+    }
+
+    /// THE WALK HANDS EACH BATCH WITH ITS FLAG (spec 107), at the code half: the whole walk and
+    /// the named walk each answer, beside a file's batch, whether `walk_exclusions` names its
+    /// `gc` identity - set for the out-of-line test module alone, clear for the source file and
+    /// for a named path the index lacks.
+    #[test]
+    fn both_walks_of_the_code_half_answer_each_batchs_flag_beside_it() {
+        use crate::extraction_tree::{planted_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
+
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let root = dir.path().to_str().unwrap();
+        let flags =
+            |batches: &[(String, Vec<crate::eventstore::Event>, bool)]| -> Vec<(String, bool)> {
+                batches
+                    .iter()
+                    .map(|(file, _, excluded)| (file.clone(), *excluded))
+                    .collect()
+            };
+        let walked = [
+            (TEST_MODULE_PATH.to_string(), true),
+            (SOURCE_PATH.to_string(), false),
+        ];
+
+        assert_eq!(flags(&super::project_batches_paced(root, 1).0), walked);
+        assert_eq!(flags(&super::project_batches(root)), walked);
+        let named = [
+            SOURCE_PATH.to_string(),
+            "src/absent.rs".to_string(),
+            TEST_MODULE_PATH.to_string(),
+        ];
+        assert_eq!(
+            flags(&super::file_batches(root, &named)),
+            [
+                (SOURCE_PATH.to_string(), false),
+                ("src/absent.rs".to_string(), false),
+                (TEST_MODULE_PATH.to_string(), true),
+            ]
+        );
+    }
+
+    /// `lower_file`'s `excluded` decides the batch on the SAME symbols: the source file excluded
+    /// is hollowed to one boundary event with no evidence, and the test module not excluded
+    /// carries its own definition and reference with the evidence boundary after them.
+    #[test]
+    fn lower_file_hollows_an_excluded_file_and_adds_evidence_to_one_that_is_not() {
+        use crate::extraction_tree::{planted_extraction_tree, SOURCE_PATH, TEST_MODULE_PATH};
+        use crate::test_support::wire;
+
+        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
+        let idx = crate::grounder::symbols::build_index(dir.path().to_str().unwrap(), None);
+
+        let hollowed = super::lower_file(SOURCE_PATH, &idx.files()[SOURCE_PATH], true);
+        assert_eq!(
+            wire(&hollowed),
+            vec![(
+                TYPE_EDGE_INFERRED,
+                r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true}"#
+            )]
+        );
+
+        let kept = super::lower_file(TEST_MODULE_PATH, &idx.files()[TEST_MODULE_PATH], false);
+        assert_eq!(
+            wire(&kept),
+            vec![
+                (
+                    TYPE_CODE_ENTITY_EXTRACTED,
+                    r#"{"file":"src/checks.rs","name":"checks_product","kind":"function","line":2,"lang":"rust","fresh":true}"#
+                ),
+                (
+                    TYPE_EDGE_INFERRED,
+                    r#"{"file":"src/checks.rs","name":"product","lang":"rust","caller":"checks_product"}"#
+                ),
+                (
+                    TYPE_EDGE_INFERRED,
+                    r#"{"file":"src/checks.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#
+                ),
+            ]
+        );
+    }
+
+    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over a `gc` file's UTF-8
+    /// bytes answers the batch the walk lowers from that file - the source file's whole batch,
+    /// and the out-of-line test module hollowed to its one boundary event under `excluded`.
+    #[test]
+    fn bytes_batch_answers_the_batch_the_walk_lowers_from_a_files_bytes() {
+        use crate::extraction_tree::{
+            walked_batch, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH,
+        };
+        use crate::test_support::wire;
+
+        for (path, body, excluded) in [
+            (SOURCE_PATH, SOURCE_BODY, false),
+            (TEST_MODULE_PATH, TEST_MODULE_BODY, true),
+        ] {
+            assert_eq!(
+                wire(&super::bytes_batch(path, Some(body.as_bytes()), excluded)),
+                walked_batch("gc", path).to_vec(),
+                "the bytes of {path}"
+            );
+        }
+    }
+
+    /// `excluded` changes a parsed batch: the source file's bytes under the flag are hollowed to
+    /// one boundary event of the file's own language.
+    #[test]
+    fn bytes_batch_hollows_a_parsed_file_under_the_excluded_flag() {
+        use crate::extraction_tree::{SOURCE_BODY, SOURCE_PATH};
+        use crate::test_support::wire;
+
+        assert_eq!(
+            wire(&super::bytes_batch(
+                SOURCE_PATH,
+                Some(SOURCE_BODY.as_bytes()),
+                true
+            )),
+            vec![(
+                TYPE_EDGE_INFERRED,
+                r#"{"file":"src/lib.rs","name":"","lang":"rust","fresh":true}"#
+            )]
+        );
+    }
+
+    /// Every input `bytes_batch` cannot parse - no bytes, bytes that are not UTF-8, a path no
+    /// grammar resolves - answers exactly the one boundary event of an unknown language, whatever
+    /// the flag says, as the named walk gives a path the index lacks.
+    #[test]
+    fn bytes_batch_answers_the_unknown_boundary_for_every_input_it_cannot_parse() {
+        use crate::extraction_tree::{SOURCE_BODY, SOURCE_PATH};
+        use crate::test_support::wire_owned;
+
+        let boundary = |path: &str| {
+            vec![(
+                TYPE_EDGE_INFERRED.to_string(),
+                format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#),
+            )]
+        };
+        let not_utf8: &[u8] = &[b'f', b'n', 0xff, 0xfe];
+        for (path, bytes, excluded) in [
+            (SOURCE_PATH, None, false),
+            (SOURCE_PATH, None, true),
+            (SOURCE_PATH, Some(not_utf8), false),
+            (SOURCE_PATH, Some(not_utf8), true),
+            ("notes.txt", Some(SOURCE_BODY.as_bytes()), false),
+            ("notes.txt", Some(SOURCE_BODY.as_bytes()), true),
+        ] {
+            assert_eq!(
+                wire_owned(&super::bytes_batch(path, bytes, excluded)),
+                boundary(path),
+                "{path} with bytes {bytes:?} under excluded {excluded}"
+            );
+        }
+        // The named walk's batch for a path the index lacks is that same event.
+        let dir = tempfile::tempdir().unwrap();
+        let named =
+            super::file_batches(dir.path().to_str().unwrap(), &["src/absent.rs".to_string()]);
+        assert_eq!(wire_owned(&named[0].1), boundary("src/absent.rs"));
     }
 }

@@ -57,12 +57,12 @@ use crate::grounder::symbols::model::Lang;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
 /// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
-/// which files count), and for each file whose extension the registry resolves, extract its symbols
-/// under its
-/// normalized relative path. A file whose extension is unregistered is skipped; a file that
-/// cannot be read, or whose parse recovers to no symbols, contributes whatever the tags run
-/// produced and NEVER crashes the walk. `override_lang` forces one language for every file
-/// (the `--language` override); `None` auto-detects per extension.
+/// which files count), and for each file whose extension the registry resolves, read it and
+/// extract its symbols under its normalized relative path. A file whose extension is unregistered
+/// is skipped without being read; a file that cannot be read or fails to extract contributes no
+/// entry; a parse that recovers to no symbols contributes an empty one. None of them crashes the
+/// walk. `override_lang` forces one language for every file (the `--language` override); `None`
+/// auto-detects per extension.
 #[cfg(feature = "symbols")]
 pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     let mut idx = SymbolIndex::default();
@@ -78,42 +78,65 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     idx
 }
 
+/// The symbols of the file at `path` under the grammar the registry resolves for that path and
+/// `override_lang`, beside the text they were extracted from: none when no grammar resolves, an
+/// inner none when `source` answers no text or the extraction fails. `source` is asked for the
+/// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
+/// a path's grammar is paired with the extraction it drives, so every reader of a file's symbols -
+/// the index ([`index_one_file`]) and the batch re-extracted from bytes
+/// ([`bytes_batch`](events::bytes_batch)) - reads the same symbols from the same text.
+#[cfg(feature = "symbols")]
+pub(crate) fn extracted<S: AsRef<str>>(
+    path: &str,
+    source: impl FnOnce() -> Option<S>,
+    override_lang: Option<Lang>,
+) -> Option<Option<(S, model::FileSymbols)>> {
+    let grammar = registry::for_path(path, override_lang)?;
+    Some(source().and_then(|text| {
+        extract::extract(
+            text.as_ref(),
+            grammar.lang,
+            &grammar.language,
+            grammar.tags_query,
+        )
+        .ok()
+        .map(|symbols| (text, symbols))
+    }))
+}
+
 /// Extract the single file at relative path `rel` (under `root`) into `idx`, keyed by `rel`, if
-/// the registry resolves a grammar for it. This is the ONE per-file extraction authority: the
+/// the registry resolves a grammar for it. This is the ONE per-file indexing authority: the
 /// whole-tree `build_index` and the incremental `reindex_files` both freshen a file through here,
-/// so a file is indexed identically whether the whole tree is built or one file is re-parsed.
+/// so a file is indexed identically whether the whole tree is built or one file is re-parsed. The
+/// file is read only once a grammar resolves, and its symbols are [`extracted`] from that text.
 ///
 /// The miss arms keep the incremental index equal to a fresh `build_index` over the current tree,
 /// and none of them crashes the walk:
-/// - an UNRESOLVED extension leaves `idx` untouched - a fresh build never indexes such a file, so
-///   there is no entry to hold or drop;
-/// - a file that can no longer be READ (deleted or unreadable) or that fails to EXTRACT (a
-///   tags-query failure) has its entry REMOVED via [`SymbolIndex::remove_file`], so reindexing a
-///   deleted file purges its stale symbols rather than grounding a file a fresh build never visits;
+/// - an UNRESOLVED extension leaves `idx` untouched and the file unread, whether or not it could
+///   be read - a fresh build never indexes such a file;
+/// - under a grammar, a file that can no longer be READ (deleted, unreadable or not UTF-8) or that
+///   fails to EXTRACT (a tags-query failure) has its entry REMOVED via
+///   [`SymbolIndex::remove_file`], so reindexing a deleted file purges its stale symbols rather
+///   than grounding a file a fresh build never visits;
 /// - a parse that recovers to NO symbols still returns `Ok` and INSERTS an empty entry (replacing
 ///   any prior one), so a file edited down to its last symbol overwrites to empty rather than
 ///   keeping stale defs.
 ///
 /// A file that is successfully indexed also has its CONTENT HASH recorded (spec 68), via
 /// `store::content_hash` - the one hash primitive, the SAME one the live grounder's reindex
-/// freshening gate hashes with - so `rigger validate`'s staleness advisory can later rehash a
-/// small sample of the tree and diff it against these persisted values without a full-tree
-/// rehash. A removed entry drops its hash too ([`SymbolIndex::remove_file`]).
+/// freshening gate hashes with - over the same text the extraction read, so `rigger validate`'s
+/// staleness advisory can later rehash a small sample of the tree and diff it against these
+/// persisted values without a full-tree rehash. A removed entry drops its hash too
+/// ([`SymbolIndex::remove_file`]).
 #[cfg(feature = "symbols")]
 pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lang: Option<Lang>) {
-    let Some(entry) = registry::for_path(rel, override_lang) else {
-        return;
-    };
-    let abs = Path::new(root).join(rel);
-    let Ok(src) = std::fs::read_to_string(&abs) else {
-        idx.remove_file(rel);
-        return;
-    };
-    match extract::extract(&src, entry.lang, &entry.language, entry.tags_query) {
-        Ok(fs) => {
+    let read = || std::fs::read_to_string(Path::new(root).join(rel)).ok();
+    match extracted(rel, read, override_lang) {
+        None => {}
+        Some(Some((src, fs))) => {
             idx.insert_hashed_file(rel.to_string(), fs, store::content_hash(&src));
         }
-        Err(_) => idx.remove_file(rel),
+        Some(None) => idx.remove_file(rel),
     }
 }
 
@@ -122,11 +145,11 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
 /// integrates (re-parse the just-changed files, not the whole tree). Each file is freshened
 /// through the shared [`index_one_file`] authority, NOT a second extract loop, so a file is
 /// indexed IDENTICALLY whether the whole tree is built (`build_index`) or one file is
-/// re-parsed here (one mutation authority; the two paths cannot drift). A named file that can no
-/// longer be read (deleted or unreadable) or that fails to extract has its entry REMOVED, so
-/// reindexing a deletion leaves the index equal to a fresh `build_index` over the surviving tree;
-/// a file with an unregistered extension leaves `idx` untouched, exactly as `index_one_file` does
-/// on the whole-tree walk.
+/// re-parsed here (one mutation authority; the two paths cannot drift). A named file under a
+/// grammar that can no longer be read (deleted or unreadable) or that fails to extract has its
+/// entry REMOVED, so reindexing a deletion leaves the index equal to a fresh `build_index` over
+/// the surviving tree; a file with an unregistered extension leaves `idx` untouched and is not
+/// read, exactly as `index_one_file` does on the whole-tree walk.
 #[cfg(feature = "symbols")]
 pub fn reindex_files(
     root: &str,
@@ -507,6 +530,68 @@ mod tests {
         // surviving tree - the invariant reindex must hold (it never visits the gone file either).
         let fresh = build_index(root, None);
         assert_eq!(idx, fresh);
+    }
+
+    /// A path no grammar resolves is left alone without its file being asked for: an entry the
+    /// index holds for it stands whether the file reads or cannot be read at all.
+    #[test]
+    fn an_entry_under_no_grammar_stands_whether_or_not_its_file_can_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "fn in_prose() {}\n").unwrap();
+        // Indexed under a forced language, as a `--language` override indexes it.
+        let mut idx = SymbolIndex::default();
+        index_one_file(root, "notes.txt", &mut idx, Some(Lang::Rust));
+        let forced = idx.clone();
+        assert_eq!(defs_named(&idx, "in_prose").len(), 1);
+
+        reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        assert_eq!(idx, forced, "a file no grammar resolves is untouched");
+
+        // A directory at the path cannot be read as text under any uid.
+        std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
+        std::fs::create_dir(dir.path().join("notes.txt")).unwrap();
+        reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        assert_eq!(
+            idx, forced,
+            "no grammar resolves, so the unreadable path is never asked for"
+        );
+
+        // The same unreadable path under a grammar has its entry removed.
+        reindex_files(root, &mut idx, &["notes.txt".into()], Some(Lang::Rust));
+        assert_eq!(
+            idx,
+            SymbolIndex::default(),
+            "an unreadable file's entry goes once a grammar resolves"
+        );
+    }
+
+    /// The text is asked for only once a grammar resolves: a path under no grammar answers the
+    /// outer none with the text never asked, and a path under a grammar asks exactly once and
+    /// hands back the very text it was given beside the symbols extracted from it.
+    #[test]
+    fn extracted_asks_for_the_text_only_once_a_grammar_resolves() {
+        let asked = std::cell::Cell::new(0_u32);
+        let source = || {
+            asked.set(asked.get() + 1);
+            Some(String::from("fn one() {}\n"))
+        };
+
+        assert_eq!(extracted("notes.txt", source, None), None);
+        assert_eq!(asked.get(), 0, "no grammar resolves, so no text is asked");
+
+        let (text, symbols) = extracted("a.rs", source, None)
+            .expect("a grammar resolves for a.rs")
+            .expect("the handed text extracts");
+        assert_eq!(asked.get(), 1, "the text is asked exactly once");
+        assert_eq!(text, "fn one() {}\n");
+        assert_eq!(symbols.lang, Lang::Rust);
+        let defs: Vec<(&str, Kind, u32)> = symbols
+            .defs
+            .iter()
+            .map(|d| (d.name.as_str(), d.kind, d.line))
+            .collect();
+        assert_eq!(defs, [("one", Kind::Function, 1)]);
     }
 
     #[test]

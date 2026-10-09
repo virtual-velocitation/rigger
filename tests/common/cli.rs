@@ -317,6 +317,20 @@ pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R
     f(&store)
 }
 
+/// `f` over `root`'s own project namespace of its `.rigger/events.db` as a binary before the
+/// ledger wrote it: every append `f` makes lands as pre-ledger rows
+/// ([`super::fixtures::PreLedgerStore`]), so `f` seeds the derived events a store now refuses.
+pub fn with_pre_ledger_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R {
+    let db = rigger_file(root, "events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let pre_ledger = super::fixtures::PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
+    let store = Namespaced::new(&pre_ledger, &run_stream_identity(root));
+    f(&store)
+}
+
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
     with_run_store(root, |store| {
@@ -324,6 +338,22 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
             .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
             .unwrap()
     })
+}
+
+/// `root`'s run stream as `(position, revision, type)`, oldest first.
+pub fn stream_shape(root: &Path) -> Vec<(u64, i64, String)> {
+    read_run_events(root)
+        .into_iter()
+        .map(|event| (event.position, event.revision, event.type_))
+        .collect()
+}
+
+/// `(position, type)` of every event on `root`'s run stream, oldest first.
+pub fn run_log(root: &Path) -> Vec<(u64, String)> {
+    read_run_events(root)
+        .into_iter()
+        .map(|e| (e.position, e.type_))
+        .collect()
 }
 
 /// The decoded payloads of the events of type `type_` in `root`'s namespaced run stream, oldest
@@ -346,10 +376,189 @@ pub fn with_graph_locked<T>(graph_db: &Path, run: impl FnOnce() -> T) -> T {
     out
 }
 
+/// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
+/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
+/// identity's current generation, the node and edge assertions of live generations (edges by their
+/// columns, never their row ids), and the detached attachments a returning node revives. Everything
+/// else in the file is history a compacted log no longer replays.
+pub fn fold_state(graph_db: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(graph_db).unwrap();
+    [
+        "SELECT project, name, file, evidence, source, target FROM proofs
+          ORDER BY project, name, file, source, evidence",
+        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
+        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
+        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
+          ORDER BY project, identity, node_id",
+        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
+                e.valid_from, e.valid_to, e.source
+           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
+          ORDER BY 1, 2, 3, 4, 5, 6, 7",
+        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
+           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
+          ORDER BY 1, 2, 3, 4",
+    ]
+    .into_iter()
+    .flat_map(|sql| {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let width = stmt.column_count();
+        stmt.query_map([], |r| {
+            Ok((0..width)
+                .map(|i| match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" | "))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .map(|row| format!("{sql}: {row}"))
+        .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+/// The whole live projection of the graph at `graph_db`, read under `project`, and its
+/// [`fold_state`], as one comparable value: spec 101's comparison surface.
+pub fn graph_identity(graph_db: &Path, project: &str) -> (String, Vec<String>) {
+    let whole = Projector::open(graph_db.to_str().unwrap(), project)
+        .unwrap()
+        .whole()
+        .unwrap();
+    (serde_json::to_string(&whole).unwrap(), fold_state(graph_db))
+}
+
+/// Whether `db`'s applied ledger records `position`.
+pub fn applied(db: &Path, position: u64) -> bool {
+    exists(
+        db,
+        "SELECT EXISTS (SELECT 1 FROM applied WHERE position = ?1)",
+        position,
+    )
+}
+
+/// Every position `db`'s applied ledger records, ascending.
+pub fn applied_positions(db: &Path) -> Vec<u64> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut rows = conn
+        .prepare("SELECT position FROM applied ORDER BY position")
+        .unwrap();
+    let positions = rows.query_map([], |r| r.get(0)).unwrap();
+    positions.map(Result::unwrap).collect()
+}
+
+/// What the `SELECT EXISTS` query `sql` answers over `db` with `param` bound to `?1`.
+pub fn exists(db: &Path, sql: &str, param: impl rusqlite::ToSql) -> bool {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .query_row(sql, [param], |r| r.get(0))
+        .unwrap()
+}
+
+/// What a rebuild that reports nothing hands its progress callback.
+pub fn no_progress(_: rigger::contextgraph::sqlite::RebuildProgress) {}
+
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
     Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
+}
+
+/// Every `graph.db*` entry under `.rigger/` of `root` ([`super::fixtures::dir_snapshot`]).
+pub fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    super::fixtures::dir_snapshot(&rigger_file(root, ""), "graph.db")
+}
+
+/// The event log's files and every `graph.db*` file under `.rigger/` of `root`, byte for byte: what
+/// a refused `rigger reset --derived` must leave as it found.
+pub type LogAndGraphFiles = (
+    Vec<(String, Option<Vec<u8>>)>,
+    Vec<(String, Option<Vec<u8>>)>,
+);
+
+/// The [`LogAndGraphFiles`] of `root` as they stand now.
+pub fn log_and_graph_files(root: &Path) -> LogAndGraphFiles {
+    (
+        super::fixtures::dir_snapshot(&rigger_file(root, ""), "events.db"),
+        graph_files(root),
+    )
+}
+
+/// `rigger reset --derived` run in `root`, as a test that expects it refused reads it: whether it
+/// succeeded, its stdout, its stderr, and whether the log and the graph files stand as `found`.
+pub fn refused_derived_reset(
+    root: &Path,
+    found: &LogAndGraphFiles,
+) -> (bool, String, String, bool) {
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    (ok, out, err, log_and_graph_files(root) == *found)
+}
+
+/// The two lines `rigger reset --derived` prints, each ended, for a migration that converted
+/// `converted` latest batches into ledger entries and shed `shed` derived events, `unkeyed` of
+/// them naming no file identity.
+pub fn migrated_lines(converted: usize, shed: usize, unkeyed: usize) -> String {
+    format!(
+        "reset --derived: converted {converted} latest batch(es) into ledger entries and shed \
+         {shed} derived event(s) from the event log\n\
+         reset --derived: {unkeyed} of the derived event(s) shed named no file identity (no \
+         replay key, or one that does not parse)\n"
+    )
+}
+
+/// The line `rigger reset --derived` prints, ended, over a store holding no derived event.
+pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to shed\n";
+
+/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events
+/// of `identities` file identities.
+pub fn derived_menu_line_naming(events: usize, identities: usize) -> String {
+    format!(
+        "--derived: {events} derived events of {identities} file identities to shed from the \
+         event log; rerun `rigger reset --derived` to migrate them"
+    )
+}
+
+/// The `--derived` line bare `rigger reset` prints over a store holding no derived event.
+pub const NOTHING_TO_SHED_MENU_LINE: &str = "--derived: no derived event to shed";
+
+/// The `--derived` lines of what bare `rigger reset` printed, in order.
+pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("--derived:"))
+}
+
+/// The line `rigger reset --derived` prints, ended, when the log's file held no free page.
+pub const LOG_LEFT_AS_IT_STANDS_LINE: &str =
+    "reset --derived: the log file holds no reclaimable free page, so it was left as it stands \
+     rather than rewritten to reclaim nothing\n";
+
+/// The line `rigger reset --derived` prints, ended, for a rewrite that reclaimed `bytes`.
+pub fn reclaimed_line(bytes: u64) -> String {
+    format!("reset --derived: compacted the log file and reclaimed {bytes} byte(s) on disk\n")
+}
+
+/// The line a command refused at `graph.db.lock` ends its stderr with, whoever holds the lock.
+pub const REBUILD_LOCK_REFUSAL: &str =
+    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";
+
+/// The whole stderr of `rigger reset --derived` on a project configured for the server-backed
+/// store, where the migration does not run.
+pub const SERVER_BACKED_DERIVED_REFUSAL: &str =
+    "rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
+     is configured for the server-backed store, where the migration does not run. Re-run it \
+     against a project on the sqlite backend. Refusing rather than reporting a migration that did \
+     not happen.\n";
+
+/// The line `rigger reset --derived` ends its stderr with over a rebuild left unfinished.
+pub const UNFINISHED_REBUILD_REFUSAL: &str =
+    "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
+     finish it";
+
+/// The rebuild lock of the `graph.db` of `root`, held as a `rigger setup` or a `rigger reset`
+/// holds `graph.db.lock`, until it is dropped.
+pub fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {
+    Projector::lock_rebuild(rigger_file(root, "graph.db").to_str().unwrap()).unwrap()
 }
 
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
@@ -362,6 +571,12 @@ pub fn body_line_count(out: &str) -> usize {
                 .unwrap_or(false)
         })
         .count()
+}
+
+/// The line `rigger graph build` prints for a build that counted `events` batch events, with
+/// `lost`, its fold-loss clause: empty when the build lost no fold.
+pub fn graph_build_line(events: usize, lost: &str) -> String {
+    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
 }
 
 /// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
@@ -493,6 +708,32 @@ pub fn code_entity() -> Vec<u8> {
     .unwrap()
 }
 
+/// One pre-ledger batch of `src/a.rs` at the generation `h1`, valid from `secs`: the entity
+/// `name` under `gc/src/a.rs@h1#0`, then an edge of that name under `gc/src/a.rs@h1#1`. The
+/// derived reset rewrites the first row of the latest recording of this batch into its ledger
+/// entry and deletes the rest.
+pub fn pre_ledger_batch(name: &str, secs: u64) -> [Event; 2] {
+    let entity = serde_json::json!({
+        "file": "src/a.rs", "name": name, "kind": "function", "line": 1, "lang": "rust",
+        "fresh": true,
+    });
+    let edge = serde_json::json!({ "file": "src/a.rs", "name": name, "lang": "rust" });
+    [
+        keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&entity).unwrap(),
+            "gc/src/a.rs@h1#0",
+            secs,
+        ),
+        keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            serde_json::to_vec(&edge).unwrap(),
+            "gc/src/a.rs@h1#1",
+            secs,
+        ),
+    ]
+}
+
 /// How many duplicate re-extractions [`seed_derived_duplicates`] appends.
 pub const DUP_ROUNDS: usize = 3;
 /// The one replay key every duplicate [`seed_derived_duplicates`] appends shares.
@@ -512,7 +753,7 @@ pub fn seed_derived_duplicates(root: &Path) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
         );
     }
-    with_run_store(root, |store| {
+    with_pre_ledger_run_store(root, |store| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
             .unwrap();
@@ -823,4 +1064,41 @@ pub fn assert_light_lane_extent_note(out: &str) {
         !out.contains(" | ") && body_line_count(out) == 0,
         "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
     );
+}
+
+/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
+pub fn index_lag_advisory(files: &[&str]) -> String {
+    format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger graph build` to refresh it.",
+        files.len(),
+        files.join(", ")
+    )
+}
+
+/// Every graph index-lag advisory line among `stderr`, what `rigger validate` wrote there, in
+/// order.
+pub fn index_lag_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("fallen behind"))
+}
+
+/// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived
+/// events of `identities` file identities.
+pub fn bloat_advisory_naming(events: usize, identities: usize) -> String {
+    format!(
+        "warning: the event log still holds {events} derived events of {identities} file \
+         identities; run `rigger reset --derived` to migrate them into the ledger."
+    )
+}
+
+/// Every line naming `rigger reset --derived` among `stderr`, what `rigger validate` wrote there,
+/// in order: the log-bloat advisory, and nothing else of validate's.
+pub fn bloat_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("rigger reset --derived"))
+}
+
+/// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
+/// printed that a test compares.
+pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
+    text.lines().filter(|line| keep(line)).collect()
 }

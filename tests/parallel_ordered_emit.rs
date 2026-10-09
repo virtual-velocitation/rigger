@@ -87,7 +87,7 @@ fn record_emitted(
     ingest: impl FnOnce(&mut dyn rigger::ingest::BatchSink) -> rigger::ingest::IngestStats,
 ) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
     let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-    let stats = ingest(&mut |batch| {
+    let stats = ingest(&mut |batch, _| {
         for (key, ev) in batch {
             seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
         }
@@ -200,10 +200,10 @@ fn project_batches_paced_is_width_invariant_and_matches_the_facade() {
 
     // Normalize a batch set to its content observable: the file path (order-carrying) mapped to the
     // ordered `(type, bytes)` of its events - independent of any run-varying Event field.
-    fn norm(batches: &[(String, Vec<Event>)]) -> Vec<FileContent> {
+    fn norm(batches: &[(String, Vec<Event>, bool)]) -> Vec<FileContent> {
         batches
             .iter()
-            .map(|(file, evs)| {
+            .map(|(file, evs, _)| {
                 (
                     file.clone(),
                     evs.iter()

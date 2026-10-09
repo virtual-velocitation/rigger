@@ -1548,6 +1548,132 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
+/// prints it under `root`. One process per call, waited to its exit: it writes no object and
+/// applies no filter, so the id is that of the bytes as they are, and it answers outside a
+/// repository too. A process that cannot start, or that fails, fails the hash, naming the
+/// command, the root and the cause.
+pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let failed = |why: &str| {
+        Error(format!(
+            "git hash-object --stdin in {}: {why}",
+            root.display()
+        ))
+    };
+    let mut process = crate::subprocess::git_in(root)
+        .args(["hash-object", "--no-filters", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| failed(&e.to_string()))?;
+    // A write that fails is a process that stopped reading, which its exit status then says:
+    // git prints an id only once it has read its whole input.
+    if let Some(mut input) = process.stdin.take() {
+        let _ = input.write_all(bytes);
+    }
+    let out = process
+        .wait_with_output()
+        .map_err(|e| failed(&e.to_string()))?;
+    if !out.status.success() {
+        return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
+/// (spec 107): started once for a repository, asked for one object at a time, and ended by
+/// closing its standard input and waiting for it on every exit path - when this is dropped -
+/// never by a signal. It runs with `GIT_NO_LAZY_FETCH=1`, so a blob a partial clone has not
+/// fetched is one git does not hold, never a network read.
+pub struct BlobBatch {
+    /// The process, holding the standard input the requests are written to.
+    process: std::process::Child,
+    /// The process's standard output, the answers.
+    answers: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl BlobBatch {
+    /// Start the batch process over the repository holding `root`, or answer none when there is
+    /// no object database to ask: `root` is outside a git repository, or the process cannot
+    /// start at all.
+    pub fn start(root: &std::path::Path) -> Option<Self> {
+        use std::process::Stdio;
+
+        let in_repository = crate::subprocess::git_in(root)
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if !in_repository {
+            return None;
+        }
+        let mut process = crate::subprocess::git_in(root)
+            .args(["cat-file", "--batch"])
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let answers = std::io::BufReader::new(process.stdout.take()?);
+        Some(BlobBatch { process, answers })
+    }
+
+    /// The bytes of the object `id` names, or none when the repository does not hold it:
+    /// whatever made git answer `missing` for it (an absent object, a loose object whose header
+    /// is corrupt), and an `id` that is not all hexadecimal digits, which is never written to
+    /// the process, so no id can read as two requests. A process that stopped before its answer
+    /// was whole - it died, as git dies on a loose object whose body is truncated - fails the
+    /// read, naming the object and its remedy.
+    pub fn blob(&mut self, id: &str) -> Result<Option<Vec<u8>>, Error> {
+        if !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(None);
+        }
+        self.answer(id).ok_or_else(|| {
+            Error(format!(
+                "git cat-file --batch stopped while answering object {id}: restore the object \
+                 or remove it, after which git answers it missing and its entry resolves from \
+                 the tree"
+            ))
+        })
+    }
+
+    /// Ask the process for the object `id` and read its whole answer: the object's bytes, or
+    /// none for an answer that carries no size (`<id> missing`). `None` when the process
+    /// stopped before the answer was whole.
+    fn answer(&mut self, id: &str) -> Option<Option<Vec<u8>>> {
+        use std::io::{BufRead, Read, Write};
+
+        let requests = self.process.stdin.as_mut()?;
+        writeln!(requests, "{id}").ok()?;
+        requests.flush().ok()?;
+        // `<id> <type> <size>` for an object git holds, then its bytes and one line break.
+        let header = self.answers.by_ref().lines().next()?.ok()?;
+        let Some(size) = header
+            .rsplit(' ')
+            .next()
+            .and_then(|size| size.parse::<usize>().ok())
+        else {
+            return Some(None);
+        };
+        let mut bytes = vec![0; size + 1];
+        self.answers.read_exact(&mut bytes).ok()?;
+        bytes.truncate(size);
+        Some(Some(bytes))
+    }
+}
+
+impl Drop for BlobBatch {
+    /// End the process through its own handle: waiting closes its standard input first, at
+    /// which `git cat-file --batch` exits, and then reaps it.
+    fn drop(&mut self) {
+        let _ = self.process.wait();
+    }
+}
+
 /// Every unit branch (`rigger/u/*`) currently present in `repo`, sorted for determinism, via
 /// `git for-each-ref`. Empty when git is unavailable or `repo` is not a repository. Used by the
 /// conductor's land-refused lesson (spec 103 criterion 8) to search every unit's branch for one
@@ -2655,6 +2781,205 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 }
 
 #[cfg(test)]
+mod blob_batch_tests {
+    //! Tests for [`BlobBatch`] (spec 107, THE REBUILD RE-EXTRACTS THE LEDGER): the one
+    //! `git cat-file --batch` process a rebuild reads its entries' blobs from.
+
+    use super::BlobBatch;
+    use crate::test_support::{
+        git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
+        temp_git_project_with_commit, write_file,
+    };
+    use std::path::Path;
+
+    /// What `batch` answers for `id`: the bytes, none, or the error's text.
+    fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
+        batch.blob(id).map_err(|e| e.0)
+    }
+
+    /// One process answers every object asked of it, in any order and more than once: a blob's
+    /// exact bytes - empty, binary, ending without a newline - and none for an id the
+    /// repository does not hold, with the answers after a miss still each their own object's.
+    #[test]
+    fn one_process_answers_each_blob_it_holds_and_none_for_one_it_does_not() {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), b"first line\nsecond line");
+        let text = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.bin"), &[0, 159, 146, 150, b'\n', b'\n', 255]);
+        let binary = git_hash_object(root, "b.bin", true);
+        write_file(&root.join("empty"), b"");
+        let empty = git_hash_object(root, "empty", true);
+        let absent = "1111111111111111111111111111111111111111";
+
+        let mut batch = BlobBatch::start(root).expect("a repository starts the batch process");
+        assert_eq!(
+            asked(&mut batch, &text),
+            Ok(Some(b"first line\nsecond line".to_vec()))
+        );
+        assert_eq!(asked(&mut batch, absent), Ok(None));
+        assert_eq!(
+            asked(&mut batch, &binary),
+            Ok(Some(vec![0, 159, 146, 150, b'\n', b'\n', 255]))
+        );
+        assert_eq!(asked(&mut batch, &empty), Ok(Some(Vec::new())));
+        assert_eq!(
+            asked(&mut batch, &text),
+            Ok(Some(b"first line\nsecond line".to_vec()))
+        );
+    }
+
+    /// An id that is not all hexadecimal digits is never written to the process - one holding a
+    /// space, a ref name, one holding a line break that would read as two requests - and answers
+    /// not held; the empty id passes that check, is written, and git answers it missing, so it
+    /// answers not held too. After each, the next answer is still its own object's. An object that is not a blob is read
+    /// whole like any other, so the answer after it is aligned too.
+    #[test]
+    fn an_id_that_is_not_hexadecimal_is_not_held_and_never_shifts_the_answers_after_it() {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), b"the body\n");
+        let text = git_hash_object(root, "a.txt", true);
+        git_ok_with_identity(root, &["add", "a.txt"]);
+        git_ok_with_identity(root, &["commit", "-q", "-m", "one"]);
+        let tree = git_out(root, &["rev-parse", "HEAD^{tree}"]);
+        let tree_bytes = crate::subprocess::git_in(root)
+            .args(["cat-file", "tree", &tree])
+            .output()
+            .unwrap()
+            .stdout;
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        for id in [
+            "",
+            "zz zz",
+            "HEAD",
+            &format!("{text}\n{text}"),
+            &format!("{text} "),
+        ] {
+            assert_eq!(asked(&mut batch, id), Ok(None), "the id {id:?}");
+            assert_eq!(
+                asked(&mut batch, &text),
+                Ok(Some(b"the body\n".to_vec())),
+                "the answer after the id {id:?}"
+            );
+        }
+        assert_ne!(tree_bytes, Vec::<u8>::new());
+        assert_eq!(asked(&mut batch, &tree), Ok(Some(tree_bytes)));
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+    }
+
+    /// Outside a repository there is no object database to ask: no batch process is started.
+    /// Once the same directory is a repository one is, and it answers.
+    #[test]
+    fn outside_a_repository_no_batch_process_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(BlobBatch::start(root).is_none());
+
+        git_init_quiet(root);
+        write_file(
+            &root.join("a.txt"),
+            b"held once the directory is a repository\n",
+        );
+        let id = git_hash_object(root, "a.txt", true);
+        let mut batch = BlobBatch::start(root).expect("a repository starts a batch process");
+        assert_eq!(
+            asked(&mut batch, &id),
+            Ok(Some(b"held once the directory is a repository\n".to_vec()))
+        );
+    }
+
+    /// A loose object whose body is truncated kills the process mid-answer: the read fails
+    /// naming the object and its remedy, and so does every read after it. An object asked before
+    /// it was answered whole.
+    #[test]
+    fn a_truncated_loose_object_fails_the_read_naming_the_object_and_its_remedy() {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), b"an object git holds whole\n");
+        let whole = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.txt"), b"an object whose body is cut short\n");
+        let cut = git_hash_object(root, "b.txt", true);
+        let object = loose_object(root, &cut);
+        let bytes = std::fs::read(&object).unwrap();
+        std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(
+            asked(&mut batch, &whole),
+            Ok(Some(b"an object git holds whole\n".to_vec()))
+        );
+        for id in [&cut, &whole] {
+            assert_eq!(
+                asked(&mut batch, id),
+                Err(format!(
+                    "git cat-file --batch stopped while answering object {id}: restore the object \
+                     or remove it, after which git answers it missing and its entry resolves from \
+                     the tree"
+                ))
+            );
+        }
+    }
+
+    /// A loose object whose header is corrupt is one git answers `missing` for: it is not held,
+    /// and the process goes on answering.
+    #[test]
+    fn a_loose_object_with_a_corrupt_header_is_not_held_and_the_process_goes_on() {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), b"an object git holds whole\n");
+        let whole = git_hash_object(root, "a.txt", true);
+        write_file(&root.join("b.txt"), b"an object whose header is garbage\n");
+        let corrupt = git_hash_object(root, "b.txt", true);
+        std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(asked(&mut batch, &corrupt), Ok(None));
+        assert_eq!(
+            asked(&mut batch, &whole),
+            Ok(Some(b"an object git holds whole\n".to_vec()))
+        );
+    }
+
+    /// The ids of the live processes whose command line names `dir`.
+    fn processes_naming(dir: &Path) -> Vec<u32> {
+        let needle = dir.to_str().unwrap();
+        std::fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| {
+                std::fs::read(format!("/proc/{pid}/cmdline"))
+                    .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(needle))
+            })
+            .collect()
+    }
+
+    /// The batch is one process for as long as it is held, and dropping it ends that process by
+    /// closing its input and waits for it: nothing of it is left, not even an unreaped child.
+    #[test]
+    fn dropping_the_batch_ends_its_process_and_reaps_it() {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join("a.txt"), b"the body\n");
+        let text = git_hash_object(root, "a.txt", true);
+
+        let mut batch = BlobBatch::start(root).unwrap();
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+        let running = processes_naming(root);
+        assert_eq!(running.len(), 1, "one batch process: {running:?}");
+        assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
+        assert_eq!(processes_naming(root), running, "still the one process");
+
+        drop(batch);
+        assert!(
+            !Path::new(&format!("/proc/{}", running[0])).exists(),
+            "the process is gone and reaped once the batch is dropped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::eventstore::Event;
@@ -2664,6 +2989,97 @@ mod tests {
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
+
+    /// What [`hash_blob`] answers for `bytes` under `root`: the object id, or the error's text.
+    fn hashed(root: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
+        hash_blob(root, bytes).map_err(|e| e.0)
+    }
+
+    /// THE ONE HASH FUNCTION outside a repository (spec 107): a tree that is no git repository
+    /// still answers the object id git gives the bytes - the id `git hash-object` prints for a
+    /// file holding them - for text, for the empty file and for bytes that are not UTF-8.
+    #[test]
+    fn hash_blob_outside_a_repository_answers_the_object_id_git_hash_object_gives() {
+        use crate::test_support::{git_hash_object, write_file};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let binary = [0, 159, 146, 150, b'\n', 255];
+        write_file(&root.join("hello"), b"hello\n");
+        write_file(&root.join("empty"), b"");
+        write_file(&root.join("binary"), &binary);
+
+        assert_eq!(
+            [
+                hashed(root, b"hello\n"),
+                hashed(root, b""),
+                hashed(root, &binary)
+            ],
+            [
+                Ok("ce013625030ba8dba906f756967f9e9ca394464a".to_string()),
+                Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_string()),
+                Ok(git_hash_object(root, "binary", false)),
+            ]
+        );
+        assert_eq!(
+            [
+                git_hash_object(root, "hello", false),
+                git_hash_object(root, "empty", false)
+            ],
+            [
+                "ce013625030ba8dba906f756967f9e9ca394464a",
+                "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+            ]
+        );
+    }
+
+    /// The hash applies no filter and writes no object: in a repository whose attributes convert
+    /// line endings, bytes ending in CRLF hash as they are - not as the converted blob a path's
+    /// hash would name - and the object database does not hold the id afterwards.
+    #[test]
+    fn hash_blob_applies_no_filter_and_writes_no_object() {
+        use crate::test_support::{git_hash_object, temp_git_project_with_commit, write_file};
+
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_file(&root.join(".gitattributes"), b"* text eol=lf\n");
+        write_file(&root.join("crlf.txt"), b"one\r\ntwo\r\n");
+        let filtered = git_hash_object(root, "crlf.txt", false);
+        let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
+
+        assert_eq!(hashed(root, b"one\r\ntwo\r\n"), Ok(unfiltered.to_string()));
+        assert_ne!(filtered, unfiltered);
+        let mut held = BlobBatch::start(root).expect("a repository starts the batch process");
+        assert_eq!(held.blob(unfiltered).map_err(|e| e.0), Ok(None));
+    }
+
+    /// A hash process that fails fails the hash, naming the command, the root and what git said:
+    /// here a root whose `.git` is a file git cannot read as a repository.
+    #[test]
+    fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
+        use crate::test_support::write_file;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_file(&root.join(".git"), b"not a gitfile\n");
+        let said = crate::subprocess::git_in(root)
+            .args(["hash-object", "--no-filters", "--stdin"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!said.status.success());
+        let said = String::from_utf8(said.stderr).unwrap();
+        assert!(!said.trim().is_empty());
+
+        assert_eq!(
+            hashed(root, b"hello\n"),
+            Err(format!(
+                "git hash-object --stdin in {}: {}",
+                root.display(),
+                said.trim()
+            ))
+        );
+    }
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec

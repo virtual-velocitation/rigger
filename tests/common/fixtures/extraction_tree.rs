@@ -1,0 +1,297 @@
+//! THE EXTRACTION TREE: the one small project tree the bytes-form tests extract, holding one file
+//! of each kind an ingest reads - a `gc` source file, the out-of-line test module it declares, a
+//! `gd` design document and the workflow definition. It names no workspace crate and needs
+//! `tempfile` from the including crate's dev-dependencies.
+
+use std::path::Path;
+
+/// The `gc` source file: two product functions, a rationale line, an in-file test module that
+/// references a product function, and the declaration of the out-of-line test module.
+pub const SOURCE_PATH: &str = "src/lib.rs";
+/// The identity of the source file's `gc` batch: its code half under [`SOURCE_PATH`].
+pub const SOURCE: &str = "gc/src/lib.rs";
+pub const SOURCE_BODY: &str = "\
+// WHY: the entry stays small so the walk has one product file
+fn product() {
+    helper();
+}
+
+fn helper() {}
+
+#[cfg(test)]
+mod checks;
+
+#[cfg(test)]
+mod inline {
+    #[test]
+    fn it_works() {
+        product();
+    }
+}
+";
+
+/// One rewording of [`SOURCE_BODY`]: the text it replaces and the text it puts there.
+pub type Rewording = (&'static str, &'static str);
+
+/// The helper renamed: a second body of the source file that keeps its rationale line and its
+/// test-module declaration, so only the file's code batch moves.
+pub const MOVED: Rewording = ("helper", "assistant");
+
+/// The rationale line reworded: a body of the source file that keeps its code, so the file's
+/// design batch moves and its code batch keeps its generation.
+pub const REWORDED: Rewording = ("stays small", "stays short");
+
+/// [`SOURCE_BODY`] under `rewording`.
+pub fn source_with((from, to): Rewording) -> String {
+    SOURCE_BODY.replace(from, to)
+}
+
+/// The out-of-line test module [`SOURCE_BODY`] declares. Its rationale line gives the same path a
+/// `gd` batch too, so the path has an identity under two prefixes.
+pub const TEST_MODULE_PATH: &str = "src/checks.rs";
+pub const TEST_MODULE_BODY: &str = "\
+// WHY: the checks live out of line so the product file stays short
+fn checks_product() {
+    product();
+}
+";
+
+/// The `gd` design document: a titled reference architecture with one section, one code path it
+/// specifies and one document it cites.
+pub const DOCUMENT_PATH: &str = "docs/architecture.md";
+pub const DOCUMENT_BODY: &str = "\
+# Reference architecture
+
+## The walk
+
+The entry is `src/lib.rs`.
+
+See the [handbook](docs/handbook.md).
+";
+
+/// The workflow definition's path, spelled once for the constant and for the payloads of
+/// [`WALKED`] that carry it.
+macro_rules! workflow_path {
+    () => {
+        ".rigger/workflow.yml"
+    };
+}
+
+/// The workflow definition: one stage run by one agent under one gate.
+pub const WORKFLOW_PATH: &str = workflow_path!();
+pub const WORKFLOW_BODY: &str = "\
+stages:
+  implement:
+    agent: rust-engineer
+    gates: [fmt]
+
+gates:
+  fmt: { run: \"cargo fmt --check\" }
+";
+
+/// One batch the walk hands a sink: the identity's prefix and path, the batch's generation, the
+/// flag the walk hands it with - whether the identity is an out-of-line test module's `gc` one -
+/// and its events as `(type, payload text)`.
+pub struct WalkedBatch {
+    pub prefix: &'static str,
+    pub path: &'static str,
+    pub generation: &'static str,
+    pub excluded: bool,
+    pub events: &'static [(&'static str, &'static str)],
+}
+
+/// What the walk hands a sink for the tree, in emit order. The out-of-line test module's `gc`
+/// batch is the one boundary event of a hollowed file and the one batch handed with its flag set,
+/// the same path's `gd` batch being handed with it clear; the source file's last event is the
+/// evidence its in-file test module gives.
+pub const WALKED: [WalkedBatch; 6] = [
+    WalkedBatch {
+        prefix: "gc",
+        path: TEST_MODULE_PATH,
+        generation: "878ec204b714de6b",
+        excluded: true,
+        events: &[(
+            "EdgeInferred",
+            r#"{"file":"src/checks.rs","name":"","lang":"rust","fresh":true}"#,
+        )],
+    },
+    WalkedBatch {
+        prefix: "gc",
+        path: SOURCE_PATH,
+        generation: "f81a57a5c4f55f52",
+        excluded: false,
+        events: &[
+            (
+                "CodeEntityExtracted",
+                r#"{"file":"src/lib.rs","name":"helper","kind":"function","line":6,"lang":"rust","fresh":true}"#,
+            ),
+            (
+                "CodeEntityExtracted",
+                r#"{"file":"src/lib.rs","name":"product","kind":"function","line":2,"lang":"rust"}"#,
+            ),
+            (
+                "EdgeInferred",
+                r#"{"file":"src/lib.rs","name":"helper","lang":"rust","caller":"product"}"#,
+            ),
+            (
+                "EdgeInferred",
+                r#"{"file":"src/lib.rs","name":"product","lang":"rust","fresh":true,"line":15,"is_test":true}"#,
+            ),
+        ],
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: DOCUMENT_PATH,
+        generation: "ea5177040caf5338",
+        excluded: false,
+        events: &[
+            (
+                "DocConceptExtracted",
+                r#"{"kind":"design-doc","id":"docs/architecture.md","title":"Reference architecture","doc":"docs/architecture.md"}"#,
+            ),
+            (
+                "DocConceptExtracted",
+                r#"{"kind":"design-doc","id":"docs/architecture.md#the-walk","title":"The walk","doc":"docs/architecture.md"}"#,
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"docs/architecture.md","to":"src/lib.rs","rel":"SPECIFIES"}"#,
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"docs/architecture.md","to":"docs/handbook.md","rel":"references"}"#,
+            ),
+        ],
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: TEST_MODULE_PATH,
+        generation: "8c6020acb1774c78",
+        excluded: false,
+        events: &[
+            (
+                "DocConceptExtracted",
+                r#"{"kind":"rationale","id":"src/checks.rs#L1","title":"WHY: the checks live out of line so the product file stays short","doc":"src/checks.rs"}"#,
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"src/checks.rs#L1","to":"src/checks.rs","rel":"explains"}"#,
+            ),
+        ],
+    },
+    WalkedBatch {
+        prefix: "gd",
+        path: SOURCE_PATH,
+        generation: "88eadaf4024b4a86",
+        excluded: false,
+        events: &[
+            (
+                "DocConceptExtracted",
+                r#"{"kind":"rationale","id":"src/lib.rs#L1","title":"WHY: the entry stays small so the walk has one product file","doc":"src/lib.rs"}"#,
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"src/lib.rs#L1","to":"src/lib.rs","rel":"explains"}"#,
+            ),
+        ],
+    },
+    WalkedBatch {
+        prefix: "gw",
+        path: WORKFLOW_PATH,
+        generation: "08eb9cb734e95dc1",
+        excluded: false,
+        events: &[
+            (
+                "DocConceptExtracted",
+                concat!(
+                    r#"{"kind":"agent","id":"agent:rust-engineer","title":"rust-engineer","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
+            ),
+            (
+                "DocConceptExtracted",
+                concat!(
+                    r#"{"kind":"gate","id":"gate:fmt","title":"fmt","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
+            ),
+            (
+                "DocConceptExtracted",
+                concat!(
+                    r#"{"kind":"stage","id":"stage:implement","title":"implement","doc":""#,
+                    workflow_path!(),
+                    r#""}"#
+                ),
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"stage:implement","to":"agent:rust-engineer","rel":"RUNS"}"#,
+            ),
+            (
+                "DocLinkExtracted",
+                r#"{"from":"stage:implement","to":"gate:fmt","rel":"RUNS"}"#,
+            ),
+        ],
+    },
+];
+
+/// The identity of each batch of [`WALKED`], in walk order.
+pub fn walked_identities() -> Vec<String> {
+    WALKED
+        .iter()
+        .map(|batch| format!("{}/{}", batch.prefix, batch.path))
+        .collect()
+}
+
+/// The `(identity, flag)` of each batch of [`WALKED`], in walk order: what a walk of the tree
+/// hands a sink that records each batch's identity beside the flag it was handed with.
+pub fn walked_handoffs() -> Vec<(String, bool)> {
+    walked_identities()
+        .into_iter()
+        .zip(WALKED.iter().map(|batch| batch.excluded))
+        .collect()
+}
+
+/// The generation of each batch of [`WALKED`], in walk order, as a side that holds it answers
+/// it.
+pub fn walked_generations() -> Vec<Option<String>> {
+    WALKED
+        .iter()
+        .map(|batch| Some(batch.generation.to_string()))
+        .collect()
+}
+
+/// The batch [`WALKED`] holds under `prefix` for `path`.
+fn walked(prefix: &str, path: &str) -> &'static WalkedBatch {
+    WALKED
+        .iter()
+        .find(|batch| batch.prefix == prefix && batch.path == path)
+        .expect("the walk lowers a batch under the prefix for the path")
+}
+
+/// The events of the batch [`WALKED`] holds under `prefix` for `path`.
+pub fn walked_batch(prefix: &str, path: &str) -> &'static [(&'static str, &'static str)] {
+    walked(prefix, path).events
+}
+
+/// The generation of the batch [`WALKED`] holds under `prefix` for `path`.
+pub fn walked_generation(prefix: &str, path: &str) -> &'static str {
+    walked(prefix, path).generation
+}
+
+/// The tree planted in a fresh directory, kept alive by the returned guard: the four files
+/// written through `write_file`, the caller's writer of one file with its parent directories.
+pub fn planted_extraction_tree(write_file: impl Fn(&Path, &[u8])) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a fresh directory for the extraction tree");
+    for (path, body) in [
+        (SOURCE_PATH, SOURCE_BODY),
+        (TEST_MODULE_PATH, TEST_MODULE_BODY),
+        (DOCUMENT_PATH, DOCUMENT_BODY),
+        (WORKFLOW_PATH, WORKFLOW_BODY),
+    ] {
+        write_file(&dir.path().join(path), body.as_bytes());
+    }
+    dir
+}

@@ -168,7 +168,7 @@ mod tests {
     use crate::test_support::{seed_one_shot_fixture, ReadCountingStore};
 
     /// THE SIDECAR BEHIND `rigger peers` READS FROM THE BOUNDARY (spec 101): over a log holding
-    /// 200,000 derived events and two superseded runs before the boundary, one read costs exactly
+    /// 200,000 ledger entries and two superseded runs before the boundary, one read costs exactly
     /// the run's events plus the typed carry-over, and still surfaces every run's decisions,
     /// lessons and findings - the current run's decision LIVE, a superseded run's HISTORICAL.
     #[test]

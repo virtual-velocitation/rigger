@@ -17,6 +17,8 @@ mod blast_radius_eval;
 pub mod canary_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod conductor;
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
+mod logged_generations;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod replay_keys;
 
@@ -27,7 +29,7 @@ use rigger_config_files::config;
 use rigger_config_files::config_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{
-    blocker, canary, failure, instructions, ledger, metrics, playbooks, run, safety,
+    blocker, canary, failure, instructions, ledger, metrics, playbooks, retention, run, safety,
 };
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::{spec, test_cases};
@@ -91,10 +93,47 @@ mod config_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+/// THE EXTRACTION TREE the run sink's tests walk, compiled here from the same file as the root
+/// crate's tests; only the default lane's tests plant it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
+mod extraction_tree_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/fold.rs"]
 mod fold_fixtures;
+/// The host fixtures the run sink's tests write their files through. They name the reaper and
+/// the open-files reader as `rigger::reap` and `rigger::holders`, which the import below makes
+/// resolve in this crate.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/host.rs"]
+mod host_fixtures;
+/// The ledger fixtures the run sink's tests share with the root crate's tests, compiled here from
+/// the same file.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/ledger.rs"]
+mod ledger_fixtures;
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use rigger_process::{holders, reap};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/git.rs"]
@@ -107,6 +146,16 @@ mod ingest_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
 mod plan_critique_fixtures;
+/// THE READ FAULT fixture the run sink's test arms, compiled here from the same file as the
+/// grounder's and the root crate's tests.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/read_fault.rs"]
+mod read_fault_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
@@ -114,15 +163,33 @@ mod spawn_fixtures;
 // The config fixtures the conductor fixtures name through `super::`.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use config_fixtures::{agent, gate_def, gate_def_inputs};
+// The fixtures the ledger fixtures name through `super::`.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use {
+    event_fixtures::CountedRead, extraction_tree_fixtures::WALKED,
+    fold_fixtures::generation_ingested, git_fixtures::git_hash_object,
+};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::canary_fixtures::*;
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::event_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::extraction_tree_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
+    #[cfg(feature = "symbols")]
+    pub use crate::read_fault_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

@@ -10,13 +10,13 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 
 use super::query::name_suffix;
 use super::{
-    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, FoldAccess,
-    Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-    KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
-    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
-    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
+    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
+    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
+    KIND_STAGE, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS,
+    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
+    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
     REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
     TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
@@ -27,6 +27,7 @@ use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revis
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
 use crate::sqlite::open_connection;
+use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS nodes (
@@ -161,6 +162,12 @@ pub type RebuildSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 
 /// production.
 pub type RebuildSource<'s> = dyn FnMut(Position, &mut RebuildSink) -> Result<(), Error> + 's;
 
+/// Re-extracts the batch of a ledger entry of perception (spec 107): handed the entry's event, it
+/// answers the batch the entry's generation names, that no source resolves it, or an error, which
+/// fails the rebuild. What a [`Projector::rebuild`] folds each entry with, behind the ledger
+/// fold; `rigger setup` binds the one that reads the repository's object database and the tree.
+pub type Reextract<'s> = dyn FnMut(&Event) -> Result<Option<Vec<Event>>, Error> + 's;
+
 /// Hand `sink` the events of `log` - in position order - past position `after`, in batches of at
 /// most `batch`, each with the log's last position: the [`RebuildSource`] body for a log already
 /// read into memory.
@@ -235,19 +242,22 @@ pub struct RebuildProgress {
     pub folded: usize,
 }
 
-/// Why a rebuild of `graph.db`, or `rigger reset` removing a stale pruned copy, is refused at once:
-/// another rebuild holds the rebuild lock ([`Projector::lock_rebuild`]). The one spelling of that
-/// refusal, which `rigger setup` exits on and `rigger reset --runs` reports.
+/// Why a command that needs the rebuild lock ([`Projector::lock_rebuild`]) is refused at once:
+/// another holds it - a `rigger setup` rebuilding `graph.db`, a `rigger reset --runs` removing a
+/// stale pruned copy, or a `rigger reset --derived` compacting the log. The one spelling of that
+/// refusal, true of every holder, which `rigger setup` and `rigger reset --derived` exit on and
+/// `rigger reset --runs` reports.
 pub const REBUILD_IN_PROGRESS: &str =
-    "a rebuild of graph.db is in progress (a `rigger setup` holds graph.db.lock)";
+    "graph.db.lock is held by another `rigger setup` or `rigger reset`";
 
 /// The exclusion a [`Projector::rebuild`] of one graph file holds, from before it opens or creates
-/// its shadow until its tail is folded and its cursor dropped (spec 101): the OS advisory lock on
-/// the zero-byte `<path>.lock` beside the graph file - a file no rebuild removes, and one SQLite
-/// never opens, so no connection's own locks ride on it. Only its holder ever has a shadow open,
-/// so a shadow is removed only when no other connection holds it. The lock is released when this
-/// is dropped - explicitly, never by closing its descriptor alone ([`HeldLock`]) - and by the OS
-/// when its process ends however it ends, so an interrupted rebuild leaves no stale lock.
+/// its shadow until its tail is folded and its cursor dropped (spec 101), and that a `rigger reset`
+/// holds while it removes a stale pruned copy or compacts the log: the OS advisory lock on the
+/// zero-byte `<path>.lock` beside the graph file - a file no holder removes, and one SQLite never
+/// opens, so no connection's own locks ride on it. Only a rebuild holding it ever has a shadow
+/// open, so a shadow is removed only when no other connection holds it. The lock is released when
+/// this is dropped - explicitly, never by closing its descriptor alone ([`HeldLock`]) - and by the
+/// OS when its process ends however it ends, so an interrupted holder leaves no stale lock.
 #[derive(Debug)]
 pub struct RebuildLock {
     /// The graph file the rebuild is of.
@@ -270,7 +280,8 @@ pub enum StaleCopy {
     Absent,
     /// A stale copy stood there, and it is removed.
     Removed,
-    /// A copy stood there while a rebuild held the rebuild lock: that rebuild's own, kept.
+    /// A copy stood there while another held the rebuild lock - a rebuild, whose own copy it may
+    /// be, or a `rigger reset`: kept.
     InUse,
 }
 
@@ -374,9 +385,9 @@ impl Projector {
 
     /// Take the rebuild lock of the graph file at `path` (spec 101), never waiting: the OS advisory
     /// lock on the zero-byte `<path>.lock` beside it, created if absent and never removed. Refused at
-    /// once with the one text ([`REBUILD_IN_PROGRESS`]) while another holds it - whatever that
-    /// rebuild is doing, and whether or not it has written yet - touching nothing but the lock file
-    /// the holder made; any other failure names the lock file.
+    /// once with the one text ([`REBUILD_IN_PROGRESS`]) while another holds it - a rebuild, whatever
+    /// it is doing and whether or not it has written yet, or a `rigger reset` - touching nothing but
+    /// the lock file the holder made; any other failure names the lock file.
     pub fn lock_rebuild(path: &str) -> Result<RebuildLock, Error> {
         take_rebuild_lock(path)?.ok_or_else(|| Error(REBUILD_IN_PROGRESS.to_string()))
     }
@@ -392,7 +403,8 @@ impl Projector {
     /// put in place. The mark is dropped once the rebuilt file is in place.
     ///
     /// The rebuild folds `source` - the log's live selection, whose cost is bounded by the live
-    /// projection rather than the log's age - into a fresh SHADOW file beside the graph file, in the
+    /// projection rather than the log's age - each ledger entry of perception with the batch
+    /// `reextract` answers for it (see `fold_source`), into a fresh SHADOW file beside the graph file, in the
     /// batches `source` hands it, each committed with the last position it folded and the run
     /// attribution it gathered ([`REBUILD_STATE`]) and reported to `progress`; the live file is only
     /// ever read meanwhile. Once `source` is exhausted, a private copy of the shadow, pruned as
@@ -435,6 +447,7 @@ impl Projector {
         project: &str,
         owed: bool,
         source: &mut RebuildSource,
+        reextract: &mut Reextract,
         progress: &mut dyn FnMut(RebuildProgress),
     ) -> Result<Option<Rebuilt>, Error> {
         let path = held.path();
@@ -447,7 +460,7 @@ impl Projector {
             let mut shadow = open_shadow(&shadow_path)?;
             schema(&shadow, project)?;
             shadow.execute_batch(REBUILD_STATE).map_err(be)?;
-            passed_over += fold_source(&mut shadow, project, source, progress, true)?;
+            passed_over += fold_source(&mut shadow, project, source, reextract, progress, true)?;
             // The graph the live one would hold, never a larger one: the prune `rigger reset
             // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
             let copy = pruned_copy(path);
@@ -470,7 +483,7 @@ impl Projector {
         } else if !rebuild_tail_owed(&live)? {
             return Ok(None);
         }
-        passed_over += fold_source(&mut live, project, source, progress, false)?;
+        passed_over += fold_source(&mut live, project, source, reextract, progress, false)?;
         let pruned = live
             .query_row(
                 "SELECT pruned_nodes, reclaimed_edges FROM rebuild_cursor",
@@ -488,6 +501,25 @@ impl Projector {
             passed_over,
             pruned,
         }))
+    }
+
+    /// Whether a rebuild of the graph file `held` names was left unfinished (spec 107): the file
+    /// stands and has beside it the shadow a [`Projector::rebuild`] resumes, or holds the cursor
+    /// whose tail it finishes. False when no graph file stands, whatever stands beside where it
+    /// would be, and answered then, as over a standing shadow, without opening anything - so asking
+    /// never makes a graph file. It takes the held rebuild lock, so no caller asks while a rebuild
+    /// could be moving either sign. It writes no row, table or projection; a standing graph file
+    /// with no shadow beside it is opened through the one opener [`Projector::rebuild`] opens it
+    /// through, which checkpoints a write-ahead log a dead process left, as any open does.
+    pub fn rebuild_unfinished(held: &RebuildLock) -> Result<bool, Error> {
+        let path = held.path();
+        if !Path::new(path).exists() {
+            return Ok(false);
+        }
+        if Path::new(&shadow_of(path)).exists() {
+            return Ok(true);
+        }
+        rebuild_tail_owed(&open_connection(path).map_err(be)?)
     }
 
     /// Why this file says it owes its rebuild (spec 101), each cause it carries in order - it
@@ -557,12 +589,12 @@ impl Projector {
     }
 
     /// Remove the stale pruned copy ([`pruned_copy`]) of the graph file at `path` that a rebuild's
-    /// stopped swap left, and answer what it found ([`StaleCopy`]) - unless a rebuild holds the
-    /// rebuild lock, in which case the copy may be the one its live swap is using, so it is kept
-    /// and the rebuild in progress is answered. The lock ([`Projector::lock_rebuild`]) is taken
-    /// first, never waiting, and held while the copy is removed, so no copy a swap is using is ever
-    /// removed under it; with no copy nothing is taken and nothing is made. The shadow is never
-    /// read or removed here, since a rebuild resumes from it.
+    /// stopped swap left, and answer what it found ([`StaleCopy`]) - unless another holds the
+    /// rebuild lock, a rebuild or a `rigger reset`, in which case the copy may be the one a live
+    /// swap is using, so it is kept and that is answered. The lock ([`Projector::lock_rebuild`])
+    /// is taken first, never waiting, and held while the copy is removed, so no copy a swap is
+    /// using is ever removed under it; with no copy nothing is taken and nothing is made. The
+    /// shadow is never read or removed here, since a rebuild resumes from it.
     pub fn forget_stale_copy(path: &str) -> Result<StaleCopy, Error> {
         let copy = pruned_copy(path);
         if !Path::new(&copy).exists() {
@@ -574,12 +606,42 @@ impl Projector {
         }
     }
 
-    /// Fold `events` in ONE transaction, rolled back whole on any failure.
-    fn fold_batch(&self, events: &[Event]) -> Result<(), Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        fold_new(&tx, events, &self.project)?;
-        tx.commit().map_err(be)
+    /// Run `body` in ONE transaction on this file's connection, held under its lock for the
+    /// whole of it ([`in_transaction`]): the one lock -> transaction -> body -> commit frame,
+    /// taken by each method that writes in a transaction. The lock is released when this returns.
+    fn transact<T>(&self, body: impl FnOnce(&Transaction) -> Result<T, Error>) -> Result<T, Error> {
+        in_transaction(&mut self.conn.lock().unwrap(), body)
+    }
+
+    /// Run `fold` under the two guards every fold into this file keeps. It refuses before
+    /// folding when the file owes its rebuild ([`REBUILD_OWED`]). And a fold that fails into a
+    /// file that owed nothing leaves that file behind the log for good - nothing folds a position
+    /// twice - and its positions missing from the `applied` ledger are that debt, which the next
+    /// `rigger setup` reads against the log and pays ([`Projector::owed_against`]). The failure
+    /// also marks the file ([`owed_mark`]), so from then on it refuses every fold and every
+    /// answer that depends on the fold with [`REBUILD_OWED`] without reading the log; a mark that
+    /// cannot be written is named beside the fold's error and nothing else is recorded - the
+    /// ledger still carries the debt. Either way the error ends by naming the one command that
+    /// pays it, so every surface that reports the lost fold says who does.
+    fn guarded<T>(&self, fold: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+        if self.rebuild_owed()? {
+            return Err(Error(REBUILD_OWED.to_string()));
+        }
+        let lost = match fold() {
+            Err(lost) => lost,
+            folded => return folded,
+        };
+        let unmarked = match self.mark_lost_fold() {
+            Ok(()) => String::new(),
+            Err(unmarked) => {
+                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
+            }
+        };
+        Err(Error(format!(
+            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
+             rebuilds it",
+            lost.0
+        )))
     }
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
@@ -656,11 +718,7 @@ impl Projector {
         node_ids: &[String],
         superseded_before: Option<i64>,
     ) -> Result<PruneStats, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        let stats = prune_in(&tx, &self.project, node_ids, superseded_before)?;
-        tx.commit().map_err(be)?;
-        Ok(stats)
+        self.transact(|tx| prune_in(tx, &self.project, node_ids, superseded_before))
     }
 
     /// A read-only PREVIEW of what [`prune`] would remove (spec 68, "the reset surface"): the
@@ -779,23 +837,20 @@ impl Projector {
     /// never collides. A no-op returning 0 when nothing is tagged `from`, so a re-open after the
     /// migration re-keys nothing (idempotent, mirroring `rename_stream_prefix`).
     pub fn migrate_project(&self, from: &str, to: &str) -> Result<usize, Error> {
-        let mut guard = self.conn.lock().unwrap();
-        let tx = guard.transaction().map_err(be)?;
-        // Edges and nodes re-key in the same transaction so a crash never leaves an edge under
-        // the old scope while its endpoint node moved (or the reverse) on a shared backend.
-        tx.execute(
-            "UPDATE edges SET project = ?2 WHERE project = ?1",
-            params![from, to],
-        )
-        .map_err(be)?;
-        let moved = tx
-            .execute(
-                "UPDATE nodes SET project = ?2 WHERE project = ?1",
+        self.transact(|tx| {
+            // Edges and nodes re-key in the same transaction so a crash never leaves an edge under
+            // the old scope while its endpoint node moved (or the reverse) on a shared backend.
+            tx.execute(
+                "UPDATE edges SET project = ?2 WHERE project = ?1",
                 params![from, to],
             )
             .map_err(be)?;
-        tx.commit().map_err(be)?;
-        Ok(moved)
+            tx.execute(
+                "UPDATE nodes SET project = ?2 WHERE project = ?1",
+                params![from, to],
+            )
+            .map_err(be)
+        })
     }
 
     /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
@@ -1201,6 +1256,20 @@ fn prune_in(
     })
 }
 
+/// Run `body` in ONE transaction on `conn` and commit it: the one DEFERRED transaction -> body ->
+/// commit frame of this file; [`open_current`] keeps its own immediate transaction on the shared
+/// connection it is handed. A `body` that fails, or a commit that does, leaves nothing written -
+/// the transaction rolls back whole as it drops.
+fn in_transaction<T>(
+    conn: &mut Connection,
+    body: impl FnOnce(&Transaction) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let tx = conn.transaction().map_err(be)?;
+    let answer = body(&tx)?;
+    tx.commit().map_err(be)?;
+    Ok(answer)
+}
+
 /// Apply to the pruned copy behind `conn` the run-closure prune `rigger reset --runs` applies
 /// (spec 21, spec 101): the drop set and the superseded-edge boundary derived, through the one
 /// rule ([`rigger_domain::run::superseded_graph_nodes`], [`rigger_domain::run::superseded_edge_boundary`]),
@@ -1210,33 +1279,34 @@ fn prune_in(
 /// however many passes the rebuild took, and what it removed is stamped, in its transaction, as
 /// the counts the rebuild state records - the cold rebuild's counts, never a sum.
 fn prune_run_closure(conn: &mut Connection, project: &str) -> Result<(), Error> {
-    let tx = conn.transaction().map_err(be)?;
-    let gathered = tx
-        .prepare(
-            "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
+    in_transaction(conn, |tx| {
+        let gathered = tx
+            .prepare(
+                "SELECT position, type, data, valid_from FROM rebuild_run_closure ORDER BY position",
+            )
+            .map_err(be)?
+            .query_map([], |r| {
+                let mut e = Event::new(&r.get::<_, String>(1)?, r.get(2)?);
+                e.position = r.get::<_, i64>(0)? as Position;
+                e.valid_from = from_nanos(r.get(3)?);
+                Ok(e)
+            })
+            .map_err(be)?
+            .collect::<Result<Vec<Event>, _>>()
+            .map_err(be)?;
+        let pruned = prune_in(
+            tx,
+            project,
+            &rigger_domain::run::superseded_graph_nodes(&gathered),
+            rigger_domain::run::superseded_edge_boundary(&gathered),
+        )?;
+        tx.execute(
+            "UPDATE rebuild_cursor SET pruned_nodes = ?1, reclaimed_edges = ?2",
+            params![pruned.nodes as i64, pruned.superseded_edges as i64],
         )
-        .map_err(be)?
-        .query_map([], |r| {
-            let mut e = Event::new(&r.get::<_, String>(1)?, r.get(2)?);
-            e.position = r.get::<_, i64>(0)? as Position;
-            e.valid_from = from_nanos(r.get(3)?);
-            Ok(e)
-        })
-        .map_err(be)?
-        .collect::<Result<Vec<Event>, _>>()
         .map_err(be)?;
-    let pruned = prune_in(
-        &tx,
-        project,
-        &rigger_domain::run::superseded_graph_nodes(&gathered),
-        rigger_domain::run::superseded_edge_boundary(&gathered),
-    )?;
-    tx.execute(
-        "UPDATE rebuild_cursor SET pruned_nodes = ?1, reclaimed_edges = ?2",
-        params![pruned.nodes as i64, pruned.superseded_edges as i64],
-    )
-    .map_err(be)?;
-    tx.commit().map_err(be)
+        Ok(())
+    })
 }
 
 /// The private copy a [`Projector::rebuild`] of the graph file at `path` prunes and swaps in: it
@@ -1325,14 +1395,19 @@ fn remove_shadow(shadow: Connection, path: &str) -> Result<(), Error> {
 /// Fold what `source` hands after the cursor of `conn`'s [`REBUILD_STATE`], one committed transaction per
 /// batch that also records the batch's last position as the cursor, reporting each to
 /// `progress`, and answer how many events it passed over. Each event folds exactly as
-/// [`Projection::apply`] folds it and one at a time, so an event whose payload the fold rejects
-/// ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is passed over and
-/// the rest still fold: where the live fold rolls its whole batch back and marks the file owed, the
-/// rebuild is what pays that debt, so its position is recorded in the `applied` ledger all the
-/// same, and the rebuilt file does not miss it and the next `rigger setup` does not rebuild for it
-/// again. Any other failure is the store's, not the payload's: it propagates with the batch rolled
-/// back, so nothing records the event folded and the next rebuild resumes from the cursor and
-/// folds it. One the file already folded is passed over by the fold's per-position guard.
+/// [`Projection::apply`] folds it and one at a time - but a ledger entry of perception, which
+/// that fold refuses: it folds as [`Projection::apply_generation`] folds it ([`fold_entry`]), with
+/// the batch `reextract` answers for it, under the same savepoint. So an event whose payload the
+/// fold rejects ([`super::check_fold_payload`] - deterministic, so no fold will ever hold it) is
+/// passed over and the rest still fold: where the live fold rolls its whole batch back and marks
+/// the file owed, the rebuild is what pays that debt, so its position is recorded in the `applied`
+/// ledger all the same, and the rebuilt file does not miss it and the next `rigger setup` does not
+/// rebuild for it again. Any other failure is the store's, not the payload's: it propagates with
+/// the batch rolled back, so nothing records the event folded and the next rebuild resumes from
+/// the cursor and folds it. That is every failure of an entry whose own payload parses - a
+/// `reextract` that fails, and a re-extracted batch event the fold rejects, which is this binary's
+/// own extraction and never a payload to pass over. One the file already folded is passed over by
+/// the fold's per-position guard.
 ///
 /// A shadow fold (`gather_run_closure`) also keeps, in the same transaction, every event of the
 /// [`rigger_domain::run::RUN_CLOSURE_TYPES`] it passes ([`REBUILD_STATE`]), whatever became
@@ -1341,6 +1416,7 @@ fn fold_source(
     conn: &mut Connection,
     project: &str,
     source: &mut RebuildSource,
+    reextract: &mut Reextract,
     progress: &mut dyn FnMut(RebuildProgress),
     gather_run_closure: bool,
 ) -> Result<usize, Error> {
@@ -1348,33 +1424,39 @@ fn fold_source(
     let mut folded = 0;
     let mut passed_over = 0;
     source(start, &mut |events, head| {
-        let tx = conn.transaction().map_err(be)?;
-        for e in events {
-            tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
-            if let Err(failed) = fold_new(&tx, std::slice::from_ref(e), project) {
-                if super::check_fold_payload(&e.type_, &e.data).is_ok() {
-                    return Err(failed);
+        let through = in_transaction(conn, |tx| {
+            for e in events {
+                tx.execute_batch("SAVEPOINT fold_event").map_err(be)?;
+                let folded = if e.type_ == TYPE_GENERATION_INGESTED {
+                    fold_entry(tx, e, project, || reextract(e)).map(drop)
+                } else {
+                    fold_new(tx, std::slice::from_ref(e), project)
+                };
+                if let Err(failed) = folded {
+                    if super::check_fold_payload(&e.type_, &e.data).is_ok() {
+                        return Err(failed);
+                    }
+                    tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
+                    record_applied(tx, e.position)?;
+                    passed_over += 1;
                 }
-                tx.execute_batch("ROLLBACK TO fold_event").map_err(be)?;
-                record_applied(&tx, e.position)?;
-                passed_over += 1;
+                tx.execute_batch("RELEASE fold_event").map_err(be)?;
+                if gather_run_closure
+                    && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
+                {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
+                    )
+                    .map_err(be)?;
+                }
             }
-            tx.execute_batch("RELEASE fold_event").map_err(be)?;
-            if gather_run_closure
-                && rigger_domain::run::RUN_CLOSURE_TYPES.contains(&e.type_.as_str())
-            {
-                tx.execute(
-                    "INSERT OR IGNORE INTO rebuild_run_closure (position, type, data, valid_from)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![e.position as i64, e.type_, e.data, to_nanos(e.valid_from)],
-                )
+            let through = events.last().map_or(start, |e| e.position);
+            tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
                 .map_err(be)?;
-            }
-        }
-        let through = events.last().map_or(start, |e| e.position);
-        tx.execute("UPDATE rebuild_cursor SET position = ?1", [through as i64])
-            .map_err(be)?;
-        tx.commit().map_err(be)?;
+            Ok(through)
+        })?;
         folded += events.len();
         progress(RebuildProgress {
             start,
@@ -1605,34 +1687,25 @@ impl Projection for Projector {
     /// CADENCE only, never the graph. Atomic: a fold error rolls the whole batch back (the events are
     /// still durable in the log, and the sink folds best-effort), never a half-applied batch.
     ///
-    /// A batch that fails to fold into a file that owed nothing leaves that file behind the log
-    /// for good - nothing folds a position twice - and its positions missing from the `applied`
-    /// ledger are that debt, which the next `rigger setup` reads against the log and pays
-    /// ([`Projector::owed_against`]). The failure also marks the file ([`owed_mark`]), so from
-    /// then on it refuses every fold and every answer that depends on the fold with
-    /// [`REBUILD_OWED`] without reading the log; a mark that cannot be written is named beside the
-    /// fold's error and nothing else is recorded - the ledger still carries the debt. Either way the
-    /// error ends by naming the one command that pays it, so every surface that reports the lost
-    /// fold says who does.
+    /// It folds under the two guards of [`Projector::guarded`]: refused on a file that owes its
+    /// rebuild, and a batch that fails to fold marks the file owed.
     fn apply_batch(&self, events: &[Event], _access: FoldAccess) -> Result<(), Error> {
-        if self.rebuild_owed()? {
-            return Err(Error(REBUILD_OWED.to_string()));
-        }
-        let lost = match self.fold_batch(events) {
-            Err(lost) => lost,
-            folded => return folded,
-        };
-        let unmarked = match self.mark_lost_fold() {
-            Ok(()) => String::new(),
-            Err(unmarked) => {
-                format!("; the mark that graph.db owes its rebuild was not written ({unmarked})")
-            }
-        };
-        Err(Error(format!(
-            "{}{unmarked} - the next `rigger setup` finds the event missing from graph.db and \
-             rebuilds it",
-            lost.0
-        )))
+        self.guarded(|| self.transact(|tx| fold_new(tx, events, &self.project)))
+    }
+
+    /// Fold `entry` with its batch in ONE transaction ([`fold_entry`]), under the same two guards
+    /// as every other fold into this file ([`Projector::guarded`]): refused before folding, its
+    /// batch never asked for, on a file that owes its rebuild, and a fold that fails - an entry
+    /// whose payload does not parse, a batch function that fails, a batch event the fold rejects
+    /// - rolls back whole, its `applied` row included, and marks the file owed.
+    fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
+        self.guarded(|| self.transact(|tx| fold_entry(tx, entry, &self.project, batch)))
+    }
+
+    /// A plain read of the `generations` table ([`current_generation`]): it consults no owed
+    /// mark, so it answers on a file that owes its rebuild.
+    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
+        current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
 
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
@@ -1779,7 +1852,8 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
 }
 
 /// Who asserts the facts one event folds: the `<prefix>/<file>` identity and content generation
-/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]), or, for every other event, the log
+/// of a derived-index event ([`rigger_domain::ingest::derived_generation`]) or of the ledger
+/// entry whose batch the event belongs to ([`fold_entry`]), or, for every other event, the log
 /// itself - an assertion no later generation can retract (both fields empty).
 struct Asserter<'e> {
     identity: &'e str,
@@ -1801,11 +1875,19 @@ impl<'e> Asserter<'e> {
 }
 
 /// Fold every event of `events` whose position has not folded yet, in order - the one
-/// per-position idempotency guard (`applied`) every fold path shares.
+/// per-position idempotency guard (`applied`) every fold path shares. A ledger entry of
+/// perception is refused, whatever its position and before anything is written for it: it folds
+/// only with its batch ([`fold_entry`]).
 fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<(), Error> {
     for e in events {
+        if e.type_ == TYPE_GENERATION_INGESTED {
+            return Err(Error(format!(
+                "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
+                 `Projection::apply_generation`"
+            )));
+        }
         if record_applied(tx, e.position)? {
-            fold(tx, e, project)?;
+            fold(tx, e, project, &Asserter::of(e))?;
         }
     }
     relabel_owed_communities(tx)
@@ -1821,20 +1903,75 @@ fn record_applied(tx: &Transaction, position: Position) -> Result<bool, Error> {
     .map_err(be)
 }
 
-/// Fold one event under the GENERATION RULE (spec 101, [`rigger_domain::ingest::derived_generation`]): when the
-/// event opens a newer generation of its identity, the prior generation's design links are
-/// retired BEFORE it folds (each one the newer generation asserts again is revived in place by
-/// [`assert_link`]), and every node the prior generation asserted that nothing live still holds is
-/// retired AFTER it folds ([`retire_unheld_nodes`]) - after, because the event's own arm is what
-/// retires the code half's prior edges (its `fresh` head) and re-asserts the nodes it keeps.
-fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
-    let by = Asserter::of(e);
-    let prior = advance_generation(tx, &by, project)?;
-    fold_event(tx, e, project, &by)?;
+/// Fold the ledger entry `entry` with its batch, in the caller's transaction, and answer which of
+/// the three outcomes happened. It begins, as [`fold_new`] does, with the entry's `applied` row,
+/// so everything after it is read under the write lock: a position already there folds nothing.
+/// An entry naming the generation its identity holds is a re-recording and writes that row alone.
+/// Any other asks `batch` for the entry's batch, once, and folds each event of it through
+/// [`fold`] at the entry's position and valid-time - which [`fold_event`] reads for every edge it
+/// adds - under the ENTRY's identity and generation, never a key the event carries. The first
+/// event folded installs the generation ([`advance_generation`]), so an entry no source resolves
+/// installs none and leaves the identity's facts as they stood. Every community the batch owed a
+/// relabel is labelled before this returns ([`relabel_owed_communities`]). The `applied` row
+/// cannot guard the batch's events, which share the entry's position.
+fn fold_entry(
+    tx: &Transaction,
+    entry: &Event,
+    project: &str,
+    batch: impl FnOnce() -> Result<Option<Vec<Event>>, Error>,
+) -> Result<EntryFold, Error> {
+    if !record_applied(tx, entry.position)? {
+        return Ok(EntryFold::AlreadyApplied);
+    }
+    let named = GenerationIngested::parse(&entry.data).map_err(Error)?;
+    let identity = named.identity();
+    if current_generation(tx, project, &identity)?.as_deref() == Some(named.generation.as_str()) {
+        return Ok(EntryFold::ReRecording);
+    }
+    let by = Asserter {
+        identity: &identity,
+        generation: &named.generation,
+        at: to_nanos(entry.valid_from),
+    };
+    for mut e in batch()?.unwrap_or_default() {
+        e.position = entry.position;
+        e.valid_from = entry.valid_from;
+        fold(tx, &e, project, &by)?;
+    }
+    relabel_owed_communities(tx)?;
+    Ok(EntryFold::BatchAsked)
+}
+
+/// Fold one event, asserted by `by` ([`Asserter`]), under the GENERATION RULE (spec 101,
+/// [`rigger_domain::ingest::derived_generation`]): when the event opens a newer generation of its
+/// identity, the prior generation's design links are retired BEFORE it folds (each one the newer
+/// generation asserts again is revived in place by [`assert_link`]), and every node the prior
+/// generation asserted that nothing live still holds is retired AFTER it folds
+/// ([`retire_unheld_nodes`]) - after, because the event's own arm is what retires the code half's
+/// prior edges (its `fresh` head) and re-asserts the nodes it keeps.
+fn fold(tx: &Transaction, e: &Event, project: &str, by: &Asserter) -> Result<(), Error> {
+    let prior = advance_generation(tx, by, project)?;
+    fold_event(tx, e, project, by)?;
     match prior {
-        Some(prior) => retire_unheld_nodes(tx, &by, &prior, project),
+        Some(prior) => retire_unheld_nodes(tx, by, &prior, project),
         None => Ok(()),
     }
+}
+
+/// The generation the file behind `conn` currently holds for `identity` in `project`, or `None`
+/// when it holds none.
+fn current_generation(
+    conn: &Connection,
+    project: &str,
+    identity: &str,
+) -> Result<Option<String>, Error> {
+    conn.query_row(
+        "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
+        params![project, identity],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(be)
 }
 
 /// Record `by`'s generation as its identity's current one, answering the PRIOR generation when
@@ -1852,15 +1989,7 @@ fn advance_generation(
     if by.identity.is_empty() {
         return Ok(None);
     }
-    let current: Option<String> = tx
-        .query_row(
-            "SELECT generation FROM generations WHERE project = ?1 AND identity = ?2",
-            params![project, by.identity],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(be)?;
-    let Some(prior) = current else {
+    let Some(prior) = current_generation(tx, project, by.identity)? else {
         tx.execute(
             "INSERT INTO generations (project, identity, generation) VALUES (?1, ?2, ?3)",
             params![project, by.identity, by.generation],
@@ -4320,6 +4449,7 @@ mod tests {
             "test",
             false,
             &mut |_, _| panic!("a paid rebuild reads nothing"),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -4342,7 +4472,7 @@ mod tests {
         e
     }
 
-    /// The rebuild lock of the graph file at `path`, which no other rebuild holds.
+    /// The rebuild lock of the graph file at `path`, which no other holder has.
     fn locked(path: &str) -> RebuildLock {
         Projector::lock_rebuild(path).unwrap()
     }
@@ -4363,6 +4493,7 @@ mod tests {
                 reads_from.push(after);
                 stream_past(log, after, batch, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
     }
@@ -4443,6 +4574,7 @@ mod tests {
                 let log: &[Event] = if reads == 1 { &before } else { &gained };
                 stream_past(log, after, 10, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -4544,6 +4676,7 @@ mod tests {
             "test",
             owed,
             &mut |after, sink| stream_past(log, after, 10, sink),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap()
@@ -4635,6 +4768,7 @@ mod tests {
                 let first = stream_past(&log, after, 2, sink);
                 first.and(Err(Error("interrupted after the first batch".to_string())))
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         );
         assert!(interrupted.is_err(), "the first rebuild is interrupted");
@@ -4758,6 +4892,7 @@ mod tests {
                         sink(events, head)
                     })
                 },
+                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .unwrap();
@@ -4920,6 +5055,7 @@ mod tests {
                         _ => Err(Error("interrupted in its tail".to_string())),
                     }
                 },
+                &mut |_| Ok(None),
                 &mut |_| {},
             )
             .map_err(|e| e.to_string());
@@ -4942,6 +5078,7 @@ mod tests {
                     sink(events, head)
                 })
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -5016,6 +5153,7 @@ mod tests {
                     sink(events, head)
                 })
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         );
         let shadow = format!("{path}.rebuild");
@@ -5163,6 +5301,7 @@ mod tests {
                 }
                 stream_past(&log, after, 10, sink)
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .map_err(|e| e.to_string());
@@ -5171,6 +5310,7 @@ mod tests {
             "test",
             false,
             &mut |after, sink| stream_past(&log, after, 10, sink),
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .unwrap();
@@ -5448,10 +5588,10 @@ mod tests {
         );
     }
 
-    /// A stale pruned copy is forgotten - removed, answering that it was - whenever no rebuild holds
-    /// the rebuild lock, whatever stands beside it; while a rebuild holds the lock the copy is that
-    /// rebuild's own and is kept, answering so; with no copy nothing is removed and no lock file is
-    /// made. The shadow beside it is never removed or rewritten here.
+    /// A stale pruned copy is forgotten - removed, answering that it was - whenever no one holds
+    /// the rebuild lock, whatever stands beside it; while another holds the lock the copy may be
+    /// a rebuild's own and is kept, answering so; with no copy nothing is removed and no lock file
+    /// is made. The shadow beside it is never removed or rewritten here.
     #[test]
     fn a_stale_pruned_copy_is_forgotten_unless_a_rebuild_holds_the_lock() {
         let dir = tempfile::tempdir().unwrap();
@@ -5489,8 +5629,74 @@ mod tests {
                 (StaleCopy::Removed, false),
                 b"the shadow the rebuild folds".to_vec()
             ),
-            "a copy no rebuild holds the lock for is removed, one a rebuild holds it for is kept, \
+            "a copy stood beside a free lock is removed, one beside a held lock is kept, \
              and the shadow stays as it was"
+        );
+    }
+
+    /// A rebuild is left unfinished over a graph file that stands with the shadow a rebuild resumes
+    /// beside it, or that holds the cursor whose tail a rebuild finishes - and over no other: not
+    /// one that stands with neither, nor once the cursor is dropped, and never where no graph file
+    /// stands, shadow or not, which is answered without making one. The shadow is never opened: it
+    /// is not a database here, and stands byte for byte.
+    #[test]
+    fn a_rebuild_is_unfinished_over_a_standing_shadow_or_a_held_cursor_and_never_without_a_graph_file(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let shadow = dir.path().join("graph.db.rebuild");
+        let left = b"left by a rebuild that stopped";
+        let held = locked(path);
+        let lock_only = dir_snapshot(dir.path(), "");
+        // What is answered, and what stands beside the lock once it is.
+        let unfinished = || {
+            (
+                Projector::rebuild_unfinished(&held).map_err(|e| e.to_string()),
+                dir_snapshot(dir.path(), ""),
+            )
+        };
+
+        let no_graph_file = unfinished();
+        std::fs::write(&shadow, left).unwrap();
+        let a_shadow_beside_no_graph_file = unfinished();
+        std::fs::remove_file(&shadow).unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let neither = unfinished().0;
+        std::fs::write(&shadow, left).unwrap();
+        let a_standing_shadow = (unfinished().0, std::fs::read(&shadow).unwrap());
+        std::fs::remove_file(&shadow).unwrap();
+        let graph = Connection::open(path).unwrap();
+        graph.execute_batch(REBUILD_STATE).unwrap();
+        let the_cursor = unfinished().0;
+        graph.execute_batch(DROP_REBUILD_STATE).unwrap();
+        let the_cursor_dropped = unfinished().0;
+        assert_eq!(
+            (
+                no_graph_file,
+                a_shadow_beside_no_graph_file,
+                neither,
+                a_standing_shadow,
+                the_cursor,
+                the_cursor_dropped
+            ),
+            (
+                (Ok(false), lock_only.clone()),
+                (
+                    Ok(false),
+                    vec![
+                        ("graph.db.lock".to_string(), Some(vec![])),
+                        ("graph.db.rebuild".to_string(), Some(left.to_vec())),
+                    ]
+                ),
+                Ok(false),
+                (Ok(true), left.to_vec()),
+                Ok(true),
+                Ok(false)
+            ),
+            "only a graph file that stands beside a shadow, or holds the cursor, has a rebuild \
+             left unfinished, and asking makes no graph file; beside the lock alone stood \
+             {lock_only:?}"
         );
     }
 
@@ -5664,6 +5870,7 @@ mod tests {
                 while_it_rebuilds.push(second());
                 Ok(())
             },
+            &mut |_| Ok(None),
             &mut |_| {},
         )
         .map_err(|e| e.to_string());
@@ -5730,7 +5937,7 @@ mod tests {
     }
 
     /// Forgetting a stale copy never reads the shadow beside it: beside a shadow that is not a
-    /// database, the copy no rebuild holds the lock for is removed, and the shadow stands byte for
+    /// database, the copy beside a free lock is removed, and the shadow stands byte for
     /// byte.
     #[test]
     fn forgetting_a_stale_copy_never_reads_the_shadow_beside_it() {
@@ -7405,6 +7612,86 @@ mod tests {
             .unwrap()
             .collect::<Result<C, _>>()
             .unwrap()
+    }
+
+    /// Every row of every table but the `applied` ledger, straight off the projector's own
+    /// connection, as `<table>: <columns>`, sorted, so two dumps compare whatever order a table
+    /// hands its rows in.
+    fn projection_but_applied(p: &Projector) -> Vec<String> {
+        let tables: Vec<String> = raw_rows(
+            p,
+            "SELECT name FROM sqlite_master
+              WHERE type = 'table' AND name != 'applied' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        );
+        let mut rows: Vec<String> = Vec::new();
+        for table in tables {
+            let found: Vec<String> = raw_rows(p, &format!("SELECT * FROM {table}"), [], |r| {
+                let width = r.as_ref().column_count();
+                Ok((0..width)
+                    .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join(" | "))
+            });
+            rows.extend(found.into_iter().map(|row| format!("{table}: {row}")));
+        }
+        rows.sort();
+        rows
+    }
+
+    #[test]
+    fn folding_each_episodic_type_writes_its_applied_row_and_leaves_the_projection_unchanged() {
+        // Spec 107, criterion 1 (THE CLASSES ARE ONE TABLE): an episodic type is one whose fold
+        // changes neither the live projection nor the fold state, `FileTouched` and `GateVerdict`
+        // through their no-op arms and the rest through none. Over a seeded graph, folding one
+        // event of each type of `retention::EPISODIC_TYPES`, its payload naming a seeded file,
+        // leaves every table but `applied` row for row as it stood and adds exactly its own
+        // position to `applied`.
+        let p = Projector::open(":memory:", "test").unwrap();
+        let mut pos = crate::test_support::seed_two_subsystems(&p);
+        apply_decision(&p, pos, "d1", "keep", &["src/combat/hit.rs"], "");
+        let seeded = projection_but_applied(&p);
+        for table in ["nodes: ", "edges: ", "node_assertions: "] {
+            assert!(
+                seeded.iter().any(|row| row.starts_with(table)),
+                "the seeded projection holds rows of {table}so an unchanged dump proves something"
+            );
+        }
+        for type_ in rigger_domain::retention::EPISODIC_TYPES {
+            pos += 1;
+            let mut applied: Vec<i64> = raw_rows(
+                &p,
+                "SELECT position FROM applied ORDER BY position",
+                [],
+                |r| r.get(0),
+            );
+            apply_json(
+                &p,
+                pos,
+                type_,
+                serde_json::json!({
+                    "id": "e1", "unit": "u1", "by": "rust-engineer", "path": "src/combat/hit.rs",
+                    "gate": "cargo test", "pass": true, "artifact": "src/combat/hit.rs",
+                }),
+            );
+            assert_eq!(
+                projection_but_applied(&p),
+                seeded,
+                "folding {type_} changes no table but applied"
+            );
+            applied.push(i64::try_from(pos).unwrap());
+            let after: Vec<i64> = raw_rows(
+                &p,
+                "SELECT position FROM applied ORDER BY position",
+                [],
+                |r| r.get(0),
+            );
+            assert_eq!(
+                after, applied,
+                "folding {type_} adds exactly its own applied row"
+            );
+        }
     }
 
     #[test]
@@ -11432,6 +11719,625 @@ mod tests {
                 alpha.attrs
             );
             assert_eq!(alpha.attrs.get("line").map(String::as_str), Some("2"));
+        }
+
+        /// Spec 107, THE ENTRY AND ITS BATCH FOLD AS ONE: a `GenerationIngested` ledger entry
+        /// folds only through `Projection::apply_generation`, with the batch its `batch` function
+        /// answers, at the entry's position and valid-time and under the entry's identity and
+        /// generation. Every entry is built by the one constructor and no sink is involved.
+        mod ledger_entries {
+            use super::*;
+            use crate::contextgraph::{wired, EntryFold, Fold};
+            use crate::test_support::event_of;
+            use rigger_domain::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
+            use std::cell::Cell;
+
+            /// The tail every lost fold's error ends with.
+            const SETUP_PAYS: &str =
+                " - the next `rigger setup` finds the event missing from graph.db and rebuilds it";
+
+            /// What the generic fold answers a ledger entry.
+            const ENTRY_REFUSED: &str = "a GenerationIngested entry folds only with its batch, \
+                                         through `Projection::apply_generation`";
+
+            /// The hand-built entry of `<prefix>/<file>` at `generation`, at log position `pos`,
+            /// valid from `secs` past the epoch.
+            fn entry(prefix: &str, file: &str, generation: &str, pos: u64, secs: u64) -> Event {
+                let named = GenerationIngested {
+                    prefix: prefix.to_string(),
+                    file: file.to_string(),
+                    generation: generation.to_string(),
+                    blob: String::new(),
+                    excluded: false,
+                };
+                let mut e = named
+                    .event(1)
+                    .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs));
+                e.position = pos;
+                e
+            }
+
+            /// Fold `entry` into `p` with a batch function that answers `batch` and counts each
+            /// call of it in `asked`, answering the outcome or the error's text.
+            fn apply_entry(
+                p: &Projector,
+                entry: &Event,
+                batch: Result<Option<Vec<Event>>, Error>,
+                asked: &Cell<u32>,
+            ) -> Result<EntryFold, String> {
+                p.apply_generation(
+                    entry,
+                    Box::new(move || {
+                        asked.set(asked.get() + 1);
+                        batch
+                    }),
+                )
+                .map_err(|e| e.0)
+            }
+
+            /// One unkeyed definition of `src/f.rs`, as a batch event.
+            fn def_event(name: &str, line: u64, fresh: bool) -> Event {
+                event_of(TYPE_CODE_ENTITY_EXTRACTED, def(name, line, fresh))
+            }
+
+            /// One unkeyed `SPECIFIES` link from [`F`] to `to`, as a batch event.
+            fn link_event(to: &str) -> Event {
+                event_of(
+                    TYPE_DOC_LINK_EXTRACTED,
+                    serde_json::json!({ "from": F, "to": to, "rel": REL_SPECIFIES }),
+                )
+            }
+
+            /// Every position `p`'s `applied` ledger holds, in order.
+            fn applied_positions(p: &Projector) -> Vec<i64> {
+                raw_rows(
+                    p,
+                    "SELECT position FROM applied ORDER BY position",
+                    [],
+                    |r| r.get(0),
+                )
+            }
+
+            /// Every distinct `(identity, generation)` pair in `p`'s `table`, in order: the
+            /// generations it holds (`generations`) or made its node assertions under
+            /// (`node_assertions`).
+            fn identity_generations(p: &Projector, table: &str) -> Vec<(String, String)> {
+                raw_rows(
+                    p,
+                    &format!(
+                        "SELECT DISTINCT identity, generation FROM {table}
+                          ORDER BY identity, generation"
+                    ),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            }
+
+            /// The `label` attribute of the community node `community` in `p`.
+            fn label(p: &Projector, community: &str) -> Option<String> {
+                p.whole()
+                    .unwrap()
+                    .nodes
+                    .into_iter()
+                    .find(|n| n.id == community)
+                    .and_then(|n| n.attrs.get("label").cloned())
+            }
+
+            /// A fresh file-backed graph, with the directory that keeps it and its owed mark's path.
+            fn graph_file() -> (tempfile::TempDir, Projector, PathBuf) {
+                let dir = tempfile::tempdir().unwrap();
+                let p =
+                    Projector::open(dir.path().join("graph.db").to_str().unwrap(), "test").unwrap();
+                let mark = dir.path().join("graph.db.owed");
+                (dir, p, mark)
+            }
+
+            /// `p` holding generation `h1` of `gc/src/f.rs`, folded from the entry at position 7
+            /// valid from 10s: the definitions `alpha` and `gone`.
+            fn holding_h1(p: &Projector) {
+                let asked = Cell::new(0);
+                let batch = vec![def_event("alpha", 1, true), def_event("gone", 9, false)];
+                assert_eq!(
+                    apply_entry(
+                        p,
+                        &entry("gc", "src/f.rs", "h1", 7, 10),
+                        Ok(Some(batch)),
+                        &asked
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+            }
+
+            #[test]
+            fn the_entry_builder_stamps_the_identity_as_group_and_the_generation_key() {
+                let named = GenerationIngested {
+                    prefix: "gd".to_string(),
+                    file: "docs/f.md".to_string(),
+                    generation: "h1".to_string(),
+                    blob: "b10b".to_string(),
+                    excluded: true,
+                };
+                let e = named.event(3);
+                assert_eq!(e.type_, TYPE_GENERATION_INGESTED);
+                assert_eq!(
+                    e.meta
+                        .get(crate::eventstore::META_GROUP)
+                        .map(String::as_str),
+                    Some("gd/docs/f.md")
+                );
+                assert_eq!(
+                    e.meta
+                        .get(rigger_domain::ingest::META_REPLAY_KEY)
+                        .map(String::as_str),
+                    Some("gd/docs/f.md@h1#3")
+                );
+                assert_eq!(GenerationIngested::parse(&e.data), Ok(named));
+            }
+
+            #[test]
+            fn a_resolved_entry_folds_its_batch_at_the_entrys_position_and_installs_its_generation()
+            {
+                let p = Projector::open(":memory:", "test").unwrap();
+                assert_eq!(p.current_generation("gc/src/f.rs").unwrap(), None);
+                // The second batch event carries a replay key naming another identity, and its own
+                // position and valid-time: the fold reads none of the three.
+                let mut stray = def_event("gone", 9, false)
+                    .with_meta(
+                        rigger_domain::ingest::META_REPLAY_KEY,
+                        "gc/src/other.rs@zz#0",
+                    )
+                    .with_valid_from(UNIX_EPOCH + Duration::from_secs(99));
+                stray.position = 42;
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h1", 7, 10),
+                        Ok(Some(vec![def_event("alpha", 1, true), stray])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![
+                        edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 10, 7),
+                        edge("src/f.rs", "src/f.rs::gone", REL_CONTAINS, 10, 7),
+                    ],
+                    "every batch event folds at the entry's position and valid-time"
+                );
+                assert_eq!(
+                    node_ids(&p),
+                    vec!["src/f.rs", "src/f.rs::alpha", "src/f.rs::gone"]
+                );
+                assert_eq!(
+                    applied_positions(&p),
+                    vec![7],
+                    "the entry's position is recorded once, and no batch event's own"
+                );
+                let h1 = vec![("gc/src/f.rs".to_string(), "h1".to_string())];
+                assert_eq!(identity_generations(&p, "generations"), h1);
+                assert_eq!(
+                    identity_generations(&p, "node_assertions"),
+                    h1,
+                    "every batch event is asserted under the entry's identity and generation"
+                );
+            }
+
+            #[test]
+            fn an_entry_of_another_generation_supersedes_the_code_facts_its_batch_drops() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                holding_h1(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 9, 20),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h2".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 20, 9)]
+                );
+                assert_eq!(node_ids(&p), vec!["src/f.rs", "src/f.rs::alpha"]);
+                assert_eq!(p.retired_code_entity_count().unwrap(), 1);
+                assert_eq!(applied_positions(&p), vec![7, 9]);
+            }
+
+            #[test]
+            fn an_entry_of_another_generation_retires_the_design_link_its_batch_drops() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gd", F, "h1", 1, 10),
+                        Ok(Some(vec![link_event("src/a.rs"), link_event("src/b.rs")])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gd", F, "h2", 3, 20),
+                        Ok(Some(vec![link_event("src/a.rs")])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 2);
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge(F, "src/a.rs", REL_SPECIFIES, 10, 3)],
+                    "the kept link holds from its first entry and is sourced at its newest"
+                );
+                assert_eq!(node_ids(&p), vec![F, "src/a.rs"]);
+                let retired_at: Vec<Option<i64>> = raw_rows(
+                    &p,
+                    "SELECT valid_to FROM edges WHERE to_id = 'src/b.rs'",
+                    [],
+                    |r| r.get(0),
+                );
+                assert_eq!(
+                    retired_at,
+                    vec![Some(to_nanos(UNIX_EPOCH + Duration::from_secs(20)))],
+                    "the dropped link is retired at the superseding entry's valid-time"
+                );
+                assert_eq!(
+                    p.current_generation("gd/docs/f.md").unwrap(),
+                    Some("h2".to_string())
+                );
+            }
+
+            /// A graph holding `h1` folds `entry`, of `gc/src/f.rs` at position 8, with a batch
+            /// function answering `batch`: the fold answers `outcome` having asked for the batch
+            /// `asks` times, and changes no fact - every table but `applied` stands row for row,
+            /// `applied` gains exactly position 8 and the identity still holds `h1`. Answers the
+            /// graph, for the caller to go on from.
+            fn folds_nothing_onto_h1(
+                entry: Event,
+                batch: Option<Vec<Event>>,
+                outcome: EntryFold,
+                asks: u32,
+            ) -> Projector {
+                let p = Projector::open(":memory:", "test").unwrap();
+                holding_h1(&p);
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                assert_eq!(apply_entry(&p, &entry, Ok(batch), &asked), Ok(outcome));
+                assert_eq!(asked.get(), asks, "how often the batch was asked for");
+                assert_eq!(projection_but_applied(&p), before, "no fact changes");
+                assert_eq!(applied_positions(&p), vec![7, 8]);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                p
+            }
+
+            #[test]
+            fn a_re_recording_writes_only_its_applied_row_and_never_asks_for_its_batch() {
+                // The batch would resolve, and would change the identity's facts, were it asked for.
+                let _ = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h1", 8, 50),
+                    Some(vec![def_event("other", 5, true)]),
+                    EntryFold::ReRecording,
+                    0,
+                );
+            }
+
+            #[test]
+            fn an_unresolved_entry_leaves_the_identitys_facts_and_generation_as_they_stood() {
+                // A batch that resolves to no events folds as an unresolved one does: asked for
+                // once, and nothing changes.
+                let _ = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h2", 8, 20),
+                    Some(vec![]),
+                    EntryFold::BatchAsked,
+                    1,
+                );
+                let p = folds_nothing_onto_h1(
+                    entry("gc", "src/f.rs", "h2", 8, 20),
+                    None,
+                    EntryFold::BatchAsked,
+                    1,
+                );
+                let held = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                // An identity that holds no generation installs none either.
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/new.rs", "k1", 9, 20),
+                        Ok(None),
+                        &asked
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 1, "the batch is asked for exactly once");
+                assert_eq!(
+                    projection_but_applied(&p),
+                    held,
+                    "an unresolved entry folds nothing"
+                );
+                assert_eq!(applied_positions(&p), vec![7, 8, 9]);
+                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
+                // The generation the first entry named is still not the current one, so a later
+                // entry of it that resolves folds.
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 10, 30),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(asked.get(), 2);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h2".to_string())
+                );
+                assert_eq!(
+                    live_edges(&p),
+                    vec![edge("src/f.rs", "src/f.rs::alpha", REL_CONTAINS, 30, 10)]
+                );
+            }
+
+            #[test]
+            fn an_entry_whose_position_is_applied_folds_nothing_and_never_asks_for_its_batch() {
+                let (_dir, p, mark) = graph_file();
+                apply_decision(&p, 3, "d1", "keep", &["src/f.rs"], "");
+                holding_h1(&p);
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                // Position 7 is the entry that installed h1; position 3 a decision's.
+                for (file, generation, pos) in [("src/f.rs", "h2", 7), ("src/new.rs", "k1", 3)] {
+                    assert_eq!(
+                        apply_entry(
+                            &p,
+                            &entry("gc", file, generation, pos, 20),
+                            Ok(Some(vec![def_event("other", 5, true)])),
+                            &asked,
+                        ),
+                        Ok(EntryFold::AlreadyApplied),
+                        "position {pos}"
+                    );
+                }
+                // An entry whose payload does not parse, at a position already applied: the
+                // `applied` guard answers before the payload is read, so the fold neither fails
+                // nor marks the file owed.
+                let mut unparsable = entry("gc", "src/f.rs", "h2", 7, 20);
+                unparsable.data = b"not a ledger entry".to_vec();
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &unparsable,
+                        Ok(Some(vec![def_event("other", 5, true)])),
+                        &asked,
+                    ),
+                    Ok(EntryFold::AlreadyApplied),
+                    "an unparsable entry at an applied position"
+                );
+                assert_eq!(
+                    asked.get(),
+                    0,
+                    "an applied position never asks for its batch"
+                );
+                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(applied_positions(&p), vec![3, 7]);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(p.current_generation("gc/src/new.rs").unwrap(), None);
+                assert_eq!(
+                    (p.rebuild_owed().unwrap(), mark.exists()),
+                    (false, false),
+                    "nothing failed, so the file owes nothing"
+                );
+            }
+
+            #[test]
+            fn a_resolved_batch_changing_a_members_degree_relabels_its_community_as_it_returns() {
+                let p = Projector::open(":memory:", "test").unwrap();
+                seed_community_fixture(&p);
+                assert_eq!(label(&p, "community/1/0"), Some("apply_damage".to_string()));
+                let hit = "src/combat/hit.rs";
+                let batch = vec![
+                    event_of(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        crate::test_support::def_json(hit, "apply_damage", 10, true),
+                    ),
+                    event_of(
+                        TYPE_CODE_ENTITY_EXTRACTED,
+                        crate::test_support::def_json(hit, "clamp", 30, false),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "min", "clamp"),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "max", "clamp"),
+                    ),
+                    event_of(
+                        TYPE_EDGE_INFERRED,
+                        crate::test_support::call_json(hit, "floor", "clamp"),
+                    ),
+                ];
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(&p, &entry("gc", hit, "h1", 20, 30), Ok(Some(batch)), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!(
+                    label(&p, "community/1/0"),
+                    Some("clamp".to_string()),
+                    "the member whose degree the batch raised labels the community at once"
+                );
+                assert_eq!(label(&p, "community/1/1"), Some("alpha".to_string()));
+                let owed: Vec<String> =
+                    raw_rows(&p, "SELECT community FROM relabel_owed", [], |r| r.get(0));
+                assert_eq!(owed, Vec::<String>::new(), "the fold ends owing no relabel");
+            }
+
+            #[test]
+            fn the_generic_fold_refuses_a_ledger_entry_naming_apply_generation_and_marks_the_graph_owed(
+            ) {
+                let refused = Fold::NotFolded(format!("graph: {ENTRY_REFUSED}{SETUP_PAYS}"));
+                // A batch holding an entry is refused whole.
+                let (_dir, p, mark) = graph_file();
+                let mut held =
+                    event_of(TYPE_DECISION_MADE, decision_json("d1", "x", &["a.rs"], ""));
+                held.position = 1;
+                let batch = [held, entry("gc", "src/f.rs", "h1", 2, 10)];
+                assert_eq!(Fold::of_batch(|| wired(Some(&p)), &batch), refused);
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), Vec::<i64>::new());
+                assert_eq!(node_ids(&p), Vec::<String>::new());
+
+                // One entry alone is refused.
+                let (_dir, p, mark) = graph_file();
+                assert_eq!(
+                    Fold::of(wired(Some(&p)), &entry("gc", "src/f.rs", "h1", 2, 10)),
+                    refused
+                );
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), Vec::<i64>::new());
+
+                // So is one whose position the ledger already holds.
+                let (_dir, p, mark) = graph_file();
+                let asked = Cell::new(0);
+                let folded = entry("gc", "src/f.rs", "h1", 5, 10);
+                assert_eq!(
+                    apply_entry(&p, &folded, Ok(None), &asked),
+                    Ok(EntryFold::BatchAsked)
+                );
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
+                assert_eq!(Fold::of(wired(Some(&p)), &folded), refused);
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                assert_eq!(applied_positions(&p), vec![5]);
+            }
+
+            #[test]
+            fn apply_generation_refuses_on_a_graph_that_owes_its_rebuild_and_the_generation_still_reads(
+            ) {
+                let (_dir, p, mark) = graph_file();
+                holding_h1(&p);
+                let mut poison = Event::new(TYPE_DECISION_MADE, b"{ not valid json".to_vec());
+                poison.position = 8;
+                assert!(matches!(
+                    Fold::of(wired(Some(&p)), &poison),
+                    Fold::NotFolded(_)
+                ));
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (true, true));
+                let before = projection_but_applied(&p);
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(
+                        &p,
+                        &entry("gc", "src/f.rs", "h2", 9, 20),
+                        Ok(Some(vec![def_event("alpha", 2, true)])),
+                        &asked,
+                    ),
+                    Err(REBUILD_OWED.to_string())
+                );
+                assert_eq!(asked.get(), 0, "a refused fold never asks for its batch");
+                assert_eq!(applied_positions(&p), vec![7]);
+                assert_eq!(projection_but_applied(&p), before);
+                assert_eq!(
+                    p.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string()),
+                    "the generation is read from a graph that owes its rebuild"
+                );
+            }
+
+            /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`: the
+            /// file is marked owed, and no applied row, generation or fact is written.
+            fn fails_and_marks(entry: Event, batch: Result<Option<Vec<Event>>, Error>, why: &str) {
+                let (_dir, p, mark) = graph_file();
+                assert_eq!((p.rebuild_owed().unwrap(), mark.exists()), (false, false));
+                let asked = Cell::new(0);
+                assert_eq!(
+                    apply_entry(&p, &entry, batch, &asked),
+                    Err(format!("{why}{SETUP_PAYS}"))
+                );
+                assert_eq!(
+                    (p.rebuild_owed().unwrap(), mark.exists()),
+                    (true, true),
+                    "{why}"
+                );
+                assert_eq!(applied_positions(&p), Vec::<i64>::new(), "{why}");
+                assert_eq!(
+                    identity_generations(&p, "generations"),
+                    Vec::<(String, String)>::new(),
+                    "{why}"
+                );
+                assert_eq!(node_ids(&p), Vec::<String>::new(), "{why}");
+            }
+
+            #[test]
+            fn a_failed_apply_generation_marks_the_file_owed_and_writes_no_applied_row() {
+                // The batch function fails.
+                fails_and_marks(
+                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    Err(Error("the blob could not be read".to_string())),
+                    "the blob could not be read",
+                );
+                // The entry's payload does not parse.
+                let mut unparsable = entry("gc", "src/f.rs", "h1", 7, 10);
+                unparsable.data = b"{}".to_vec();
+                fails_and_marks(
+                    unparsable,
+                    Ok(Some(vec![def_event("alpha", 1, true)])),
+                    "GenerationIngested payload: missing field `prefix` at line 1 column 2",
+                );
+                // A batch event's fold fails after an earlier one folded: the whole entry rolls
+                // back, the generation the first event installed included.
+                let poison: &[u8] = b"{ not valid json";
+                let rejected = serde_json::from_slice::<serde_json::Value>(poison)
+                    .unwrap_err()
+                    .to_string();
+                fails_and_marks(
+                    entry("gc", "src/f.rs", "h1", 7, 10),
+                    Ok(Some(vec![
+                        def_event("alpha", 1, true),
+                        Event::new(TYPE_CODE_ENTITY_EXTRACTED, poison.to_vec()),
+                    ])),
+                    &rejected,
+                );
+            }
+
+            #[test]
+            fn current_generation_answers_only_the_asking_projects_own_identity() {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("graph.db");
+                let path = path.to_str().unwrap();
+                let ours = Projector::open(path, "ours").unwrap();
+                let theirs = Projector::open(path, "theirs").unwrap();
+                holding_h1(&ours);
+                assert_eq!(
+                    ours.current_generation("gc/src/f.rs").unwrap(),
+                    Some("h1".to_string())
+                );
+                assert_eq!(theirs.current_generation("gc/src/f.rs").unwrap(), None);
+                assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
+            }
         }
     }
 }

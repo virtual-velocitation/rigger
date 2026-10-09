@@ -14,10 +14,82 @@ use rigger::contextgraph::{
     TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
+use rigger::retention::GenerationIngested;
 
 /// A `type_` event carrying `json` as its payload.
 pub fn event_of(type_: &str, json: serde_json::Value) -> Event {
     Event::new(type_, serde_json::to_vec(&json).unwrap())
+}
+
+/// Each event of `events` as `(type, payload text)`, in order: the form a test compares a batch
+/// by, an event having no equality of its own.
+pub fn wire(events: &[Event]) -> Vec<(&str, &str)> {
+    events
+        .iter()
+        .map(|e| {
+            (
+                e.type_.as_str(),
+                std::str::from_utf8(&e.data).expect("an extraction payload is UTF-8"),
+            )
+        })
+        .collect()
+}
+
+/// [`wire`] with each pair owned: the form a test compares by when the batch does not outlive
+/// the comparison.
+pub fn wire_owned(events: &[Event]) -> Vec<(String, String)> {
+    wire(events)
+        .into_iter()
+        .map(|(type_, payload)| (type_.to_string(), payload.to_string()))
+        .collect()
+}
+
+/// `events` - `(type, payload text)` pairs, the form [`wire`] answers - as unkeyed batch events.
+pub fn events_of(events: &[(&str, &str)]) -> Vec<Event> {
+    events
+        .iter()
+        .map(|(type_, payload)| Event::new(*type_, payload.as_bytes().to_vec()))
+        .collect()
+}
+
+/// The `gc` batch of `path` for no bytes: the one boundary event of a path that holds no file an
+/// ingest reads.
+pub fn no_bytes_batch(path: &str) -> Vec<Event> {
+    events_of(&[(
+        "EdgeInferred",
+        &format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#),
+    )])
+}
+
+/// What a ledger entry of `<prefix>/<file>` at `generation` records, its batch extracted from
+/// `blob` under the walk's flag `excluded`.
+pub fn generation_ingested(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    blob: &str,
+    excluded: bool,
+) -> GenerationIngested {
+    GenerationIngested {
+        prefix: prefix.to_string(),
+        file: file.to_string(),
+        generation: generation.to_string(),
+        blob: blob.to_string(),
+        excluded,
+    }
+}
+
+/// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
+pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
+    let mut edges: Vec<_> = p
+        .whole()
+        .unwrap()
+        .edges
+        .into_iter()
+        .map(|e| (e.from, e.rel, e.to, e.valid_from, e.source))
+        .collect();
+    edges.sort();
+    edges
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of
