@@ -2677,4 +2677,275 @@ mod tests {
         assert_eq!(pragma_i64(&path, "freelist_count"), 0);
         assert!(pragma_i64(&path, "page_count") < pages_before);
     }
+
+    // --- Spec 107, criterion 16: THE MIGRATION'S ONE TRANSACTION AND ITS READ-ONLY COUNT ---
+
+    /// One row of the events table, every column.
+    type Row = (i64, String, String, String, Vec<u8>, String, i64, i64, i64);
+
+    /// Every row the file at `path` holds, in position order, read through a connection of its
+    /// own.
+    fn rows_of(path: &std::path::Path) -> Vec<Row> {
+        Connection::open(path)
+            .unwrap()
+            .prepare(&format!("SELECT {COLS} FROM events ORDER BY position"))
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// A derived event of `type_` under the replay key `key`, valid from `secs`.
+    fn derived_at(type_: &str, key: &str, secs: u64) -> Event {
+        keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// The ledger entry of `identity` at `generation`, as its constructor builds it for a batch
+    /// of `n` events extracted from `blob` under the flag `excluded`.
+    fn entry_event(
+        identity: &str,
+        generation: &str,
+        n: usize,
+        blob: &str,
+        excluded: bool,
+    ) -> Event {
+        let (prefix, file) =
+            crate::retention::GenerationIngested::identity_parts(identity).unwrap();
+        crate::retention::GenerationIngested {
+            prefix: prefix.to_string(),
+            file: file.to_string(),
+            generation: generation.to_string(),
+            blob: blob.to_string(),
+            excluded,
+        }
+        .event(n)
+    }
+
+    /// `row` as the migration leaves the row it rewrites into `entry`: its type, payload and
+    /// metadata the entry's, every other column but the valid-time, which is `secs`, its own.
+    fn rewritten(row: &Row, entry: &Event, secs: u64) -> Row {
+        (
+            row.0,
+            row.1.clone(),
+            entry.type_.clone(),
+            row.3.clone(),
+            entry.data.clone(),
+            meta_json(&entry.meta),
+            Duration::from_secs(secs).as_nanos() as i64,
+            row.7,
+            row.8,
+        )
+    }
+
+    /// `row` with its valid-time moved to `secs` and nothing else changed.
+    fn redated(row: &Row, secs: u64) -> Row {
+        let mut row = row.clone();
+        row.6 = Duration::from_secs(secs).as_nanos() as i64;
+        row
+    }
+
+    /// The blob and flag the migration's caller answers for `identity` in these tests: a blob
+    /// that names the identity, and the flag set for `gd/b.md` alone.
+    fn named_entry(identity: &str) -> (String, bool) {
+        (format!("blob-of-{identity}"), identity == "gd/b.md")
+    }
+
+    /// A store at `path` whose stream `p-run` holds, in position order: a run event (1); three
+    /// generations of `gc/a.rs` (2 to 6); a latest generation of `gd/b.md` recorded twice (7 to
+    /// 10); `gc/c.rs` with a ledger entry above its derived row (11, 12); `gc/d.rs` with a
+    /// ledger entry below its derived rows (13 to 15); an unkeyed derived event (16) and one
+    /// whose key does not parse (17); a generation of `gd/e.md` whose second recording repeats
+    /// only its first key, an alias definition between the two (18 to 21); and a decision (22).
+    /// The streams `p-run-x`, whose name starts with that stream's, and `q-run` hold one derived
+    /// row each (23, 24).
+    fn store_to_migrate(path: &std::path::Path) -> Store {
+        use crate::contextgraph::{
+            TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_DOC_CONCEPT_EXTRACTED as DC,
+            TYPE_DOC_LINK_EXTRACTED as DL, TYPE_EDGE_INFERRED as EI,
+        };
+        let at = |event: Event, secs: u64| {
+            event.with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+        };
+        store_with(
+            path.to_str().unwrap(),
+            &[
+                (
+                    "p-run",
+                    vec![
+                        at(Event::new("RunStarted", b"{}".to_vec()), 1),
+                        derived_at(CE, "gc/a.rs@h1#0", 50),
+                        derived_at(CE, "gc/a.rs@h2#0", 20),
+                        derived_at(EI, "gc/a.rs@h2#1", 21),
+                        derived_at(CE, "gc/a.rs@h3#0", 60),
+                        derived_at(EI, "gc/a.rs@h3#1", 61),
+                        derived_at(DC, "gd/b.md@h1#0", 30),
+                        derived_at(DL, "gd/b.md@h1#1", 31),
+                        derived_at(DC, "gd/b.md@h1#0", 40),
+                        derived_at(DL, "gd/b.md@h1#1", 41),
+                        derived_at(CE, "gc/c.rs@h1#0", 70),
+                        at(entry_event("gc/c.rs", "h2", 1, "held", false), 80),
+                        at(entry_event("gc/d.rs", "h1", 1, "held", false), 90),
+                        derived_at(CE, "gc/d.rs@h9#0", 10),
+                        derived_at(CE, "gc/d.rs@h2#0", 85),
+                        at(Event::new(CE, b"{}".to_vec()), 5),
+                        derived_at(CE, "not a key", 6),
+                        derived_at(DC, "gd/e.md@h1#0", 100),
+                        derived_at(DL, "gd/e.md@h1#1", 101),
+                        at(
+                            Event::new(
+                                crate::contextgraph::TYPE_ALIAS_DEFINED,
+                                br#"{"alias":"x","canonical":"y"}"#.to_vec(),
+                            ),
+                            105,
+                        ),
+                        derived_at(DC, "gd/e.md@h1#0", 110),
+                        at(Event::new("DecisionMade", b"{}".to_vec()), 120),
+                    ],
+                ),
+                ("p-run-x", vec![derived_at(CE, "gc/a.rs@h0#0", 2)]),
+                ("q-run", vec![derived_at(CE, "gc/a.rs@h0#0", 3)]),
+            ],
+        )
+    }
+
+    /// The count of `store_to_migrate`'s stream: every derived row of it, the two that name no
+    /// identity, and the five identities holding one.
+    fn counted_before() -> DerivedCount {
+        DerivedCount {
+            shed: 17,
+            unkeyed: 2,
+            identities: ["gc/a.rs", "gc/c.rs", "gc/d.rs", "gd/b.md", "gd/e.md"]
+                .map(String::from)
+                .into(),
+        }
+    }
+
+    /// The read-only count answers every derived row of the one stream it is handed, the rows
+    /// naming no identity among them, and the identities holding one - never a row of a stream
+    /// whose name only starts with that stream's, never a ledger entry - and changes nothing.
+    #[test]
+    fn count_derived_counts_one_streams_derived_rows_its_unkeyed_rows_and_its_identities() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        let before = rows_of(&path);
+
+        assert_eq!(
+            (
+                s.count_derived("p-run").unwrap(),
+                s.count_derived("p-run-x").unwrap(),
+                s.count_derived("p-").unwrap(),
+                rows_of(&path) == before,
+            ),
+            (
+                counted_before(),
+                DerivedCount {
+                    shed: 1,
+                    unkeyed: 0,
+                    identities: ["gc/a.rs".to_string()].into(),
+                },
+                DerivedCount::default(),
+                true,
+            )
+        );
+    }
+
+    /// THE MIGRATION'S ONE TRANSACTION: each identity whose latest recording is derived has the
+    /// lowest row the selection keeps rewritten in place into its entry - every column a
+    /// uniqueness rule covers and its recorded-time kept - every identity's earliest surviving
+    /// recording takes the identity's earliest recorded valid-time, and every other derived row
+    /// of the stream is deleted, keyed or not. Nothing else in the file changes.
+    #[test]
+    fn shed_derived_rewrites_each_latest_derived_batch_into_its_entry_and_deletes_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        let before = rows_of(&path);
+        // `before` is in position order from 1, so the row at position `p` is `before[p - 1]`.
+        let at = |position: usize| &before[position - 1];
+
+        let shed = s.shed_derived("p-run", &named_entry).unwrap();
+
+        assert_eq!(
+            (shed, rows_of(&path)),
+            (
+                ShedDerived {
+                    converted: 4,
+                    shed: 17,
+                    unkeyed: 2,
+                },
+                vec![
+                    at(1).clone(),
+                    // Three generations: the entry stands at the first row of the latest batch,
+                    // counts that generation's two keys and is dated at the earliest recording,
+                    // a row of a superseded generation.
+                    rewritten(
+                        at(5),
+                        &entry_event("gc/a.rs", "h3", 2, "blob-of-gc/a.rs", false),
+                        20
+                    ),
+                    // Recorded twice: the entry stands at the first row of the second recording.
+                    rewritten(
+                        at(9),
+                        &entry_event("gd/b.md", "h1", 2, "blob-of-gd/b.md", true),
+                        30
+                    ),
+                    // An entry above derived rows: nothing is rewritten, the entry is re-dated.
+                    redated(at(12), 70),
+                    // An entry below derived rows: it is the earliest surviving recording, so
+                    // it takes the earliest valid-time and the rewritten row keeps its own.
+                    redated(at(13), 10),
+                    rewritten(
+                        at(15),
+                        &entry_event("gc/d.rs", "h2", 1, "blob-of-gc/d.rs", false),
+                        85
+                    ),
+                    // A generation whose kept rows span two recordings: the entry stands at the
+                    // lowest kept row, the second row of the first recording.
+                    rewritten(
+                        at(19),
+                        &entry_event("gd/e.md", "h1", 2, "blob-of-gd/e.md", false),
+                        100
+                    ),
+                    at(20).clone(),
+                    at(22).clone(),
+                    at(23).clone(),
+                    at(24).clone(),
+                ]
+            )
+        );
+    }
+
+    /// A migrated stream holds no derived row: the count answers nothing, and a second migration
+    /// sheds nothing, converts nothing and leaves every row as it stands.
+    #[test]
+    fn a_migrated_stream_counts_no_derived_row_and_a_second_migration_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_to_migrate(&path);
+        s.shed_derived("p-run", &named_entry).unwrap();
+        let migrated = rows_of(&path);
+
+        assert_eq!(
+            (
+                s.count_derived("p-run").unwrap(),
+                s.shed_derived("p-run", &named_entry).unwrap(),
+                rows_of(&path) == migrated,
+            ),
+            (DerivedCount::default(), ShedDerived::default(), true)
+        );
+    }
 }

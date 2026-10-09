@@ -1428,216 +1428,155 @@ mod tests {
         );
     }
 
-    // --- Spec 60, criterion 5: what `rigger reset --derived` SAYS about what it did ---
+    // --- Spec 107, criterion 16: what `rigger reset --derived` SAYS about the reclamation ---
 
-    /// A prune report with `removed` rows spread over the shipped derived types and the given
-    /// reclamation state. Built from the real type list so a fifth derived type cannot leave this
-    /// pinning a report shape nothing renders.
+    /// The lines [`reclamation_lines`] renders for a hand-built reclamation in the given state.
     ///
-    /// `compaction_ran` is a parameter of its own rather than inferred from `reclaimed`, for the
-    /// same reason the report reads it rather than inferring it: a file that was not rewritten
-    /// and a rewrite that reclaimed nothing are both `Some(0)` and are different states. So is
-    /// `on_disk_measured`, for the same reason again one level down: a rewrite whose bytes could
-    /// not be measured because a reader declined the checkpoint and one whose bytes never existed
-    /// because the database has no file are BOTH a rewritten file with no number, and only the
-    /// caller of the prune knows which.
-    fn report_of(
-        removed: usize,
+    /// `compaction_ran` and `on_disk_measured` are parameters of their own rather than inferred
+    /// from `reclaimed`, as the lines read them rather than inferring them: a file that was not
+    /// rewritten and a rewrite that reclaimed nothing are both `Some(0)`, and a rewrite a reader
+    /// declined to let land and one over a database with no file are both a rewritten file with
+    /// no number.
+    fn lines_of(
         compaction_ran: bool,
         reclaimed: Option<u64>,
         on_disk_measured: bool,
         failure: Option<&str>,
-    ) -> String {
-        let types = rigger::ingest::DERIVED_INDEX_TYPES;
-        let pruned = PrunedDerived {
-            removed: types
-                .iter()
-                .enumerate()
-                .map(|(i, t)| (t.to_string(), if i == 0 { removed } else { 0 }))
-                .collect(),
-            superseded_generations: 0,
-            reclamation: rigger::eventstore::sqlite::Reclamation {
-                reclaimed_bytes: reclaimed,
-                compaction_ran,
-                on_disk_measured,
-                compaction_error: failure.map(str::to_string),
-            },
-        };
-        derived_prune_report(&pruned)
+    ) -> Vec<String> {
+        reclamation_lines(&rigger::eventstore::sqlite::Reclamation {
+            reclaimed_bytes: reclaimed,
+            compaction_ran,
+            on_disk_measured,
+            compaction_error: failure.map(str::to_string),
+        })
     }
 
-    /// Spec 60, criterion 5: a compaction that failed AFTER the deletes committed is reported, not
-    /// swallowed into an error that says only that something went wrong.
-    ///
-    /// The rows are gone from the log by then. An operator told only "error" cannot tell that from
-    /// a prune that never ran, so they cannot know whether to run it again, and they never see the
-    /// per-type counts the command exists to give them. The line therefore carries the counts, the
-    /// failure by name, and the two things that follow from the ordering: the deletes are durable
-    /// and a re-run is safe.
+    /// A compaction that failed AFTER the migration committed is reported, not swallowed into an
+    /// error: the failure by name on one line, and on the next the two things that follow from
+    /// the ordering - what the run changed is durable and a re-run is safe and retries.
     #[test]
     fn a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts() {
-        let out = report_of(7, true, None, true, Some("database or disk is full"));
-        assert!(
-            out.contains("pruned 7 redundant derived-index event(s)"),
-            "a failed compaction must not cost the operator the counts; got {out:?}"
-        );
-        assert!(
-            out.contains("database or disk is full"),
-            "the report must NAME the failure, or an operator cannot act on it; got {out:?}"
-        );
-        for (fact, needle) in [
-            ("say the deletes survived it", "deletes are committed"),
-            ("say a re-run is safe", "re-running"),
-        ] {
-            assert!(
-                out.contains(needle),
-                "the failed-compaction report must {fact} ({needle:?}); got {out:?}"
-            );
-        }
-        assert!(
-            !out.contains("byte(s) on disk"),
-            "a compaction that failed reclaimed nothing it can put a number on; got {out:?}"
+        assert_eq!(
+            lines_of(true, None, true, Some("database or disk is full")),
+            [
+                "reset --derived: the log file could NOT be compacted: database or disk is full",
+                "reset --derived: what this run changed is committed and durable, so re-running \
+                 the command is safe - and it retries the reclamation, because the space this \
+                 run could not reclaim is still free in the file",
+            ]
         );
     }
 
-    /// Spec 60, criterion 5: a prune that shed nothing says the file was left as it stands, and
-    /// justifies itself by WHAT THIS LOG HOLDS - never by WHEN the log was written.
-    ///
-    /// A log written since the ingest dedup existed does NOT always prune to zero: a file whose
-    /// content returns to a generation the log already recorded re-records that whole batch by
-    /// design, so "written after the dedup" implies nothing about the count. Justifying the zero
-    /// report that way is the sentence an operator uses to decide whether a NON-zero prune means
-    /// the dedup is broken, so it has to be a statement about the log in front of them.
+    /// A file holding no free page is said to have been left as it stands: zero bytes is the
+    /// measurement there, never a rewrite that reclaimed nothing.
     #[test]
     fn a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written() {
-        let out = report_of(0, false, Some(0), true, None);
-        for (fact, needle) in [
-            ("say WHY nothing was shed", "no redundancy to shed"),
-            ("say the report is the EXPECTED one", "expected report"),
-            ("say it is not a failure", "not a failed prune"),
-            (
-                "say the file was not rewritten",
-                "left exactly as it stands",
-            ),
-        ] {
-            assert!(
-                out.contains(needle),
-                "the report on a clean log must {fact} ({needle:?}); got {out:?}"
-            );
-        }
-        assert!(
-            !out.contains("written since"),
-            "the zero report must not rest on WHEN the log was written: a log written since the \
-             dedup existed still re-records a file's batch whenever its content returns to a \
-             generation the log already held, so that reasoning would make a perfectly correct \
-             non-zero prune look like a broken dedup. Got {out:?}"
+        assert_eq!(
+            lines_of(false, Some(0), true, None),
+            ["reset --derived: the log file holds no reclaimable free page, so it was left as it \
+              stands rather than rewritten to reclaim nothing"]
         );
     }
 
-    /// Spec 60, criterion 5: "the file was left alone" is a statement about THE REWRITE, not about
-    /// the row count - so a pass that deleted nothing and DID rewrite the file says so.
-    ///
-    /// This is the pass an operator reaches by following the failed-reclamation report's own
-    /// advice: the first run's deletes committed and its rewrite failed, so the re-run sheds no
-    /// rows and reclaims the space that was left behind. A report that read "nothing was deleted"
-    /// as "nothing was rewritten" would tell that operator their log was untouched by the very
-    /// run that compacted it, and would make the advice look like it had done nothing.
+    /// "The file was left alone" is a statement about THE REWRITE, not about the row count: a
+    /// pass that rewrote the file reports the bytes the log lost on disk, and never says the
+    /// file was left as it stands.
     #[test]
     fn a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation() {
-        let out = report_of(0, true, Some(8192), true, None);
-        assert!(
-            out.contains("reclaimed 8192 byte(s) on disk"),
-            "the re-run's reclamation is what the operator was told to run for; got {out:?}"
-        );
-        assert!(
-            !out.contains("left exactly as it stands"),
-            "a run that rewrote the file must never say it left it alone - that is the sentence \
-             an operator checks the advice against; got {out:?}"
+        assert_eq!(
+            lines_of(true, Some(8192), true, None),
+            ["reset --derived: compacted the log file and reclaimed 8192 byte(s) on disk"]
         );
     }
 
-    /// Spec 60, criterion 5: a prune that DID shed rows explains why a deduplicated log still had
-    /// something to shed, and carries none of the clean-log clause.
-    #[test]
-    fn a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates() {
-        let out = report_of(12, true, Some(4096), true, None);
-        for (fact, needle) in [
-            ("name the shape that re-records a batch", "RETURNS"),
-            ("give the operator the ordinary cause", "revert"),
-            (
-                "say it is not a broken dedup",
-                "not a sign the ingest dedup is broken",
-            ),
-        ] {
-            assert!(
-                out.contains(needle),
-                "a non-zero prune must {fact} ({needle:?}), or an operator reads it as the dedup \
-                 having failed; got {out:?}"
-            );
-        }
-        for needle in [
-            "no redundancy to shed",
-            "expected report",
-            "not a failed prune",
-        ] {
-            assert!(
-                !out.contains(needle),
-                "the clean-log clause must not print on a prune that shed rows ({needle:?}); got \
-                 {out:?}"
-            );
-        }
-        assert!(
-            out.contains("reclaimed 4096 byte(s) on disk"),
-            "a measured reclamation is reported as the measurement it is; got {out:?}"
-        );
-    }
-
-    /// Spec 60, criterion 5: an unmeasured reclamation has TWO causes, and the report may only
-    /// name the one it was actually told about.
-    ///
-    /// `reclaimed_bytes: None` with the rewrite having run means either "a concurrent reader held
-    /// the write-ahead log so the checkpoint was declined" or "this database has no file behind
-    /// it, so there were never any bytes on disk to measure" - and the store yields the SAME
-    /// `(no error, rewritten, no bytes)` triple for both. Rendering a concurrent reader for the
-    /// second is the report asserting a cause it was never handed: it sends an operator looking
-    /// for a reader that does not exist, and tells them pages will land at a checkpoint that will
-    /// never move a byte onto a disk this database does not use. `on_disk_measured` is the fact
-    /// that separates them, so it is carried beside the count rather than guessed at from it.
+    /// An unmeasured reclamation has TWO causes, and the lines name only the one they were told
+    /// about: a checkpoint a concurrent reader declined, whose pages land later, or a database
+    /// with no file behind it, where there were never bytes on disk to measure.
     #[test]
     fn an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined() {
-        let no_file = report_of(5, true, None, false, None);
-        let declined = report_of(5, true, None, true, None);
+        assert_eq!(
+            (
+                lines_of(true, None, false, None),
+                lines_of(true, None, true, None)
+            ),
+            (
+                vec![
+                    "reset --derived: compacted the log, which has no file behind it (an \
+                     in-memory or temporary database): there are no bytes on disk to have been \
+                     reclaimed, so the reclamation is unmeasured rather than zero"
+                        .to_string()
+                ],
+                vec![
+                    "reset --derived: compacted the log file, but the freed pages could not be \
+                     folded back into it: a concurrent reader held the write-ahead log, so they \
+                     land at the next checkpoint and this run reclaimed an unmeasured amount"
+                        .to_string()
+                ],
+            )
+        );
+    }
 
-        assert!(
-            !no_file.contains("concurrent reader"),
-            "a database with no file behind it was never told a reader held anything - naming one \
-             invents the cause; got {no_file:?}"
-        );
-        assert!(
-            !no_file.contains("next checkpoint"),
-            "and there is no checkpoint that will land bytes on a disk this database does not \
-             write to; got {no_file:?}"
-        );
-        assert!(
-            no_file.contains("no file behind it"),
-            "the report must say WHY the figure is missing: the database has no file on disk to \
-             measure; got {no_file:?}"
-        );
-        assert!(
-            no_file.contains("pruned 5 redundant derived-index event(s)"),
-            "and an unmeasurable reclamation must not cost the operator the counts; got \
-             {no_file:?}"
-        );
+    /// Given a store whose run stream holds a derived row naming a regular file of the tree, when
+    /// the migration is handed a hash function that fails, then it fails with that function's own
+    /// error, having handed it the tree's root and the file's bytes, before any row changes.
+    #[test]
+    fn reset_derived_handed_a_failing_hash_function_fails_before_any_row_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::test_support::git_init_quiet(dir.path());
+        let rigger_dir = dir.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
+        let loc = StoreLocation {
+            dir: rigger_dir.clone(),
+        };
+        let db = loc.file("events.db");
+        let rows = || {
+            let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+            Namespaced::new(&backend, &loc.identity())
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .unwrap()
+                .into_iter()
+                .map(|event| (event.position, event.type_, event.data, event.meta))
+                .collect::<Vec<_>>()
+        };
+        {
+            let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
+            Namespaced::new(&backend, &loc.identity())
+                .append(
+                    conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        Event::new(contextgraph::TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec())
+                            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+                    ],
+                )
+                .unwrap();
+        }
+        let before = rows();
+        let asked = std::cell::RefCell::new(Vec::new());
 
-        assert!(
-            declined.contains("concurrent reader"),
-            "the OTHER cause of the same triple still reads as itself - this is the arm the file \
-             case must not be folded into; got {declined:?}"
-        );
-        assert_ne!(
-            no_file, declined,
-            "the two causes of an unmeasured reclamation must not render to one sentence, or the \
-             distinction is carried and then thrown away"
+        let failed = reset_derived(&loc, &|root, bytes| {
+            asked
+                .borrow_mut()
+                .push((root.canonicalize().unwrap(), bytes.to_vec()));
+            Err("no hash today".into())
+        })
+        .expect_err("a failed hash fails the migration");
+
+        assert_eq!(
+            (
+                failed.to_string(),
+                asked.into_inner(),
+                rows() == before,
+                before.len(),
+            ),
+            (
+                "no hash today".to_string(),
+                vec![(dir.path().canonicalize().unwrap(), b"fn a() {}\n".to_vec())],
+                true,
+                1,
+            )
         );
     }
 

@@ -36,8 +36,8 @@ use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 use common::cli::{nanos, temp_repoless_project};
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object, walked_batch,
-    DOCUMENT_BODY, SOURCE_BODY, TEST_MODULE_BODY, WORKFLOW_BODY,
+    git_hash_object, git_ok, git_ok_with_identity, git_out, live_edges, loose_object,
+    no_bytes_batch, walked_batch, DOCUMENT_BODY, SOURCE_BODY, TEST_MODULE_BODY, WORKFLOW_BODY,
 };
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::{REL_CONTAINS, REL_DOC_REFERENCES, REL_SPECIFIES};
@@ -138,14 +138,6 @@ const GONE_BATCH: [(&str, &str); 2] = [
         r#"{"file":"src/gone.rs","name":"","lang":"rust","fresh":true,"is_test":true}"#,
     ),
 ];
-
-/// The `gc` batch of [`GONE_PATH`] for no bytes: the one boundary event of a path that holds no
-/// file.
-#[cfg(feature = "symbols")]
-const GONE_NO_BYTES_BATCH: [(&str, &str); 1] = [(
-    "EdgeInferred",
-    r#"{"file":"src/gone.rs","name":"","lang":"unknown","fresh":true}"#,
-)];
 
 /// One recording of a generation: what its entry names, when it was recorded, and the batch the
 /// recording process extracted - `None` for a recording whose process resolved nothing.
@@ -417,14 +409,7 @@ fn setup_rebuilds_from_blobs_tree_files_and_no_bytes_the_graph_the_incremental_f
             21,
             document_without_citation_batch(),
         ),
-        recording(
-            "gc",
-            GONE_PATH,
-            "",
-            false,
-            22,
-            events_of(&GONE_NO_BYTES_BATCH),
-        ),
+        recording("gc", GONE_PATH, "", false, 22, no_bytes_batch(GONE_PATH)),
     ];
     // The fixture's recorded generations are the ones these hand-built batches hash to.
     assert_eq!(
@@ -609,14 +594,7 @@ fn setup_outside_a_repository_resolves_every_entry_from_the_trees_files() {
             13,
             walked("gw", WORKFLOW_PATH),
         ),
-        recording(
-            "gc",
-            GONE_PATH,
-            "",
-            false,
-            14,
-            events_of(&GONE_NO_BYTES_BATCH),
-        ),
+        recording("gc", GONE_PATH, "", false, 14, no_bytes_batch(GONE_PATH)),
     ];
     record(root, &recordings);
     let scratch = tempfile::tempdir().unwrap();

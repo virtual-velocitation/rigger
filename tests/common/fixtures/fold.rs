@@ -52,6 +52,15 @@ pub fn events_of(events: &[(&str, &str)]) -> Vec<Event> {
         .collect()
 }
 
+/// The `gc` batch of `path` for no bytes: the one boundary event of a path that holds no file an
+/// ingest reads.
+pub fn no_bytes_batch(path: &str) -> Vec<Event> {
+    events_of(&[(
+        "EdgeInferred",
+        &format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#),
+    )])
+}
+
 /// What a ledger entry of `<prefix>/<file>` at `generation` records, its batch extracted from
 /// `blob` under the walk's flag `excluded`.
 pub fn generation_ingested(

@@ -27677,3 +27677,632 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
     );
     drop(lock_free);
 }
+
+/// The generation a pre-ledger sink keyed the unkeyed `batch` under: the batch's own where an
+/// extraction is compiled, so a rebuild's re-extraction reproduces it.
+#[cfg(feature = "symbols")]
+fn generation_keyed(batch: &[rigger::eventstore::Event]) -> String {
+    rigger::ingest::batch_generation(batch)
+}
+
+/// Light lane: no extraction is compiled, so no rebuild re-extracts a batch and any generation
+/// stands for it.
+#[cfg(not(feature = "symbols"))]
+fn generation_keyed(_batch: &[rigger::eventstore::Event]) -> String {
+    "unextracted".to_string()
+}
+
+/// One append of the store `rigger reset --derived` migrates in
+/// [`reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place`]: what the test
+/// calls it, the events appended, and the batch a ledger entry among them folds with.
+struct SeededAppend {
+    name: &'static str,
+    events: Vec<rigger::eventstore::Event>,
+    entry_batch: Option<Vec<rigger::eventstore::Event>>,
+}
+
+/// The derived rows a pre-ledger sink recorded for `batch` under `identity` at `generation`, valid
+/// from `secs`: each event under its replay key `<identity>@<generation>#<index>`, with no group.
+fn pre_ledger_rows(
+    name: &'static str,
+    identity: &str,
+    generation: &str,
+    batch: &[rigger::eventstore::Event],
+    secs: u64,
+) -> SeededAppend {
+    SeededAppend {
+        name,
+        events: batch
+            .iter()
+            .enumerate()
+            .map(|(index, event)| {
+                common::cli::keyed(
+                    &event.type_,
+                    event.data.clone(),
+                    &format!("{identity}@{generation}#{index}"),
+                    secs,
+                )
+            })
+            .collect(),
+        entry_batch: None,
+    }
+}
+
+/// One event that is no keyed derived row, appended alone and valid from `secs`.
+fn lone(name: &'static str, type_: &str, payload: &str, secs: u64) -> SeededAppend {
+    SeededAppend {
+        name,
+        events: vec![
+            rigger::eventstore::Event::new(type_, payload.as_bytes().to_vec())
+                .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+        ],
+        entry_batch: None,
+    }
+}
+
+/// Given a store recorded before the ledger, its `graph.db` folded as each append landed, holding
+/// three generations of a source file, a design batch whose latest generation was recorded twice,
+/// a deleted file, the workflow definition with a ledger entry above its derived row, an
+/// out-of-line test module, a path where a directory now stands, a `gc` path outside the walk's
+/// scope holding a readable file, an unkeyed derived event, a keyed one whose replay key does not
+/// parse, and a document generation whose second recording repeats two of its four keys after an
+/// alias moved - when the operator runs `rigger reset --derived`, then the first row of each
+/// identity's latest derived batch (the lowest row kept, for the spanning generation) is its
+/// ledger entry, every other derived row is gone, each identity's earliest surviving recording is
+/// dated at its earliest recorded valid-time, the counts and the bytes the log lost are printed,
+/// the unkeyed count on its own line, and `graph.db` holds what it held. A second run sheds
+/// nothing and still reclaims. A rebuild of the migrated store then holds the generations the
+/// store held and the facts its parsable recordings asserted, the spanning generation's names
+/// resolved through the alias defined before its entry alone.
+#[test]
+fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
+    use common::fixtures::{
+        events_of, generation_ingested, git_hash_object, walked_batch, walked_generation,
+        write_text, DOCUMENT_BODY, DOCUMENT_PATH, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY,
+        TEST_MODULE_PATH, WORKFLOW_BODY, WORKFLOW_PATH,
+    };
+    use rigger::contextgraph::{
+        TYPE_ALIAS_DEFINED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED,
+    };
+    use rigger::retention::TYPE_GENERATION_INGESTED;
+
+    const GONE: &str = "src/gone.rs";
+    const DIRECTORY: &str = "src/dir.rs";
+    const OUT_OF_SCOPE: &str = "build/out.rs";
+
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::init_event_log(root);
+    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(settled, "premise: setup settles the project: {settle_err}");
+    let project = run_stream_identity(root);
+    write_text(root, SOURCE_PATH, SOURCE_BODY);
+    write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
+    write_text(root, DOCUMENT_PATH, DOCUMENT_BODY);
+    write_text(root, WORKFLOW_PATH, WORKFLOW_BODY);
+    std::fs::create_dir_all(root.join(DIRECTORY)).unwrap();
+    write_text(root, OUT_OF_SCOPE, "fn out() {}\n");
+    let ignored = std::fs::read_to_string(root.join(".gitignore")).unwrap_or_default();
+    write_text(root, ".gitignore", &format!("{ignored}build/\n"));
+    let blob = |path: &str| git_hash_object(root, path, false);
+
+    let walked = |prefix: &str, path: &str| events_of(walked_batch(prefix, path));
+    let no_bytes = |path: &str| common::fixtures::no_bytes_batch(path);
+    let none_at = |path: &str| generation_keyed(&no_bytes(path));
+    let code = |file: &str, name: &str| {
+        events_of(&[(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            &format!(
+                r#"{{"file":"{file}","name":"{name}","kind":"function","line":1,"lang":"rust","fresh":true}}"#
+            ),
+        )])
+    };
+    let document = walked("gd", DOCUMENT_PATH);
+    let architecture = format!("gd/{DOCUMENT_PATH}");
+    let workflow = format!("gw/{WORKFLOW_PATH}");
+    let workflow_entry = generation_ingested(
+        "gw",
+        WORKFLOW_PATH,
+        walked_generation("gw", WORKFLOW_PATH),
+        &blob(WORKFLOW_PATH),
+        false,
+    );
+    // A superseded row heavy enough that deleting it frees whole pages of the log's file.
+    let heavy = events_of(&[(
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        &format!(
+            r#"{{"kind":"gate","id":"gate:old","title":"{}","doc":"{WORKFLOW_PATH}"}}"#,
+            "old ".repeat(60_000)
+        ),
+    )]);
+    let appends = vec![
+        pre_ledger_rows(
+            "source-1",
+            "gc/src/lib.rs",
+            "old1",
+            &code(SOURCE_PATH, "ancient"),
+            10,
+        ),
+        pre_ledger_rows(
+            "source-2",
+            "gc/src/lib.rs",
+            "old2",
+            &[code(SOURCE_PATH, "older"), code(SOURCE_PATH, "elder")].concat(),
+            20,
+        ),
+        pre_ledger_rows(
+            "source-3",
+            "gc/src/lib.rs",
+            walked_generation("gc", SOURCE_PATH),
+            &walked("gc", SOURCE_PATH),
+            30,
+        ),
+        pre_ledger_rows(
+            "rationale-1",
+            "gd/src/lib.rs",
+            walked_generation("gd", SOURCE_PATH),
+            &walked("gd", SOURCE_PATH),
+            40,
+        ),
+        pre_ledger_rows(
+            "rationale-2",
+            "gd/src/lib.rs",
+            walked_generation("gd", SOURCE_PATH),
+            &walked("gd", SOURCE_PATH),
+            50,
+        ),
+        pre_ledger_rows("gone-1", "gc/src/gone.rs", "held", &code(GONE, "gone"), 60),
+        pre_ledger_rows(
+            "gone-2",
+            "gc/src/gone.rs",
+            &none_at(GONE),
+            &no_bytes(GONE),
+            70,
+        ),
+        pre_ledger_rows("workflow-1", &workflow, "wold", &heavy, 80),
+        SeededAppend {
+            name: "workflow-entry",
+            events: vec![workflow_entry
+                .event(5)
+                .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(90))],
+            entry_batch: Some(walked("gw", WORKFLOW_PATH)),
+        },
+        pre_ledger_rows(
+            "test-module",
+            "gc/src/checks.rs",
+            walked_generation("gc", TEST_MODULE_PATH),
+            &walked("gc", TEST_MODULE_PATH),
+            100,
+        ),
+        pre_ledger_rows(
+            "directory",
+            "gc/src/dir.rs",
+            &none_at(DIRECTORY),
+            &no_bytes(DIRECTORY),
+            110,
+        ),
+        pre_ledger_rows(
+            "out-of-scope",
+            "gc/build/out.rs",
+            &none_at(OUT_OF_SCOPE),
+            &no_bytes(OUT_OF_SCOPE),
+            120,
+        ),
+        SeededAppend {
+            name: "unkeyed",
+            events: code("src/unkeyed.rs", "ghost")
+                .into_iter()
+                .map(|event| {
+                    event.with_valid_from(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(130),
+                    )
+                })
+                .collect(),
+            entry_batch: None,
+        },
+        SeededAppend {
+            name: "unparsable",
+            events: vec![common::cli::keyed(
+                TYPE_CODE_ENTITY_EXTRACTED,
+                code("src/odd.rs", "odd")[0].data.clone(),
+                "gc/src/odd.rs",
+                140,
+            )],
+            entry_batch: None,
+        },
+        lone(
+            "alias-before",
+            TYPE_ALIAS_DEFINED,
+            r#"{"alias":"docs/handbook.md","canonical":"docs/manual.md"}"#,
+            145,
+        ),
+        pre_ledger_rows(
+            "document-1",
+            &architecture,
+            walked_generation("gd", DOCUMENT_PATH),
+            &document,
+            150,
+        ),
+        lone(
+            "alias-between",
+            TYPE_ALIAS_DEFINED,
+            r#"{"alias":"docs/handbook.md","canonical":"docs/guide.md"}"#,
+            160,
+        ),
+        SeededAppend {
+            name: "document-2",
+            events: [0, 3]
+                .map(|index| {
+                    common::cli::keyed(
+                        &document[index].type_,
+                        document[index].data.clone(),
+                        &format!(
+                            "{architecture}@{}#{index}",
+                            walked_generation("gd", DOCUMENT_PATH)
+                        ),
+                        170,
+                    )
+                })
+                .to_vec(),
+            entry_batch: None,
+        },
+    ];
+
+    // Each append lands and folds as its recording process folded it; `first` is the position
+    // of its first event.
+    let graph_db = common::cli::rigger_file(root, "graph.db");
+    let first: std::collections::BTreeMap<&str, u64> = {
+        let graph = common::cli::open_graph(root);
+        common::cli::with_run_store(root, |store| {
+            let folding = rigger::ingest::folding_into(store, Some(&graph), &|_| {});
+            appends
+                .iter()
+                .map(|append| {
+                    let placed = match &append.entry_batch {
+                        Some(batch) => {
+                            let done = folding
+                                .append_entry_and_fold(
+                                    rigger::conductor::STREAM,
+                                    &append.events[0],
+                                    batch.clone(),
+                                )
+                                .unwrap();
+                            assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
+                            done.appended
+                        }
+                        None => {
+                            let done = folding
+                                .append_and_fold(
+                                    rigger::conductor::STREAM,
+                                    rigger::eventstore::ExpectedRevision::Any,
+                                    &append.events,
+                                )
+                                .unwrap();
+                            assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
+                            done.appended
+                        }
+                    };
+                    let (_, position) = placed.placed().next().unwrap();
+                    (append.name, position)
+                })
+                .collect()
+        })
+    };
+    std::fs::remove_file(root.join(GONE)).ok();
+
+    // What the store holds of the stream from the first seeded append on, as a test compares
+    // it: each event's position, type, replay key, group and valid-time in seconds, and a ledger
+    // entry's payload.
+    let recorded = || {
+        read_run_events(root)
+            .into_iter()
+            .filter(|event| event.position >= first["source-1"])
+            .map(|event| {
+                let meta = |name: &str| event.meta.get(name).cloned().unwrap_or_default();
+                (
+                    event.position,
+                    event.type_.clone(),
+                    meta(rigger::ingest::META_REPLAY_KEY),
+                    meta(rigger::eventstore::META_GROUP),
+                    event
+                        .valid_from
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                    (event.type_ == TYPE_GENERATION_INGESTED).then(|| {
+                        rigger::retention::GenerationIngested::parse(&event.data).unwrap()
+                    }),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before_the_seed = |events: Vec<rigger::eventstore::Event>| {
+        events
+            .into_iter()
+            .filter(|event| event.position < first["source-1"])
+            .map(|event| {
+                (
+                    event.position,
+                    event.type_,
+                    event.data,
+                    event.meta,
+                    event.valid_from,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let settled_events = before_the_seed(read_run_events(root));
+    let folded = common::cli::graph_identity(&graph_db, &project);
+    let applied = common::cli::applied_positions(&graph_db);
+    let identities = [
+        "gc/src/lib.rs",
+        "gd/src/lib.rs",
+        "gc/src/gone.rs",
+        workflow.as_str(),
+        "gc/src/checks.rs",
+        "gc/src/dir.rs",
+        "gc/build/out.rs",
+        architecture.as_str(),
+    ];
+    let held_before =
+        common::fixtures::held_generations(&common::cli::open_graph(root), &identities);
+    assert_eq!(
+        held_before,
+        [
+            walked_generation("gc", SOURCE_PATH).to_string(),
+            walked_generation("gd", SOURCE_PATH).to_string(),
+            none_at(GONE),
+            walked_generation("gw", WORKFLOW_PATH).to_string(),
+            walked_generation("gc", TEST_MODULE_PATH).to_string(),
+            none_at(DIRECTORY),
+            none_at(OUT_OF_SCOPE),
+            walked_generation("gd", DOCUMENT_PATH).to_string(),
+        ]
+        .map(Some),
+        "premise: the graph holds each identity's latest recorded generation"
+    );
+
+    let db = common::cli::rigger_file(root, "events.db");
+    let on_disk = || file_len(&db) + file_len(&db.with_extension("db-wal"));
+    let size_before = on_disk();
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    let size_migrated = on_disk();
+
+    let entry = |prefix: &str, path: &str, generation: &str, n: usize, blob: &str, excluded| {
+        let named = generation_ingested(prefix, path, generation, blob, excluded);
+        (
+            TYPE_GENERATION_INGESTED.to_string(),
+            format!("{}@{generation}#{n}", named.identity()),
+            named.identity(),
+            Some(named),
+        )
+    };
+    let at = |position: u64, (type_, key, group, named): (String, String, String, _), secs: u64| {
+        (position, type_, key, group, secs, named)
+    };
+    let alias = || {
+        (
+            TYPE_ALIAS_DEFINED.to_string(),
+            String::new(),
+            String::new(),
+            None,
+        )
+    };
+    assert_eq!(
+        (
+            ok,
+            out.as_str(),
+            recorded(),
+            before_the_seed(read_run_events(root)) == settled_events
+        ),
+        (
+            true,
+            format!(
+                "reset --derived: converted 7 latest batch(es) into ledger entries and shed 26 \
+                 derived event(s) from the event log\n\
+                 reset --derived: 2 of the derived event(s) shed named no file identity (no \
+                 replay key, or one that does not parse)\n\
+                 reset --derived: compacted the log file and reclaimed {} byte(s) on disk\n",
+                size_before - size_migrated
+            )
+            .as_str(),
+            vec![
+                at(
+                    first["source-3"],
+                    entry(
+                        "gc",
+                        SOURCE_PATH,
+                        walked_generation("gc", SOURCE_PATH),
+                        4,
+                        &blob(SOURCE_PATH),
+                        false
+                    ),
+                    10
+                ),
+                at(
+                    first["rationale-2"],
+                    entry(
+                        "gd",
+                        SOURCE_PATH,
+                        walked_generation("gd", SOURCE_PATH),
+                        2,
+                        &blob(SOURCE_PATH),
+                        false
+                    ),
+                    40
+                ),
+                at(
+                    first["gone-2"],
+                    entry("gc", GONE, &none_at(GONE), 1, "", false),
+                    60
+                ),
+                at(
+                    first["workflow-entry"],
+                    entry(
+                        "gw",
+                        WORKFLOW_PATH,
+                        walked_generation("gw", WORKFLOW_PATH),
+                        5,
+                        &blob(WORKFLOW_PATH),
+                        false
+                    ),
+                    80
+                ),
+                at(
+                    first["test-module"],
+                    entry(
+                        "gc",
+                        TEST_MODULE_PATH,
+                        walked_generation("gc", TEST_MODULE_PATH),
+                        1,
+                        &blob(TEST_MODULE_PATH),
+                        cfg!(feature = "symbols")
+                    ),
+                    100
+                ),
+                at(
+                    first["directory"],
+                    entry("gc", DIRECTORY, &none_at(DIRECTORY), 1, "", false),
+                    110
+                ),
+                at(
+                    first["out-of-scope"],
+                    entry("gc", OUT_OF_SCOPE, &none_at(OUT_OF_SCOPE), 1, "", false),
+                    120
+                ),
+                at(first["alias-before"], alias(), 145),
+                at(
+                    first["document-1"] + 1,
+                    entry(
+                        "gd",
+                        DOCUMENT_PATH,
+                        walked_generation("gd", DOCUMENT_PATH),
+                        4,
+                        &blob(DOCUMENT_PATH),
+                        false
+                    ),
+                    150
+                ),
+                at(first["alias-between"], alias(), 160),
+            ],
+            true,
+        ),
+        "the migration converts in place, sheds every other derived row and reports it; its \
+         stderr: {err}"
+    );
+    assert!(
+        size_migrated < size_before,
+        "the log's file shrank: {size_before} before, {size_migrated} after"
+    );
+    assert_eq!(
+        (
+            common::cli::graph_identity(&graph_db, &project) == folded,
+            common::cli::applied_positions(&graph_db) == applied,
+        ),
+        (true, true),
+        "the migration writes no projection row and no ledger row to graph.db"
+    );
+
+    // Run again over a file holding free pages: nothing is left to shed, and it still reclaims.
+    let migrated = recorded();
+    common::fixtures::plant_free_pages(&db, 3_000);
+    let size_planted = on_disk();
+    let (again, again_err, again_ok) = run_rigger(root, &["reset", "--derived"]);
+    let size_reclaimed = on_disk();
+    assert_eq!(
+        (again_ok, again.as_str(), recorded() == migrated),
+        (
+            true,
+            format!(
+                "reset --derived: no derived event to shed\n\
+                 reset --derived: compacted the log file and reclaimed {} byte(s) on disk\n",
+                size_planted - size_reclaimed
+            )
+            .as_str(),
+            true,
+        ),
+        "a second run sheds nothing and reclaims the free pages; its stderr: {again_err}"
+    );
+    assert!(
+        size_reclaimed < size_planted,
+        "the second run shrank the file: {size_planted} before, {size_reclaimed} after"
+    );
+
+    // A rebuild of the migrated store.
+    #[cfg(feature = "symbols")]
+    let facts = |graph: &rigger::contextgraph::sqlite::Projector| {
+        let whole = graph.whole().unwrap();
+        let mut nodes: Vec<String> = whole.nodes.into_iter().map(|node| node.id).collect();
+        let mut edges: Vec<(String, String, String)> = whole
+            .edges
+            .into_iter()
+            .map(|edge| (edge.from, edge.rel, edge.to))
+            .collect();
+        nodes.sort();
+        edges.sort();
+        (nodes, edges)
+    };
+    #[cfg(feature = "symbols")]
+    let folded_facts = facts(&common::cli::open_graph(root));
+    common::fixtures::owe_a_rebuild(&common::cli::open_graph(root));
+    let (rebuilt, rebuilt_err, rebuilt_ok) =
+        run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    let behind = if cfg!(feature = "symbols") { 0 } else { 5 };
+    assert_eq!(
+        (
+            rebuilt_ok,
+            common::cli::lines_where(&rebuilt, |line| {
+                line.starts_with("rebuilt graph.db") || line.starts_with("identities the tree")
+            }),
+        ),
+        (
+            true,
+            vec![
+                "rebuilt graph.db from the event log".to_string(),
+                format!(
+                    "identities the tree holds a file for whose generation in graph.db is not \
+                     their latest recording's: {behind}"
+                ),
+            ]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ),
+        "the rebuild of the migrated store reports the identities behind their recording; its \
+         stderr: {rebuilt_err}"
+    );
+    #[cfg(feature = "symbols")]
+    {
+        let rebuilt_graph = common::cli::open_graph(root);
+        let (mut nodes, mut edges) = folded_facts.clone();
+        // What only the unkeyed event and the one whose key does not parse asserted is gone, and
+        // the spanning generation folds whole at its entry, before the second alias.
+        let gone_nodes = [
+            "src/odd.rs",
+            "src/odd.rs::odd",
+            "src/unkeyed.rs",
+            "src/unkeyed.rs::ghost",
+        ];
+        let gone_edges = [
+            ("docs/architecture.md", "references", "docs/guide.md"),
+            ("src/odd.rs", "CONTAINS", "src/odd.rs::odd"),
+            ("src/unkeyed.rs", "CONTAINS", "src/unkeyed.rs::ghost"),
+        ]
+        .map(|(from, rel, to)| (from.to_string(), rel.to_string(), to.to_string()));
+        let held_nodes = nodes.len();
+        let held_edges = edges.len();
+        nodes.retain(|node| !gone_nodes.contains(&node.as_str()));
+        edges.retain(|edge| !gone_edges.contains(edge));
+        assert_eq!(
+            (
+                held_nodes - nodes.len(),
+                held_edges - edges.len(),
+                facts(&rebuilt_graph),
+                common::fixtures::held_generations(&rebuilt_graph, &identities),
+            ),
+            (4, 3, (nodes, edges), held_before),
+            "the rebuilt graph holds the facts the parsable recordings asserted and the \
+             generations the store held"
+        );
+    }
+}
