@@ -232,7 +232,7 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
         let plan = plan_derived_prune(&tx, stream, &crate::ingest::derived_index_identity(), &[])?;
-        let shed_by_the_plan = plan.deletes.iter().map(|(_, position)| *position).collect();
+        let shed_by_the_plan = plan.deletes.iter().copied().collect();
         let read = read_derived(&tx, stream, &shed_by_the_plan)?;
         let mut converted = 0;
         {
@@ -491,8 +491,7 @@ impl Store {
         let mut guard = self.conn.lock().unwrap();
         let tx = guard.transaction().map_err(be)?;
         let plan = plan_derived_prune(&tx, stream_prefix, identity, &reasserting)?;
-        let shed: std::collections::HashSet<i64> =
-            plan.deletes.iter().map(|(_, position)| *position).collect();
+        let shed: std::collections::HashSet<i64> = plan.deletes.iter().copied().collect();
         let carried: std::collections::HashMap<i64, i64> = plan.carries.into_iter().collect();
         let stream = format!("{stream_prefix}{stream}");
         let Some(head) = stream_head(&tx, &stream)? else {
@@ -700,8 +699,8 @@ fn read_derived(
 struct DerivedPrunePlan {
     /// How many covered, keyed rows the selection weighed.
     rows: usize,
-    /// `(index into the policy's types, position)` of every row to delete.
-    deletes: Vec<(usize, i64)>,
+    /// The position of every row the selection sets aside.
+    deletes: Vec<i64>,
     /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
     /// first recorded earlier than its own valid-time.
     carries: Vec<(i64, i64)>,
@@ -857,9 +856,9 @@ fn plan_derived_prune(
         let content_key: String = row.get(3).map_err(be)?;
         let valid_from: i64 = row.get(4).map_err(be)?;
         let payload: Option<Vec<u8>> = row.get(5).map_err(be)?;
-        let Some(type_index) = types.iter().position(|t| *t == type_) else {
+        if !identity.covers(&type_) {
             continue;
-        };
+        }
         plan.rows += 1;
         let (batch, generation) = identity
             .key_parts(&content_key)
@@ -877,7 +876,7 @@ fn plan_derived_prune(
         let exact = (stream.clone(), type_.clone(), content_key);
         let survives = !superseded && seen.insert(exact.clone());
         if !survives {
-            plan.deletes.push((type_index, position));
+            plan.deletes.push(position);
         }
         let fact = payload.and_then(|payload| match identity.facts() {
             Some(facts) => {

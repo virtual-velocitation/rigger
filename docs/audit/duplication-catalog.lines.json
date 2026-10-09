@@ -469,8 +469,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1138,
-        "end_line": 1140
+        "start_line": 1137,
+        "end_line": 1139
       }
     ]
   },
@@ -3694,33 +3694,33 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 442,
-        "end_line": 442
+        "start_line": 516,
+        "end_line": 516
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 584,
-        "end_line": 584
+        "start_line": 658,
+        "end_line": 658
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 861,
-        "end_line": 861
+        "start_line": 935,
+        "end_line": 935
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 861,
-        "end_line": 861
+        "start_line": 935,
+        "end_line": 935
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 876,
-        "end_line": 876
+        "start_line": 950,
+        "end_line": 950
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 919,
-        "end_line": 919
+        "start_line": 993,
+        "end_line": 993
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -5289,8 +5289,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 944,
-        "end_line": 950
+        "start_line": 943,
+        "end_line": 949
       }
     ]
   },
@@ -5754,23 +5754,23 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1595,
-        "end_line": 1595
+        "start_line": 1594,
+        "end_line": 1594
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2116,
-        "end_line": 2116
+        "start_line": 2115,
+        "end_line": 2115
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2252,
-        "end_line": 2252
+        "start_line": 2251,
+        "end_line": 2251
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 2575,
-        "end_line": 2575
+        "start_line": 2574,
+        "end_line": 2574
       },
       {
         "file": "crates/rigger-store-sqlite/src/run_store.rs",
@@ -5969,13 +5969,13 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 55,
-        "end_line": 55
+        "start_line": 56,
+        "end_line": 56
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 593,
-        "end_line": 593
+        "start_line": 667,
+        "end_line": 667
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -6284,8 +6284,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 1535,
-        "end_line": 1540
+        "start_line": 1534,
+        "end_line": 1539
       }
     ]
   },
@@ -6514,8 +6514,8 @@
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "start_line": 529,
-        "end_line": 546
+        "start_line": 528,
+        "end_line": 545
       }
     ]
   },
