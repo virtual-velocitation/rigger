@@ -49,7 +49,6 @@ use common::cli::with_graph_locked;
 use common::cli::write_workflow_fixture;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::fixtures::cleanup;
-use common::fixtures::dir_snapshot;
 use common::fixtures::files_open_by;
 use common::fixtures::meta_replay_key;
 use common::fixtures::wait_until_for;
