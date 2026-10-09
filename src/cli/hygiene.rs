@@ -2057,6 +2057,31 @@ mod tests {
         );
     }
 
+    /// A count holding no derived event has no phrase; any other is phrased by its events and
+    /// the size of its identity set, decided by the events alone, so rows that all name no
+    /// identity are still held.
+    #[test]
+    fn derived_events_held_phrases_a_count_holding_a_derived_event_and_answers_none_for_zero() {
+        assert_eq!(derived_events_held(&DerivedCount::default()), None);
+        assert_eq!(
+            derived_events_held(&derived_count(0, 0, &["gc/src/a.rs"])),
+            None,
+            "the events decide, never the identities"
+        );
+        assert_eq!(
+            derived_events_held(&derived_count(1, 0, &["gc/src/a.rs"])).as_deref(),
+            Some("1 derived events of 1 file identities")
+        );
+        assert_eq!(
+            derived_events_held(&derived_count(7, 1, &["gc/src/a.rs", "gd/src/a.rs"])).as_deref(),
+            Some("7 derived events of 2 file identities")
+        );
+        assert_eq!(
+            derived_events_held(&derived_count(2, 2, &[])).as_deref(),
+            Some("2 derived events of 0 file identities")
+        );
+    }
+
     #[test]
     fn derived_menu_line_names_the_events_the_file_identities_holding_them_and_the_flag() {
         assert_eq!(
