@@ -247,13 +247,13 @@ fn discipline_body(ctx: &DocsContext) -> String {
          design, since a dedup that suppressed an already-recorded key would strand the graph \
          on the version the file has since moved past. A prune that sheds rows on such a log is \
          shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \
-         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and stages \
-         a COMPLETE COPY of the log in SQLite's temporary directory while it does, so the free \
-         space it needs is on whichever filesystem that resolves to rather than on the partition \
-         holding .rigger/ - SQLITE_TMPDIR if you set it, else TMPDIR, else the first of /var/tmp, \
-         /usr/tmp, /tmp that exists and is writable, which on a Linux box with TMPDIR unset means \
-         /var/tmp and NOT /tmp. Set TMPDIR yourself if the default lands somewhere too small for \
-         a second copy of your log. It rewrites only when the FILE is holding reclaimable free \
+         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
+         a COMPLETE COPY of the log in the process's MEMORY while it does, never in a temporary \
+         directory, so what it needs is free memory of about the size of your log rather than \
+         free space on any disk, no temporary-directory setting changes where the copy goes, and \
+         a crash leaves no temporary file behind to clean up. A machine short of that memory \
+         fails the rewrite and nothing else: the rewrite rolls back and the log stays as the \
+         deletes left it. It rewrites only when the FILE is holding reclaimable free \
          pages, which is not the same as this run having deleted something: a prune with nothing \
          to shed from an already-compact log leaves the file exactly as it found it and reports \
          reclaiming zero, while a prune that sheds nothing from a log still holding free pages \
@@ -1651,26 +1651,29 @@ mod tests {
                 "{label} must give that case its ordinary name, so an operator recognizes it"
             );
 
-            // WHAT IT COSTS TO RUN, which is not on the partition the operator is watching: the
-            // rewrite stages a complete copy of the log in the temporary directory, and it only
-            // runs when the FILE has free space to reclaim.
+            // WHAT IT COSTS TO RUN, which is not disk space at all: the rewrite holds a complete
+            // copy of the log in the process's memory, and it only runs when the FILE has free
+            // space to reclaim.
             assert!(
-                out.contains("temporary directory"),
-                "{label} must say where the compaction stages its copy of the log, since the free \
-                 space it needs is not on the partition holding the log"
+                out.contains(
+                    "holds a COMPLETE COPY of the log in the process's MEMORY while it does, \
+                     never in a temporary directory"
+                ),
+                "{label} must say where the compaction stages its copy of the log, since what it \
+                 needs is memory and not room on any disk"
             );
-            // AND WHICH DIRECTORY THAT IS, resolved the way SQLite resolves it. This sentence
-            // exists for exactly one job - telling an operator WHICH filesystem must hold a full
-            // copy of their log - so naming the wrong one is worse than saying nothing. SQLite's
-            // unix resolution is SQLITE_TMPDIR, then TMPDIR, then the first of /var/tmp, /usr/tmp
-            // and /tmp that it can use, so with TMPDIR unset the answer is /var/tmp and /tmp is
-            // never consulted.
-            for needle in ["SQLITE_TMPDIR", "TMPDIR", "/var/tmp"] {
+            assert!(
+                out.contains("free memory of about the size of your log"),
+                "{label} must say HOW MUCH memory the staged copy takes, or an operator cannot \
+                 tell beforehand whether the machine can run it"
+            );
+            // AND NO DIRECTORY IS NAMED AS ITS HOME. The copy never touches SQLite's temporary
+            // directory, so a sentence still resolving one would send an operator to free space
+            // on a filesystem the rewrite does not use.
+            for stale in ["SQLITE_TMPDIR", "/var/tmp", "/usr/tmp"] {
                 assert!(
-                    out.contains(needle),
-                    "{label} must name how the temporary directory RESOLVES ({needle:?}): an \
-                     operator reads this to decide which filesystem needs the free space, and a \
-                     guess at the default sends them to the wrong one"
+                    !out.contains(stale),
+                    "{label} must not name {stale:?}: the compaction stages nothing there"
                 );
             }
             assert!(

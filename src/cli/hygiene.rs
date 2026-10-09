@@ -188,7 +188,7 @@ impl ResetEnv {
 ///
 /// WHY A COUNT, NOT A DISK-BYTE FORECAST. The flagged reports name bytes RECLAIMED
 /// (`derived_prune_report`, `reset_runs`'s own line) because they measure a real before/after
-/// across the mutation that just ran - `PrunedDerived::reclaimed_bytes`'s own docs are explicit
+/// across the mutation that just ran - `Reclamation::reclaimed_bytes`'s own docs are explicit
 /// that this is "MEASURED, NOT DERIVED" over the actual rewrite, and `Projector::compact`'s docs
 /// say the same of `VACUUM`: a page-count delta is only meaningful once the rewrite has happened.
 /// There is no honest byte figure to preview BEFORE that rewrite runs - printing one here would
@@ -512,7 +512,7 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     //     that WAS pruned.
     //   - the file had no free space to reclaim: it is deliberately not rewritten, because a full
     //     rewrite there holds the write lock for a whole scan and stages a second copy of the log
-    //     in the temporary directory to reclaim nothing. Zero bytes is the measurement, not a
+    //     in the process's memory to reclaim nothing. Zero bytes is the measurement, not a
     //     missing one. Read from `compaction_ran`, never inferred from a zero count: a pass that
     //     deleted nothing still rewrites a file that HAS space to reclaim, and telling an
     //     operator their log was left alone while it was being rewritten is the misreport this
@@ -529,10 +529,10 @@ fn derived_prune_report(pruned: &PrunedDerived) -> String {
     //     writer that does not exist and promise pages at a checkpoint that will never put a byte
     //     on a disk this database does not use.
     let compaction = match (
-        &pruned.compaction_error,
-        pruned.compaction_ran,
-        pruned.reclaimed_bytes,
-        pruned.on_disk_measured,
+        &pruned.reclamation.compaction_error,
+        pruned.reclamation.compaction_ran,
+        pruned.reclamation.reclaimed_bytes,
+        pruned.reclamation.on_disk_measured,
     ) {
         (Some(err), _, _, _) => format!(
             "the log file could NOT be compacted afterwards: {err}. The deletes are committed and \
@@ -1438,10 +1438,12 @@ mod tests {
                 .map(|(i, t)| (t.to_string(), if i == 0 { removed } else { 0 }))
                 .collect(),
             superseded_generations: 0,
-            reclaimed_bytes: reclaimed,
-            compaction_ran,
-            on_disk_measured,
-            compaction_error: failure.map(str::to_string),
+            reclamation: rigger::eventstore::sqlite::Reclamation {
+                reclaimed_bytes: reclaimed,
+                compaction_ran,
+                on_disk_measured,
+                compaction_error: failure.map(str::to_string),
+            },
         };
         derived_prune_report(&pruned)
     }

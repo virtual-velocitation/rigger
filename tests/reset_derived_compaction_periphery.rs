@@ -410,7 +410,7 @@ fn prune_derived_index_keeps_the_callers_type_order_and_is_a_faithful_no_op_at_i
     // compare one without a prune having run.
     let empty = PrunedDerived::default();
     assert_eq!(empty.total_removed(), 0);
-    assert!(empty.removed.is_empty() && empty.reclaimed_bytes.is_none());
+    assert!(empty.removed.is_empty() && empty.reclamation.reclaimed_bytes.is_none());
 }
 
 /// The valid-time partition is an input the prune CANNOT default, so it refuses instead.
@@ -531,7 +531,7 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
         .prune_derived_index(&prefix, &rigger::ingest::derived_index_identity())
         .expect("prune the uncontended log");
     assert!(
-        solo_report.reclaimed_bytes.is_some() && solo_report.total_removed() > 0,
+        solo_report.reclamation.reclaimed_bytes.is_some() && solo_report.total_removed() > 0,
         "with no reader parked on the log the checkpoint completes, so the reclamation is a \
          measurement; got {solo_report:?}"
     );
@@ -557,7 +557,7 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
          checkpoint is ever asked for"
     );
     assert_eq!(
-        report.reclaimed_bytes, None,
+        report.reclamation.reclaimed_bytes, None,
         "the checkpoint was refused, so the freed pages are still in the write-ahead log and the \
          file did not shrink: the reclamation is UNMEASURED, never a byte count the operator's own \
          `ls` would contradict; got {report:?}"
@@ -1131,7 +1131,7 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
             ),
             (
                 "say where the compaction stages its copy of the log",
-                "temporary directory",
+                "in the process's MEMORY while it does, never in a temporary directory",
             ),
             (
                 "say a prune with nothing to shed does not rewrite the file",
@@ -3597,9 +3597,8 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 // section 18 is satisfied by a command that vacuumed the entire log to reclaim nothing.
 //
 // The rewrite is the most expensive thing the command can do: it holds the write lock for a full
-// scan of the log, stages a COMPLETE second copy of the database in the temporary directory
-// SQLite resolves - which on the ordinary layout is a different, much smaller filesystem than the
-// one holding `.rigger/` - and reclaims exactly the free pages the file is holding. So a file
+// scan of the log, stages a COMPLETE second copy of the database in the process's memory and
+// reclaims exactly the free pages the file is holding. So a file
 // holding none must not be rewritten at all.
 //
 // BUT THE TRIGGER IS THE FREE SPACE, NOT THE DELETES, and that is the second half of this
@@ -3656,20 +3655,20 @@ fn assert_prune_skips_the_rewrite(backend: &Store, db: &Path, prefix: &str) -> P
         skipped.removed
     );
     assert!(
-        !skipped.compaction_ran,
+        !skipped.reclamation.compaction_ran,
         "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
          most expensive thing this command does, and declining it is a fact the operator is owed \
          rather than one they infer from a zero. Got {skipped:?}"
     );
     assert_eq!(
-        skipped.reclaimed_bytes,
+        skipped.reclamation.reclaimed_bytes,
         Some(0),
         "a prune over a file with no free space reclaimed nothing, and that is a MEASUREMENT \
          rather than a measurement it could not take: `None` means `unmeasured` and would send an \
          operator looking for pages that land at some later checkpoint. Got {skipped:?}"
     );
     assert_eq!(
-        skipped.compaction_error, None,
+        skipped.reclamation.compaction_error, None,
         "a rewrite that never ran cannot have failed; got {skipped:?}"
     );
     assert_eq!(
@@ -3717,7 +3716,7 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
         pruned.removed
     );
     assert!(
-        pruned.reclaimed_bytes.is_some_and(|b| b > 0),
+        pruned.reclamation.reclaimed_bytes.is_some_and(|b| b > 0),
         "a pass that deleted nothing must still reclaim the space the FILE is holding, or the \
          space a failed reclamation left behind is unreclaimable through this command forever; \
          got {pruned:?}"
@@ -3749,8 +3748,7 @@ fn a_prune_that_shed_nothing_still_reclaims_the_free_space_the_file_is_holding()
 //
 // The cost is the reason this matters at all. On a file with nothing to reclaim the rewrite would
 // hold the write lock for a full scan of the log, stage a COMPLETE second copy of the database in
-// the temporary directory SQLite resolves - a different and typically much smaller filesystem
-// than the one holding `.rigger/` - and reclaim not one page. Section 20 cannot see any of that:
+// the process's memory and reclaim not one page. Section 20 cannot see any of that:
 // it compares rows and dates, and a full VACUUM preserves every row and every date, so a command
 // that rewrote the entire log to reclaim nothing passes it.
 //
@@ -4112,18 +4110,18 @@ fn the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count() {
         rewrote.removed
     );
     assert!(
-        rewrote.compaction_ran,
+        rewrote.reclamation.compaction_ran,
         "a pass that deleted nothing over a file WITH space to reclaim rewrites it, and must say \
          so: this is the re-run the failure report calls the remedy, and a report that told the \
          operator their log was left alone would make that remedy read as having done nothing. \
          Got {rewrote:?}"
     );
     assert!(
-        rewrote.reclaimed_bytes.is_some_and(|b| b > 0),
+        rewrote.reclamation.reclaimed_bytes.is_some_and(|b| b > 0),
         "and it reclaimed real space, so the flag is not a constant; got {rewrote:?}"
     );
     assert_eq!(
-        rewrote.compaction_error, None,
+        rewrote.reclamation.compaction_error, None,
         "an uncontended rewrite over a writable file must not fail; got {rewrote:?}"
     );
     assert_eq!(
@@ -4179,24 +4177,24 @@ fn a_declined_checkpoint_reports_the_rewrite_that_ran_rather_than_a_file_left_al
     drop(reader);
 
     assert_eq!(
-        report.reclaimed_bytes, None,
+        report.reclamation.reclaimed_bytes, None,
         "the premise of this test: the checkpoint was declined, so the reclamation is UNMEASURED. \
          Got {report:?}"
     );
     assert_eq!(
-        report.compaction_error, None,
+        report.reclamation.compaction_error, None,
         "and it was declined, not failed - the vacuum itself succeeded under the parked reader; \
          got {report:?}"
     );
     assert!(
-        report.compaction_ran,
+        report.reclamation.compaction_ran,
         "the file WAS rewritten, and an unmeasured reclamation must not be reported as a file \
          left alone: `None` bytes says only that the figure could not be taken, so the flag is \
          the only thing separating a deferred reclamation from a rewrite that never ran. Got \
          {report:?}"
     );
     assert!(
-        report.on_disk_measured,
+        report.reclamation.on_disk_measured,
         "and this store HAS a file, so the before-measurement was taken: that is what makes this \
          `None` a checkpoint a reader declined rather than a database with nothing on disk to \
          measure. The two produce the identical (no error, rewritten, no bytes) shape and this \
@@ -4238,22 +4236,22 @@ fn a_store_with_no_file_behind_it_reports_the_reclamation_as_unmeasured() {
          got {pruned:?}"
     );
     assert!(
-        pruned.compaction_ran,
+        pruned.reclamation.compaction_ran,
         "the deletes freed whole pages, so the rewrite ran: this test is about what the RUN \
          reports, not about the skipped arm. Got {pruned:?}"
     );
     assert_eq!(
-        pruned.compaction_error, None,
+        pruned.reclamation.compaction_error, None,
         "the rewrite of an in-memory database must not fail; got {pruned:?}"
     );
     assert_eq!(
-        pruned.reclaimed_bytes, None,
+        pruned.reclamation.reclaimed_bytes, None,
         "a database with no file behind it has no bytes ON DISK to have lost, so the reclamation \
          is UNMEASURED. `Some(0)` would claim a measurement was taken - the one value this field \
          reserves for a file that was really looked at and had nothing to give back. Got {pruned:?}"
     );
     assert!(
-        !pruned.on_disk_measured,
+        !pruned.reclamation.on_disk_measured,
         "and the report must SAY WHICH unmeasured this is. The triple above - no failure, the \
          file rewritten, no byte figure - is the identical shape a checkpoint declined by a \
          concurrent reader produces on a real file, and a consumer handed only that shape can \
@@ -4320,16 +4318,16 @@ fn a_prune_reports_a_byte_figure_only_where_it_had_a_file_to_measure_one_over() 
 
     let measured = prune_all_types(&on_disk, &on_disk_prefix);
     assert!(
-        !measured.compaction_ran,
+        !measured.reclamation.compaction_ran,
         "the control is the SKIPPED arm: the file held nothing to reclaim, so it was not \
          rewritten. Got {measured:?}"
     );
     assert!(
-        measured.on_disk_measured,
+        measured.reclamation.on_disk_measured,
         "this store has a file, so the before-measurement was taken; got {measured:?}"
     );
     assert_eq!(
-        measured.reclaimed_bytes,
+        measured.reclamation.reclaimed_bytes,
         Some(0),
         "and over a file that was really looked at, ZERO IS THE MEASUREMENT - the whole meaning \
          of `Some(0)` here, and what the fileless case below must not borrow. Got {measured:?}"
@@ -4351,17 +4349,17 @@ fn a_prune_reports_a_byte_figure_only_where_it_had_a_file_to_measure_one_over() 
         unmeasured.removed
     );
     assert!(
-        !unmeasured.compaction_ran,
+        !unmeasured.reclamation.compaction_ran,
         "the fileless store must reach the SAME arm as the control, or the two are not one shape \
          with one difference; got {unmeasured:?}"
     );
     assert!(
-        !unmeasured.on_disk_measured,
+        !unmeasured.reclamation.on_disk_measured,
         "a database with no file behind it took no before-measurement, and the flag says so; got \
          {unmeasured:?}"
     );
     assert_eq!(
-        unmeasured.reclaimed_bytes, None,
+        unmeasured.reclamation.reclaimed_bytes, None,
         "SO IT MAY NOT HAND BACK A BYTE FIGURE. `Some(0)` here claims a measurement over a file \
          that does not exist, and claims it standing beside the flag that says no measurement was \
          taken - the one combination this report has no reading for. The honest answer is the one \
@@ -4380,7 +4378,7 @@ fn a_prune_reports_a_byte_figure_only_where_it_had_a_file_to_measure_one_over() 
         ("the fileless pass under test", &unmeasured),
     ] {
         assert!(
-            pruned.reclaimed_bytes.is_none() || pruned.on_disk_measured,
+            pruned.reclamation.reclaimed_bytes.is_none() || pruned.reclamation.on_disk_measured,
             "{which} reported a byte figure without a measurement behind it. Every `Some` in this \
              field is defined as a difference of two sampled sizes, so one may only appear where \
              the sampling happened. Got {pruned:?}"
