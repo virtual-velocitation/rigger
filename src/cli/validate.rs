@@ -2081,8 +2081,8 @@ mod tests {
             "the message must name every lagging file: {msg}"
         );
         assert!(
-            msg.contains("rigger reindex"),
-            "the message must name the fix: {msg}"
+            msg.contains("Run `rigger graph build` to refresh it.") && !msg.contains("reindex"),
+            "the message must name the verb that records and folds the lagging entries: {msg}"
         );
     }
 

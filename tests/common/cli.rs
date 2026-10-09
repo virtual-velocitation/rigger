@@ -1070,7 +1070,7 @@ pub fn assert_light_lane_extent_note(out: &str) {
 pub fn index_lag_advisory(files: &[&str]) -> String {
     format!(
         "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger reindex <file>...` to refresh it.",
+         ({}). Run `rigger graph build` to refresh it.",
         files.len(),
         files.join(", ")
     )

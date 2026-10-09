@@ -187,7 +187,7 @@ rigger::test_cases! {
     /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a recorded generation the
     /// tree has since moved past.
     #[cfg(feature = "symbols")]
-    validate_warns_of_graph_index_lag_and_names_reindex: assert_validate_advises(
+    validate_warns_of_graph_index_lag_and_names_graph_build: assert_validate_advises(
         |root| {
             std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
             seed_graph_generation(root, "churn.rs");
@@ -198,8 +198,9 @@ rigger::test_cases! {
         &[
             ("churn.rs", "the warning must name the lagging file"),
             (
-                "rigger reindex",
-                "the graph-lag warning must name `rigger reindex` as the fix",
+                "Run `rigger graph build` to refresh it.",
+                "the graph-lag warning must name `rigger graph build`, which records and folds \
+                 the lagging entry, as the fix",
             ),
         ],
     );
