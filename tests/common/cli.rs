@@ -435,6 +435,17 @@ pub fn open_graph(root: &Path) -> Projector {
     Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
 }
 
+/// Every `graph.db*` entry under `.rigger/` of `root` ([`super::fixtures::dir_snapshot`]).
+pub fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    super::fixtures::dir_snapshot(&rigger_file(root, ""), "graph.db")
+}
+
+/// The rebuild lock of the `graph.db` of `root`, held as a `rigger setup` or a `rigger reset`
+/// holds `graph.db.lock`, until it is dropped.
+pub fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {
+    Projector::lock_rebuild(rigger_file(root, "graph.db").to_str().unwrap()).unwrap()
+}
+
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
 pub fn body_line_count(out: &str) -> usize {
     out.lines()

@@ -27609,3 +27609,86 @@ fn validate_names_no_document_whose_only_entry_is_a_design_batch() {
         "premise: the change moved the design batch's generation, which the next build records"
     );
 }
+
+/// Given a store holding derived duplicates the derived reset would shed, a `graph.db` that owes
+/// nothing, and a regular file standing at its shadow path - a rebuild left unfinished - when
+/// `rigger reset --derived` runs while another holder has the rebuild lock, then it is refused at
+/// the lock, in the one text naming every holder; once the lock is free it is refused for the
+/// unfinished rebuild, naming `rigger setup`; each refusal prints nothing else and leaves the event
+/// log and every `graph.db` file byte for byte. With the shadow gone the same command sheds the
+/// duplicates, and `graph.db.lock` stands free behind it.
+#[test]
+fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_changes_nothing() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    common::cli::seed_derived_duplicates(root);
+    drop(common::cli::open_graph(root));
+    let shadow = common::cli::rigger_file(root, "graph.db.rebuild");
+    std::fs::write(&shadow, b"left by a rebuild that stopped").unwrap();
+    let stands = || {
+        (
+            common::fixtures::dir_snapshot(&common::cli::rigger_file(root, ""), "events.db"),
+            common::cli::graph_files(root),
+        )
+    };
+    // The refused command: whether it succeeded, its stdout, its stderr, and whether the log and
+    // the graph files stand as `found`.
+    let refused = |found: &(Vec<_>, Vec<_>)| {
+        let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+        (ok, out, err, stands() == *found)
+    };
+
+    let holder = common::cli::hold_the_rebuild(root);
+    let found = stands();
+    let at_the_lock = refused(&found);
+    drop(holder);
+    let unfinished = refused(&found);
+    std::fs::remove_file(&shadow).unwrap();
+    let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
+    let lock_free = common::cli::hold_the_rebuild(root);
+    assert_eq!(
+        (
+            found
+                .1
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            at_the_lock,
+            unfinished,
+            (
+                shed_ok,
+                shed.split(" redundant").next(),
+                common::cli::graph_files(root)
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+            ),
+        ),
+        (
+            vec!["graph.db", "graph.db.lock", "graph.db.rebuild"],
+            (
+                false,
+                String::new(),
+                "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`\n"
+                    .to_string(),
+                true
+            ),
+            (
+                false,
+                String::new(),
+                "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger \
+                 setup` to finish it\n"
+                    .to_string(),
+                true
+            ),
+            (
+                true,
+                Some("reset --derived: pruned 2"),
+                vec!["graph.db", "graph.db.lock"]
+            ),
+        ),
+        "the held lock refuses first and the unfinished rebuild second, neither changing the log \
+         or a graph file, and the reset sheds once the shadow is gone; its stderr: {shed_err}"
+    );
+    drop(lock_free);
+}

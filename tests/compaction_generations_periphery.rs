@@ -31,7 +31,9 @@ use common::cli::assert_stopped_at_the_grounder;
 use common::cli::escalate_solo_unit;
 use common::cli::exists;
 use common::cli::fold_state;
+use common::cli::graph_files;
 use common::cli::graph_identity;
+use common::cli::hold_the_rebuild;
 use common::cli::keyed;
 use common::cli::nanos;
 use common::cli::no_progress;
@@ -6118,11 +6120,6 @@ enum RebuildPhase {
     FoldingTheTail,
 }
 
-/// Every `graph.db*` entry under `.rigger/` of `root` ([`dir_snapshot`]).
-fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
-    dir_snapshot(&rigger_file(root, ""), "graph.db")
-}
-
 /// Every line of `out` that names `needle`, in order.
 fn lines_naming(out: &str, needle: &str) -> Vec<String> {
     out.lines()
@@ -6423,8 +6420,8 @@ fn a_setup_refused_by_a_rebuild_in_progress_migrates_nothing_and_names_it_in_its
                 Vec::<String>::new(),
                 0,
                 Some(
-                    "rigger: graph: a rebuild of graph.db is in progress (a `rigger setup` holds \
-                     graph.db.lock)"
+                    "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger \
+                     reset`"
                         .to_string()
                 ),
                 (vec!["d-legacy".to_string()], Vec::<String>::new()),
@@ -6575,22 +6572,16 @@ fn a_graph_db_lock_that_cannot_be_opened_is_named_by_setup_and_by_reset_runs_ove
             ),
             (
                 true,
-                Some("left, unless a rebuild in progress holds graph.db.lock".to_string())
+                Some(
+                    "left, unless another `rigger setup` or `rigger reset` holds graph.db.lock"
+                        .to_string()
+                )
             ),
         ),
         "setup and reset --runs over a stale copy name the lock file they cannot open, and reset \
          --runs with no copy never tries it; setup stdout: {out} stderr: {err}; no-copy stderr: \
          {no_copy_err}; over-copy stderr: {over_copy_err}"
     );
-}
-
-/// A rebuild in progress over the `graph.db` of `root`, holding `graph.db.lock` until it is
-/// dropped.
-fn hold_the_rebuild(root: &Path) -> rigger::contextgraph::sqlite::RebuildLock {
-    rigger::contextgraph::sqlite::Projector::lock_rebuild(
-        rigger_file(root, "graph.db").to_str().unwrap(),
-    )
-    .unwrap()
 }
 
 /// The shadow of the `graph.db` of `root`, held open mid-batch as a rebuild in its fold holds it,

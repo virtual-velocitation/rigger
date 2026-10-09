@@ -5611,6 +5611,72 @@ mod tests {
         );
     }
 
+    /// A rebuild is left unfinished over a graph file that stands with the shadow a rebuild resumes
+    /// beside it, or that holds the cursor whose tail a rebuild finishes - and over no other: not
+    /// one that stands with neither, nor once the cursor is dropped, and never where no graph file
+    /// stands, shadow or not, which is answered without making one. The shadow is never opened: it
+    /// is not a database here, and stands byte for byte.
+    #[test]
+    fn a_rebuild_is_unfinished_over_a_standing_shadow_or_a_held_cursor_and_never_without_a_graph_file(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        let shadow = dir.path().join("graph.db.rebuild");
+        let left = b"left by a rebuild that stopped";
+        let held = locked(path);
+        let lock_only = dir_snapshot(dir.path(), "");
+        // What is answered, and what stands beside the lock once it is.
+        let unfinished = || {
+            (
+                Projector::rebuild_unfinished(&held).map_err(|e| e.to_string()),
+                dir_snapshot(dir.path(), ""),
+            )
+        };
+
+        let no_graph_file = unfinished();
+        std::fs::write(&shadow, left).unwrap();
+        let a_shadow_beside_no_graph_file = unfinished();
+        std::fs::remove_file(&shadow).unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let neither = unfinished().0;
+        std::fs::write(&shadow, left).unwrap();
+        let a_standing_shadow = (unfinished().0, std::fs::read(&shadow).unwrap());
+        std::fs::remove_file(&shadow).unwrap();
+        let graph = Connection::open(path).unwrap();
+        graph.execute_batch(REBUILD_STATE).unwrap();
+        let the_cursor = unfinished().0;
+        graph.execute_batch(DROP_REBUILD_STATE).unwrap();
+        let the_cursor_dropped = unfinished().0;
+        assert_eq!(
+            (
+                no_graph_file,
+                a_shadow_beside_no_graph_file,
+                neither,
+                a_standing_shadow,
+                the_cursor,
+                the_cursor_dropped
+            ),
+            (
+                (Ok(false), lock_only.clone()),
+                (
+                    Ok(false),
+                    vec![
+                        ("graph.db.lock".to_string(), Some(vec![])),
+                        ("graph.db.rebuild".to_string(), Some(left.to_vec())),
+                    ]
+                ),
+                Ok(false),
+                (Ok(true), left.to_vec()),
+                Ok(true),
+                Ok(false)
+            ),
+            "only a graph file that stands beside a shadow, or holds the cursor, has a rebuild \
+             left unfinished, and asking makes no graph file; beside the lock alone stood \
+             {lock_only:?}"
+        );
+    }
+
     /// The rebuild lock of a graph file is the OS lock on the zero-byte `<path>.lock` beside it,
     /// made by the first lock that needs it: while one holder has it a second is refused at once
     /// with the one text, finding and leaving only that lock file; once the holder drops it the
