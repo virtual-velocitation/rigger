@@ -17,19 +17,6 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e
 }
 
-/// A KEYED DERIVED EVENT, as a store recorded one before the ledger (spec 107): `event` stamped
-/// with its replay `key` and, when the key is the content-key shape, with the batch identity the
-/// one key parser cuts from it as its group. No production code records one; the tests that
-/// still append a derived event through a store build it here.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub fn keyed_derived_event(event: Event, key: &str) -> Event {
-    let event = event.with_meta(rigger::ingest::META_REPLAY_KEY, key);
-    match rigger::ingest::derived_key_parts(key) {
-        Some((identity, _)) => event.with_meta(rigger::eventstore::META_GROUP, identity),
-        None => event,
-    }
-}
-
 /// Each event's type, in the order given.
 pub fn types_of(events: &[Event]) -> Vec<&str> {
     events.iter().map(|e| e.type_.as_str()).collect()
@@ -779,19 +766,9 @@ impl EventStore for ReadCountingStore<'_> {
     }
 }
 
-/// The derived index types a one-shot fixture floods the log with - the four
-/// `ingest::DERIVED_INDEX_TYPES`, spelled out because this fixture compiles into crates that do
-/// not all see the `ingest` module (a test asserting on them compares against that constant).
-pub const ONE_SHOT_DERIVED_TYPES: [&str; 4] = [
-    "CodeEntityExtracted",
-    "EdgeInferred",
-    "DocConceptExtracted",
-    "DocLinkExtracted",
-];
-
 /// The perception types a read of the run refuses at the store - the five
-/// `retention::PERCEPTION_TYPES`, spelled out for the reason [`ONE_SHOT_DERIVED_TYPES`] is (the
-/// tests of `run::read` hold this list to that constant).
+/// `retention::PERCEPTION_TYPES`, spelled out because this fixture compiles into crates that do
+/// not all see the `retention` module (the tests of `run::read` hold this list to that constant).
 pub const ONE_SHOT_PERCEPTION_TYPES: [&str; 5] = [
     "CodeEntityExtracted",
     "EdgeInferred",
@@ -807,7 +784,7 @@ pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
     pub boundary: Revision,
     /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
-    /// its finding and its two notes (never the derived events appended during it).
+    /// its finding and its two notes (never the ledger entries appended during it).
     pub run_events: usize,
     /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
     pub carry_over: usize,
@@ -862,23 +839,30 @@ pub fn run_started(run: &str, criteria: &[&str]) -> Event {
     .with_meta("run_id", run)
 }
 
-/// `n` derived index events, cycling the four [`ONE_SHOT_DERIVED_TYPES`].
-fn derived_events(n: usize) -> Vec<Event> {
+/// `n` ledger entries of perception, each a generation of its own of one of four files, as the
+/// entry's one constructor builds them.
+#[cfg(any(feature = "store", not(feature = "core")))]
+fn flood_entries(n: usize) -> Vec<Event> {
     (0..n)
         .map(|i| {
-            ev(
-                ONE_SHOT_DERIVED_TYPES[i % 4],
-                r#"{"from":"a","rel":"CALLS","to":"b"}"#,
-            )
+            rigger::retention::GenerationIngested {
+                prefix: "gc".to_string(),
+                file: format!("src/f{}.rs", i % 4),
+                generation: format!("h{i}"),
+                blob: String::new(),
+                excluded: false,
+            }
+            .event(1)
         })
         .collect()
 }
 
-/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 derived index
-/// events before the current run's boundary, then the current run (started over `criteria`) with
-/// derived events of its own appended during it. Each prior run left a decision, a lesson or a
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 ledger entries
+/// of perception before the current run's boundary, then the current run (started over
+/// `criteria`) with entries of its own appended during it. Each prior run left a decision, a lesson or a
 /// finding the current run carries over, and a note of its own no one-shot read carries; the
 /// current run holds a decision and a finding of its own plus two notes.
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub fn seed_one_shot_fixture(
     store: &dyn EventStore,
     stream: &str,
@@ -906,7 +890,7 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&derived_events(10_000));
+        append(&flood_entries(10_000));
     }
     append(&[
         run_started("run-b", &["another prior campaign"]),
@@ -918,14 +902,14 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&derived_events(10_000));
+        append(&flood_entries(10_000));
     }
     append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
     let boundary = store
         .last_position(stream, "RunStarted")
         .expect("the fixture's boundary reads")
         .expect("the fixture started a run");
-    append(&derived_events(50));
+    append(&flood_entries(50));
     append(&[
         decision("d-c", "c.rs"),
         ev(
@@ -934,7 +918,7 @@ pub fn seed_one_shot_fixture(
         ),
         ev("RunNote", "{}"),
     ]);
-    append(&derived_events(50));
+    append(&flood_entries(50));
     OneShotFixture {
         boundary,
         run_events: 5,

@@ -950,7 +950,7 @@
     "reason": "`RunCtx::append_and_fold` is the run's one-event case: it stamps the run id and appends through the run's folding store (`Deps::folding`), whose append delegates to `ingest::FoldingStore::append_and_fold`, the one append-then-fold body, rather than re-implementing it."
   },
   {
-    "id": "dup-f0e40001391f",
+    "id": "dup-0f62ab248065",
     "disposition": "not-a-duplicate",
     "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through the folding store's `append_and_fold`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
   },

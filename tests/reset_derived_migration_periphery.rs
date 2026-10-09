@@ -14,7 +14,8 @@ mod common;
 
 use common::cli::{
     applied_positions, emit, log_and_graph_files, migrated_lines, pre_ledger_batch, rigger_file,
-    run_rigger, stream_shape, temp_rigger_project, with_run_store, LOG_LEFT_AS_IT_STANDS_LINE,
+    run_rigger, stream_shape, temp_rigger_project, with_pre_ledger_run_store,
+    LOG_LEFT_AS_IT_STANDS_LINE,
 };
 use common::repo::repo_text;
 use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED};
@@ -26,7 +27,7 @@ use std::path::Path;
 /// position 1 and an edge at position 2 - so the migration rewrites the first into the batch's
 /// ledger entry and deletes the second, the stream's tail.
 fn seed_a_two_event_batch(root: &Path) {
-    with_run_store(root, |store| {
+    with_pre_ledger_run_store(root, |store| {
         store
             .append(
                 rigger::conductor::STREAM,

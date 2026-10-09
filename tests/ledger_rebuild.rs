@@ -21,7 +21,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use common::cli::{
     applied, graph_identity, init_event_log, no_progress, read_run_events, rigger_file,
-    run_rigger_envs, run_stream_identity, temp_project, with_run_store,
+    run_rigger_envs, run_stream_identity, temp_project, with_pre_ledger_run_store, with_run_store,
 };
 use common::fixtures::{
     events_of, folds, generation_ingested, held_generations, walked_generation, write_text,
@@ -204,15 +204,22 @@ fn settled(cwd: &Path) -> String {
 }
 
 /// Append `event` to `cwd`'s run stream by a plain append, behind every fold, and answer its log
-/// position.
+/// position. A derived event, which a store refuses, lands as the row of a store recorded
+/// before the ledger.
 fn append_unfolded(cwd: &Path, event: Event) -> u64 {
-    with_run_store(cwd, |store| {
+    let pre_ledger = rigger::ingest::is_derived_index_type(&event.type_);
+    let record = |store: &dyn rigger::eventstore::EventStore| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap()
             .one("the unfolded event")
             .unwrap()
-    })
+    };
+    if pre_ledger {
+        with_pre_ledger_run_store(cwd, record)
+    } else {
+        with_run_store(cwd, record)
+    }
 }
 
 /// The ledger entry of `recording`, as its recording process appends it.

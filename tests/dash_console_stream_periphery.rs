@@ -283,8 +283,8 @@ fn open_stream_with_query_and_headers(
 
 /// THE STREAM's type filter + delivery latency: a console event appended AFTER the
 /// connection opens reaches the client as an `event` frame carrying console-core's own wire
-/// shape, well within the spec's one-second bound; a graph-extraction type appended right
-/// alongside it never does.
+/// shape, well within the spec's one-second bound; a graph type, a ledger entry of perception
+/// appended right alongside it, never does.
 #[test]
 #[serial(dash_console_stream_periphery)]
 fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_never_does() {
@@ -297,13 +297,16 @@ fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_nev
         &store.events,
         ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#),
     );
-    // A graph-extraction type sharing the same stream: must NEVER surface as an `event`
+    // A ledger entry of perception sharing the same stream: must NEVER surface as an `event`
     // frame (it would otherwise arrive as frame #2, right behind the console event above).
     append_at_next_position(
         &store.events,
-        ev("CodeEntityExtracted", r#"{"id":"src/dash.rs::route"}"#),
+        ev(
+            "GenerationIngested",
+            r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
+        ),
     );
-    // A THIRD console event, so if the graph-extraction type were (wrongly) emitted, this
+    // A THIRD console event, so if the ledger entry were (wrongly) emitted, this
     // frame would be #3, not #2 - proving the filter rather than merely proving SOMETHING
     // arrived.
     append_at_next_position(&store.events, ev("UnitEscalated", r#"{"id":"u1"}"#));
@@ -326,8 +329,8 @@ fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_nev
     let data2: serde_json::Value = serde_json::from_str(&frame2.data).expect("frame data is JSON");
     assert_eq!(
         data2["type"], "UnitEscalated",
-        "the graph-extraction event (position 2) must be skipped entirely, not just \
-         reordered: {data2:?}"
+        "the ledger entry (position 2) must be skipped entirely, not just reordered: \
+         {data2:?}"
     );
     assert_eq!(data2["position"], 3);
 }
@@ -709,12 +712,12 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
         &store.events,
         ev("GateVerdict", r#"{"gate":"cargo test","pass":true}"#),
     );
-    // A graph-extraction type sharing the same stream: must be excluded from `events`.
+    // A ledger entry of perception sharing the same stream: must be excluded from `events`.
     append_at_next_position(
         &store.events,
         ev(
-            "CodeEntityExtracted",
-            r#"{"id":"src/dash.rs::route","kind":"function"}"#,
+            "GenerationIngested",
+            r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
         ),
     );
     append_at_next_position(
@@ -751,10 +754,10 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
     assert_eq!(
         feed.len(),
         3,
-        "the graph-extraction event must be excluded over the real socket: {feed:?}"
+        "the ledger entry must be excluded over the real socket: {feed:?}"
     );
     assert!(
-        feed.iter().all(|e| e["type"] != "CodeEntityExtracted"),
+        feed.iter().all(|e| e["type"] != "GenerationIngested"),
         "{feed:?}"
     );
     assert_eq!(v["progress"][0]["id"], "u1/implementer#0");
@@ -919,15 +922,18 @@ fn open_stream_status_line(addr: std::net::SocketAddr, query: &str) -> String {
 }
 
 /// What a store whose two lowest positions were deleted still holds, built by hand: one
-/// graph-extraction row at position 3 and one console event at position 4. The floor - the
+/// ledger entry of perception at position 3 and one console event at position 4. The floor - the
 /// smallest position ANY row still occupies, of ANY type - is 3, so a `since=`/`Last-Event-ID`
 /// naming 1 or 2 names a position the log no longer holds.
 fn events_above_a_gap() -> Vec<Event> {
     vec![
         common::fixtures::ev_at(
             3,
-            "CodeEntityExtracted",
-            serde_json::json!({"id": "src/a.rs::x"}),
+            "GenerationIngested",
+            serde_json::json!({
+                "prefix": "gc", "file": "src/a.rs", "generation": "h1", "blob": "",
+                "excluded": false,
+            }),
         ),
         common::fixtures::ev_at(
             4,
@@ -979,8 +985,8 @@ fn reconnecting_from_scratch_above_a_gap_delivers_exactly_the_surviving_console_
     let frame = read_frame(&mut stream).expect("a frame must arrive");
     assert_eq!(
         frame.event, "event",
-        "the surviving CodeEntityExtracted row is a graph-extraction type, never an event \
-         frame; the first (and only) event frame must be the console event: {frame:?}"
+        "the surviving GenerationIngested row is a ledger entry, never an event frame; the \
+         first (and only) event frame must be the console event: {frame:?}"
     );
     let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
     assert_eq!(data["type"], "DecisionMade");

@@ -98,7 +98,7 @@ fn seed_derived_events(root: &Path, keys: &[Option<&str>]) {
             None => event,
         });
     }
-    common::cli::with_run_store(root, |store| {
+    common::cli::with_pre_ledger_run_store(root, |store| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
             .unwrap();
@@ -119,7 +119,7 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
         Event::new(rigger::contextgraph::TYPE_EDGE_INFERRED, b"{}".to_vec())
             .with_meta(rigger::ingest::META_REPLAY_KEY, key),
     ];
-    common::cli::with_run_store(root, |store| {
+    common::cli::with_pre_ledger_run_store(root, |store| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
             .unwrap();

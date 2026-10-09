@@ -20816,10 +20816,10 @@ mod tests {
             arm_read_fault, entry_records, fixture_entry_events, generation_ingested, git_answer,
             git_hash_object, handed_by_the_walk, held_generations, logged_generations,
             one_lookup_each, owe_a_rebuild, planted_extraction_tree, rebuild_from_the_tree,
-            seed_pre_ledger_rows_without_a_group, source_with, walked_generations,
-            walked_identities, write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY,
-            DOCUMENT_PATH, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY,
-            TEST_MODULE_PATH, WALKED, WORKFLOW_BODY, WORKFLOW_PATH,
+            seed_generations_on_another_stream, source_with, walked_generations, walked_identities,
+            write_file, CountedRead, Handed, ReadCountingStore, DOCUMENT_BODY, DOCUMENT_PATH,
+            MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY, TEST_MODULE_PATH, WALKED,
+            WORKFLOW_BODY, WORKFLOW_PATH,
         };
 
         /// The hash function as a run is handed it.
@@ -22145,10 +22145,12 @@ mod tests {
             );
         }
 
-        /// SINK OUTCOMES row 13's fixture in one process.
+        /// SINK OUTCOMES row 13's state in one process.
         ///
-        /// GIVEN a store recorded before the ledger and before the group stamp, so the group
-        /// lookup answers no generation for any identity while the graph holds each one's,
+        /// GIVEN a graph holding each identity's generation and a run stream that never
+        /// recorded one, so the group lookup answers no generation for any identity - what a
+        /// store recorded before the ledger and before the group stamp leaves, reached here
+        /// through entries on another stream, since no store accepts a derived row,
         /// WHEN one process walks the tree twice,
         /// THEN the first walk asks the group lookup once per identity, in walk order, and
         /// records one entry per identity; the memo takes each entry's generation in place of
@@ -22160,17 +22162,21 @@ mod tests {
             let root = tree.path().to_str().unwrap();
             let inner = Store::open(":memory:").unwrap();
             let graph = contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-            seed_pre_ledger_rows_without_a_group(tree.path(), &inner, &graph);
+            seed_generations_on_another_stream(tree.path(), &inner, &graph, "elsewhere");
             let identities = walked_identities();
             assert_eq!(
                 (
+                    recorded(&inner),
                     logged_generations(&inner, STREAM, &identities),
                     held_generations(&graph, &identities)
                 ),
-                (vec![None; identities.len()], walked_generations()),
-                "premise: the log answers no generation and the graph holds each one"
+                (
+                    Vec::new(),
+                    vec![None; identities.len()],
+                    walked_generations()
+                ),
+                "premise: the run stream holds nothing and the graph holds each generation"
             );
-            let pre_ledger = recorded(&inner);
             let counted = ReadCountingStore::new(&inner);
             let driver = Stub::new();
             let deps = sink_deps(&counted, &driver, &graph, root, &sized_hash);
@@ -22180,7 +22186,7 @@ mod tests {
 
             ctx.ingest_project_batches().unwrap();
 
-            let first_walk = [pre_ledger, entries(&walked_entries())].concat();
+            let first_walk = entries(&walked_entries());
             assert_eq!(recorded(&inner), first_walk);
             assert_eq!(
                 counted.reads()[built..],
@@ -36095,7 +36101,7 @@ mod tests {
     }
 
     /// A `rigger step` THAT DOES NOT INGEST READS FROM THE BOUNDARY (spec 101): over a log
-    /// holding 200,000 derived events and two superseded runs before the boundary, a step that
+    /// holding 200,000 ledger entries and two superseded runs before the boundary, a step that
     /// adopts the current run and finds nothing to do costs exactly the run's own events plus the
     /// typed carry-over per read of the run, and never reads the stream any other way - asserted
     /// through the counting store double.
@@ -36190,7 +36196,7 @@ mod tests {
     /// criterion adoption (spec 88) is decided across runs, so it reads every run's LIFECYCLE
     /// events by type - one `Only(ADOPTION_TYPES)` read from 0 materializing exactly the runs'
     /// boundaries and unit starts - and every other read the step makes is a read of the run
-    /// from the boundary with the carried-over knowledge by type, over the 200,000-derived-event
+    /// from the boundary with the carried-over knowledge by type, over the 200,000-ledger-entry
     /// fixture; asserted through the counting store double.
     #[test]
     fn a_step_that_starts_a_criterion_unit_in_a_repo_reads_adoption_by_lifecycle_type() {
@@ -36257,7 +36263,7 @@ mod tests {
     }
 
     /// A `rigger step` THAT INGESTS ASKS THE GROUP LOOKUP (spec 101 criterion 3, spec 107): over
-    /// the 200,000-derived-event one-shot fixture, a project whose `unchanged.rs` still holds the
+    /// the 200,000-ledger-entry one-shot fixture, a project whose `unchanged.rs` still holds the
     /// generation the log and the graph hold, whose `changed.rs` moved to a new one and whose
     /// `reverted.rs` went back to a generation it has since left, a step that parks a stage's
     /// spawn - and so walks and ingests the tree - materializes no derived event: every read it

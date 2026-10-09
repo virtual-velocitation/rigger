@@ -285,37 +285,38 @@ fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &
 /// THE GROUP LOOKUP ANSWERS A LEDGER ENTRY (spec 107): a hand-built `GenerationIngested` recorded
 /// under its group is its identity's newest member like any grouped event - `latest_in_group`
 /// answers its position, type and metadata - and the domain reader answers the generation its
-/// replay key names. Three identities on one stream: one whose entry follows a derived batch, one
-/// whose only recording is an entry, and one whose derived row follows an entry, which is answered
-/// by that derived row as before. Every answer is the one the whole-stream reference gives over the
-/// perception types.
+/// replay key names. Three identities on one stream: one whose entry follows an earlier entry of
+/// another generation, one whose only recording is an entry, and one recorded last, whose later
+/// entry answers in place of its first. Every answer is the one the whole-stream reference gives
+/// over the perception types.
 fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
-    use crate::test_support::keyed_derived_event;
-    use rigger_domain::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
     use rigger_domain::ingest::META_REPLAY_KEY;
     use rigger_domain::retention::TYPE_GENERATION_INGESTED;
     let stream = "c-ledger";
-    let derived = |key: &str| {
-        keyed_derived_event(Event::new(TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec()), key)
-    };
     let entry = identity_entry;
     let appended = store
         .append(
             stream,
             ExpectedRevision::NoStream,
             &[
-                derived("gc/a.rs@h1#0"),
+                entry("gc", "a.rs", "h1", 1),
                 entry("gc", "b.rs", "h1", 1),
                 entry("gc", "a.rs", "h2", 2),
                 entry("gd", "c.md", "h4", 5),
-                derived("gc/b.rs@h3#0"),
+                entry("gc", "b.rs", "h3", 1),
             ],
         )
         .expect("the ledger stream appends");
     let at: Vec<u64> = appended.placed().map(|(_, p)| p).collect();
 
-    let head = |position: u64, t: &str, group: &str, key: &str| {
-        group_head(position, t, group, META_REPLAY_KEY, key)
+    let head = |position: u64, group: &str, key: &str| {
+        group_head(
+            position,
+            TYPE_GENERATION_INGESTED,
+            group,
+            META_REPLAY_KEY,
+            key,
+        )
     };
     let heads: Vec<Option<GroupHead>> = ["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"]
         .iter()
@@ -328,24 +329,9 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
     assert_eq!(
         heads,
         [
-            Some(head(
-                at[2],
-                TYPE_GENERATION_INGESTED,
-                "gc/a.rs",
-                "gc/a.rs@h2#2"
-            )),
-            Some(head(
-                at[3],
-                TYPE_GENERATION_INGESTED,
-                "gd/c.md",
-                "gd/c.md@h4#5"
-            )),
-            Some(head(
-                at[4],
-                TYPE_CODE_ENTITY_EXTRACTED,
-                "gc/b.rs",
-                "gc/b.rs@h3#0"
-            )),
+            Some(head(at[2], "gc/a.rs", "gc/a.rs@h2#2")),
+            Some(head(at[3], "gd/c.md", "gd/c.md@h4#5")),
+            Some(head(at[4], "gc/b.rs", "gc/b.rs@h3#1")),
             None,
         ],
         "an entry is its group's newest member until a later recording of the identity follows it"
@@ -364,7 +350,7 @@ fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn 
             ("gc/b.rs".to_string(), Some("h3".to_string())),
             ("gc/never.rs".to_string(), None),
         ],
-        "an entry answers its own generation, a derived row after an entry answers as before, \
+        "an entry answers its own generation, the later of two entries answers for its identity, \
          and a never-recorded identity answers none"
     );
     assert_eq!(

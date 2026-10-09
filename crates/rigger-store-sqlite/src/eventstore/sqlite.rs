@@ -1489,7 +1489,7 @@ fn direction_sql(dir: Direction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{file_len, plant_free_pages, pragma_i64};
+    use crate::test_support::{file_len, insert_pre_ledger_rows, plant_free_pages, pragma_i64};
 
     #[test]
     fn passes_the_contract() {
@@ -2034,7 +2034,7 @@ mod tests {
                 "gc/src/a.rs@h1#0",
             ));
         }
-        store_with(path, &[("run", events)])
+        pre_ledger_store_with(path, &[("run", events)])
     }
 
     /// An event of `type_` carrying the derived-index replay key `key`.
@@ -2049,6 +2049,98 @@ mod tests {
             s.append(stream, ExpectedRevision::Any, events).unwrap();
         }
         s
+    }
+
+    /// A store at `path` holding each `(stream, events)` batch as the rows of a store recorded
+    /// before the ledger, inserted in order: the derived events among them are rows this store
+    /// refuses to append.
+    fn pre_ledger_store_with(path: &str, batches: &[(&str, Vec<Event>)]) -> Store {
+        let s = Store::open(path).unwrap();
+        for (stream, events) in batches {
+            insert_pre_ledger_rows(std::path::Path::new(path), stream, events);
+        }
+        s
+    }
+
+    /// THE PRE-LEDGER ROW INSERTER writes the rows a store recorded before it refused a derived
+    /// append: each lands at the tail of its stream, at the stream's next revision and the log's
+    /// next position, and reads back through the store as the event given - its id, type,
+    /// payload, metadata and valid-time. A derived row inserted above a ledger entry of its
+    /// identity is its group's newest member, so the group lookup and the domain reader answer
+    /// it as they did before the refusal, and the store appends after the rows at the revision
+    /// they left the stream on.
+    #[test]
+    fn pre_ledger_rows_land_at_the_streams_tail_and_read_back_as_the_events_given() {
+        use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_EDGE_INFERRED as EI};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[
+                ("run", vec![Event::new("RunStarted", b"{}".to_vec())]),
+                ("other", vec![Event::new("RunStarted", b"{}".to_vec())]),
+                ("run", vec![entry_event("gc/a.rs", "h1", 1, "held", false)]),
+            ],
+        );
+        let derived = derived_at(CE, "gc/a.rs@h2#0", 40).with_meta(META_GROUP, "gc/a.rs");
+        let unkeyed = Event::new(EI, vec![7]);
+
+        let positions = insert_pre_ledger_rows(&path, "run", &[derived.clone(), unkeyed.clone()]);
+
+        assert_eq!(positions, [4, 5], "the log's next positions, in order");
+        let read: Vec<_> = s
+            .read_stream("run", 2, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                (
+                    (e.stream, e.revision, e.position),
+                    (e.id, e.type_, e.data, e.meta, e.valid_from),
+                )
+            })
+            .collect();
+        let given = |e: &Event| {
+            (
+                e.id.clone(),
+                e.type_.clone(),
+                e.data.clone(),
+                e.meta.clone(),
+                e.valid_from,
+            )
+        };
+        assert_eq!(
+            read,
+            [
+                (("run".to_string(), 2, 4), given(&derived)),
+                (("run".to_string(), 3, 5), given(&unkeyed)),
+            ]
+        );
+        assert_eq!(
+            derived.valid_from,
+            std::time::UNIX_EPOCH + Duration::from_secs(40),
+            "the valid-time read back is the one the row was given"
+        );
+        assert_eq!(
+            s.latest_in_group("run", "gc/a.rs").unwrap(),
+            Some(GroupHead {
+                position: 4,
+                type_: CE.to_string(),
+                meta: derived.meta.clone(),
+            }),
+            "a derived row above an entry is its group's newest member, as before"
+        );
+        assert_eq!(
+            crate::ingest::latest_generation(&s, "run", "gc/a.rs").unwrap(),
+            Some("h2".to_string())
+        );
+        let next = s
+            .append(
+                "run",
+                ExpectedRevision::Exact(3),
+                &[Event::new("DecisionMade", b"{}".to_vec())],
+            )
+            .expect("the store appends at the revision the rows left the stream on");
+        assert_eq!(next.last(), Some(6));
     }
 
     /// The number of rows the log holds for the seeded replay key, read through a connection of
@@ -2491,7 +2583,7 @@ mod tests {
         let at = |event: Event, secs: u64| {
             event.with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
         };
-        store_with(
+        pre_ledger_store_with(
             path.to_str().unwrap(),
             &[
                 (
@@ -2649,7 +2741,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
         let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-        let s = store_with(
+        let s = pre_ledger_store_with(
             path.to_str().unwrap(),
             &[(
                 "p-run",
@@ -2696,7 +2788,7 @@ mod tests {
             entry_event("gc/a.rs", "h1", 1, "held", false)
                 .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
         };
-        let s = store_with(
+        let s = pre_ledger_store_with(
             path.to_str().unwrap(),
             &[(
                 "p-run",

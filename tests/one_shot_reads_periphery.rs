@@ -15,7 +15,7 @@
 //!    cost of exactly one more read), that the spawn-bound `rigger_progress` stamps the run the
 //!    boundary read names, nor that `rigger_activity` reads that run's progress stream alone;
 //!  - no counting double reaches into the compiled binary, so the binary tests make any read past
-//!    the slice observable instead: every derived event and every superseded run's own event in a
+//!    the slice observable instead: each perception event and every superseded run's own event in a
 //!    real 200,000-event log is made undecodable, so a command that materialized even one of them
 //!    would fail - and a control proves the poison does fail a command that reads it.
 
@@ -28,7 +28,7 @@ use std::process::Stdio;
 use common::cli::{rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
     ev, generation_ingested, run_started, seed_one_shot_fixture, seed_one_shot_progress, types_of,
-    CountedRead, HandBuiltLog, OneShotFixture, ReadCountingStore, ONE_SHOT_DERIVED_TYPES,
+    CountedRead, HandBuiltLog, OneShotFixture, PreLedgerStore, ReadCountingStore,
     ONE_SHOT_PERCEPTION_TYPES,
 };
 use rigger::conductor::STREAM;
@@ -55,6 +55,8 @@ fn payload_ids(events: &[Event]) -> Vec<String> {
 
 /// `beta`'s history in a shared `events.db`: a run started as `run`, a decision, a lesson, a
 /// derived edge and a note - a neighbor whose records no read of another project's run may hold.
+/// The edge is a row of a store recorded before the ledger, so `beta` records through a
+/// [`PreLedgerStore`].
 fn seed_beta_history(beta: &dyn EventStore, run: &str, decision: &str) {
     beta.append(
         STREAM,
@@ -86,8 +88,12 @@ fn a_project_namespace_over_a_shared_events_file_reads_its_run_as_one_typed_read
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("events.db");
     let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let pre_ledger = PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
     let alpha = Namespaced::new(&backend, "alpha");
-    let beta = Namespaced::new(&backend, "beta");
+    let beta = Namespaced::new(&pre_ledger, "beta");
     seed_beta_history(&beta, "beta-1", "d-beta-1");
     let fixture = seed_one_shot_fixture(&alpha, STREAM, &["the current campaign"]);
     seed_beta_history(&beta, "beta-2", "d-beta-2");
@@ -178,7 +184,7 @@ fn section_ids(reply: &Value, section: &str) -> Vec<String> {
         .collect()
 }
 
-/// Given a spawn-bound MCP server over the 200,000-derived-event log, when an agent calls
+/// Given a spawn-bound MCP server over the 200,000-entry log, when an agent calls
 /// `rigger_peers` scoped to a file, a peer then records a decision about that file, and the agent
 /// calls `rigger_peers` again and reports progress, then every call is exactly one read of the
 /// run from its boundary plus the typed carry-over - the second peers call sees the new decision
@@ -354,7 +360,7 @@ fn mcp_peers(root: &Path) -> Value {
 
 /// Seed `root`'s `events.db` with the one-shot fixture under the project's namespace, then
 /// `current` (the current run's further events, appended through the same namespace), and make
-/// every derived event and every superseded run's event outside the `read` types undecodable -
+/// each perception event and every superseded run's event outside the `read` types undecodable -
 /// so a command that materializes even one of them fails. Returns how many superseded events it
 /// poisoned.
 fn seed_poisoned_project(
@@ -363,10 +369,23 @@ fn seed_poisoned_project(
     read: &[&str],
     current: impl FnOnce(&dyn EventStore),
 ) -> usize {
+    let pre_ledger_rows = rigger::ingest::DERIVED_INDEX_TYPES.map(|t| ev(t, "{}"));
     let fixture = {
-        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        let db = rigger_file(root, "events.db");
+        let backend = Store::open(db.to_str().unwrap()).unwrap();
         let store = Namespaced::new(&backend, &run_stream_identity(root));
         let fixture = seed_one_shot_fixture(&store, STREAM, criteria);
+        // The current run's slice also holds one row of each derived type, as a store recorded
+        // them before the ledger.
+        Namespaced::new(
+            &PreLedgerStore {
+                db: &db,
+                inner: &backend,
+            },
+            &run_stream_identity(root),
+        )
+        .append(STREAM, ExpectedRevision::Any, &pre_ledger_rows)
+        .unwrap();
         current(&store);
         fixture
     };
@@ -377,24 +396,25 @@ fn seed_poisoned_project(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let derived = poison(
-        root,
-        &format!("type IN ({})", quoted(&ONE_SHOT_DERIVED_TYPES)),
+    let perception = quoted(&ONE_SHOT_PERCEPTION_TYPES);
+    let poisoned = poison(root, &format!("type IN ({perception})"));
+    assert_eq!(
+        poisoned,
+        200_100 + pre_ledger_rows.len(),
+        "every ledger entry of the flood and every pre-ledger derived row is poisoned"
     );
-    assert_eq!(derived, 200_100, "every derived event is poisoned");
     poison(
         root,
         &format!(
-            "revision < {} AND type NOT IN ({}, {})",
+            "revision < {} AND type NOT IN ({}, {perception})",
             fixture.boundary,
             quoted(read),
-            quoted(&ONE_SHOT_DERIVED_TYPES)
         ),
     )
 }
 
-/// Given a project whose `events.db` holds two superseded runs and 200,000 derived events before
-/// the current run's boundary, with every derived event and every superseded run's own event made
+/// Given a project whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// the current run's boundary, with each perception event and every superseded run's own event made
 /// undecodable, when the operator runs the one-shot commands, then each answers from the current
 /// run and every run's carried-over knowledge - a command that read past its slice would have
 /// materialized a poisoned event and failed. A control then poisons a carried-over event and the
@@ -594,8 +614,8 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
 }
 
 /// Given a project that is NOT a git repo (so the step walks no tree and ingests nothing) whose
-/// `events.db` holds two superseded runs and 200,000 derived events before the current run's
-/// boundary, with every derived event and every superseded run's own event made undecodable, when
+/// `events.db` holds two superseded runs and 200,000 ledger entries before the current run's
+/// boundary, with each perception event and every superseded run's own event made undecodable, when
 /// the operator runs `rigger step`, then the step parks the stage's spawn in the current run, and
 /// after the spawn's result is recorded the next `rigger step` replays it and finishes the run -
 /// a step that read past the run's slice, or took the ingest seed's derived read without
@@ -646,8 +666,8 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
     );
 }
 
-/// Given a git repo whose `events.db` holds two superseded runs and 200,000 derived events before
-/// the current run's boundary, with every derived event and every superseded run's event outside
+/// Given a git repo whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// the current run's boundary, with each perception event and every superseded run's event outside
 /// the carried-over and criterion-adoption types made undecodable, when the operator runs `rigger
 /// step --spec` over the current run's criterion, then the step starts the criterion's unit and
 /// parks its spawn in the current run - it read the superseded runs' lifecycle events for
@@ -790,10 +810,14 @@ fn a_current_run_read_through_a_shared_events_file_names_only_its_own_projects_r
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("events.db");
     let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let pre_ledger = PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
     let alpha = Namespaced::new(&backend, "alpha");
-    let beta = Namespaced::new(&backend, "beta");
+    let beta = Namespaced::new(&pre_ledger, "beta");
     seed_beta_history(&beta, "beta-1", "d-beta-1");
-    alpha
+    Namespaced::new(&pre_ledger, "alpha")
         .append(
             STREAM,
             ExpectedRevision::Any,
@@ -1098,10 +1122,15 @@ fn answered(events: &[Event]) -> Vec<(&str, &str, i64, u64)> {
 #[test]
 fn the_hand_built_log_answers_the_boundary_lookup_and_the_typed_read_as_the_store_does() {
     let events = stream_with_ledger_entries(Some("run-p"));
-    let store = Store::open(":memory:").unwrap();
-    store
-        .append(STREAM, ExpectedRevision::NoStream, &events)
-        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+    PreLedgerStore {
+        db: &db,
+        inner: &store,
+    }
+    .append(STREAM, ExpectedRevision::Any, &events)
+    .unwrap();
     let log = HandBuiltLog::new(STREAM, events);
 
     assert_eq!(store.last_position(STREAM, "RunStarted").unwrap(), Some(2));
@@ -1173,20 +1202,19 @@ fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_
     let backend = Store::open(db.to_str().unwrap()).unwrap();
     let started = Namespaced::new(&backend, "started");
     let unstarted = Namespaced::new(&backend, "unstarted");
-    started
-        .append(
-            STREAM,
-            ExpectedRevision::NoStream,
-            &stream_with_ledger_entries(Some("run-p")),
-        )
-        .unwrap();
-    unstarted
-        .append(
-            STREAM,
-            ExpectedRevision::NoStream,
-            &stream_with_ledger_entries(None),
-        )
-        .unwrap();
+    let pre_ledger = PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
+    for (project, run) in [("started", Some("run-p")), ("unstarted", None)] {
+        Namespaced::new(&pre_ledger, project)
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &stream_with_ledger_entries(run),
+            )
+            .unwrap();
+    }
     let perception = ONE_SHOT_PERCEPTION_TYPES.map(String::from).to_vec();
     let boundary_lookup = CountedRead::LastPosition {
         stream: STREAM.to_string(),
@@ -1281,15 +1309,22 @@ fn a_ledger_entry_in_the_run_stream_is_absent_from_the_current_run_read_through_
 fn seed_undecodable_ledger_entries(root: &Path, run: Option<&str>) {
     common::cli::seed_store(root);
     common::cli::write_workflow(root, "");
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let db = rigger_file(root, "events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
-    store
-        .append(
-            STREAM,
-            ExpectedRevision::NoStream,
-            &stream_with_ledger_entries(run),
-        )
-        .unwrap();
+    Namespaced::new(
+        &PreLedgerStore {
+            db: &db,
+            inner: &backend,
+        },
+        &run_stream_identity(root),
+    )
+    .append(
+        STREAM,
+        ExpectedRevision::Any,
+        &stream_with_ledger_entries(run),
+    )
+    .unwrap();
     assert_eq!(poison(root, "type = 'GenerationIngested'"), 2);
     assert_eq!(
         store

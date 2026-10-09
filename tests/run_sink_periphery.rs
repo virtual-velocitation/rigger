@@ -117,6 +117,17 @@ impl Files {
         Projector::open(self.graph_db().to_str().unwrap(), "test").unwrap()
     }
 
+    /// Record every batch the walk extracts from the tree at `root` as the rows of a store
+    /// recorded before the ledger and before the group stamp, each batch folded into the graph.
+    fn seed_pre_ledger_rows(&self, root: &Path) {
+        let store = self.store();
+        let pre_ledger = common::fixtures::PreLedgerStore {
+            db: &self.dir.path().join("events.db"),
+            inner: &store,
+        };
+        seed_pre_ledger_rows_without_a_group(root, &pre_ledger, &self.graph());
+    }
+
     /// One whole run over the tree at `root`, a fresh campaign named by `criterion`, each port a
     /// fresh open of the files and the hash function the one the binary binds. It must succeed.
     fn run_over(&self, root: &Path, criterion: &str) {
@@ -273,7 +284,7 @@ fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_that_folds_
     let root = tree.path();
     let walked = walked_git_entry_records(root);
     let files = Files::new();
-    seed_pre_ledger_rows_without_a_group(root, &files.store(), &files.graph());
+    files.seed_pre_ledger_rows(root);
     let pre_ledger = files.log();
     let last_pre_ledger = pre_ledger.last().unwrap().position;
     assert_eq!(derived_count(&pre_ledger), pre_ledger.len());
@@ -911,7 +922,7 @@ fn one_run_over_a_recorded_tree_answers_both_reindexes_from_what_its_walk_looked
 fn one_run_over_pre_ledger_rows_asks_the_group_lookup_once_per_identity_across_its_reindexes() {
     let tree = committed_tree();
     let files = Files::new();
-    seed_pre_ledger_rows_without_a_group(tree.path(), &files.store(), &files.graph());
+    files.seed_pre_ledger_rows(tree.path());
     assert_eq!(
         logged_generations(
             &files.store(),

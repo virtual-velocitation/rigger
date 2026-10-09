@@ -11735,7 +11735,7 @@ mod tests {
 
     /// `rigger status`, `rigger progress` and the dash snapshot (its local and attached arms
     /// alike) fold exactly one read of the run - [`runscope::read::read_current_run`] - and over a log holding
-    /// 200,000 derived events and two superseded runs before the boundary it costs exactly the
+    /// 200,000 ledger entries and two superseded runs before the boundary it costs exactly the
     /// run's own events plus the typed carry-over, asserted through the counting store double,
     /// and hands back the current run's slice and id.
     #[test]

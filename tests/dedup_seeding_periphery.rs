@@ -596,9 +596,7 @@ use common::cli::run_stream_identity;
 use common::fixtures::minted_events;
 use common::fixtures::reference_replay_keys;
 #[cfg(feature = "symbols")]
-use common::fixtures::{
-    keyed_derived_event, latest_recorded_keys, recorded_entry_keys, walked_entry_keys,
-};
+use common::fixtures::{latest_recorded_keys, recorded_entry_keys, walked_entry_keys};
 
 /// INTEGRATION, at the crate boundary the binary crosses: the cold `graph build` sink and the run's
 /// sink are two processes that must agree, and they agree by recording through ONE function over
@@ -693,7 +691,12 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
     // lookup answers it. Only the type test stands between this residue and a lost file.
     let residue: Vec<Event> = beta
         .iter()
-        .map(|key| keyed_derived_event(Event::new(TYPE_REVIEW_FINDING, Vec::new()), key))
+        .map(|key| {
+            let (identity, _) = rigger::ingest::derived_key_parts(key).unwrap();
+            Event::new(TYPE_REVIEW_FINDING, Vec::new())
+                .with_meta(rigger::ingest::META_REPLAY_KEY, key)
+                .with_meta(rigger::eventstore::META_GROUP, identity)
+        })
         .collect();
     seed_run_stream(root, &residue);
     let before = recorded_entry_keys(&read_run_events(root));

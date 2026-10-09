@@ -88,9 +88,15 @@ fn rows_in(rows: &[Row], prefix: &str) -> Vec<Row> {
 /// Seed `project`'s namespace inside `backend` with `rounds` recordings of one derived batch of
 /// two events - a log recorded before the ledger - preceded by one non-derived event the
 /// migration must leave alone. Written THROUGH `Namespaced::new`, so the streams it creates are
-/// named by the very code path the published `Namespaced::prefix_for` claims to speak for.
-fn seed_namespace(backend: &Store, project: &str, rounds: u64) {
-    let store = Namespaced::new(backend, project);
+/// named by the very code path the published `Namespaced::prefix_for` claims to speak for, over
+/// the pre-ledger store of the file `db`, since a store refuses a derived event.
+fn seed_namespace(db: &Path, project: &str, rounds: u64) {
+    let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db,
+        inner: &backend,
+    };
+    let store = Namespaced::new(&pre_ledger, project);
     let mut events = vec![Event::new(
         "RunStarted",
         format!(r#"{{"run":"{project}","criteria":["c"]}}"#).into_bytes(),
@@ -105,8 +111,11 @@ fn seed_namespace(backend: &Store, project: &str, rounds: u64) {
 }
 
 fn seed_project(root: &Path, rounds: u64) {
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
-    seed_namespace(&backend, &run_stream_identity(root), rounds);
+    seed_namespace(
+        &rigger_file(root, "events.db"),
+        &run_stream_identity(root),
+        rounds,
+    );
 }
 
 /// The ledger entry the migration converts the seeded batch into: the generation `h1` of
@@ -159,11 +168,8 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     let root = dir.path();
     assert_eq!(run_stream_identity(root), TARGET);
     let db = rigger_file(root, "events.db");
-    {
-        let backend = Store::open(db.to_str().unwrap()).unwrap();
-        for project in [TARGET, WILDCARD_NEIGHBOUR, NEIGHBOUR] {
-            seed_namespace(&backend, project, ROUNDS);
-        }
+    for project in [TARGET, WILDCARD_NEIGHBOUR, NEIGHBOUR] {
+        seed_namespace(&db, project, ROUNDS);
     }
     let before = raw_rows(&db);
     let target_prefix = Namespaced::prefix_for(TARGET);
@@ -225,11 +231,8 @@ fn store_shared_by_three_projects() -> tempfile::TempDir {
     let root = dir.path();
     assert_eq!(run_stream_identity(root), SHARING[0].0);
     let db = rigger_file(root, "events.db");
-    {
-        let backend = Store::open(db.to_str().unwrap()).unwrap();
-        for (project, rounds) in SHARING {
-            seed_namespace(&backend, project, rounds);
-        }
+    for (project, rounds) in SHARING {
+        seed_namespace(&db, project, rounds);
     }
     assert_eq!(
         rows_held_by_each_sharing_project(&raw_rows(&db)),
@@ -845,11 +848,18 @@ fn seed_both_stores(root: &Path, rounds: u64) {
         events.extend(pre_ledger_batch("alpha", 1_000 + r));
     }
 
-    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+    let events_db = rigger_file(root, "events.db");
+    let backend = Store::open(events_db.to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &id);
-    store
-        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
-        .expect("seed the event log");
+    Namespaced::new(
+        &common::fixtures::PreLedgerStore {
+            db: &events_db,
+            inner: &backend,
+        },
+        &id,
+    )
+    .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+    .expect("seed the event log");
 
     // Fold the log AS WRITTEN - each event carrying the position the store gave it - so the graph
     // is the projection of this log rather than of a pre-append copy of it.
@@ -1023,10 +1033,7 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
     // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
     let legacy = run_stream_identity(root);
-    let backend =
-        Store::open(rigger_file(root, "events.db").to_str().unwrap()).expect("open the event log");
-    seed_namespace(&backend, &legacy, rounds);
-    drop(backend);
+    seed_namespace(&rigger_file(root, "events.db"), &legacy, rounds);
 
     // The minted id shares NO prefix with the basename it replaces. `proj-<id>-` is a separator-free
     // string prefix, so an id of the form `<legacy>-<suffix>` would leave every migrated stream

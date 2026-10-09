@@ -27947,8 +27947,11 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
     let graph_db = common::cli::rigger_file(root, "graph.db");
     let first: std::collections::BTreeMap<&str, u64> = {
         let graph = common::cli::open_graph(root);
-        common::cli::with_run_store(root, |store| {
+        let recording = |store: &dyn rigger::eventstore::EventStore,
+                         pre_ledger: &dyn rigger::eventstore::EventStore| {
             let folding = rigger::ingest::folding_into(store, Some(&graph), &|_| {});
+            let folding_pre_ledger =
+                rigger::ingest::folding_into(pre_ledger, Some(&graph), &|_| {});
             appends
                 .iter()
                 .map(|append| {
@@ -27965,7 +27968,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
                             done.appended
                         }
                         None => {
-                            let done = folding
+                            let done = folding_pre_ledger
                                 .append_and_fold(
                                     rigger::conductor::STREAM,
                                     rigger::eventstore::ExpectedRevision::Any,
@@ -27980,6 +27983,11 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
                     (append.name, position)
                 })
                 .collect()
+        };
+        // A ledger entry is appended through the store; a derived batch, which the store
+        // refuses, lands as the rows of a store recorded before the ledger.
+        common::cli::with_run_store(root, |store| {
+            common::cli::with_pre_ledger_run_store(root, |pre_ledger| recording(store, pre_ledger))
         })
     };
     std::fs::remove_file(root.join(GONE)).ok();
@@ -28305,7 +28313,7 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
 /// (`gc/src/a.rs`), a design batch of that same file (`gd/src/a.rs`), a second source file whose
 /// latest recording is already a ledger entry (`gc/src/b.rs`), and one event naming no identity.
 fn seed_six_derived_events_of_three_file_identities(root: &Path) {
-    use common::cli::{keyed, pre_ledger_batch, with_run_store};
+    use common::cli::{keyed, pre_ledger_batch, with_pre_ledger_run_store};
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
     use rigger::eventstore::{Event, ExpectedRevision};
 
@@ -28321,7 +28329,7 @@ fn seed_six_derived_events_of_three_file_identities(root: &Path) {
         common::fixtures::generation_ingested("gc", "src/b.rs", "b2", "", false).event(1),
         Event::new(TYPE_CODE_ENTITY_EXTRACTED, entity()),
     ];
-    with_run_store(root, |store| {
+    with_pre_ledger_run_store(root, |store| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &seeded)
             .unwrap();

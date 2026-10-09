@@ -28,7 +28,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::with_run_store;
+use common::cli::with_pre_ledger_run_store;
 use common::cli::NOTHING_TO_SHED_MENU_LINE;
 use std::path::Path;
 
@@ -108,7 +108,7 @@ fn bare_reset_names_the_derived_events_of_a_store_whose_rows_name_no_file_identi
     let root = dir.path();
     let entity = common::cli::code_entity;
     let type_ = rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-    with_run_store(root, |store| {
+    with_pre_ledger_run_store(root, |store| {
         store
             .append(
                 rigger::conductor::STREAM,

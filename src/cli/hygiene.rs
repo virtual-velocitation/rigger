@@ -1563,7 +1563,11 @@ mod tests {
         };
         {
             let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
-            Namespaced::new(&backend, &loc.identity())
+            let pre_ledger = crate::test_support::PreLedgerStore {
+                db: std::path::Path::new(&db),
+                inner: &backend,
+            };
+            Namespaced::new(&pre_ledger, &loc.identity())
                 .append(
                     conductor::STREAM,
                     ExpectedRevision::Any,

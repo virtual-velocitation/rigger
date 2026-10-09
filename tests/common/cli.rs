@@ -317,6 +317,20 @@ pub fn with_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R
     f(&store)
 }
 
+/// `f` over `root`'s own project namespace of its `.rigger/events.db` as a binary before the
+/// ledger wrote it: every append `f` makes lands as pre-ledger rows
+/// ([`super::fixtures::PreLedgerStore`]), so `f` seeds the derived events a store now refuses.
+pub fn with_pre_ledger_run_store<R>(root: &Path, f: impl FnOnce(&dyn EventStore) -> R) -> R {
+    let db = rigger_file(root, "events.db");
+    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    let pre_ledger = super::fixtures::PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
+    let store = Namespaced::new(&pre_ledger, &run_stream_identity(root));
+    f(&store)
+}
+
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
     with_run_store(root, |store| {
@@ -739,7 +753,7 @@ pub fn seed_derived_duplicates(root: &Path) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(1_000 + r as u64)),
         );
     }
-    with_run_store(root, |store| {
+    with_pre_ledger_run_store(root, |store| {
         store
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
             .unwrap();

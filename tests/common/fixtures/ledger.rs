@@ -194,7 +194,8 @@ pub fn entry_records(events: &[Event]) -> Vec<EntryRecord> {
 /// 13's fixture): record every batch the SHIPPED walk extracts from the tree at `root` into
 /// `store`'s run stream as derived rows that carry their replay key and no group, and fold each
 /// batch into `graph`. The group lookup then answers no generation for any identity of the tree
-/// while the graph holds each one's current generation.
+/// while the graph holds each one's current generation. A store refuses a derived event, so
+/// `store` is the pre-ledger store of its file (`PreLedgerStore`, the sqlite fixtures).
 #[cfg(feature = "symbols")]
 pub fn seed_pre_ledger_rows_without_a_group(
     root: &std::path::Path,
@@ -217,6 +218,33 @@ pub fn seed_pre_ledger_rows_without_a_group(
                 rigger::eventstore::ExpectedRevision::Any,
                 &rows,
             )
+            .unwrap();
+        assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
+    });
+}
+
+/// A GRAPH AHEAD OF THE RUN STREAM: record every batch the SHIPPED walk extracts from the tree at
+/// `root` as a ledger entry on `stream` of `store`, a stream other than the run's, and fold each
+/// with its batch into `graph`. The run stream's group lookup then answers no generation for any
+/// identity while the graph holds each one's - the state
+/// [`seed_pre_ledger_rows_without_a_group`] leaves, reached without a derived row, for a crate
+/// whose tests cannot insert one.
+#[cfg(feature = "symbols")]
+pub fn seed_generations_on_another_stream(
+    root: &std::path::Path,
+    store: &dyn rigger::eventstore::EventStore,
+    graph: &dyn rigger::contextgraph::Projection,
+    stream: &str,
+) {
+    let folding = rigger::ingest::folding_into(store, Some(graph), &|_| {});
+    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), |batch, excluded| {
+        let (identity, generation) = rigger::ingest::derived_key_parts(&batch[0].0).unwrap();
+        let (prefix, file) =
+            rigger::retention::GenerationIngested::identity_parts(identity).unwrap();
+        let entry = super::generation_ingested(prefix, file, generation, "", excluded);
+        let events = batch.iter().map(|(_, event)| (*event).clone()).collect();
+        let done = folding
+            .append_entry_and_fold(stream, &entry.event(batch.len()), events)
             .unwrap();
         assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
     });

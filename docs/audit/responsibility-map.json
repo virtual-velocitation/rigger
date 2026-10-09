@@ -3781,7 +3781,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests::run_sink",
     "reason": "defined inside `run_sink`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "e61612e631092966"
+    "content_hash": "74d6ef19a71dc571"
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
@@ -11781,7 +11781,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "381569a98ec5e454"
+    "content_hash": "fadcf4d4431a186b"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
@@ -11821,7 +11821,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fe683ff8e0d43875"
+    "content_hash": "d1bf94b12877637e"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

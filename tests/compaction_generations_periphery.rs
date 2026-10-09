@@ -87,7 +87,13 @@ fn store_with(dir: &Path, batches: &[(&str, Vec<Event>)]) -> (Store, String) {
     let db = dir.join("events.db");
     let backend = Store::open(db.to_str().unwrap()).unwrap();
     {
-        let store = Namespaced::new(&backend, PROJECT);
+        // The batches hold derived events, which a store refuses: they land as the rows of a
+        // store recorded before the ledger.
+        let pre_ledger = common::fixtures::PreLedgerStore {
+            db: &db,
+            inner: &backend,
+        };
+        let store = Namespaced::new(&pre_ledger, PROJECT);
         for (stream, events) in batches {
             store.append(stream, ExpectedRevision::Any, events).unwrap();
         }
@@ -328,7 +334,7 @@ fn derived_generation_names_only_a_keyed_derived_events_identity_and_generation(
 fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
     const OTHER: &str = "proj-gen-other";
     let dir = tempfile::tempdir().unwrap();
-    let (backend, _) = store_with(
+    let (backend, events_db) = store_with(
         dir.path(),
         &[(
             rigger::conductor::STREAM,
@@ -354,7 +360,11 @@ fn one_projects_generations_never_supersede_anothers_in_a_shared_graph() {
             ],
         )],
     );
-    Namespaced::new(&backend, OTHER)
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db: Path::new(&events_db),
+        inner: &backend,
+    };
+    Namespaced::new(&pre_ledger, OTHER)
         .append(
             rigger::conductor::STREAM,
             ExpectedRevision::Any,
@@ -914,15 +924,22 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
     let dir = temp_store_project();
     let root = dir.path();
     {
-        let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
+        let events_db = rigger_file(root, "events.db");
+        let backend = Store::open(events_db.to_str().unwrap()).unwrap();
         let store = Namespaced::new(&backend, &run_stream_identity(root));
-        store
-            .append(
-                rigger::conductor::STREAM,
-                ExpectedRevision::Any,
-                &two_generations_dropping_facts(),
-            )
-            .unwrap();
+        Namespaced::new(
+            &common::fixtures::PreLedgerStore {
+                db: &events_db,
+                inner: &backend,
+            },
+            &run_stream_identity(root),
+        )
+        .append(
+            rigger::conductor::STREAM,
+            ExpectedRevision::Any,
+            &two_generations_dropping_facts(),
+        )
+        .unwrap();
         let graph_db = rigger_file(root, "graph.db");
         let log = store
             .read_stream(
@@ -1173,7 +1190,11 @@ impl ReleaseEraStore {
         let graph_db = rigger_file(root, "graph.db");
         let appended = {
             let backend = Store::open(events_db.to_str().unwrap()).unwrap();
-            Namespaced::new(&backend, &project)
+            let pre_ledger = common::fixtures::PreLedgerStore {
+                db: &events_db,
+                inner: &backend,
+            };
+            Namespaced::new(&pre_ledger, &project)
                 .append(rigger::conductor::STREAM, ExpectedRevision::Any, &log)
                 .unwrap();
             run_events(&backend, &project)
@@ -1820,7 +1841,11 @@ fn selected_past(backend: &Store, project: &str, after: u64, batch: usize) -> Ve
 #[test]
 fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
     let dir = tempfile::tempdir().unwrap();
-    let (backend, _) = store_with(dir.path(), &[]);
+    let (backend, db) = store_with(dir.path(), &[]);
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db: Path::new(&db),
+        inner: &backend,
+    };
     let other = "proj-other";
     let generation = |key: &str, line| {
         vec![keyed(
@@ -1838,7 +1863,7 @@ fn the_live_selection_is_one_projects_stream_with_that_streams_head() {
         (PROJECT, "gc/src/g.rs@h1#0", 3),
         (other, "gc/src/g.rs@h1#0", 3),
     ] {
-        Namespaced::new(&backend, project)
+        Namespaced::new(&pre_ledger, project)
             .append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
@@ -1943,7 +1968,7 @@ fn the_live_selection_refuses_a_policy_without_a_reasserting_partition_and_hands
 /// what the newer generation drops, as it does live.
 fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained: Vec<Event>) {
     let dir = tempfile::tempdir().unwrap();
-    let (backend, _) = store_with(
+    let (backend, events_db) = store_with(
         dir.path(),
         &[(rigger::conductor::STREAM, two_generations_dropping_facts())],
     );
@@ -1967,7 +1992,11 @@ fn a_resumed_rebuild_after_the_log_gained_a_generation_is_the_whole_logs(gained:
         "its first batch - h2's `alpha` - is committed in the shadow"
     );
 
-    Namespaced::new(&backend, PROJECT)
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db: Path::new(&events_db),
+        inner: &backend,
+    };
+    Namespaced::new(&pre_ledger, PROJECT)
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &gained)
         .unwrap();
     assert_eq!(

@@ -1052,8 +1052,8 @@ mod tests {
         .to_string()
     }
 
-    /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 derived
-    /// events and two superseded runs before the boundary, every tool that reads the run -
+    /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
+    /// entries and two superseded runs before the boundary, every tool that reads the run -
     /// `rigger_peers`, `rigger_activity` and the spawn-bound `rigger_scratch` - costs exactly one
     /// read of the run's own events plus the typed carry-over per call, asserted through the
     /// counting store double, and still answers from the whole carry-over.

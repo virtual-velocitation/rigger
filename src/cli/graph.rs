@@ -1026,8 +1026,8 @@ mod tests {
             handed_by_the_walk, held_generations, one_lookup_each, owe_a_rebuild,
             planted_extraction_tree, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
             source_with, walked_generations, walked_identities, write_file, EntryRecord,
-            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, ReadCountingStore, MOVED,
-            SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
+            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, PreLedgerStore,
+            ReadCountingStore, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
         };
         use rigger::contextgraph::Fold;
 
@@ -1241,9 +1241,15 @@ mod tests {
         ) {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
+            let log = tempfile::tempdir().unwrap();
+            let db = log.path().join("events.db");
+            let store = Store::open(db.to_str().unwrap()).unwrap();
             let graph = Projector::open(":memory:", "test").unwrap();
-            seed_pre_ledger_rows_without_a_group(tree.path(), &store, &graph);
+            let pre_ledger = PreLedgerStore {
+                db: &db,
+                inner: &store,
+            };
+            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
             let identities = walked_identities();
             assert_eq!(
                 (recorded(&store), held_generations(&graph, &identities)),
@@ -1270,9 +1276,15 @@ mod tests {
         fn a_build_counts_the_batch_the_graph_folds_and_not_the_re_recordings_beside_it() {
             let tree = planted_extraction_tree(write_file);
             let root = tree.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
+            let log = tempfile::tempdir().unwrap();
+            let db = log.path().join("events.db");
+            let store = Store::open(db.to_str().unwrap()).unwrap();
             let graph = Projector::open(":memory:", "test").unwrap();
-            seed_pre_ledger_rows_without_a_group(tree.path(), &store, &graph);
+            let pre_ledger = PreLedgerStore {
+                db: &db,
+                inner: &store,
+            };
+            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
             write_file(
                 &tree.path().join(SOURCE_PATH),
                 source_with(MOVED).as_bytes(),

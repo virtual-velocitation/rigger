@@ -5099,6 +5099,7 @@ mod tests {
             "EdgeInferred",
             "DocLinkExtracted",
             "DocConceptExtracted",
+            "GenerationIngested",
             "AgentProgress",
             "SomethingElseEntirely",
         ] {
@@ -5175,10 +5176,10 @@ mod tests {
                 r#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#,
             ),
             ev("GateVerdict", r#"{"gate":"cargo test","pass":true}"#),
-            // A graph-extraction type sharing the same stream: must NOT appear in `events`.
+            // A ledger entry of perception sharing the same stream: must NOT appear in `events`.
             ev(
-                "CodeEntityExtracted",
-                r#"{"id":"src/dash.rs::route","kind":"function"}"#,
+                "GenerationIngested",
+                r#"{"prefix":"gc","file":"src/dash.rs","generation":"h1","blob":"","excluded":false}"#,
             ),
         ]);
         // RunStarted carries the run id in META_RUN_ID like every real one does, so
@@ -5218,13 +5219,9 @@ mod tests {
             "specs/94-the-console-shell-and-the-live-data-plane.md"
         );
         let feed = v["events"].as_array().unwrap();
-        assert_eq!(
-            feed.len(),
-            3,
-            "the graph-extraction event must be excluded: {feed:?}"
-        );
+        assert_eq!(feed.len(), 3, "the ledger entry must be excluded: {feed:?}");
         assert!(
-            feed.iter().all(|e| e["type"] != "CodeEntityExtracted"),
+            feed.iter().all(|e| e["type"] != "GenerationIngested"),
             "{feed:?}"
         );
         assert_eq!(feed[0]["type"], "RunStarted");

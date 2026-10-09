@@ -21,10 +21,9 @@
 
 mod common;
 
-use common::fixtures::keyed_derived_event;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, EventStore, ExpectedRevision, GroupHead, META_GROUP};
+use rigger::eventstore::{EventStore, ExpectedRevision, GroupHead, META_GROUP};
 use rigger::ingest::{latest_generation, META_REPLAY_KEY};
 use std::collections::BTreeMap;
 
@@ -35,10 +34,22 @@ mod ingest_sinks {
     use super::*;
     use common::cli::{
         graph_build_line, identified_git_project, init_event_log, read_run_events, run_rigger,
-        step_line, with_run_store, write_workflow,
+        step_line, with_pre_ledger_run_store, with_run_store, write_workflow,
     };
     use common::git::run_git;
+    use rigger::eventstore::Event;
     use std::path::Path;
+
+    /// A code entity row of `identity` at `generation` as a store recorded one before the ledger:
+    /// under its replay key and grouped under its identity.
+    fn pre_ledger_row(identity: &str, generation: &str) -> Event {
+        Event::new(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            b"{}".to_vec(),
+        )
+        .with_meta(META_REPLAY_KEY, format!("{identity}@{generation}#0"))
+        .with_meta(META_GROUP, identity)
+    }
 
     /// The derived index events of `events`, in log order.
     fn derived(events: &[Event]) -> Vec<Event> {
@@ -239,18 +250,12 @@ mod ingest_sinks {
     /// group lookup (its type is not text), so the store cannot answer `identity`'s lookup. Returns
     /// the run stream's length once the recording is appended, before it is made unreadable.
     fn plant_unreadable_recording(root: &Path, identity: &str) -> usize {
-        with_run_store(root, |store| {
+        with_pre_ledger_run_store(root, |store| {
             store
                 .append(
                     rigger::conductor::STREAM,
                     ExpectedRevision::Any,
-                    &[keyed_derived_event(
-                        Event::new(
-                            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            b"{}".to_vec(),
-                        ),
-                        &format!("{identity}@stale#0"),
-                    )],
+                    &[pre_ledger_row(identity, "stale")],
                 )
                 .unwrap();
         });
@@ -681,7 +686,7 @@ mod ingest_sinks {
                 legacy.push((*event).clone().with_meta(META_REPLAY_KEY, key.as_str()));
             }
         });
-        with_run_store(root, |store| {
+        with_pre_ledger_run_store(root, |store| {
             store
                 .append(rigger::conductor::STREAM, ExpectedRevision::Any, &legacy)
                 .unwrap();
@@ -767,7 +772,7 @@ mod ingest_sinks {
         );
         let seeded = walk(root);
         let rows: Vec<String> = seeded.iter().flat_map(|(_, _, k)| k.clone()).collect();
-        with_run_store(root, |store| {
+        with_pre_ledger_run_store(root, |store| {
             common::fixtures::seed_pre_ledger_rows_without_a_group(
                 root,
                 store,
@@ -904,14 +909,16 @@ mod ingest_sinks {
                         entry(SPARED, &spared_generation, spared_events),
                         entry(STALE, OLD, stale_events),
                         entry(FOLLOWED, &followed_generation, followed_events),
-                        keyed_derived_event(
-                            Event::new(
-                                rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                                b"{}".to_vec(),
-                            ),
-                            &format!("{followed}@{OLD}#0"),
-                        ),
                     ],
+                )
+                .unwrap();
+        });
+        with_pre_ledger_run_store(root, |store| {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[pre_ledger_row(&followed, OLD)],
                 )
                 .unwrap();
         });
@@ -1041,13 +1048,10 @@ fn the_group_lookup_answers_each_project_namespace_only_its_own_recording() {
             .append(
                 stream,
                 ExpectedRevision::Any,
-                &[keyed_derived_event(
-                    Event::new(
-                        rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        b"{}".to_vec(),
-                    ),
-                    &format!("gc/src/a.rs@{generation}#0"),
-                )],
+                &[
+                    common::fixtures::generation_ingested("gc", "src/a.rs", generation, "", false)
+                        .event(1),
+                ],
             )
             .unwrap()
     };
@@ -1068,12 +1072,12 @@ fn the_group_lookup_answers_each_project_namespace_only_its_own_recording() {
     };
     let expected = |position: u64, generation: &str| GroupHead {
         position,
-        type_: rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED.to_string(),
+        type_: rigger::retention::TYPE_GENERATION_INGESTED.to_string(),
         meta: BTreeMap::from([
             (META_GROUP.to_string(), "gc/src/a.rs".to_string()),
             (
                 META_REPLAY_KEY.to_string(),
-                format!("gc/src/a.rs@{generation}#0"),
+                format!("gc/src/a.rs@{generation}#1"),
             ),
         ]),
     };
