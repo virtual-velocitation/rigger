@@ -297,13 +297,12 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // LOG BLOAT advisory (spec 68, VALIDATE ADVISORIES): warn when the event log's derived
-    // index is duplicated above threshold and name `rigger reset --derived`. Reuses the
-    // store's OWN aggregate ([`rigger::eventstore::sqlite::Store::measure_derived_duplication`],
-    // the same key/type/prefix authority the compaction itself uses - no shadow accounting).
-    // `None` on a server-backed project (a sqlite-only mechanic, exactly like `reset --derived`
-    // itself), on a project with no events.db yet, or on any read failure; this never fails
-    // validate and never creates a store that does not already exist.
+    // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
+    // the event log still holds a derived event and name `rigger reset --derived`, the migration
+    // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
+    // menu prints and the migration acts on. `None` on a server-backed project (the migration is
+    // a mechanic of the sqlite store), on a project with no events.db yet, or on any read
+    // failure; this never fails validate and never creates a store that does not already exist.
     if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &project_identity()) {
         eprintln!("{advisory}");
     }
@@ -522,51 +521,41 @@ fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     ))
 }
 
-/// The derived-index duplication FACTOR (rows per row a compaction keeps) above which `rigger
-/// validate` warns of log bloat (Design: "derived-type duplication factor above threshold"). `1.5`
-/// means at least half again as many recordings as a compaction would keep sit in the log - a real
-/// redundancy signal, not the occasional legitimate re-recording (a revert, a branch switch) a
-/// small, healthy log can carry without ever being worth an operator's attention.
-const BLOAT_DUPLICATION_THRESHOLD: f64 = 1.5;
-
-/// The LOG BLOAT advisory line (spec 68, VALIDATE ADVISORIES), rendered from an already-measured
-/// [`rigger::eventstore::sqlite::DerivedDuplication`] - pure formatting, separate from the
-/// gathering in [`bloat_advisory_for`]. `None` when the measured factor does not clear
-/// [`BLOAT_DUPLICATION_THRESHOLD`].
-fn bloat_advisory(measured: &rigger::eventstore::sqlite::DerivedDuplication) -> Option<String> {
-    let factor = measured.factor();
-    if factor <= BLOAT_DUPLICATION_THRESHOLD {
-        return None;
+/// The LOG BLOAT advisory line (spec 107), rendered from an already-read
+/// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
+/// `None` for a count holding no derived event; any other names the events and the file
+/// identities left ([`derived_count_phrase`]) and `rigger reset --derived` - decided by the
+/// events alone, as the reset menu's line is, so a store whose derived rows all name no identity
+/// is still warned of.
+fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
+    match (counted.shed, counted.identities.len()) {
+        (0, _) => None,
+        (events, identities) => Some(format!(
+            "warning: the event log still holds {}; run `rigger reset --derived` to migrate \
+             them into the ledger.",
+            derived_count_phrase(events, identities)
+        )),
     }
-    Some(format!(
-        "warning: the event log's derived index is duplicated {factor:.1}x ({} row(s), of which a \
-         compaction keeps only {}); run `rigger reset --derived` to compact it.",
-        measured.rows, measured.kept
-    ))
 }
 
-/// Gather + measure the LOG BLOAT advisory's input (spec 68): open the sqlite event log at
-/// `path`, scoped to `project`'s stream prefix, and run
-/// [`rigger::eventstore::sqlite::Store::measure_derived_duplication`] - the ONE read-only
-/// aggregate the compaction's own `key_expr`/`type_list` authority backs (Design: "no shadow
-/// accounting"). `None`, never an error, on every reason there is nothing honest to measure:
-/// a server-backed project (this is a sqlite-only mechanic, exactly like `reset --derived`
-/// itself refuses there - see [`cmd_reset`]), or a project with no `events.db` file YET - checked
-/// BEFORE opening anything, because [`open_sqlite_store`] (like [`Store::open`] under it) creates
-/// a missing file, and a read-only advisory must never have that side effect. Any read error
-/// after that point (a malformed store, a lock) is likewise swallowed, exactly like the model-
-/// drift and order-signature advisories above.
+/// Gather the LOG BLOAT advisory's input (spec 107): open the sqlite event log at `path` and
+/// count the derived index `project`'s run stream holds ([`Store::count_derived`]), the read
+/// the reset menu prints and the migration acts on, so the advisory never names a count
+/// `rigger reset --derived` would not shed. `None`, never an error, on every reason there is
+/// nothing to count: a server-backed project (the migration does not run there - see
+/// [`cmd_reset`]), or a project with no `events.db` file YET - checked BEFORE opening anything,
+/// because [`open_sqlite_store`] (like [`Store::open`] under it) creates a missing file, and a
+/// read-only advisory must never have that side effect. Any read error after that point (a
+/// malformed store, a lock) is likewise swallowed, exactly like the model-drift and
+/// order-signature advisories above.
 fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     let sel = store_selection(None, None).ok()?;
     if !sel.is_sqlite() || !Path::new(path).exists() {
         return None;
     }
     let store = open_sqlite_store(path).ok()?;
-    let prefix = Namespaced::prefix_for(project);
-    let measured = store
-        .measure_derived_duplication(&prefix, &rigger::ingest::derived_index_identity())
-        .ok()?;
-    bloat_advisory(&measured)
+    let counted = store.count_derived(&run_stream_of(project)).ok()?;
+    bloat_advisory(&counted)
 }
 
 /// The RETIRED CODE-ENTITY advisory line (spec 86 criterion 3, THE MIGRATION IS DELIBERATE),
@@ -2153,28 +2142,44 @@ mod tests {
     }
 
     #[test]
-    fn bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it() {
-        // Exactly at the threshold: not yet a warning-worthy signal.
-        let at_threshold = rigger::eventstore::sqlite::DerivedDuplication {
-            rows: 3,
-            kept: 2, // factor 1.5 == BLOAT_DUPLICATION_THRESHOLD
+    fn bloat_advisory_is_none_for_a_count_holding_no_derived_event_and_names_any_other() {
+        assert_eq!(bloat_advisory(&DerivedCount::default()), None);
+        let one = DerivedCount {
+            shed: 1,
+            unkeyed: 0,
+            identities: ["gc/a.rs".to_string()].into(),
         };
-        assert_eq!(bloat_advisory(&at_threshold), None);
-
-        // Clearly above: a named warning carrying the measured factor and the fix.
-        let above_threshold = rigger::eventstore::sqlite::DerivedDuplication {
-            rows: 6,
-            kept: 1, // factor 6.0
-        };
-        let advisory = bloat_advisory(&above_threshold).expect("must warn above threshold");
-        assert!(advisory.starts_with("warning:"), "advisory: {advisory}");
-        assert!(
-            advisory.contains("6.0"),
-            "the message must carry the measured factor: {advisory}"
+        assert_eq!(
+            bloat_advisory(&one).as_deref(),
+            Some(
+                "warning: the event log still holds 1 derived events of 1 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
         );
-        assert!(
-            advisory.contains("rigger reset --derived"),
-            "the message must name the fix: {advisory}"
+        // Decided by the events alone: rows naming no identity are still derived events left.
+        let all_unkeyed = DerivedCount {
+            shed: 7,
+            unkeyed: 7,
+            identities: Default::default(),
+        };
+        assert_eq!(
+            bloat_advisory(&all_unkeyed).as_deref(),
+            Some(
+                "warning: the event log still holds 7 derived events of 0 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
+        );
+        let two_identities = DerivedCount {
+            shed: 7,
+            unkeyed: 1,
+            identities: ["gc/a.rs", "gd/a.rs"].map(String::from).into(),
+        };
+        assert_eq!(
+            bloat_advisory(&two_identities).as_deref(),
+            Some(
+                "warning: the event log still holds 7 derived events of 2 file identities; run \
+                 `rigger reset --derived` to migrate them into the ledger."
+            )
         );
     }
 

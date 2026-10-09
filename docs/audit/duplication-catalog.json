@@ -5556,25 +5556,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e7252bf71441",
-    "classification": "exact",
-    "sites": [
-      {
-        "file": "crates/rigger-domain/src/metrics.rs",
-        "name": "cost_per_upheld",
-        "content_hash": "e8cdb779abbfeffa"
-      },
-      {
-        "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
-        "name": "factor",
-        "content_hash": "e8cdb779abbfeffa"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-domain/src/metrics.rs, crates/rigger-store-sqlite/src/eventstore/sqlite.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-c16dbfd88b00",
     "classification": "exact",
     "sites": [
@@ -7236,7 +7217,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-693345bdfc2f",
+    "id": "dup-66dfa60cc910",
     "classification": "near",
     "sites": [
       {
@@ -7252,6 +7233,11 @@
       {
         "file": "tests/common/cli.rs",
         "name": "derived_menu_line_naming",
+        "content_hash": "abc61f9406535fc4"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "bloat_advisory_naming",
         "content_hash": "abc61f9406535fc4"
       },
       {
@@ -8088,7 +8074,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a1b7c48d72bd",
+    "id": "dup-065ac962b8cf",
     "classification": "exact",
     "sites": [
       {
@@ -8100,9 +8086,14 @@
         "file": "tests/common/cli.rs",
         "name": "index_lag_lines",
         "content_hash": "abcb3e0cce3666b0"
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "name": "bloat_lines",
+        "content_hash": "abcb3e0cce3666b0"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

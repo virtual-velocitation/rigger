@@ -1370,6 +1370,13 @@ fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, 
     ))
 }
 
+/// The whole name the run stream of the project `identity` scopes has in the store's file - the
+/// one spelling a read below the namespacing port ([`Namespaced`]) names it by: the identity's
+/// prefix, then [`conductor::STREAM`].
+fn run_stream_of(identity: &str) -> String {
+    format!("{}{}", Namespaced::prefix_for(identity), conductor::STREAM)
+}
+
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
 /// `reported`) must see it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
@@ -1404,15 +1411,10 @@ impl StoreLocation {
         store_file(&self.dir, name)
     }
 
-    /// The whole name this project's run stream has in the store's file - the one spelling a
-    /// read below the namespacing port ([`Namespaced`]) names it by: the prefix of this store's
-    /// [`identity`](Self::identity), then [`conductor::STREAM`].
+    /// The whole name this project's run stream has in the store's file: [`run_stream_of`] this
+    /// store's [`identity`](Self::identity).
     fn run_stream(&self) -> String {
-        format!(
-            "{}{}",
-            Namespaced::prefix_for(&self.identity()),
-            conductor::STREAM
-        )
+        run_stream_of(&self.identity())
     }
 
     /// The identity scoping this store's namespaced streams, bound to the store's OWNING

@@ -8385,6 +8385,14 @@
   },
   {
     "file": "src/cli/mod.rs",
+    "name": "run_stream_of",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "c734b4c16e9a61e3"
+  },
+  {
+    "file": "src/cli/mod.rs",
     "name": "graph",
     "is_test": false,
     "proposed_module": "main::store_location",
@@ -8405,7 +8413,7 @@
     "is_test": false,
     "proposed_module": "main::store_location",
     "reason": "method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.",
-    "content_hash": "eda7736ba5927575"
+    "content_hash": "197c9a9ef3defeee"
   },
   {
     "file": "src/cli/mod.rs",

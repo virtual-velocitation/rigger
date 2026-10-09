@@ -393,29 +393,6 @@ impl Store {
         }
     }
 
-    /// Measure the derived-index REDUNDANCY already sitting in the log, WITHOUT deleting
-    /// anything: across every type `identity` covers, within streams under `stream_prefix`, how
-    /// many rows carry a covered key versus how many of them the live selection KEEPS.
-    ///
-    /// Answered by the one selection [`plan_derived_prune`], the one a rebuild reads through
-    /// [`Store::read_live_selection`], so `rigger validate`'s bloat advisory (spec 68) measures
-    /// superseded generations as well as earlier recordings of one key and can never drift from
-    /// a second, independently re-derived definition of "redundant" (Design: "one measurement
-    /// authority per advisory ... no shadow accounting"). No row is touched, no valid-time
-    /// carried.
-    pub fn measure_derived_duplication(
-        &self,
-        stream_prefix: &str,
-        identity: &ContentIdentity,
-    ) -> Result<DerivedDuplication, Error> {
-        let guard = self.conn.lock().unwrap();
-        let plan = plan_derived_prune(&guard, stream_prefix, identity, &[])?;
-        Ok(DerivedDuplication {
-            rows: plan.rows,
-            kept: plan.rows - plan.deletes.len(),
-        })
-    }
-
     /// Stream the LIVE SELECTION of `stream_prefix` + `stream` after position `after` (spec 101):
     /// every non-derived event, and of the derived index each identity's latest generation at the
     /// latest recording of each key, its valid-time carried back to the earliest the fact has
@@ -697,8 +674,6 @@ fn read_derived(
 
 /// What the live selection sets aside and re-dates, decided by [`plan_derived_prune`].
 struct DerivedPrunePlan {
-    /// How many covered, keyed rows the selection weighed.
-    rows: usize,
     /// The position of every row the selection sets aside.
     deletes: Vec<i64>,
     /// `(position, earliest valid-time)` of every surviving re-asserting row whose fact was
@@ -782,9 +757,9 @@ fn reasserting_types(identity: &ContentIdentity) -> Result<Vec<String>, Error> {
         .collect())
 }
 
-/// The ONE live selection of the derived index, shared by the rebuild's read, the migration's
-/// choice of the rows it converts and the `rigger validate` bloat measurement: which rows are
-/// set aside, and which surviving rows take an earlier valid-time.
+/// The ONE live selection of the derived index, shared by the rebuild's read and the migration's
+/// choice of the rows it converts: which rows are set aside, and which surviving rows take an
+/// earlier valid-time.
 ///
 /// One pass over the covered, keyed rows under `stream_prefix`, NEWEST FIRST, so the first row
 /// met for a `(stream, batch identity)` names that identity's LATEST recorded generation
@@ -845,7 +820,6 @@ fn plan_derived_prune(
     // position of a surviving re-asserting row -> (its own valid-time, its fact, its key).
     let mut survivors: Vec<(i64, i64, Fact, Key)> = Vec::new();
     let mut plan = DerivedPrunePlan {
-        rows: 0,
         deletes: Vec::new(),
         carries: Vec::new(),
     };
@@ -859,7 +833,6 @@ fn plan_derived_prune(
         if !identity.covers(&type_) {
             continue;
         }
-        plan.rows += 1;
         let (batch, generation) = identity
             .key_parts(&content_key)
             .unwrap_or((content_key.as_str(), ""));
@@ -922,31 +895,6 @@ fn plan_derived_prune(
     }
     plan.carries.sort_unstable();
     Ok(plan)
-}
-
-/// What [`Store::measure_derived_duplication`] found: how many rows carry a covered derived-
-/// index key, and how many of them a compaction keeps - the read-only measurement `rigger
-/// validate`'s bloat advisory (spec 68) warns from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DerivedDuplication {
-    /// Rows in scope carrying a covered, non-null key.
-    pub rows: usize,
-    /// Of those, the rows `rigger reset --derived` keeps: the latest recording of each key of
-    /// each identity's latest generation.
-    pub kept: usize,
-}
-
-impl DerivedDuplication {
-    /// Rows per kept row: `1.0` when a compaction would shed nothing (or there are no covered
-    /// rows at all - `kept == 0` is guarded rather than divided by, since "nothing to measure" is
-    /// not evidence of bloat), rising with the log's redundancy.
-    pub fn factor(&self) -> f64 {
-        if self.kept == 0 {
-            1.0
-        } else {
-            self.rows as f64 / self.kept as f64
-        }
-    }
 }
 
 /// What the compacting step did to the file, which is the only thing about a reclamation its
@@ -2116,120 +2064,6 @@ mod tests {
             .unwrap()
             .query_row(&sql, params!["gc/src/a.rs@h1#0"], |r| r.get(0))
             .unwrap()
-    }
-
-    // --- Spec 68, VALIDATE ADVISORIES: measure_derived_duplication, the live selection's count ---
-
-    #[test]
-    fn measure_derived_duplication_reports_rows_vs_the_rows_a_compaction_keeps() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 4);
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 4, "four recordings of the one covered key");
-        assert_eq!(measured.kept, 1, "all four share the same replay key");
-        assert_eq!(measured.factor(), 4.0);
-    }
-
-    #[test]
-    fn measure_derived_duplication_is_read_only_and_never_deletes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path = path.to_str().unwrap();
-        let s = seeded_with_duplicated_key(path, 3);
-        let _ = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(
-            recordings_of_the_key(path),
-            3,
-            "measuring must never delete anything - that is the migration's job, not this read"
-        );
-    }
-
-    #[test]
-    fn measure_derived_duplication_scopes_to_the_stream_prefix() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[
-                (
-                    "proj-a/run",
-                    vec![
-                        keyed(
-                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            "gc/src/a.rs@h1#0",
-                        ),
-                        keyed(
-                            crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                            "gc/src/a.rs@h1#0",
-                        ),
-                    ],
-                ),
-                (
-                    "proj-b/run",
-                    vec![keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    )],
-                ),
-            ],
-        );
-        let measured = s
-            .measure_derived_duplication("proj-a/", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2, "only proj-a's rows are in scope");
-        assert_eq!(measured.kept, 1);
-    }
-
-    #[test]
-    fn measure_derived_duplication_on_a_clean_log_reports_no_duplication() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_with(
-            path.to_str().unwrap(),
-            &[(
-                "run",
-                vec![
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/a.rs@h1#0",
-                    ),
-                    keyed(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/src/b.rs@h1#0",
-                    ),
-                ],
-            )],
-        );
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 2);
-        assert_eq!(measured.kept, 2);
-        assert_eq!(measured.factor(), 1.0);
-    }
-
-    #[test]
-    fn measure_derived_duplication_on_an_empty_log_reports_a_factor_of_one_not_a_division_by_zero()
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = Store::open(path.to_str().unwrap()).unwrap();
-        let measured = s
-            .measure_derived_duplication("", &crate::ingest::derived_index_identity())
-            .unwrap();
-        assert_eq!(measured.rows, 0);
-        assert_eq!(measured.kept, 0);
-        assert_eq!(
-            measured.factor(),
-            1.0,
-            "no covered rows at all is not duplication - never a NaN/inf from dividing by zero"
-        );
     }
 
     /// Spec 60, criterion 5: the post-commit step this store guards against failing really can

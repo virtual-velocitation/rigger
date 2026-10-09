@@ -3,32 +3,31 @@
 //! `rigger validate` gains two advisory-only checks (Design):
 //!   (a) INDEX STALENESS - the persisted `symbols` grounding index has drifted from the tree,
 //!       warn and name `rigger reindex`.
-//!   (b) LOG BLOAT - the event log's derived index is duplicated above threshold, warn with the
-//!       measured factor and name `rigger reset --derived`.
+//!   (b) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
+//!       events and file identities left and `rigger reset --derived`, the migration.
 //!
 //! Both are stderr-only warnings that NEVER change `validate`'s exit status (Design: "advisory-
 //! warn, never failing"). These tests drive the compiled binary so the observable surface -
 //! stdout/stderr/exit code - is pinned exactly as an operator sees it.
 //!
 //! What this file OWNS (criterion 4): the two advisories' trigger conditions, their wording (the
-//! staleness kind, the measured bloat factor, the named fix each names), that a clean store
-//! draws neither and the exit status is unaffected either way, AND two boundary-only properties
-//! neither advisory's own unit tests can see from inside their module: the LOG BLOAT advisory's
-//! sqlite-only boundary - a server-selected store must draw no warning from a local events.db
-//! sitting beside it, regardless of what that local file holds (§48, "one resolution authority":
-//! `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset --derived`
-//! itself) - and its CROSS-TYPE trigger condition - the same replay key recorded once under two
-//! different covered derived-index types must draw no warning, since the real
-//! `rigger reset --derived` reclaims nothing for it (its own compaction partitions duplicates
-//! PER TYPE); plus the INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
+//! staleness kind, the derived events and file identities left, the named fix each names), that
+//! a clean store draws neither and the exit status is unaffected either way, AND boundary-only
+//! properties neither advisory's own unit tests can see from inside their module: the LOG BLOAT
+//! advisory's sqlite-only boundary - a server-selected store must draw no warning from a local
+//! events.db sitting beside it, regardless of what that local file holds (§48, "one resolution
+//! authority": `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset
+//! --derived` itself) - and its COUNT, every derived event of the project's run stream however
+//! its key or type repeats, since `rigger reset --derived` sheds every one of them; plus the
+//! INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
 //! pre-spec-68 `index.json` (missing the `hashes` key entirely, not merely an in-memory struct
 //! built via the current API) must load and stay silent; plus the GRAPH INDEX LAG sample's
 //! candidate set as the operator sees it (spec 107, THE TREE IS READ BY ONE RULE) - a recorded
 //! path outside the walk's scope, or one the read fault makes unreadable, is never named and
 //! takes no slot of the bounded sample. NOT OWNED: the underlying measurement
 //! primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
-//! `rigger::eventstore::sqlite::Store::measure_derived_duplication`), which carry their own unit
-//! tests beside their implementations.
+//! `rigger::eventstore::sqlite::Store::count_derived`), which carry their own unit tests beside
+//! their implementations.
 
 mod common;
 
@@ -74,8 +73,8 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
 }
 
 /// Seed `root`'s event log with `rounds` recordings of ONE derived-index replay key, in the
-/// project's own namespaced stream - the exact duplication `rigger reset --derived` prunes and
-/// the bloat advisory measures.
+/// project's own namespaced stream - `rounds` derived events of one file identity, each of which
+/// `rigger reset --derived` sheds and the bloat advisory counts.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
     seed_derived_keys(root, &vec!["gc/src/a.rs@h1#0"; rounds]);
 }
@@ -99,11 +98,9 @@ fn seed_derived_keys(root: &Path, keys: &[&str]) {
     });
 }
 
-/// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT covered
-/// derived-index types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`) - the cross-type
-/// scenario `rigger reset --derived`'s real per-type compaction reclaims NOTHING for (each
-/// type's own delete only ever sees its own one row), so the bloat measurement's per-type
-/// scoping must never merge these into a false duplicate pair.
+/// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT derived-index
+/// types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`): two derived events of the one
+/// file identity `key` names, each of which `rigger reset --derived` sheds.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
@@ -263,35 +260,42 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
 // (b) LOG BLOAT
 // ---------------------------------------------------------------------------------------
 
-#[test]
-fn validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err) = validate_after_init(root, |root| seed_duplicated_key(root, 6));
-    assert!(
-        err.to_lowercase().contains("duplicat") || err.to_lowercase().contains("bloat"),
-        "validate must warn of derived-index duplication; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("6.0"),
-        "the warning must carry the MEASURED factor (6 rows / 1 distinct key = 6.0x); \
-         stderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger reset --derived"),
-        "the bloat warning must name `rigger reset --derived` as the fix; stderr:\n{err}"
+/// Validate over an initialized project whose log `seed` shaped exits 0 and warns of log bloat
+/// exactly once, on the line naming `events` derived events of `identities` file identities
+/// left and `rigger reset --derived` (`why`).
+fn assert_validate_warns_of_log_bloat(
+    seed: impl FnOnce(&Path),
+    events: usize,
+    identities: usize,
+    why: &str,
+) {
+    let err = validate_stderr_after(seed);
+    assert_eq!(
+        common::cli::bloat_lines(&err),
+        [common::cli::bloat_advisory_naming(events, identities)],
+        "{why}; stderr:\n{err}"
     );
 }
 
-/// Spec 101, criterion 4: the advisory measures the ONE selection `rigger reset --derived` acts
-/// on, so a log whose every key is recorded once but which holds five superseded generations of
-/// one file (six generations, only the latest of which a compaction keeps) is 6.0x bloated.
-#[test]
-fn validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err) = validate_after_init(root, |root| {
-        seed_derived_keys(
+rigger::test_cases! {
+    /// Any derived event is one the migration sheds, so a single recording already warns: no
+    /// threshold stands between a store holding a derived event and its advisory.
+    validate_warns_of_log_bloat_on_a_log_holding_one_derived_event: assert_validate_warns_of_log_bloat(
+        |root| seed_duplicated_key(root, 1),
+        1,
+        1,
+        "one derived event of one file identity is named",
+    );
+    validate_warns_of_log_bloat_counting_every_recording_of_one_key: assert_validate_warns_of_log_bloat(
+        |root| seed_duplicated_key(root, 6),
+        6,
+        1,
+        "six recordings of one key are six derived events of one file identity",
+    );
+    /// A log whose every key is recorded once but which holds six generations of one file is
+    /// six derived events of that one identity: the migration sheds all six, the latest too.
+    validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations: assert_validate_warns_of_log_bloat(
+        |root| seed_derived_keys(
             root,
             &[
                 "gc/src/a.rs@h1#0",
@@ -301,54 +305,52 @@ fn validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations() {
                 "gc/src/a.rs@h5#0",
                 "gc/src/a.rs@h6#0",
             ],
-        )
-    });
-    assert!(
-        err.contains("6.0") && err.contains("rigger reset --derived"),
-        "six generations of which a compaction keeps one must warn at the measured 6.0x and name \
-         `rigger reset --derived`; stderr:\n{err}"
+        ),
+        6,
+        1,
+        "six generations of one file are six derived events of one file identity",
     );
-}
-
-/// `rigger validate` over an initialized project whose log `seed` shaped succeeds (`ok_why`
-/// when it does not) and draws no bloat warning (`why` when it does).
-fn assert_validate_draws_no_bloat_warning(seed: impl FnOnce(&Path), ok_why: &str, why: &str) {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    seed(root);
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "{ok_why}; stderr:\n{err}");
-    assert!(
-        !err.contains("rigger reset --derived"),
-        "{why}; stderr:\n{err}"
-    );
-}
-
-rigger::test_cases! {
-    validate_is_silent_on_log_bloat_when_every_key_is_recorded_once: assert_validate_draws_no_bloat_warning(
-        |root| seed_duplicated_key(root, 1),
-        "validate must succeed",
-        "a log with no duplication must draw no bloat warning",
-    );
-    /// spec 68 Global constraints: "one measurement authority per advisory ... no shadow
-    /// accounting". The real compaction (the live selection, `plan_derived_prune`)
-    /// deletes duplicates PER COVERED TYPE - its own per-type loop only ever compares a key
-    /// against OTHER ROWS OF THE SAME TYPE. The SAME replay key recorded once under two
-    /// DIFFERENT covered types (here, a code-entity extraction and an inferred edge) is
-    /// therefore two independent single-row groups to the real prune, which reclaims NOTHING
-    /// for it - so the bloat advisory must draw no warning either. A measurement that merges
-    /// duplicate-detection ACROSS types would read this as one key recorded twice (a false
-    /// factor of 2.0) and warn of bloat a real `rigger reset --derived` could never reclaim -
-    /// exactly the shadow, independently-re-derived definition of "duplicated" the design
-    /// forbids.
-    validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types: assert_validate_draws_no_bloat_warning(
+    /// The same replay key recorded once under two different derived types is two derived
+    /// events, both shed by `rigger reset --derived`, of the one identity the key names.
+    validate_warns_of_log_bloat_counting_a_key_recorded_under_two_derived_types: assert_validate_warns_of_log_bloat(
         |root| seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0"),
-        "an advisory must never fail validate's exit status",
-        "the same key recorded once under two different covered types is not duplication a \
-         real prune can reclaim, and must draw no bloat warning",
+        2,
+        1,
+        "one key under two derived types is two derived events of one file identity",
+    );
+    /// A file identity is its prefix and file, so a `gc` and a `gd` batch of one file are two
+    /// and a second file a third.
+    validate_warns_of_log_bloat_naming_each_file_identity_once: assert_validate_warns_of_log_bloat(
+        |root| seed_derived_keys(root, &["gc/src/a.rs@h1#0", "gc/src/b.rs@h1#0", "gd/src/a.rs@d1#0"]),
+        3,
+        3,
+        "three recordings of three identities, a gc and a gd batch of one file being two",
+    );
+}
+
+/// A log whose perception is recorded as ledger entries alone holds no derived event: the state
+/// `rigger reset --derived` leaves a store in, which draws no bloat warning.
+#[test]
+fn validate_is_silent_on_log_bloat_when_the_log_holds_ledger_entries_and_no_derived_event() {
+    let err = validate_stderr_after(|root| {
+        common::cli::seed_run_events(root, &[("RunStarted", "{}")]);
+        common::cli::with_run_store(root, |store| {
+            store
+                .append(
+                    rigger::conductor::STREAM,
+                    ExpectedRevision::Any,
+                    &[
+                        common::fixtures::generation_ingested("gc", "src/a.rs", "h1", "", false)
+                            .event(1),
+                    ],
+                )
+                .unwrap();
+        });
+    });
+    assert_eq!(
+        common::cli::bloat_lines(&err),
+        [""; 0],
+        "a ledger entry is no derived event; stderr:\n{err}"
     );
 }
 
@@ -358,14 +360,14 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
     // server-backed project ... a sqlite-only mechanic, exactly like `reset --derived` itself").
     // A server-selected store must never fabricate this warning from a LOCAL events.db that
     // happens to sit beside it - this proves the guard gates on the resolved `StoreSelection`
-    // itself, not merely on whether a local file with duplication happens to exist (the sibling
+    // itself, not merely on whether a local file holding derived events happens to exist (the sibling
     // tests above already cover THAT half with no `KURRENTDB_CONN` set at all).
     let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    // Seed the SAME heavy local duplication the sqlite-selected warn test above proves draws a
-    // warning - so any warning here would be unambiguous evidence the sqlite-only guard leaked.
+    // Seed the SAME derived events the sqlite-selected warn test above proves draw a warning - so
+    // any warning here would be unambiguous evidence the sqlite-only guard leaked.
     seed_duplicated_key(root, 6);
 
     let mut cmd = common::rigger_courier();
@@ -389,10 +391,11 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
         out.status.success(),
         "an advisory must never fail validate's exit status, even server-selected; stderr:\n{err}"
     );
-    assert!(
-        !err.contains("rigger reset --derived"),
+    assert_eq!(
+        common::cli::bloat_lines(&err),
+        [""; 0],
         "a server-selected store must draw no bloat warning from a local events.db sitting \
-         beside it, regardless of its duplication; stderr:\n{err}"
+         beside it, whatever derived events it holds; stderr:\n{err}"
     );
 }
 
@@ -649,7 +652,7 @@ fn validate_is_silent_on_a_gated_scaffolded_fanout_template() {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory() {
+fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_advisory() {
     let dir = temp_rigger_project();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
@@ -663,9 +666,10 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
         !err.contains("rigger reindex"),
         "a project with no persisted symbols index must draw no staleness warning; stderr:\n{err}"
     );
-    assert!(
-        !err.contains("rigger reset --derived"),
-        "a project with no duplication must draw no bloat warning; stderr:\n{err}"
+    assert_eq!(
+        common::cli::bloat_lines(&err),
+        [""; 0],
+        "a project holding no derived event must draw no bloat warning; stderr:\n{err}"
     );
     assert!(
         !err.to_lowercase().contains("fallen behind"),
