@@ -2734,79 +2734,84 @@ mod tests {
         );
     }
 
-    /// An identity recorded as a derived row, then a ledger entry, then the same derived row
-    /// again has a derived latest recording: the later row is rewritten, and the entry below it,
-    /// the earliest surviving recording, keeps the earliest valid-time, its own.
-    #[test]
-    fn shed_derived_rewrites_a_derived_row_recorded_again_above_a_ledger_entry() {
+    /// The ledger entry of `gc/a.rs` at `generation`, its blob `held`, valid from `secs`.
+    fn entry_valid_at(generation: &str, secs: u64) -> Event {
+        entry_event("gc/a.rs", generation, 1, "held", false)
+            .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+    }
+
+    /// A store whose stream `p-run` holds the rows of `events`, inserted in order, migrated: what
+    /// the migration answered and the rows it left, beside the rows as they stood before it.
+    fn migrated(events: Vec<Event>) -> (ShedDerived, Vec<Row>, Vec<Row>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-        let s = pre_ledger_store_with(
-            path.to_str().unwrap(),
-            &[(
-                "p-run",
-                vec![
-                    derived_at(ce, "gc/a.rs@h1#0", 30),
-                    entry_event("gc/a.rs", "h1", 1, "held", false)
-                        .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(20)),
-                    derived_at(ce, "gc/a.rs@h1#0", 40),
-                ],
-            )],
-        );
+        let s = pre_ledger_store_with(path.to_str().unwrap(), &[("p-run", events)]);
         let before = rows_of(&path);
-
         let shed = s.shed_derived("p-run", &named_entry).unwrap();
+        (shed, rows_of(&path), before)
+    }
+
+    /// THE REWRITTEN ROW STANDS ABOVE THE IDENTITY'S LATEST LEDGER ENTRY, so its latest recording
+    /// is the generation it was before the migration. An identity recorded as a derived row, a
+    /// ledger entry and the same derived row again has the later row rewritten, the entry below
+    /// it keeping the earliest valid-time, its own. One recorded as a derived batch of two keys, a
+    /// ledger entry of another generation and ONE key of that batch again keeps a row of the
+    /// batch below the entry: that row is deleted and the re-recorded row rewritten, the entry
+    /// below it re-dated to the batch's earliest valid-time.
+    #[test]
+    fn shed_derived_rewrites_the_lowest_kept_row_above_the_identitys_latest_ledger_entry() {
+        let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        let (row_shed, row_after, row) = migrated(vec![
+            derived_at(ce, "gc/a.rs@h1#0", 30),
+            entry_valid_at("h1", 20),
+            derived_at(ce, "gc/a.rs@h1#0", 40),
+        ]);
+        let (batch_shed, batch_after, batch) = migrated(vec![
+            derived_at(ce, "gc/a.rs@h1#0", 30),
+            derived_at(ce, "gc/a.rs@h1#1", 31),
+            entry_valid_at("h2", 40),
+            derived_at(ce, "gc/a.rs@h1#0", 50),
+        ]);
+        let converted = |shed| ShedDerived {
+            converted: 1,
+            shed,
+            unkeyed: 0,
+        };
+        let entry_of_h1 = |keys| entry_event("gc/a.rs", "h1", keys, "blob-of-gc/a.rs", false);
 
         assert_eq!(
-            (shed, rows_of(&path)),
-            (
-                ShedDerived {
-                    converted: 1,
-                    shed: 2,
-                    unkeyed: 0,
-                },
-                vec![
-                    before[1].clone(),
-                    rewritten(
-                        &before[2],
-                        &entry_event("gc/a.rs", "h1", 1, "blob-of-gc/a.rs", false),
-                        40
-                    ),
-                ]
-            )
+            [(row_shed, row_after), (batch_shed, batch_after)],
+            [
+                (
+                    converted(2),
+                    vec![row[1].clone(), rewritten(&row[2], &entry_of_h1(1), 40)]
+                ),
+                (
+                    converted(3),
+                    vec![
+                        redated(&batch[2], 30),
+                        rewritten(&batch[3], &entry_of_h1(2), 50)
+                    ]
+                ),
+            ]
         );
     }
 
-    /// A store at `path` whose stream `p-run` holds one identity recorded, in position order, as
-    /// a ledger entry valid from `first`, a derived row valid from 40 and a second ledger entry
-    /// valid from `second`, migrated: what the migration answered and the rows it left, beside
-    /// the two entry rows as they stood before it.
+    /// A store whose stream `p-run` holds one identity recorded, in position order, as a ledger
+    /// entry valid from `first`, a derived row valid from 40 and a second ledger entry valid from
+    /// `second`, migrated: what the migration answered and the rows it left, beside the two entry
+    /// rows as they stood before it.
     fn migrated_between_two_entries(first: u64, second: u64) -> (ShedDerived, Vec<Row>, [Row; 2]) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let entry_at = |secs: u64| {
-            entry_event("gc/a.rs", "h1", 1, "held", false)
-                .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-        };
-        let s = pre_ledger_store_with(
-            path.to_str().unwrap(),
-            &[(
-                "p-run",
-                vec![
-                    entry_at(first),
-                    derived_at(
-                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                        "gc/a.rs@h1#0",
-                        40,
-                    ),
-                    entry_at(second),
-                ],
-            )],
-        );
-        let before = rows_of(&path);
-        let shed = s.shed_derived("p-run", &named_entry).unwrap();
-        (shed, rows_of(&path), [before[0].clone(), before[2].clone()])
+        let (shed, after, before) = migrated(vec![
+            entry_valid_at("h1", first),
+            derived_at(
+                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                "gc/a.rs@h1#0",
+                40,
+            ),
+            entry_valid_at("h1", second),
+        ]);
+        (shed, after, [before[0].clone(), before[2].clone()])
     }
 
     /// Of two ledger entries of one identity with a derived row between them, the earliest
