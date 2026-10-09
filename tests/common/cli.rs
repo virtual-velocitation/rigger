@@ -496,6 +496,23 @@ pub fn migrated_lines(converted: usize, shed: usize, unkeyed: usize) -> String {
 /// The line `rigger reset --derived` prints, ended, over a store holding no derived event.
 pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to shed\n";
 
+/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events
+/// of `identities` file identities.
+pub fn derived_menu_line(events: usize, identities: usize) -> String {
+    format!(
+        "--derived: {events} derived events of {identities} file identities to shed from the \
+         event log; rerun `rigger reset --derived` to migrate them"
+    )
+}
+
+/// The `--derived` line bare `rigger reset` prints over a store holding no derived event.
+pub const NOTHING_TO_SHED_MENU_LINE: &str = "--derived: no derived event to shed";
+
+/// The `--derived` lines of what bare `rigger reset` printed, in order.
+pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("--derived:"))
+}
+
 /// The line `rigger reset --derived` prints, ended, when the log's file held no free page.
 pub const LOG_LEFT_AS_IT_STANDS_LINE: &str =
     "reset --derived: the log file holds no reclaimable free page, so it was left as it stands \

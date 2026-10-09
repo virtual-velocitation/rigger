@@ -28299,3 +28299,98 @@ fn reset_derived_converts_each_latest_derived_batch_into_its_entry_in_place() {
         );
     }
 }
+
+/// Given a store recorded before the ledger holding six derived events of three file identities
+/// - a superseded and a latest generation of one source file, a design batch of that same file, a
+/// second source file whose latest recording is already a ledger entry, and one event naming no
+/// identity - when the operator runs bare `rigger reset`, then its `--derived` line names those
+/// six events and three identities and the log stands as it stood; when `rigger reset --derived`
+/// then runs it sheds exactly those six events, the three identities holding none after it; and
+/// bare `rigger reset` then says no derived event is left to shed.
+#[test]
+fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
+    use common::cli::{
+        derived_menu_line, derived_menu_lines, keyed, migrated_lines, pre_ledger_batch,
+        stream_shape, with_run_store, NOTHING_TO_SHED_MENU_LINE,
+    };
+    use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
+    use rigger::eventstore::{Event, ExpectedRevision};
+
+    let dir = temp_project();
+    let root = dir.path();
+    common::cli::init_event_log(root);
+    let (_, settle_err, settled) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(settled, "premise: setup settles the project: {settle_err}");
+
+    let entity = common::cli::code_entity;
+    let concept = br#"{"kind":"gate","id":"gate:a","title":"a","doc":"src/a.rs"}"#.to_vec();
+    let [latest_entity, latest_edge] = pre_ledger_batch("alpha", 20);
+    let seeded = [
+        keyed(TYPE_CODE_ENTITY_EXTRACTED, entity(), "gc/src/a.rs@h0#0", 10),
+        latest_entity,
+        latest_edge,
+        keyed(TYPE_DOC_CONCEPT_EXTRACTED, concept, "gd/src/a.rs@d1#0", 30),
+        keyed(TYPE_CODE_ENTITY_EXTRACTED, entity(), "gc/src/b.rs@b1#0", 40),
+        common::fixtures::generation_ingested("gc", "src/b.rs", "b2", "", false).event(1),
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, entity()),
+    ];
+    with_run_store(root, |store| {
+        store
+            .append(rigger::conductor::STREAM, ExpectedRevision::Any, &seeded)
+            .unwrap();
+    });
+
+    // What the log holds of the derived index, read from its rows and never from the command:
+    // how many derived events, and the file identities their replay keys name.
+    let held = || {
+        let derived: Vec<_> = read_run_events(root)
+            .into_iter()
+            .filter(|event| rigger::ingest::DERIVED_INDEX_TYPES.contains(&event.type_.as_str()))
+            .collect();
+        let identities: std::collections::BTreeSet<String> = derived
+            .iter()
+            .filter_map(|event| event.meta.get(rigger::ingest::META_REPLAY_KEY))
+            .filter_map(|key| rigger::ingest::derived_key_parts(key))
+            .map(|(identity, _)| identity.to_string())
+            .collect();
+        (derived.len(), identities)
+    };
+    let identities = ["gc/src/a.rs", "gc/src/b.rs", "gd/src/a.rs"].map(str::to_string);
+    assert_eq!(
+        held(),
+        (6, identities.into_iter().collect()),
+        "premise: the log holds six derived events of three file identities"
+    );
+    let shape = stream_shape(root);
+
+    let (menu, menu_err, menu_ok) = run_rigger(root, &["reset"]);
+    assert!(menu_ok, "bare reset exits 0: {menu_err}");
+    assert_eq!(
+        derived_menu_lines(&menu),
+        [derived_menu_line(6, 3)],
+        "the menu names the six derived events and the three file identities the log holds"
+    );
+    assert_eq!(stream_shape(root), shape, "the menu changes no row");
+
+    let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
+    assert!(shed_ok, "the derived reset runs: {shed_err}");
+    assert_eq!(
+        shed.get(..migrated_lines(2, 6, 1).len()),
+        Some(migrated_lines(2, 6, 1).as_str()),
+        "the derived reset sheds the six events the menu named, converting the two identities \
+         whose latest recording was derived"
+    );
+    assert_eq!(
+        held(),
+        (0, std::collections::BTreeSet::new()),
+        "no derived event of any of the three identities is left"
+    );
+
+    let (after, after_err, after_ok) = run_rigger(root, &["reset"]);
+    assert!(after_ok, "bare reset exits 0 once migrated: {after_err}");
+    assert_eq!(
+        derived_menu_lines(&after),
+        [NOTHING_TO_SHED_MENU_LINE],
+        "the menu says none is left to shed"
+    );
+}

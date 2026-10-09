@@ -9,13 +9,15 @@
 //! proves migrates a legacy-identity store correctly for `--derived`. No existing test drives the
 //! BARE path against a store whose history predates the minted project identity, so a bug that
 //! dropped, reordered, or mis-scoped the bare branch's own call would read as: the menu silently
-//! reports "0 dead-run node(s)" / "0 redundant derived-index event(s)" on a store that is, in fact, full of
+//! reports "0 dead-run node(s)" and no derived event to shed on a store that is, in fact, full of
 //! both - a perfectly successful preview of nothing, the exact silent-lie this whole feature
 //! exists to prevent, and a shape a fixture that always seeds AFTER `rigger init` can never
 //! reproduce.
 
 mod common;
 
+use common::cli::derived_menu_line;
+use common::cli::derived_menu_lines;
 use common::cli::emit;
 use common::cli::rigger_file;
 use common::cli::run_rigger;
@@ -81,14 +83,11 @@ fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the
         "the bare menu must report the migrated store's real dead-run node count (1), not zero \
          from an unmigrated identity mismatch; got: {out:?}"
     );
-    assert!(
-        out.contains(&format!(
-            "--derived: {} redundant derived-index event(s)",
-            DUP_ROUNDS - 1
-        )),
-        "the bare menu must report the migrated store's real duplicate count ({}), not zero from \
-         an unmigrated identity mismatch; got: {out:?}",
-        DUP_ROUNDS - 1
+    assert_eq!(
+        derived_menu_lines(&out),
+        [derived_menu_line(DUP_ROUNDS, 1)],
+        "the bare menu must name the migrated store's derived events, every recording of the one \
+         file identity, not none from an unmigrated identity mismatch"
     );
 
     // And the migration is real, not a duplication: every stream now lives under the MINTED

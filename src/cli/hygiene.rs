@@ -2031,29 +2031,58 @@ mod tests {
         );
     }
 
+    /// A count of `events` derived events, `unkeyed` of them naming no file identity, held by
+    /// `identities`.
+    fn derived_count(events: usize, unkeyed: usize, identities: &[&str]) -> DerivedCount {
+        DerivedCount {
+            shed: events,
+            unkeyed,
+            identities: identities.iter().map(|i| i.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn derived_menu_line_sums_the_preview_and_names_its_superseded_generations_and_the_flag() {
-        let preview = DerivedPreview {
-            removed: vec![
-                ("CodeEntityExtracted".to_string(), 3usize),
-                ("EdgeInferred".to_string(), 0usize),
-                ("DocLinkExtracted".to_string(), 5usize),
-            ],
-            superseded_generations: 6,
-        };
+    fn derived_count_phrase_names_the_events_first_and_the_file_identities_second() {
         assert_eq!(
-            derived_menu_line(&StoreSelection::Sqlite, Some(&preview)),
-            "--derived: 8 redundant derived-index event(s) prunable from the event log across 3 \
-             derived type(s), 6 of them recordings of a superseded generation; rerun `rigger \
-             reset --derived` to compact them",
-            "must sum the per-type counts (3+0+5=8), name the superseded share and the flag"
+            derived_count_phrase(7, 2),
+            "7 derived events of 2 file identities"
         );
         assert_eq!(
-            derived_menu_line(&StoreSelection::Sqlite, Some(&DerivedPreview::default())),
-            "--derived: 0 redundant derived-index event(s) prunable from the event log across 0 \
-             derived type(s), 0 of them recordings of a superseded generation; rerun `rigger \
-             reset --derived` to compact them",
-            "an empty store must report zero, not omit the line"
+            derived_count_phrase(1, 0),
+            "1 derived events of 0 file identities"
+        );
+    }
+
+    #[test]
+    fn derived_menu_line_names_the_events_the_file_identities_holding_them_and_the_flag() {
+        assert_eq!(
+            derived_menu_line(
+                &StoreSelection::Sqlite,
+                Some(&derived_count(7, 1, &["gc/src/a.rs", "gd/src/a.rs"]))
+            ),
+            "--derived: 7 derived events of 2 file identities to shed from the event log; rerun \
+             `rigger reset --derived` to migrate them",
+            "the events are every derived event counted, the unkeyed one among them, and the \
+             identities the size of the set"
+        );
+    }
+
+    /// A store whose derived rows all name no file identity still holds events `--derived`
+    /// sheds: the line is decided by the events, never by the identities.
+    #[test]
+    fn derived_menu_line_names_the_events_of_a_store_whose_rows_are_all_unkeyed() {
+        assert_eq!(
+            derived_menu_line(&StoreSelection::Sqlite, Some(&derived_count(2, 2, &[]))),
+            "--derived: 2 derived events of 0 file identities to shed from the event log; rerun \
+             `rigger reset --derived` to migrate them"
+        );
+    }
+
+    #[test]
+    fn derived_menu_line_says_a_store_holding_no_derived_event_has_none_to_shed() {
+        assert_eq!(
+            derived_menu_line(&StoreSelection::Sqlite, Some(&DerivedCount::default())),
+            "--derived: no derived event to shed"
         );
     }
 
@@ -2062,20 +2091,14 @@ mod tests {
     /// place able to construct `Server(..)` directly and prove the wording without a live
     /// server - `derived_menu_line` never opens a connection either way.
     #[test]
-    fn derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count() {
+    fn derived_menu_line_on_a_server_backend_says_the_migration_does_not_run_there() {
         let server = StoreSelection::Server("esdb://127.0.0.1:2113?tls=false".to_string());
-        let line = derived_menu_line(&server, None);
-        assert!(
-            !line.contains("event(s)"),
-            "a backend that cannot compact must never print a count it could not measure; got {line:?}"
-        );
-        assert!(
-            line.contains("--derived:") && line.contains("unavailable"),
-            "must name its own flag and say it is unavailable; got {line:?}"
-        );
-        assert!(
-            line.contains("server-backed store"),
-            "must name the backend the project is actually configured for; got {line:?}"
+        assert_eq!(
+            derived_menu_line(&server, None),
+            "--derived: unavailable on this backend - the migration rewrites and deletes rows of \
+             the event log and vacuums the file, a mechanic of the embedded sqlite events.db \
+             store; this project is configured for the server-backed store, where the migration \
+             does not run"
         );
     }
 }
