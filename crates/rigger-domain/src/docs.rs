@@ -260,7 +260,7 @@ fn discipline_body(ctx: &DocsContext) -> String {
          the step's liveness fault) has a liveness marker younger than its wall-clock bound, or \
          a driver registration for this store has a heartbeat inside the idle window - naming \
          what it found. A run whose driver died is not live: units it left non-terminal never \
-         block the migration, a spawn with no marker never does, and an in-flight spawn stops \
+         block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
          it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
          result to end it. Every `rigger step`, `run` and `serve` registers as the run's \
