@@ -22,6 +22,10 @@
 //!      the engine's default is the positive control that the directory is being watched at all.
 //!      The same watch covers the reclamation `prune_derived_index` calls; that block goes with
 //!      the function when criterion 16 deletes it, and the rest of this file stands.
+//!   5. **What the rewrite takes on the log's own partition.** The shipped guidance tells an
+//!      operator the rewritten file passes through the write-ahead log beside the log, so that
+//!      partition needs about the compacted size free. A reader parked on the log until the
+//!      rewrite has committed holds that write-ahead log where it can be measured.
 //!
 //! Every test here takes [`serial`]: item 4 points the whole process's engine at one directory,
 //! so nothing else in this binary may stage a temporary file while it watches.
@@ -32,7 +36,7 @@ use common::fixtures::{file_len, plant_free_pages, pragma_i64};
 use rigger::eventstore::sqlite::{Reclamation, Store};
 use rigger::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision};
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -412,5 +416,79 @@ fn the_rewrite_writes_nothing_into_the_temporary_directory_the_engine_resolves()
         untouched,
         "a rewrite staged in a file must move the watched directory's modification time, or \
          the two assertions above watched a directory nothing would ever have written to"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 5. What the rewrite takes on the log's own partition
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn the_rewritten_file_passes_through_the_write_ahead_log_beside_the_log() {
+    let _serial = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("events.db");
+    let wal = dir.path().join("events.db-wal");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+    store
+        .append(
+            "run",
+            ExpectedRevision::Any,
+            &[Event::new("RunStarted", vec![b'x'; 256 * 1024])],
+        )
+        .expect("seed a live row");
+    plant_free_pages(&db, 3_000);
+    // The write-ahead log starts EMPTY, so every byte it holds below was put there by the
+    // rewrite.
+    assert_eq!(pragma_i64(&db, "wal_checkpoint(TRUNCATE)"), 0);
+    assert_eq!(file_len(&wal), 0);
+    assert!(pragma_i64(&db, "freelist_count") > 100);
+    let before = store
+        .bytes_on_disk()
+        .expect("a file-backed store has a size");
+
+    // A READER PARKED ON THE LOG keeps the write-ahead log from being folded back, and lets go
+    // the moment the rewrite has committed: a fresh connection then reads a file with no free
+    // page. What the write-ahead log holds at that moment is what the rewrite put through it.
+    let reader = rusqlite::Connection::open(&db).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    reader
+        .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, i64>(0))
+        .expect("park a reader on the log");
+    let (watched_db, watched_wal) = (db.clone(), wal.clone());
+    let watcher = std::thread::spawn(move || {
+        let give_up = Instant::now() + Duration::from_secs(20);
+        while pragma_i64(&watched_db, "freelist_count") != 0 && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let held = file_len(&watched_wal);
+        drop(reader);
+        held
+    });
+
+    let reclaimed = store.reclaim_space(Some(before));
+    let held_in_the_wal = watcher.join().expect("the watcher must not panic");
+
+    let compacted = file_len(&db);
+    assert!(
+        held_in_the_wal >= compacted,
+        "the rewritten file must pass through the write-ahead log beside the log, which is why \
+         the log's own partition needs about the compacted size free: the write-ahead log held \
+         {held_in_the_wal} byte(s) for a compacted file of {compacted}"
+    );
+    assert_eq!(file_len(&wal), 0);
+    assert_eq!(
+        reclaimed,
+        Reclamation {
+            reclaimed_bytes: Some(before - compacted),
+            compaction_ran: true,
+            on_disk_measured: true,
+            compaction_error: None,
+        },
+        "once the reader lets go the reclamation lands and is measured"
+    );
+    assert!(
+        compacted >= 256 * 1024,
+        "the compacted file still holds the live row; it is {compacted} byte(s)"
     );
 }

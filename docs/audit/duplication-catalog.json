@@ -1132,7 +1132,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a1a394c4891d",
+    "id": "dup-e702d7a094ea",
     "classification": "semantic",
     "sites": [
       {
@@ -1237,6 +1237,11 @@
       },
       {
         "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \\\n         reset --derived`. Each run's project-ingest pass records the project's derived index - \\\n         the code entities, inferred edges, design links, and doc concepts folded from your \\\n         sources - and a log written before that pass deduplicated across runs holds the WHOLE \\\n         index once per run, which is re-derivable duplication rather than history. `rigger reset \\\n         --derived` keeps, for each file, only the recordings of its LATEST generation - the \\\n         content the log last recorded for it - and of those the LATEST event per replay key, \\\n         deletes every superseded generation and re-recording, and compacts the file so \\\n         events.db shrinks on disk. Every other event survives byte-for-byte - lessons, \\\n         decisions, findings, gate verdicts, and the whole run history `rigger stats` and replay \\\n         read. The live graph a rebuild folds is unchanged: a newer generation of a file \\\n         retires every fact the one before it asserted and it does not, so the whole log \\\n         already folds to each file's latest generation; nothing reads a shed recording again \\\n         (a file that returns to an earlier content re-emits its batch); and the prune carries \\\n         a design fact's EARLIEST valid-time within its unbroken run of generations onto the \\\n         recording it keeps, so a design fact keeps the date it first became true rather than \\\n         being re-dated to whichever recording survived. WHAT IT CANNOT RECLAIM, because \\\n         this decides whether it is worth running at all: it never sheds the index itself. The latest generation of every file stays, so on \\\n         a log that holds each file once, at one recording per key, `rigger reset --derived` \\\n         deletes ZERO rows from it and reports so - that is the expected report on a clean log, \\\n         not a failure, and the derived index remains the bulk of the log by design because it \\\n         is what the graph is folded from. WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED, \\\n         because a non-zero prune is otherwise read as a broken dedup: every edit to a file \\\n         records a new generation of its batch and leaves the one before it superseded, and a \\\n         file whose content has RETURNED to a generation the log had already recorded - a \\\n         revert, a branch switch, a checkout back - re-records that file's whole batch by \\\n         design, since a dedup that suppressed an already-recorded key would strand the graph \\\n         on the version the file has since moved past. A prune that sheds rows on such a log is \\\n         shedding exactly that, not covering for a defect; a log written BEFORE the dedup sheds \\\n         the whole accumulated pile instead. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \\\n         a COMPLETE COPY of the log in the process's MEMORY while it does, never in a temporary \\\n         directory, so it needs free memory of about the size of your log, no \\\n         temporary-directory setting changes where the copy goes, and a crash leaves no \\\n         temporary file behind to clean up. It needs room on disk too, beside the log: \\\n         events.db is in write-ahead mode, so the rewritten file passes through events.db-wal \\\n         before it replaces the old pages, and the partition holding .rigger/ needs about the \\\n         compacted size of the log free while it does. A machine short of that memory or that \\\n         room fails the rewrite and nothing else: the rewrite rolls back and the log stays as \\\n         the deletes left it. It rewrites only when the FILE is holding reclaimable free \\\n         pages, which is not the same as this run having deleted something: a prune with nothing \\\n         to shed from an already-compact log leaves the file exactly as it found it and reports \\\n         reclaiming zero, while a prune that sheds nothing from a log still holding free pages \\\n         reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \\\n         the deletes have committed, the command still reports what it removed and names the \\\n         failure, and because the deletes are durable and the space they freed is still free in \\\n         the file, re-running it is both safe and the way to reclaim that space. The two flags \\\n         COMPOSE \\\n         and each prunes its own accumulation: `rigger reset --runs --derived` sheds the dead-run \\\n         graph rows and the duplicated index in one pass. Both are one-shot maintenance you run \\\n         BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: a \\\n         compaction leaves revision gaps by design, and a writer whose cursor was built before it \\\n         ran could reissue a gap and reorder the log, so it refuses while the run is live - a \\\n         `rigger step` holds its lock, an in-flight spawn (one with no recorded result, or only \\\n         the step's liveness fault) has a liveness marker younger than its wall-clock bound, or \\\n         a driver registration for this store has a heartbeat inside the idle window - naming \\\n         what it found. A run whose driver died is not live: units it left non-terminal never \\\n         block the compaction, a spawn with no marker never does, and an in-flight spawn stops \\\n         blocking once its marker outlives the spawn's bound or a real result is recorded for \\\n         it. An unbounded spawn's marker never outlives its bound, so record that spawn's \\\n         result to end it. Every `rigger step`, `run` and `serve` registers as the run's \\\n         driver, so the last step's stamp counts as a live driver for the idle window; a \\\n         courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \\\n         does. `--force-live` overrides the refusal for an operator certain no writer is using \\\n         the store; it checks nothing.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
         "name": "\"Store hygiene for rigger's own state - growing .rigger/ disk usage, \\\n         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \\\n         Read this before running `rigger reset` or touching any store file by hand.\"",
         "content_hash": "25597419b8dbb616"
       },
@@ -1258,6 +1263,11 @@
       {
         "file": "crates/rigger-domain/src/docs.rs",
         "name": "\"`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \\\n             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \\\n             for an index that has drifted from files you just changed (a unit's own commit, a \\\n             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \\\n             store from the structural context graph, so it costs only the named files, never a \\\n             walk of the whole tree.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "crates/rigger-domain/src/docs.rs",
+        "name": "\"the partition holding .rigger/ needs about the compacted size of the log \\\n                     free\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -3757,6 +3767,11 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
+        "name": "\"the partition holding .rigger/ needs about the compacted size of the log free\"",
+        "content_hash": "e24c26c0d9d4cbdb"
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b14c3b2e76f8e879"
       },
@@ -4107,7 +4122,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 594 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 597 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6061,7 +6076,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-284d97a44d43",
+    "id": "dup-e1714529b45e",
     "classification": "semantic",
     "sites": [
       {
@@ -6325,6 +6340,11 @@
         "content_hash": "6ad0a4b6d2a9cca4"
       },
       {
+        "file": "tests/reclaim_space_periphery.rs",
+        "name": "Connection::open",
+        "content_hash": "6ad0a4b6d2a9cca4"
+      },
+      {
         "file": "tests/reset_derived_compaction.rs",
         "name": "Connection::open",
         "content_hash": "a2fad77eaca35107"
@@ -6416,7 +6436,7 @@
       }
     ],
     "proposed_home": "one sqlite-connection-opening adapter function every caller is injected with",
-    "note": "mandatory sweep: sqlite Connection::open call sites - 70 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: sqlite Connection::open call sites - 71 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
