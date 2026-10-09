@@ -64,12 +64,25 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
 /// The ledger entry of `<prefix>/<file>` at `generation`, its batch holding `n` events, as the
 /// entry's one constructor builds it: under its group and its replay key.
 fn identity_entry(prefix: &str, file: &str, generation: &str, n: usize) -> Event {
+    entry_of_a_batch(prefix, file, generation, n, "b10b", false)
+}
+
+/// THE ONE BUILDER of a ledger entry in this crate's tests: the entry of `<prefix>/<file>` at
+/// `generation`, its batch of `n` events extracted from `blob` under the walk's flag `excluded`.
+pub(crate) fn entry_of_a_batch(
+    prefix: &str,
+    file: &str,
+    generation: &str,
+    n: usize,
+    blob: &str,
+    excluded: bool,
+) -> Event {
     rigger_domain::retention::GenerationIngested {
         prefix: prefix.to_string(),
         file: file.to_string(),
         generation: generation.to_string(),
-        blob: "b10b".to_string(),
-        excluded: false,
+        blob: blob.to_string(),
+        excluded,
     }
     .event(n)
 }

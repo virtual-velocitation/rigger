@@ -177,8 +177,8 @@ impl Store {
     /// migration acts on ([`read_derived`]), so what it answers never drifts from what
     /// [`Store::shed_derived`] deletes; it writes nothing.
     ///
-    /// `stream` is one stream's whole name, matched exactly: a stream whose name only starts
-    /// with it is never counted.
+    /// `stream` is one stream's whole name, matched exactly by the one read this count is
+    /// ([`read_derived`]): a stream whose name only starts with it is never counted.
     pub fn count_derived(&self, stream: &str) -> Result<DerivedCount, Error> {
         let guard = self.conn.lock().unwrap();
         let read = read_derived(&guard, stream, &std::collections::HashSet::new())?;
@@ -208,6 +208,12 @@ impl Store {
     /// dated at the identity's earliest recorded valid-time, and every remaining row of a
     /// derived type in the stream is deleted, keyed or not. A row with no replay key, or one
     /// whose key does not parse, names no identity: it is deleted and counted as unkeyed.
+    ///
+    /// `stream` is one stream's whole name. The read of its rows ([`read_derived`]) and the
+    /// DELETE match it exactly, so a stream whose name only starts with it has no row rewritten,
+    /// re-dated or deleted; the live selection ([`plan_derived_prune`]) matches its stream
+    /// argument as a PREFIX, so its plan may also name positions of such a stream, which the
+    /// exact read never meets.
     ///
     /// The selection is read INSIDE the write transaction, opened immediate, so no append lands
     /// between what was decided and what is written, and a failure rolls the whole of it back.
@@ -2643,8 +2649,8 @@ mod tests {
         keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
     }
 
-    /// The ledger entry of `identity` at `generation`, as its constructor builds it for a batch
-    /// of `n` events extracted from `blob` under the flag `excluded`.
+    /// The ledger entry of `identity` at `generation`, built by the crate's one test-side entry
+    /// builder for a batch of `n` events extracted from `blob` under the flag `excluded`.
     fn entry_event(
         identity: &str,
         generation: &str,
@@ -2654,14 +2660,7 @@ mod tests {
     ) -> Event {
         let (prefix, file) =
             crate::retention::GenerationIngested::identity_parts(identity).unwrap();
-        crate::retention::GenerationIngested {
-            prefix: prefix.to_string(),
-            file: file.to_string(),
-            generation: generation.to_string(),
-            blob: blob.to_string(),
-            excluded,
-        }
-        .event(n)
+        crate::eventstore::contract::entry_of_a_batch(prefix, file, generation, n, blob, excluded)
     }
 
     /// `row` as the migration leaves the row it rewrites into `entry`: its type, payload and
@@ -2901,6 +2900,63 @@ mod tests {
                 ]
             )
         );
+    }
+
+    /// A store at `path` whose stream `p-run` holds one identity recorded, in position order, as
+    /// a ledger entry valid from `first`, a derived row valid from 40 and a second ledger entry
+    /// valid from `second`, migrated: what the migration answered and the rows it left, beside
+    /// the two entry rows as they stood before it.
+    fn migrated_between_two_entries(first: u64, second: u64) -> (ShedDerived, Vec<Row>, [Row; 2]) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let entry_at = |secs: u64| {
+            entry_event("gc/a.rs", "h1", 1, "held", false)
+                .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
+        };
+        let s = store_with(
+            path.to_str().unwrap(),
+            &[(
+                "p-run",
+                vec![
+                    entry_at(first),
+                    derived_at(
+                        crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                        "gc/a.rs@h1#0",
+                        40,
+                    ),
+                    entry_at(second),
+                ],
+            )],
+        );
+        let before = rows_of(&path);
+        let shed = s.shed_derived("p-run", &named_entry).unwrap();
+        (shed, rows_of(&path), [before[0].clone(), before[2].clone()])
+    }
+
+    /// Of two ledger entries of one identity with a derived row between them, the earliest
+    /// surviving recording is the FIRST entry in position order and the date it takes is the
+    /// EARLIEST any recording held, whichever entry held it: an earlier first entry keeps its
+    /// own date, a later one is re-dated to the second entry's, and the second entry is left as
+    /// it stands. The derived row is shed and nothing is converted.
+    #[test]
+    fn shed_derived_dates_the_first_of_two_entries_at_the_earliest_valid_time_either_holds() {
+        for (first_valid, second_valid) in [(30, 50), (50, 30)] {
+            let (shed, after, [first, second]) =
+                migrated_between_two_entries(first_valid, second_valid);
+
+            assert_eq!(
+                (shed, after),
+                (
+                    ShedDerived {
+                        converted: 0,
+                        shed: 1,
+                        unkeyed: 0,
+                    },
+                    vec![redated(&first, 30), second]
+                ),
+                "entries valid from {first_valid} then {second_valid}"
+            );
+        }
     }
 
     /// A migrated stream holds no derived row: the count answers nothing, and a second migration

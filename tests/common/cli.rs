@@ -494,6 +494,15 @@ pub fn reclaimed_line(bytes: u64) -> String {
 pub const REBUILD_LOCK_REFUSAL: &str =
     "rigger: graph: graph.db.lock is held by another `rigger setup` or `rigger reset`";
 
+/// The whole stderr of `rigger reset --derived` on a project configured for the server-backed
+/// store, where the migration does not run.
+pub const SERVER_BACKED_DERIVED_REFUSAL: &str =
+    "rigger: reset --derived: the migration rewrites and deletes rows of the event log and \
+     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \
+     is configured for the server-backed store, where the migration does not run. Re-run it \
+     against a project on the sqlite backend. Refusing rather than reporting a migration that did \
+     not happen.\n";
+
 /// The line `rigger reset --derived` ends its stderr with over a rebuild left unfinished.
 pub const UNFINISHED_REBUILD_REFUSAL: &str =
     "rigger: reset --derived: a rebuild of graph.db was left unfinished - run `rigger setup` to \
@@ -650,6 +659,32 @@ pub fn code_entity() -> Vec<u8> {
         "file": "src/a.rs", "name": "alpha", "kind": "function", "line": 1, "lang": "rust",
     }))
     .unwrap()
+}
+
+/// One pre-ledger batch of `src/a.rs` at the generation `h1`, valid from `secs`: the entity
+/// `name` under `gc/src/a.rs@h1#0`, then an edge of that name under `gc/src/a.rs@h1#1`. The
+/// derived reset rewrites the first row of the latest recording of this batch into its ledger
+/// entry and deletes the rest.
+pub fn pre_ledger_batch(name: &str, secs: u64) -> [Event; 2] {
+    let entity = serde_json::json!({
+        "file": "src/a.rs", "name": name, "kind": "function", "line": 1, "lang": "rust",
+        "fresh": true,
+    });
+    let edge = serde_json::json!({ "file": "src/a.rs", "name": name, "lang": "rust" });
+    [
+        keyed(
+            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&entity).unwrap(),
+            "gc/src/a.rs@h1#0",
+            secs,
+        ),
+        keyed(
+            rigger::contextgraph::TYPE_EDGE_INFERRED,
+            serde_json::to_vec(&edge).unwrap(),
+            "gc/src/a.rs@h1#1",
+            secs,
+        ),
+    ]
 }
 
 /// How many duplicate re-extractions [`seed_derived_duplicates`] appends.

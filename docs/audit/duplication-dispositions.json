@@ -865,11 +865,6 @@
     "reason": "Serialized-literal stability tests for two different layers (community versus concept) with different literals."
   },
   {
-    "id": "dup-19f9cf9e5fab",
-    "disposition": "not-a-duplicate",
-    "reason": "Payload builders for two different event types (a `CommunityAssigned` membership versus a `CodeEntityExtracted` definition) whose only shared shape is serializing a `json!` literal."
-  },
-  {
     "id": "dup-5f6fcac3a66f",
     "disposition": "not-a-duplicate",
     "reason": "Accessors of two different optional fields on two different types (the config's traversal depth versus the content-identity policy's declared fact identity); the shared token shape is a one-line `as_ref`."

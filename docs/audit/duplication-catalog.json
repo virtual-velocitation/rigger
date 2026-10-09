@@ -1127,7 +1127,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-d660b45cb38f",
+    "id": "dup-9326ce810768",
     "classification": "semantic",
     "sites": [
       {
@@ -3117,6 +3117,11 @@
       },
       {
         "file": "tests/common/cli.rs",
+        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log and \\\n     vacuums the file, which is a mechanic of the embedded .rigger/events.db store; this project \\\n     is configured for the server-backed store, where the migration does not run. Re-run it \\\n     against a project on the sqlite backend. Refusing rather than reporting a migration that did \\\n     not happen.\\n\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/common/cli.rs",
         "name": "\"graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\\n\"",
         "content_hash": "5c8bc0fb7d9e9b92"
       },
@@ -3761,11 +3766,6 @@
         "content_hash": "0a68549443b7c66d"
       },
       {
-        "file": "tests/reset_derived_compaction.rs",
-        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log \\\n             and vacuums the file, which is a mechanic of the embedded .rigger/events.db store; \\\n             this project is configured for the server-backed store, where the migration does \\\n             not run. Re-run it against a project on the sqlite backend. Refusing rather than \\\n             reporting a migration that did not happen.\\n\"",
-        "content_hash": "25597419b8dbb616"
-      },
-      {
         "file": "tests/reset_derived_compaction_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "44b595c2e872fec9"
@@ -3814,11 +3814,6 @@
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "bd5c09ebe3b4227d"
-      },
-      {
-        "file": "tests/reset_derived_migration_periphery.rs",
-        "name": "\"rigger: reset --derived: the migration rewrites and deletes rows of the event log \\\n             and vacuums the file, which is a mechanic of the embedded .rigger/events.db store; \\\n             this project is configured for the server-backed store, where the migration does \\\n             not run. Re-run it against a project on the sqlite backend. Refusing rather than \\\n             reporting a migration that did not happen.\\n\"",
-        "content_hash": "25597419b8dbb616"
       },
       {
         "file": "tests/review_round_lenses_only_log_derived_resume_periphery.rs",
@@ -4132,7 +4127,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 600 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 599 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -8352,25 +8347,6 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
-    "id": "dup-19f9cf9e5fab",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/compaction_generations_periphery.rs",
-        "name": "community_of",
-        "content_hash": "dd3b18fc951c09ce"
-      },
-      {
-        "file": "tests/reset_derived_compaction_periphery.rs",
-        "name": "entity",
-        "content_hash": "eb2d9e93f18e7ff8"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/compaction_generations_periphery.rs, tests/reset_derived_compaction_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

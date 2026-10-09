@@ -2,23 +2,19 @@
 //! one-time migration of the event log, that the migration's own behavior test in `tests/cli.rs`
 //! does not walk. Each drives the built binary and reads back what an operator can read.
 //!
-//!   1. **The backend the migration needs.** On a project configured for the server-backed store
-//!      the command refuses in the migration's own words, before it reaches for the server, and
-//!      leaves a local log lying beside it as it found it; the same project without that
-//!      configuration migrates.
-//!   2. **The mode list.** A `rigger reset` handed flags but no mode names every mode, and names
+//!   1. **The mode list.** A `rigger reset` handed flags but no mode names every mode, and names
 //!      `--derived` as the migration it is.
-//!   3. **The next writer.** A migration that deleted the tail of the run stream leaves a log the
+//!   2. **The next writer.** A migration that deleted the tail of the run stream leaves a log the
 //!      next append lands on: above every position the log ever held, at the revision after the
 //!      highest the stream still holds, and folded into the graph.
-//!   4. **The shipped store-hygiene skill.** The committed skill an operator reads before a reset
+//!   3. **The shipped store-hygiene skill.** The committed skill an operator reads before a reset
 //!      describes `--derived` as the migration, word for word, wherever it names it.
 
 mod common;
 
 use common::cli::{
-    applied_positions, emit, keyed, log_and_graph_files, migrated_lines, read_run_events,
-    rigger_file, run_rigger, run_rigger_envs, temp_rigger_project, with_run_store,
+    applied_positions, emit, log_and_graph_files, migrated_lines, pre_ledger_batch,
+    read_run_events, rigger_file, run_rigger, temp_rigger_project, with_run_store,
     LOG_LEFT_AS_IT_STANDS_LINE,
 };
 use common::repo::repo_text;
@@ -27,28 +23,16 @@ use rigger::eventstore::ExpectedRevision;
 use rigger::retention::TYPE_GENERATION_INGESTED;
 use std::path::Path;
 
-/// The generation every seeded batch below is keyed under.
-const BATCH: &str = "gc/src/a.rs@h1";
-
 /// Record, in `root`'s run stream, one pre-ledger batch of two derived events - an entity at
 /// position 1 and an edge at position 2 - so the migration rewrites the first into the batch's
 /// ledger entry and deletes the second, the stream's tail.
 fn seed_a_two_event_batch(root: &Path) {
-    let edge = br#"{"file":"src/a.rs","name":"alpha","lang":"rust"}"#.to_vec();
     with_run_store(root, |store| {
         store
             .append(
                 rigger::conductor::STREAM,
                 ExpectedRevision::Any,
-                &[
-                    keyed(
-                        TYPE_CODE_ENTITY_EXTRACTED,
-                        common::cli::code_entity(),
-                        &format!("{BATCH}#0"),
-                        10,
-                    ),
-                    keyed(TYPE_EDGE_INFERRED, edge, &format!("{BATCH}#1"), 11),
-                ],
+                &pre_ledger_batch("alpha", 10),
             )
             .expect("seed the batch");
     });
@@ -63,61 +47,7 @@ fn stream_shape(root: &Path) -> Vec<(u64, i64, String)> {
 }
 
 // ---------------------------------------------------------------------------------------
-// 1. The backend the migration needs
-// ---------------------------------------------------------------------------------------
-
-/// Given a project holding a local log with a pre-ledger batch, when the operator runs `rigger
-/// reset --derived` with the project configured for the server-backed store, then the command
-/// fails with the migration's refusal and nothing else, prints no report, and the local log and
-/// graph files stand byte for byte; run again without that configuration, the same log migrates.
-#[test]
-fn reset_derived_on_a_server_backed_project_refuses_the_migration_and_leaves_the_local_log() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    seed_a_two_event_batch(root);
-    let found = log_and_graph_files(root);
-
-    // A well-formed address nothing listens on: the refusal is decided on the selection alone.
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &["reset", "--derived"],
-        &[("KURRENTDB_CONN", "kurrentdb://127.0.0.1:65533?tls=false")],
-    );
-
-    assert_eq!(
-        (
-            ok,
-            out.as_str(),
-            err.as_str(),
-            log_and_graph_files(root) == found
-        ),
-        (
-            false,
-            "",
-            "rigger: reset --derived: the migration rewrites and deletes rows of the event log \
-             and vacuums the file, which is a mechanic of the embedded .rigger/events.db store; \
-             this project is configured for the server-backed store, where the migration does \
-             not run. Re-run it against a project on the sqlite backend. Refusing rather than \
-             reporting a migration that did not happen.\n",
-            true,
-        ),
-        "a server-backed project refuses the migration and changes nothing"
-    );
-
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert_eq!(
-        (ok, out, stream_shape(root)),
-        (
-            true,
-            migrated_lines(1, 2, 0) + LOG_LEFT_AS_IT_STANDS_LINE,
-            vec![(1, 0, TYPE_GENERATION_INGESTED.to_string())],
-        ),
-        "on the sqlite backend the same log migrates; its stderr: {err}"
-    );
-}
-
-// ---------------------------------------------------------------------------------------
-// 2. The mode list
+// 1. The mode list
 // ---------------------------------------------------------------------------------------
 
 /// Given any project, when the operator runs `rigger reset --force-live`, a flag that is no
@@ -155,7 +85,7 @@ fn reset_handed_no_mode_names_the_derived_mode_as_the_migration() {
 }
 
 // ---------------------------------------------------------------------------------------
-// 3. The next writer
+// 2. The next writer
 // ---------------------------------------------------------------------------------------
 
 /// Given a run stream whose last event was a derived row the migration deleted, when an agent
@@ -210,7 +140,7 @@ fn the_append_after_a_migration_that_deleted_the_streams_tail_lands_above_it_and
 }
 
 // ---------------------------------------------------------------------------------------
-// 4. The shipped store-hygiene skill
+// 3. The shipped store-hygiene skill
 // ---------------------------------------------------------------------------------------
 
 /// Given the committed `rigger-reset-store` skill, when an operator reads what it says of

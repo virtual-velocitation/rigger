@@ -23,8 +23,8 @@
 mod common;
 use common::git::run_git;
 
-use common::cli::keyed;
 use common::cli::migrated_lines;
+use common::cli::pre_ledger_batch;
 use common::cli::reclaimed_line;
 use common::cli::reported_reclaimed_bytes;
 use common::cli::rigger_file;
@@ -38,7 +38,6 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
-use rigger::retention::GenerationIngested;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
@@ -84,26 +83,6 @@ fn rows_in(rows: &[Row], prefix: &str) -> Vec<Row> {
         .collect()
 }
 
-/// The SAME two replay keys are recorded in EVERY seeded namespace below. A prune that partitioned
-/// by content key alone - forgetting that the key is only meaningful WITHIN a stream - would sweep
-/// every project's recordings of these keys together, which is precisely the failure the
-/// namespace assertions exist to catch.
-const KEY_DEF: &str = "gc/src/a.rs@h1#0";
-const KEY_REF: &str = "gc/src/a.rs@h1#1";
-
-fn entity(name: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "file": "src/a.rs", "name": name, "kind": "function", "line": 1, "lang": "rust",
-        "fresh": true,
-    }))
-    .unwrap()
-}
-
-fn edge(name: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "file": "src/a.rs", "name": name, "lang": "rust" }))
-        .unwrap()
-}
-
 /// Seed `project`'s namespace inside `backend` with `rounds` recordings of one derived batch of
 /// two events - a log recorded before the ledger - preceded by one non-derived event the
 /// migration must leave alone. Written THROUGH `Namespaced::new`, so the streams it creates are
@@ -116,18 +95,7 @@ fn seed_namespace(backend: &Store, project: &str, rounds: u64) {
     )
     .with_valid_from(UNIX_EPOCH + Duration::from_secs(10))];
     for r in 0..rounds {
-        events.push(keyed(
-            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            entity(project),
-            KEY_DEF,
-            1_000 + r,
-        ));
-        events.push(keyed(
-            rigger::contextgraph::TYPE_EDGE_INFERRED,
-            edge(project),
-            KEY_REF,
-            1_000 + r,
-        ));
+        events.extend(pre_ledger_batch(project, 1_000 + r));
     }
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
@@ -142,14 +110,7 @@ fn seed_project(root: &Path, rounds: u64) {
 /// The ledger entry the migration converts the seeded batch into: the generation `h1` of
 /// `src/a.rs`, a batch of two events, recording `blob`.
 fn seeded_entry(blob: &str) -> Event {
-    GenerationIngested {
-        prefix: "gc".into(),
-        file: "src/a.rs".into(),
-        generation: "h1".into(),
-        blob: blob.into(),
-        excluded: false,
-    }
-    .event(2)
+    common::fixtures::generation_ingested("gc", "src/a.rs", "h1", blob, false).event(2)
 }
 
 /// The rows of `rows` holding a ledger entry, each as `(position, payload, replay key)`.
@@ -717,18 +678,7 @@ fn seed_both_stores(root: &Path, rounds: u64) {
             .with_valid_from(UNIX_EPOCH + Duration::from_secs(20)),
     );
     for r in 0..rounds {
-        events.push(keyed(
-            rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            entity("alpha"),
-            KEY_DEF,
-            1_000 + r,
-        ));
-        events.push(keyed(
-            rigger::contextgraph::TYPE_EDGE_INFERRED,
-            edge("alpha"),
-            KEY_REF,
-            1_000 + r,
-        ));
+        events.extend(pre_ledger_batch("alpha", 1_000 + r));
     }
 
     let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
