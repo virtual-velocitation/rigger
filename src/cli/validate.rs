@@ -523,19 +523,16 @@ fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
 
 /// The LOG BLOAT advisory line (spec 107), rendered from an already-read
 /// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
-/// `None` for a count holding no derived event; any other names the events and the file
-/// identities left ([`derived_count_phrase`]) and `rigger reset --derived` - decided by the
-/// events alone, as the reset menu's line is, so a store whose derived rows all name no identity
-/// is still warned of.
+/// `None` for a count holding no derived event; any other names what the log still holds and
+/// `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
+/// reset menu's line asks too.
 fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
-    match (counted.shed, counted.identities.len()) {
-        (0, _) => None,
-        (events, identities) => Some(format!(
-            "warning: the event log still holds {}; run `rigger reset --derived` to migrate \
-             them into the ledger.",
-            derived_count_phrase(events, identities)
-        )),
-    }
+    derived_events_held(counted).map(|held| {
+        format!(
+            "warning: the event log still holds {held}; run `rigger reset --derived` to migrate \
+             them into the ledger."
+        )
+    })
 }
 
 /// Gather the LOG BLOAT advisory's input (spec 107): open the sqlite event log at `path` and

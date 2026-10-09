@@ -880,7 +880,7 @@
     "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
   },
   {
-    "id": "dup-66dfa60cc910",
+    "id": "dup-ffc17308c029",
     "disposition": "not-a-duplicate",
     "reason": "Five different lines spelled for different surfaces (the production phrase naming a log's derived events and file identities, the test-side expected `--derived` menu line and the test-side expected `rigger validate` log-bloat warning, each holding that phrase's text independently of the code it checks, the counts `rigger reset --derived` prints of its migration, and the bare menu's `--runs` line); they share only the `format!` shape."
   },

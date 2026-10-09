@@ -1912,8 +1912,8 @@ mandatory sweep: Command::new call sites - 89 site(s), collected mechanically re
 - `src/cli/run.rs:3287-3287` `Command::new`
 - `src/cli/run.rs:3331-3331` `Command::new`
 - `src/cli/run.rs:3400-3400` `Command::new`
-- `src/cli/validate.rs:1452-1452` `Command::new`
-- `src/cli/validate.rs:1731-1731` `Command::new`
+- `src/cli/validate.rs:1449-1449` `Command::new`
+- `src/cli/validate.rs:1728-1728` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:2067-2067` `Command::new`
 - `tests/checkin_mutation_diff_base_periphery.rs:76-76` `Command::new`
@@ -2132,9 +2132,9 @@ mandatory sweep: .rigger-path string literals - 598 site(s), collected mechanica
 - `crates/rigger-worktree-git/src/worktree.rs:7107-7107` `".rigger"`
 - `src/cli/critique.rs:168-168` `"{COMMAND}: the critic {:?} the workflow names has no definition under \
                  .rigger/agents"`
-- `src/cli/hygiene.rs:656-656` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1606-1606` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/cli/hygiene.rs:1735-1735` `"/home/dev/proj/.rigger/events.db"`
+- `src/cli/hygiene.rs:666-666` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:1616-1616` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/cli/hygiene.rs:1745-1745` `"/home/dev/proj/.rigger/events.db"`
 - `src/cli/mod.rs:638-638` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
          secret file"`
@@ -2363,19 +2363,19 @@ __END__
 - `src/cli/setup.rs:3432-3432` `".rigger/agents/{f}"`
 - `src/cli/setup.rs:3558-3558` `".rigger/agents/rust-engineer.md"`
 - `src/cli/setup.rs:3584-3584` `".rigger/agents/sdet-author.md"`
-- `src/cli/validate.rs:850-850` `"warning: tracked .rigger/ files have uncommitted modifications:"`
-- `src/cli/validate.rs:1292-1292` `" M .rigger/workflow.yml\n\
+- `src/cli/validate.rs:847-847` `"warning: tracked .rigger/ files have uncommitted modifications:"`
+- `src/cli/validate.rs:1289-1289` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
                          !! .rigger/shim/node_modules\n"`
-- `src/cli/validate.rs:1302-1302` `".rigger/workflow.yml"`
-- `src/cli/validate.rs:1303-1303` `".rigger/agents/sdet.md"`
-- `src/cli/validate.rs:1304-1304` `".rigger/agents/new.md"`
-- `src/cli/validate.rs:1305-1305` `".rigger/agents/gone.md"`
-- `src/cli/validate.rs:2197-2197` `".rigger"`
-- `src/cli/validate.rs:2251-2251` `".rigger"`
+- `src/cli/validate.rs:1299-1299` `".rigger/workflow.yml"`
+- `src/cli/validate.rs:1300-1300` `".rigger/agents/sdet.md"`
+- `src/cli/validate.rs:1301-1301` `".rigger/agents/new.md"`
+- `src/cli/validate.rs:1302-1302` `".rigger/agents/gone.md"`
+- `src/cli/validate.rs:2194-2194` `".rigger"`
+- `src/cli/validate.rs:2248-2248` `".rigger"`
 - `src/main.rs:181-181` `"rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
@@ -3221,7 +3221,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `crates/rigger-config-files/src/config_store.rs:959-961` `rejects_missing_frontmatter`
 - `crates/rigger-domain/src/contextgraph/query.rs:1937-1939` `graph_load_rejects_malformed_json_without_panicking`
 - `crates/rigger-domain/src/spec.rs:1275-1277` `empty_when_no_criteria`
-- `src/cli/validate.rs:1313-1315` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+- `src/cli/validate.rs:1310-1312` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 
 #### `dup-f61039476fc4` (near, 3 sites)
 
@@ -4154,7 +4154,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:10673-10675` `edge_desc`
 - `src/cli/hygiene.rs:237-243` `runs_menu_line`
-- `src/cli/hygiene.rs:969-974` `pruned_line`
+- `src/cli/hygiene.rs:979-984` `pruned_line`
 
 #### `dup-233d5e6363a7` (near, 2 sites)
 
@@ -4309,7 +4309,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-process/s
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-process/src/reap.rs:872-879` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
-- `src/cli/validate.rs:1777-1784` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
+- `src/cli/validate.rs:1774-1781` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 
 #### `dup-183455104b30` (near, 3 sites)
 
@@ -4436,9 +4436,9 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/guard.rs, src/c
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/cli/guard.rs:1279-1281` `parse_guard_write_roots_requires_at_least_one`
-- `src/cli/validate.rs:1977-1979` `order_signature_advisories_is_empty_when_no_signatures_are_given`
+- `src/cli/validate.rs:1974-1976` `order_signature_advisories_is_empty_when_no_signatures_are_given`
 
-#### `dup-66dfa60cc910` (near, 5 sites)
+#### `dup-ffc17308c029` (near, 5 sites)
 
 Proposed home: `a new shared module (sites span 3 files: src/cli/hygiene.rs, tests/common/cli.rs, tests/compaction_generations_periphery.rs)`
 
@@ -4456,8 +4456,8 @@ Proposed home: `hygiene::support (consolidate these 2 sites into one function in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:1913-1933` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/cli/hygiene.rs:1987-2008` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/cli/hygiene.rs:1923-1943` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/cli/hygiene.rs:1997-2018` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
 #### `dup-4b714a54ab5e` (near, 2 sites)
 
@@ -4465,7 +4465,7 @@ Proposed home: `a new shared module (sites span 2 files: src/cli/hygiene.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/hygiene.rs:2049-2058` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
+- `src/cli/hygiene.rs:2059-2068` `derived_count_phrase_names_the_events_first_and_the_file_identities_second`
 - `tests/simplification_audit.rs:7457-7461` `pluralize_uses_singular_only_at_exactly_one`
 
 #### `dup-e9f78fd7efcc` (exact, 2 sites)
@@ -4565,8 +4565,8 @@ Proposed home: `validate::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/cli/validate.rs:1480-1501` `git_is_ancestor_decides_commit_order_in_a_real_repo`
-- `src/cli/validate.rs:1504-1525` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
+- `src/cli/validate.rs:1477-1498` `git_is_ancestor_decides_commit_order_in_a_real_repo`
+- `src/cli/validate.rs:1501-1522` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
 
 #### `dup-5f516fce9f0b` (near, 2 sites)
 
@@ -5208,7 +5208,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8889 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8891 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4974-5015` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15023-15045` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`

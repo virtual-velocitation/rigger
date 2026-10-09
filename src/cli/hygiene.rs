@@ -249,8 +249,21 @@ const NO_DERIVED_EVENT_TO_SHED: &str = "no derived event to shed";
 /// How the operator is told what the derived index of a log holds (spec 107): `events` derived
 /// events of `identities` file identities, the two numbers [`Store::count_derived`] answers as
 /// its count of events shed and the size of its set of identities.
-pub(crate) fn derived_count_phrase(events: usize, identities: usize) -> String {
+fn derived_count_phrase(events: usize, identities: usize) -> String {
     format!("{events} derived events of {identities} file identities")
+}
+
+/// THE ONE READING of a [`DerivedCount`] (spec 107): a store holds a derived event when the
+/// count's events shed is not zero, and what it holds is told as those events of the size of
+/// its identity set ([`derived_count_phrase`]). `None` for a count holding no derived event -
+/// decided by the events alone, so a store whose derived rows all name no identity still holds
+/// what `--derived` sheds. The menu's `--derived` line, `rigger validate`'s log-bloat advisory
+/// and `rigger reset --derived` itself each ask this, never the count's fields.
+pub(crate) fn derived_events_held(counted: &DerivedCount) -> Option<String> {
+    match counted.shed {
+        0 => None,
+        events => Some(derived_count_phrase(events, counted.identities.len())),
+    }
 }
 
 /// The `--derived` line of [`reset_menu`], pure over the already-read count (or its absence, on
@@ -258,17 +271,14 @@ pub(crate) fn derived_count_phrase(events: usize, identities: usize) -> String {
 /// a live server: `counted` is `Some` on the sqlite backend (`selection.is_sqlite()`) and `None`
 /// on any other, and this reads `selection` only to name the backend it is honest about.
 ///
-/// A count holding no derived event says there is none to shed; any other names the events, the
-/// file identities holding them ([`derived_count_phrase`]) and the flag - decided by the events
-/// alone, so a store whose derived rows all name no identity is still told what `--derived`
-/// sheds.
+/// A count holding no derived event says there is none to shed; any other names what it holds
+/// and the flag - the one reading of a count, [`derived_events_held`].
 fn derived_menu_line(selection: &StoreSelection, counted: Option<&DerivedCount>) -> String {
-    match counted.map(|counted| (counted.shed, counted.identities.len())) {
-        Some((0, _)) => format!("--derived: {NO_DERIVED_EVENT_TO_SHED}"),
-        Some((events, identities)) => format!(
-            "--derived: {} to shed from the event log; rerun `rigger reset --derived` to \
-             migrate them",
-            derived_count_phrase(events, identities)
+    match counted.map(derived_events_held) {
+        Some(None) => format!("--derived: {NO_DERIVED_EVENT_TO_SHED}"),
+        Some(Some(held)) => format!(
+            "--derived: {held} to shed from the event log; rerun `rigger reset --derived` to \
+             migrate them"
         ),
         None => {
             debug_assert!(
@@ -508,7 +518,7 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
     let on_disk_before = store.bytes_on_disk();
     let stream = loc.run_stream();
     let counted = store.count_derived(&stream)?;
-    if counted.shed == 0 {
+    if derived_events_held(&counted).is_none() {
         println!("reset --derived: {NO_DERIVED_EVENT_TO_SHED}");
     } else {
         let entries = tree_entries(&tree_root(&loc.dir), &counted.identities, hash)?;
