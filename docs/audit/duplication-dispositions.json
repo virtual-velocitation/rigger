@@ -250,11 +250,6 @@
     "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
   },
   {
-    "id": "dup-831910355599",
-    "disposition": "not-a-duplicate",
-    "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
-  },
-  {
     "id": "dup-9408447d0007",
     "disposition": "not-a-duplicate",
     "reason": "Two named modes of the shared `name_occurrence_map` (counting references too vs definitions only), feeding two different ranking signals."
@@ -680,11 +675,6 @@
     "reason": "Audit tests with different planted sources and different assertions (remove_dir_all, worktree remove, finding location, wrapped args)."
   },
   {
-    "id": "dup-cb850da85ff9",
-    "disposition": "not-a-duplicate",
-    "reason": "`rows` and `raw_rows` read different column sets into different row types."
-  },
-  {
     "id": "dup-adfce3b42b86",
     "disposition": "not-a-duplicate",
     "reason": "`walk` is the recursive helper that `fingerprint_subtree` calls, not a second copy of it."
@@ -890,9 +880,14 @@
     "reason": "Builder setters for two different declarations of the content-identity policy (how a key names its generation versus how a recording names its fact); the shared token shape is a one-field assignment."
   },
   {
-    "id": "dup-acf2bec10ae7",
+    "id": "dup-d9566abe700a",
     "disposition": "not-a-duplicate",
     "reason": "One-line key, path, message and harness builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, workflow node ids, a critique run's unit name, a path's `gc` identity, retired-grounder error, the not-folded report line, the owed-rebuild refusal, a rebuild's shadow and pruned-copy file names, the driver test's worker-prompts harness completed by its check); they share only the `format!` shape."
+  },
+  {
+    "id": "dup-f1b8cb556362",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different report lines spelled for two different commands (the counts `rigger reset --derived` prints of its migration vs the bare menu's `--runs` line); they share only the `format!` shape."
   },
   {
     "id": "dup-0b2669324614",

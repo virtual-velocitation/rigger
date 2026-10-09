@@ -11477,7 +11477,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "7dcacf5aea17a1ec"
+    "content_hash": "b714de717d79a2a0"
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",
