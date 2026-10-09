@@ -8163,31 +8163,31 @@
     "file": "src/cli/mod.rs",
     "name": "watch_once_on_the_seeded_store_reports_one_line_per_anomaly",
     "start_line": 12103,
-    "end_line": 12240
+    "end_line": 12236
   },
   {
     "file": "src/cli/mod.rs",
     "name": "the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names",
-    "start_line": 12247,
-    "end_line": 12266
+    "start_line": 12243,
+    "end_line": 12262
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder",
-    "start_line": 12274,
-    "end_line": 12303
+    "start_line": 12270,
+    "end_line": 12299
   },
   {
     "file": "src/cli/mod.rs",
     "name": "watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder",
-    "start_line": 12310,
-    "end_line": 12341
+    "start_line": 12306,
+    "end_line": 12337
   },
   {
     "file": "src/cli/mod.rs",
     "name": "tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory",
-    "start_line": 12347,
-    "end_line": 12368
+    "start_line": 12343,
+    "end_line": 12364
   },
   {
     "file": "crates/rigger-dash/src/dash.rs",

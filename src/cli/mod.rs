@@ -12179,11 +12179,7 @@ mod tests {
         // `append_refuses_a_stream_whose_position_order_and_revision_order_already_
         // disagree` (src/eventstore/sqlite.rs). The reissued row now sits AFTER the boundary
         // in the log, so the run the poll reads holds it where the log recorded it.
-        let scoped_run_stream = format!(
-            "{}{}",
-            rigger::eventstore::namespace::Namespaced::prefix_for(&identity),
-            conductor::STREAM
-        );
+        let scoped_run_stream = loc.run_stream();
         {
             let conn = rusqlite::Connection::open(&db).unwrap();
             conn.execute(

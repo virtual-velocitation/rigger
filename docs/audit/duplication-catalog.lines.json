@@ -5794,8 +5794,8 @@
       },
       {
         "file": "src/cli/mod.rs",
-        "start_line": 12188,
-        "end_line": 12188
+        "start_line": 12184,
+        "end_line": 12184
       },
       {
         "file": "tests/cli.rs",
