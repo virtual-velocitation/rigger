@@ -1651,21 +1651,39 @@ mod tests {
                 "{label} must give that case its ordinary name, so an operator recognizes it"
             );
 
-            // WHAT IT COSTS TO RUN, which is not disk space at all: the rewrite holds a complete
-            // copy of the log in the process's memory, and it only runs when the FILE has free
-            // space to reclaim.
+            // WHAT IT COSTS TO RUN, which is memory AND room beside the log: the rewrite holds a
+            // complete copy of the log in the process's memory, writes the rewritten file through
+            // the write-ahead log beside it, and only runs when the FILE has free space to
+            // reclaim.
             assert!(
                 out.contains(
                     "holds a COMPLETE COPY of the log in the process's MEMORY while it does, \
                      never in a temporary directory"
                 ),
-                "{label} must say where the compaction stages its copy of the log, since what it \
-                 needs is memory and not room on any disk"
+                "{label} must say where the compaction stages its copy of the log, since that \
+                 copy takes memory and no temporary directory"
             );
             assert!(
                 out.contains("free memory of about the size of your log"),
                 "{label} must say HOW MUCH memory the staged copy takes, or an operator cannot \
                  tell beforehand whether the machine can run it"
+            );
+            // AND WHAT IT TAKES ON DISK. The store is in write-ahead mode, so the rewritten file
+            // is written into the `-wal` beside the log before it replaces the old pages: the
+            // partition holding the log needs room for it, and a passage saying no disk is
+            // needed sends an operator into a rewrite that fails on a full partition.
+            assert!(
+                out.contains(
+                    "the partition holding .rigger/ needs about the compacted size of the log \
+                     free"
+                ),
+                "{label} must say that the rewritten file passes through the write-ahead log \
+                 beside the log, so the log's own partition needs room for it"
+            );
+            assert!(
+                !out.contains("rather than free space on any disk"),
+                "{label} must not say the compaction needs no disk: it writes the rewritten \
+                 file into the write-ahead log beside the log"
             );
             // AND NO DIRECTORY IS NAMED AS ITS HOME. The copy never touches SQLite's temporary
             // directory, so a sentence still resolving one would send an operator to free space

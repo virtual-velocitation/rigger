@@ -1134,6 +1134,10 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
                 "in the process's MEMORY while it does, never in a temporary directory",
             ),
             (
+                "say what the rewrite takes on the log's own partition",
+                "the partition holding .rigger/ needs about the compacted size of the log free",
+            ),
+            (
                 "say a prune with nothing to shed does not rewrite the file",
                 "leaves the file exactly as it found it",
             ),
