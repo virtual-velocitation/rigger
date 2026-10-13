@@ -25,16 +25,21 @@ tool that searches them.
 - **Generated files are committed with their inputs.** A file a tool generates from the tree is
   regenerated and committed in the same commit that changed its inputs. Check: `git status
   --porcelain` is empty at head.
-- **A test-side shape is spelled once.** A helper, fixture, builder, seeder, expected value or
-  oracle you add exists once across every test home, as production code does. Check: look it
-  up where the project's test helpers live before you write it; when a second home needs one
-  the first already spells, move it to the shared home and have both call it, changing no
-  assertion or expected value. Record each duplicate you close as one whole-tree audit
-  DecisionMade naming every site of its shape FIXED or CHECKED.
+- **A test-side shape is spelled once.** A table, fixture, helper, builder, seeder, expected
+  value or oracle you add exists once across every test home, as production code does. Check:
+  look it up where the project's test helpers live before you write it; when a second home
+  needs one the first already spells, move it to the shared home and have both call it,
+  changing no assertion or expected value. The record is owed for every test-side shape you
+  add, merged or not: one whole-tree audit DecisionMade naming every site of its shape FIXED or
+  CHECKED - FIXED when moved to the shared home with both calling it and no assertion or
+  expected value changed, CHECKED when kept apart, with the reason.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each
   function you changed and of its callers, module docs, test names, test docs, assertion
   messages and operator docs say what the code at head does. Check: read each against the
-  code; when you rename a concept, walk every spelling of the old term through the tree.
+  code; when you rename or retire a name, walk every spelling of the old term through the
+  tree. The old spelling occurs zero times in the tree outside git history, counted over every
+  root (test docs, test comments and assertion messages are sentences too), or your hand-over
+  names each remaining occurrence as a deliberate mention with its reason.
 - **Nothing is added that nothing reads.** A field, index, parameter, helper or variant that no
   code reads after your change, on any feature lane, is removed. Check: name its reader.
 - **The red test stands as it went red.** The green commit makes the red test pass without
