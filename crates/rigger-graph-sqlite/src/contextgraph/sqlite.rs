@@ -4640,6 +4640,31 @@ mod tests {
         )
     }
 
+    /// A rebuild of the graph file at `path` from `log` in batches of two, owed by its caller,
+    /// that fails at the second batch it is handed: its shadow is left holding the first.
+    fn rebuild_interrupted_after_its_first_batch(
+        path: &str,
+        log: &[Event],
+    ) -> Result<Option<Rebuilt>, Error> {
+        let mut batches = 0;
+        Projector::rebuild(
+            &locked(path),
+            "test",
+            true,
+            &mut |after, sink| {
+                stream_past(log, after, 2, &mut |events, head| {
+                    batches += 1;
+                    if batches > 1 {
+                        return Err(Error("interrupted after the first batch".to_string()));
+                    }
+                    sink(events, head)
+                })
+            },
+            &mut |_| Ok(None),
+            &mut |_| {},
+        )
+    }
+
     /// A rebuild passes over exactly the events whose payload the fold rejects - of any type the
     /// fold reads a payload for - recording each in the `applied` ledger so the rebuilt file owes
     /// nothing for them, and says how many it passed over; every other event folds.
@@ -5281,23 +5306,7 @@ mod tests {
         let path = dir.path().join("graph.db");
         let path = path.to_str().unwrap();
         drop(Projector::open(path, "test").unwrap());
-        let mut batches = 0;
-        let interrupted = Projector::rebuild(
-            &locked(path),
-            "test",
-            true,
-            &mut |after, sink| {
-                stream_past(&log, after, 2, &mut |events, head| {
-                    batches += 1;
-                    if batches > 1 {
-                        return Err(Error("interrupted after the first batch".to_string()));
-                    }
-                    sink(events, head)
-                })
-            },
-            &mut |_| Ok(None),
-            &mut |_| {},
-        );
+        let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
         let shadow = format!("{path}.rebuild");
         Connection::open(&shadow)
             .unwrap()
@@ -12266,23 +12275,7 @@ mod tests {
                 let path = dir.path().join("graph.db");
                 let path = path.to_str().unwrap();
                 drop(Projector::open(path, "test").unwrap());
-                let mut batches = 0;
-                let interrupted = Projector::rebuild(
-                    &locked(path),
-                    "test",
-                    true,
-                    &mut |after, sink| {
-                        stream_past(&log, after, 2, &mut |events, head| {
-                            batches += 1;
-                            if batches > 1 {
-                                return Err(Error("interrupted after the first batch".to_string()));
-                            }
-                            sink(events, head)
-                        })
-                    },
-                    &mut |_| Ok(None),
-                    &mut |_| {},
-                );
+                let interrupted = rebuild_interrupted_after_its_first_batch(path, &log);
                 Connection::open(format!("{path}.rebuild"))
                     .unwrap()
                     .execute_batch(
