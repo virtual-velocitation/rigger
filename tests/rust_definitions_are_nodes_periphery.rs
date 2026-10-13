@@ -6,8 +6,8 @@
 //!  - the graph `rigger graph build` folds from the Rust definitions fixture: each definition is
 //!    a node carrying its kind string and line, a test-attributed member is no node while its
 //!    owner and its siblings are, and each call hangs off the caller the fixture gives it;
-//!  - the persisted symbol index: the variant names the three kinds a Rust data definition
-//!    takes, `static`, `variant` and `field`, are written under and read back from.
+//!  - the persisted symbol index: the variant names `Static`, `Variant` and `Field`, which the
+//!    three kinds a Rust data definition takes are written under and read back from.
 
 mod common;
 #[path = "common/symbol_index.rs"]
