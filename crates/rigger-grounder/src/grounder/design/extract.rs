@@ -22,7 +22,8 @@
 //! CONSTRAINS/GOVERNS carrier or markdown-citation REFERENCES carrier alike - is excluded from
 //! this pass too, by the SAME predicate the code-entity pass applies to a whole dev-only file
 //! ([`crate::grounder::symbols::events::is_dev_only`], spec 116 criterion 1, reused here rather
-//! than re-derived, and read over the mention without its `#anchor`). Without this, the
+//! than re-derived, and read over the path the mention names, [`named_path`]: the mention
+//! without its `#anchor` or its `:line` suffix, which the link target keeps). Without this, the
 //! always-compiled fold would still mint a bare `KIND_ARTIFACT` node for the mention that
 //! `concepts::intent_layer` walks (its own filter only requires the
 //! OTHER endpoint be a doc), so test-scoped code would re-enter the intent layer through this
@@ -280,7 +281,7 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
             // Module doc: a mention of a dev-only path is excluded from the design-intent link
             // pass too, by the SAME predicate the code-entity pass applies to a whole dev-only
             // file - never a second, independent check.
-            if is_code_path(&span) && !is_dev_only(sans_anchor(&span)) {
+            if is_code_path(&span) && !is_dev_only(named_path(&span)) {
                 out.insert(DesignLink {
                     from: from.clone(),
                     rel: code_rel,
@@ -294,7 +295,7 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
             for target in link_targets(line) {
                 // The same exclusion as the inline-code carrier above, applied to the citation
                 // carrier - a markdown-link target at a dev-only path excludes identically.
-                if is_repo_path(&target) && !is_dev_only(sans_anchor(&target)) {
+                if is_repo_path(&target) && !is_dev_only(named_path(&target)) {
                     out.insert(DesignLink {
                         from: from.clone(),
                         rel: LinkRel::References,
@@ -384,6 +385,24 @@ fn is_repo_path(target: &str) -> bool {
 /// `s` (a path mention) without its `#anchor`: the path the mention names.
 fn sans_anchor(s: &str) -> &str {
     s.split_once('#').map_or(s, |(path, _)| path)
+}
+
+/// The path a mention `s` names: `s` without its `#anchor` and without one trailing `:line` or
+/// `:line-line` suffix. A suffix of any other shape is part of the path as written.
+fn named_path(s: &str) -> &str {
+    let path = sans_anchor(s);
+    match path.rsplit_once(':') {
+        Some((file, span)) if is_line_span(span) => file,
+        _ => path,
+    }
+}
+
+/// Whether `s` is a line or a `from-to` line span: non-empty runs of ASCII digits.
+fn is_line_span(s: &str) -> bool {
+    let (from, to) = s.split_once('-').unwrap_or((s, s));
+    [from, to]
+        .iter()
+        .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether `p` (a path, ignoring any `#anchor`) is a markdown doc.

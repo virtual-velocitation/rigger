@@ -149,8 +149,8 @@
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 160,
-        "end_line": 162
+        "start_line": 161,
+        "end_line": 163
       }
     ]
   },
@@ -5449,8 +5449,8 @@
       },
       {
         "file": "crates/rigger-grounder/src/grounder/design/extract.rs",
-        "start_line": 397,
-        "end_line": 400
+        "start_line": 416,
+        "end_line": 419
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -6309,13 +6309,13 @@
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 790,
-        "end_line": 801
+        "start_line": 788,
+        "end_line": 799
       },
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/events.rs",
-        "start_line": 805,
-        "end_line": 814
+        "start_line": 803,
+        "end_line": 812
       },
       {
         "file": "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",

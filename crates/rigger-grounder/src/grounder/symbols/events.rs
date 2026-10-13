@@ -10,7 +10,7 @@ use crate::contextgraph::{
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
-use crate::grounder::symbols::registry::for_extension;
+use crate::grounder::symbols::registry::for_path;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
@@ -529,17 +529,15 @@ fn set_fresh(e: &mut Event) {
 /// - Ungated, in every language: a DIRECTORY component (every segment except the file's own
 ///   name, [`dir_of`]) `tests`, `benches`, `examples` or `__tests__`. So `tests/foo.rs` and
 ///   `crate/benches/b.rs` are dev-only while `src/testsuite.rs` and `src/tests.rs` are not.
-/// - Gated on the language [`for_extension`] gives the text after the file name's last `.`: Go
-///   `*_test.go`; Python `test_*.py` and `*_test.py`; JS and TS `*.test.*` and `*.spec.*`; C# a
-///   directory component ending `Test` or `Tests` (its last dot-separated segment ending so,
-///   neither suffix holding a `.`). A file whose extension registers no language, one indexed
-///   under a `--language` override included, matches the ungated part only.
+/// - Gated on the language [`for_path`] gives the path's own extension (a dotfile such as
+///   `.cs` has none): Go `*_test.go`; Python `test_*.py` and `*_test.py`; JS and TS `*.test.*`
+///   and `*.spec.*`; C# a directory component ending `Test` or `Tests` (its last dot-separated
+///   segment ending so, neither suffix holding a `.`). A file whose extension registers no
+///   language, one indexed under a `--language` override included, matches the ungated part
+///   only.
 pub(crate) fn is_dev_only(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let lang = name
-        .rsplit_once('.')
-        .and_then(|(_, ext)| for_extension(ext))
-        .map(|entry| entry.lang);
+    let lang = for_path(path, None).map(|entry| entry.lang);
     let dev_dir = |dir: &str| {
         matches!(dir, "tests" | "benches" | "examples" | "__tests__")
             || (lang == Some(Lang::CSharp) && (dir.ends_with("Test") || dir.ends_with("Tests")))
@@ -1220,10 +1218,8 @@ mod tests {
     /// [`product_fs`] in the language `path`'s own extension registers, Rust when it registers
     /// none (the shape a `--language` override indexes a file in).
     fn product_fs_at(path: &str) -> FileSymbols {
-        let ext = path.rsplit('.').next().unwrap_or("");
         FileSymbols {
-            lang: crate::grounder::symbols::registry::for_extension(ext)
-                .map_or(Lang::Rust, |entry| entry.lang),
+            lang: super::for_path(path, None).map_or(Lang::Rust, |entry| entry.lang),
             ..product_fs()
         }
     }
