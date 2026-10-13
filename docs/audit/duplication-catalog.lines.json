@@ -6335,12 +6335,12 @@
     ]
   },
   {
-    "id": "dup-ab65932dea10",
+    "id": "dup-228f0b9d15fe",
     "sites": [
       {
         "file": "crates/rigger-grounder/src/grounder/symbols/extract.rs",
-        "start_line": 34,
-        "end_line": 203
+        "start_line": 46,
+        "end_line": 221
       },
       {
         "file": "tests/common/source_audit.rs",

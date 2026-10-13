@@ -23,10 +23,22 @@ fn kind_of(syntax_type: &str) -> Kind {
     }
 }
 
+/// THE NAME FILTER (spec 116): whether a definition whose leaf is `leaf` names nothing in `lang`.
+/// The empty leaf names nothing in any language. `_` names nothing in Go and Rust, whose
+/// grammars make it the blank identifier, which nothing can refer to; in JS, TS, Python and C#
+/// `_` is an ordinary name its `_(..)` calls resolve to.
+fn is_nameless(lang: Lang, leaf: &str) -> bool {
+    leaf.is_empty() || (leaf == "_" && matches!(lang, Lang::Go | Lang::Rust))
+}
+
 /// Extract one file's definitions and references by running the INJECTED grammar's tag query
 /// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
 /// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
+///
+/// A definition tag whose leaf names nothing ([`is_nameless`]) makes no `Def`, and the references
+/// in its body take the next enclosing definition by the caller rule, else the file. An impl
+/// block is not put to that filter: its name is its header, `impl ..`, never empty and never `_`.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -60,6 +72,12 @@ pub fn extract(
         // 1-based line from the tag span's start row.
         let line = tag.span.start.row as u32 + 1;
         if tag.is_definition {
+            // THE NAME FILTER, ahead of both pushes: a nameless definition enters neither `defs`
+            // nor `def_ranges`, so the two stay index-aligned and its range is no caller range
+            // and no test region.
+            if is_nameless(lang, &name) {
+                continue;
+            }
             let kind = kind_of(config.syntax_type_name(tag.syntax_type_id));
             def_ranges.push((tag.range.clone(), name.clone(), kind));
             defs.push(Def {
