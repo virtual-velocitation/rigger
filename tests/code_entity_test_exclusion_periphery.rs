@@ -1800,13 +1800,46 @@ rigger::test_cases! {
     );
 }
 
+/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, has gone
+/// through the REAL `extract_concepts`/`extract_links` pass, `concept_events`/`link_events` and
+/// the always-compiled fold. Seeded from the doc alone: an excluded target must not exist to
+/// seed from.
+#[cfg(feature = "symbols")]
+fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::design::events::{concept_events, link_events};
+    use rigger::grounder::design::extract::{extract_concepts, extract_links};
+
+    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
+    events.extend(link_events(&extract_links("docs/architecture.md", md)));
+    fold_events(events)
+        .subgraph(&["docs/architecture.md".to_string()], 3)
+        .unwrap()
+}
+
+/// [`design_doc_graph`] of `md` holds exactly `links` (`(from, rel, to)`, sorted) and exactly
+/// the nodes `node_ids` (sorted).
+#[cfg(feature = "symbols")]
+fn assert_design_doc_graph(md: &str, links: &[(&str, &str, &str)], node_ids: &[&str]) {
+    let g = design_doc_graph(md);
+    let mut got_links: Vec<(&str, &str, &str)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    got_links.sort_unstable();
+    assert_eq!(got_links, links, "the doc's links");
+    let mut got_nodes: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    got_nodes.sort_unstable();
+    assert_eq!(got_nodes, node_ids, "the nodes the doc reaches");
+}
+
 /// Spec 86 criterion 1's CONSTRAINTS WALK amendment (the file's own module doc covers the
 /// code-entity pass; this ONE test covers the OTHER extraction pass the same amendment names): a
 /// design doc's inline-code mention (and its markdown-citation form) of a `tests/`-rooted path
 /// must be excluded from the design-intent link pass too, "by the SAME exclusion rule... no
 /// placeholder node for test-scoped code ever enters the intent layer this way either." Drives the
-/// REAL `extract_concepts`/`extract_links` pass (`grounder::design::extract`) end to end through
-/// `link_events`/`concept_events` and the always-compiled fold, the same outside-the-crate
+/// REAL design pass end to end through the fold ([`design_doc_graph`]), the same outside-the-crate
 /// discipline this file's other tests hold the code-entity pass to - so the guarantee that no bare
 /// `KIND_ARTIFACT` placeholder ever lands for a `tests/`-rooted mention does not rest on the
 /// extraction unit test (`grounder::design::extract::tests::
@@ -1814,23 +1847,13 @@ rigger::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
     use std::collections::BTreeSet;
 
-    let md = "# Reference architecture\n\n\
-              See `tests/cli.rs` inline and cite [the suite](tests/no_os_kill_audit.rs). Real \
-              product code `src/conductor.rs` still links normally.\n";
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    let p = fold_events(events);
-
-    // Seed from the doc alone (never from the excluded targets, which must not exist to seed
-    // from) and walk far enough to reach any real edge the doc's own links created.
-    let g = p
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap();
+    let g = design_doc_graph(
+        "# Reference architecture\n\n\
+         See `tests/cli.rs` inline and cite [the suite](tests/no_os_kill_audit.rs). Real \
+         product code `src/conductor.rs` still links normally.\n",
+    );
     let node_ids: BTreeSet<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
 
     assert!(
@@ -1850,46 +1873,20 @@ fn a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_publi
 /// design doc's mention of a path a DEV-ONLY PATHS pattern names - a Go `*_test.go` file inline
 /// and cited with an `#anchor`, a `benches/` file inline, an `examples/` file cited - mints no
 /// node, while the production file beside the Go test, mentioned both ways, is the doc's one
-/// neighbor. Drives the REAL `extract_concepts`/`extract_links` pass through
-/// `link_events`/`concept_events` and the always-compiled fold, as the `tests/`-rooted test
-/// above does.
+/// neighbor ([`assert_design_doc_graph`]).
 #[cfg(feature = "symbols")]
 #[test]
 fn a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
-
-    let md = "# Reference architecture\n\n\
-              See `pkg/x_test.go`, `benches/b.rs` and `pkg/x.go` inline, and cite \
-              [the test](pkg/x_test.go#L3), [the example](examples/e.rs) and \
-              [the code](pkg/x.go).\n";
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    let g = fold_events(events)
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap();
-
-    let mut node_ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
-    node_ids.sort_unstable();
-    assert_eq!(
-        node_ids,
-        vec!["docs/architecture.md", "pkg/x.go"],
-        "the doc reaches its production mention alone: no dev-only path is a node"
-    );
-    let mut links: Vec<(&str, &str, &str)> = g
-        .edges
-        .iter()
-        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
-        .collect();
-    links.sort_unstable();
-    assert_eq!(
-        links,
-        vec![
+    assert_design_doc_graph(
+        "# Reference architecture\n\n\
+         See `pkg/x_test.go`, `benches/b.rs` and `pkg/x.go` inline, and cite \
+         [the test](pkg/x_test.go#L3), [the example](examples/e.rs) and \
+         [the code](pkg/x.go).\n",
+        &[
             ("docs/architecture.md", "SPECIFIES", "pkg/x.go"),
             ("docs/architecture.md", "references", "pkg/x.go"),
         ],
-        "each carrier links the production file and no dev-only path"
+        &["docs/architecture.md", "pkg/x.go"],
     );
 }
 
@@ -1903,46 +1900,22 @@ fn a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_ap
 #[cfg(feature = "symbols")]
 #[test]
 fn a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
-
-    let md = "# Reference architecture\n\n\
-              See `pkg/x_test.go:12`, `pkg/x_test.go:12-20`, `pkg/x.go:12` and \
-              `pkg/x_test.go:1a` inline, and cite [the case](pkg/x_test.go:12), \
-              [the class](Acme.Tests/A.cs) and [the dotfile](Acme.Tests/.cs).\n";
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    let g = fold_events(events)
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap();
-
-    let mut links: Vec<(&str, &str, &str)> = g
-        .edges
-        .iter()
-        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
-        .collect();
-    links.sort_unstable();
-    assert_eq!(
-        links,
-        vec![
+    assert_design_doc_graph(
+        "# Reference architecture\n\n\
+         See `pkg/x_test.go:12`, `pkg/x_test.go:12-20`, `pkg/x.go:12` and \
+         `pkg/x_test.go:1a` inline, and cite [the case](pkg/x_test.go:12), \
+         [the class](Acme.Tests/A.cs) and [the dotfile](Acme.Tests/.cs).\n",
+        &[
             ("docs/architecture.md", "SPECIFIES", "pkg/x.go:12"),
             ("docs/architecture.md", "SPECIFIES", "pkg/x_test.go:1a"),
             ("docs/architecture.md", "references", "Acme.Tests/.cs"),
         ],
-        "a line-suffixed or C# test-directory mention links nothing; the rest link as written"
-    );
-    let mut node_ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
-    node_ids.sort_unstable();
-    assert_eq!(
-        node_ids,
-        vec![
+        &[
             "Acme.Tests/.cs",
             "docs/architecture.md",
             "pkg/x.go:12",
             "pkg/x_test.go:1a",
         ],
-        "the doc reaches exactly the mentions that name no dev-only path"
     );
 }
 

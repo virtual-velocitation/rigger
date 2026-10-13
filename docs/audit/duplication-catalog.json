@@ -8066,24 +8066,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-a6d696c0cf08",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "name": "a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api",
-        "content_hash": "47e36d3a7f6b1103"
-      },
-      {
-        "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "name": "a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api",
-        "content_hash": "df327c788d835ad6"
-      }
-    ],
-    "proposed_home": "code_entity_test_exclusion_periphery::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
     "id": "dup-4fbc57c56116",
     "classification": "near",
     "sites": [
