@@ -1396,6 +1396,10 @@ mod tests {
             ),
             ("Testing/A.cs", "`Test` is not the directory's end"),
             ("Acme.tests/A.cs", "the C# suffix is case-sensitive"),
+            (
+                "Acme.Tests/.cs",
+                "a dotfile has no extension, so no language",
+            ),
         ] {
             assert_eq!(
                 lowered_at(path),
