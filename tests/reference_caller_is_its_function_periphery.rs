@@ -195,13 +195,9 @@ fn the_emit_pass_lowers_the_eight_older_kinds_to_the_kind_strings_a_folded_graph
 #[test]
 fn the_three_code_kinds_persist_under_their_variant_names_and_reload() {
     let saved = SavedIndex::save("a.rs", one_of_each_new_kind());
-    let persisted: serde_json::Value = serde_json::from_str(&saved.bytes).unwrap();
-    let written: Vec<&str> = persisted["files"]["a.rs"]["defs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|d| d["kind"].as_str().unwrap())
-        .collect();
-    assert_eq!(written, ["Constructor", "Declaration", "Macro"]);
+    assert_eq!(
+        saved.written_kinds("a.rs"),
+        ["Constructor", "Declaration", "Macro"]
+    );
     assert_eq!(saved.reload().files()["a.rs"], one_of_each_new_kind());
 }

@@ -269,7 +269,7 @@ pub(crate) mod tests {
 
     /// Rust's DEFINITION TYPES (spec 116): each row a node type of the Rust grammar that is a
     /// definition, a kind it lowers to, and the leaf of the one definition of that kind the Rust
-    /// definitions fixture in `extract.rs`'s tests holds for it. A `function_item` has a row per
+    /// definitions fixture `extract.rs`'s tests read holds for it. A `function_item` has a row per
     /// kind it takes; the last two rows are read off the parsed tree, the tuple-field row naming
     /// its list, the grammar giving a tuple field no node of its own.
     pub(crate) const RUST_DEFINITION_TYPES: [(&str, Kind, &str); 19] = [

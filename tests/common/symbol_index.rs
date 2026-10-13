@@ -66,6 +66,18 @@ impl SavedIndex {
         Self { dir, bytes }
     }
 
+    /// The kind each definition of `path` is written under in the persisted `index.json`, in
+    /// the order written.
+    pub fn written_kinds(&self, path: &str) -> Vec<String> {
+        let persisted: serde_json::Value = serde_json::from_str(&self.bytes).unwrap();
+        persisted["files"][path]["defs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["kind"].as_str().unwrap().to_string())
+            .collect()
+    }
+
     /// The saved index read back through the real `store::load`.
     pub fn reload(&self) -> SymbolIndex {
         store::load(self.dir.path().to_str().unwrap()).expect("the persisted index loads")

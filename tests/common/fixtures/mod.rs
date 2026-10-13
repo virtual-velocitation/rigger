@@ -21,6 +21,7 @@ mod host;
 mod name_filter_sources;
 mod page;
 mod read_fault;
+mod rust_definition_sources;
 mod spawn;
 pub use caller_sources::*;
 pub use config::*;
@@ -32,6 +33,7 @@ pub use host::*;
 pub use name_filter_sources::*;
 pub use page::*;
 pub use read_fault::*;
+pub use rust_definition_sources::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
