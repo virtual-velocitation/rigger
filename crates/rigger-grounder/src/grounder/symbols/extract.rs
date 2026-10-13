@@ -939,8 +939,8 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
 
     #[test]
     fn rust_grammar_kind_mapping_is_characterized() {
-        // Drives every reachable `kind_of` arm through the ONLY shipped grammar and pins the
-        // real observed lowering, so the mapping has actual coverage (not an eprintln probe).
+        // Drives the `kind_of` arms the UPSTREAM Rust query reaches and pins the real observed
+        // lowering, so the mapping has actual coverage (not an eprintln probe).
         let src = "\
 struct Widget;
 enum State { On, Off }
@@ -956,24 +956,21 @@ fn free() {}
         let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
         let kind_of_def = |name: &str| fs.defs.iter().find(|d| d.name == name).map(|d| d.kind);
 
-        // Reachable arms with the Rust grammar: struct/enum -> Type, method -> Method,
-        // module -> Module, function -> Function, macro (unknown category) -> Other.
+        // The arms the upstream query reaches: struct/enum -> Type, method -> Method,
+        // module -> Module, function -> Function, macro -> Macro.
         assert_eq!(kind_of_def("Widget"), Some(Kind::Type));
         assert_eq!(kind_of_def("State"), Some(Kind::Type));
         assert_eq!(kind_of_def("draw"), Some(Kind::Method));
         assert_eq!(kind_of_def("inner"), Some(Kind::Module));
         assert_eq!(kind_of_def("free"), Some(Kind::Function));
-        assert_eq!(kind_of_def("mymac"), Some(Kind::Other));
+        assert_eq!(kind_of_def("mymac"), Some(Kind::Macro));
 
-        // KNOWN grammar limitation (NON-BLOCKING; a unit-2 tag-query concern, characterized
-        // here rather than changed in unit 1): the Rust `tags.scm` tags a `trait` under the
-        // "interface" category, so `Drawable` lowers to Kind::Type, NOT Kind::Trait - i.e.
-        // Kind::Trait is an unreachable arm with the only shipped grammar today.
+        // The upstream `tags.scm` tags a `trait` under the "interface" category, so under it
+        // `Drawable` lowers to Kind::Type; the registered `RUST_TAGS` tags it a trait instead.
         assert_eq!(kind_of_def("Drawable"), Some(Kind::Type));
-        // The Rust tags query emits no tag for a `const` or a `static`, so those definitions
-        // are absent (Kind::Constant is likewise unreachable with this grammar - the
-        // const/static drop is the same unit-2 tag-query concern). An `impl` block is read off
-        // the parsed tree instead (gap 104) and lowers to Kind::Impl, named by its header.
+        // The upstream query emits no tag for a `const` or a `static`, so under it those
+        // definitions are absent; `RUST_TAGS` tags both. An `impl` block is read off the parsed
+        // tree instead (gap 104) and lowers to Kind::Impl, named by its header.
         assert_eq!(kind_of_def("MAX"), None);
         assert_eq!(kind_of_def("GLOBAL"), None);
         assert_eq!(kind_of_def("impl Drawable for Widget"), Some(Kind::Impl));
@@ -1254,6 +1251,177 @@ setup!();
                 "{kind:?}: identical ranges break on the lesser name"
             );
         }
+    }
+
+    /// THE RUST DEFINITIONS FIXTURE (spec 116 criterion 6): one Rust file holding every Rust
+    /// definition type. Lines 1-2 an `extern crate` without and with an alias; 3-4 an item const
+    /// and an item static whose initializer calls; 5 a tuple struct whose third field is a
+    /// test-attributed `pub` one; 6 an enum of a unit, a tuple and a struct variant and a
+    /// test-attributed unit variant; 7-8 a union and a type alias; 9 a trait holding an
+    /// associated type and a required fn; 10 an impl holding an associated const and a method; 11
+    /// a `macro_rules!`; 12-13 a proc-macro fn holding a const whose initializer calls; 14 a fn
+    /// holding a const whose initializer calls and a static; 15 a mod; 16-18 a fn `size` above a
+    /// struct whose fields are `size`, `area` and a test-attributed `spy`, above a fn `area`;
+    /// 19-20 a test-attributed const and static; 21-25 a struct, an enum, an impl, a fn and a mod
+    /// whose body each opens with a test-attributed member, variant, method, statement or mod.
+    const RUST_DEFINITIONS_SOURCE: &str = "\
+extern crate alloc;
+extern crate core as base;
+pub const LIMIT: u8 = 9;
+static TABLE: u8 = build();
+pub struct Pair(u8, u16, #[cfg(test)] pub u32);
+pub enum Shape { Unit, Tuple(u8), Struct { side: u8 }, #[cfg(test)] Probe }
+pub union Bits { whole: u8 }
+pub type Alias = u8;
+pub trait Draw { type Canvas; fn paint(&self); }
+impl Pair { const WIDTH: u8 = 2; fn width(&self) {} }
+macro_rules! shout { () => {} }
+#[proc_macro]
+pub fn derive(input: u8) -> u8 { const SEED: u8 = seed(); input }
+fn host() { const LOCAL: u8 = compute(); static CACHE: u8 = 1; }
+mod nest {}
+fn size() {}
+struct Plot { size: u8, area: u8, #[cfg(test)] spy: u8 }
+fn area() {}
+#[cfg(test)] const PROBE_LIMIT: u8 = 1;
+#[cfg(test)] static PROBE_TABLE: u8 = 1;
+struct S { #[cfg(test)] probe: u32, real: u32 }
+enum E { #[cfg(test)] A, B }
+impl X { #[cfg(test)] fn t() {} fn real() {} }
+fn f() { #[cfg(test)] let x = 1; }
+mod outer { #[cfg(test)] mod inner {} }
+";
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the test attribute: a `#[cfg(test)]`
+    /// tuple field, unit variant, named field, const and static are each test code, as a
+    /// `#[cfg(test)]` method and mod are, and nothing else is: a struct, enum, impl, fn or mod
+    /// whose body opens with a test-attributed child stays production with its other members.
+    #[test]
+    fn a_test_attributed_rust_member_is_test_code_and_its_owner_and_siblings_stay_production() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::test_defs_by_line(&fs),
+            vec![
+                (5, "2"),
+                (6, "Probe"),
+                (17, "spy"),
+                (19, "PROBE_LIMIT"),
+                (20, "PROBE_TABLE"),
+                (21, "probe"),
+                (22, "A"),
+                (23, "t"),
+                (25, "inner"),
+            ]
+        );
+    }
+
+    /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the callers: a call in an item
+    /// static's initializer is the static's, no function enclosing it, while a call in a const
+    /// local to a fn is the fn's and one in a const local to a proc-macro fn the macro's; an impl
+    /// header's self type stays the impl's.
+    #[test]
+    fn a_call_in_a_rust_data_definition_is_its_function_s_else_the_definition_s() {
+        let fs = crate::symbol_index::extracted("rs", RUST_DEFINITIONS_SOURCE);
+        assert_eq!(
+            crate::symbol_index::refs_with_callers(&fs),
+            vec![
+                (4, "build", Some("TABLE")),
+                (10, "Pair", Some("impl Pair")),
+                (13, "seed", Some("derive")),
+                (14, "compute", Some("host")),
+                (23, "X", Some("impl X")),
+            ]
+        );
+    }
+
+    /// A fn under any of the three proc-macro attributes is a macro, wherever the attribute
+    /// sits in the fn's attribute stack; a fn under another attribute stays a function, and a
+    /// proc-macro attribute on an item that is no fn changes nothing.
+    #[test]
+    fn a_fn_under_a_proc_macro_attribute_is_a_macro() {
+        let src = "\
+#[proc_macro_derive(Shape)]
+pub fn derive_shape() {}
+#[proc_macro_attribute]
+pub fn route() {}
+#[inline]
+fn plain() {}
+#[proc_macro]
+struct Marked;
+/// Expands a call.
+#[proc_macro]
+// A comment inside the stack.
+#[allow(dead_code)]
+pub fn bang() {}
+";
+        let fs = crate::symbol_index::extracted("rs", src);
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![
+                (2, "derive_shape", Kind::Macro),
+                (4, "route", Kind::Macro),
+                (6, "plain", Kind::Function),
+                (8, "Marked", Kind::Type),
+                (13, "bang", Kind::Macro),
+            ]
+        );
+    }
+
+    /// The Rust read-offs are selected by the language `extract` is given: the fixture read
+    /// under the Rust grammar and query as another language makes no tuple field and leaves the
+    /// proc-macro fn a function, while what the query tags stays.
+    #[test]
+    fn the_rust_read_offs_run_only_for_the_rust_language() {
+        let entry = crate::grounder::symbols::registry::for_extension("rs").unwrap();
+        let fs = extract(
+            RUST_DEFINITIONS_SOURCE,
+            Lang::Go,
+            &entry.language,
+            entry.tags_query,
+        )
+        .unwrap();
+        let on_lines_5_and_13: Vec<_> = crate::symbol_index::defs_by_line(&fs)
+            .into_iter()
+            .filter(|(line, _, _)| [5, 13].contains(line))
+            .collect();
+        assert_eq!(
+            on_lines_5_and_13,
+            vec![
+                (5, "Pair", Kind::Type),
+                (13, "SEED", Kind::Constant),
+                (13, "derive", Kind::Function),
+            ]
+        );
+    }
+
+    /// The attribute walk starts below the root: a file that is one mod, its range the root's
+    /// own, still reads the inner attribute its body opens with, so the mod and what it holds
+    /// are test code.
+    #[test]
+    fn a_definition_spanning_the_whole_file_is_still_read_for_its_inner_test_attribute() {
+        let fs = crate::symbol_index::extracted("rs", "mod t { #![cfg(test)] fn h() {} }");
+        assert_eq!(
+            crate::symbol_index::test_defs_by_line(&fs),
+            vec![(1, "h"), (1, "t")]
+        );
+    }
+
+    /// `is_declaration` is consulted for a function, method or constructor only: a signature
+    /// node an injected query tags as another kind keeps that kind.
+    #[test]
+    fn a_signature_node_tagged_as_no_function_keeps_its_tagged_kind() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fs = extract(
+            "trait T { fn m(&self); }\n",
+            Lang::Rust,
+            &language,
+            "(function_signature_item name: (identifier) @name) @definition.constant",
+        )
+        .unwrap();
+        assert_eq!(
+            crate::symbol_index::defs_by_line(&fs),
+            vec![(1, "m", Kind::Constant)]
+        );
     }
 
     /// The symbols the Rust grammar extracts from `src`.

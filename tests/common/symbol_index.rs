@@ -1,7 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
 //! index, saving it through the real `store` boundary and reading the bytes back, loading a
-//! hand-authored legacy `index.json`, and projecting a file's definitions and its references with
-//! their callers.
+//! hand-authored legacy `index.json`, and projecting a file's definitions, its test-marked
+//! definitions and its references with their callers.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted` alone reaches the parser
@@ -107,6 +107,20 @@ pub fn defs_by_line(fs: &FileSymbols) -> Vec<(u32, &str, Kind)> {
         .defs
         .iter()
         .map(|d| (d.line, d.name.as_str(), d.kind))
+        .collect();
+    defs.sort();
+    defs
+}
+
+/// Every definition of `fs` marked test code as `(line, name)`, sorted: the one projection the
+/// test-attribute tests of the extractor compare whole, so a definition wrongly marked and one
+/// wrongly left production both fail it.
+pub fn test_defs_by_line(fs: &FileSymbols) -> Vec<(u32, &str)> {
+    let mut defs: Vec<_> = fs
+        .defs
+        .iter()
+        .filter(|d| d.is_test)
+        .map(|d| (d.line, d.name.as_str()))
         .collect();
     defs.sort();
     defs
