@@ -73,9 +73,10 @@ mod graph_fixtures;
 #[path = "../../../tests/common/fixtures/caller_sources.rs"]
 mod caller_sources;
 
-/// The symbol index fixtures the extractor's and the registry's caller-rule tests share with the
-/// root crate's tests (the stamped `index.json` writer, the reference projection), compiled here
-/// from the same file. It names the crate as `rigger::...`; only the default lane's tests read it.
+/// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
+/// tests (the stamped `index.json` writer, a source read through the registry, the definition
+/// and reference projections), compiled here from the same file. It names the crate as
+/// `rigger::...`; only the default lane's tests read it.
 #[cfg(all(
     test,
     feature = "symbols",

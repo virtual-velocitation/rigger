@@ -4,8 +4,8 @@
 //! their callers.
 //! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Parser-free but for `extracted`, which only the `symbols` lane
-//! compiles, so the rest compiles in every feature lane.
+//! `tests/common/mod.rs` keeps). Every lane compiles it; `extracted` alone reaches the parser
+//! and is held by the `symbols` lane only.
 
 #![allow(dead_code)]
 
