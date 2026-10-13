@@ -265,6 +265,17 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
     apply_json(p, pos, TYPE_EDGE_INFERRED, ref_json(file, name));
 }
 
+/// Fold into `p`, at log position `pos`, one test-origin reference from `file` line `line` to
+/// `name`: the evidence event a test's reference to a definition records, as raw on-log JSON.
+pub fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
+    apply_json(
+        p,
+        pos,
+        TYPE_EDGE_INFERRED,
+        serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
+    );
+}
+
 /// Fold one caller-attributed call (see [`call_json`]) at `pos`. When `name` is defined in
 /// ANOTHER file it lands on a BARE same-file placeholder the detection pass resolves by unique
 /// name-suffix.

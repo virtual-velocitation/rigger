@@ -845,7 +845,7 @@
     "reason": "Two unrelated one-line `format!` wrappers sharing only their token shape: the rebuild-owed note a read-only surface prints versus the platform's product binary file name."
   },
   {
-    "id": "dup-49b57537de27",
+    "id": "dup-2c822fd14970",
     "disposition": "not-a-duplicate",
     "reason": "Fold helpers that each build a different event type or payload (inferred edges with and without evidence, doc concepts, doc links, batch refs, unit integration, lang-less refs) over the shared `apply_json`."
   },

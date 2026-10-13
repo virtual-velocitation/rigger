@@ -4209,9 +4209,9 @@ mod tests {
         REL_GATED_BY, REL_TOUCHES,
     };
     use crate::test_support::{
-        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at, apply_governs_at,
-        apply_json, apply_json_as, apply_ref, call_back_edge, call_edge_pairs, call_layer,
-        call_node_ids, decision_json, dir_snapshot,
+        apply_call, apply_code_entity, apply_decision, apply_def, apply_def_at,
+        apply_edge_inferred_evidence, apply_governs_at, apply_json, apply_json_as, apply_ref,
+        call_back_edge, call_edge_pairs, call_layer, call_node_ids, decision_json, dir_snapshot,
     };
 
     #[test]
@@ -6339,19 +6339,6 @@ mod tests {
                 "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
                 "partial": partial,
             }),
-        );
-    }
-
-    /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
-    /// `proof_events` dependency) so the fold is proven in isolation. Constructed as raw JSON
-    /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
-    /// struct, so this exercises the exact wire shape a real emitter produces.
-    fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
-        apply_json(
-            p,
-            pos,
-            TYPE_EDGE_INFERRED,
-            serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true }),
         );
     }
 

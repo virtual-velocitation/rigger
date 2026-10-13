@@ -22,8 +22,9 @@ mod common;
 
 use common::cli::{open_graph, run_rigger_ok, seed_rigger_dir, temp_project};
 use common::fixtures::{
-    apply_call, apply_code_entity, apply_def, apply_json, call_edge_pairs, call_frontiers,
-    call_layer, call_node_ids, call_walk, edge, kinded_def_node, node_with_optional_attrs, plain,
+    apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
+    call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node,
+    node_with_optional_attrs, plain,
 };
 use common::served::served_json;
 use rigger::community::Coupling;
@@ -33,7 +34,7 @@ use rigger::contextgraph::{
     CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD,
     CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     KIND_CODE_ENTITY, KIND_CONCEPT, NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_EDGE_INFERRED,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{clustered_overview, reproject, Lens};
 
@@ -395,12 +396,7 @@ fn proven(p: &Projector) -> Vec<String> {
 
 /// Fold one test-origin reference to `open` from `tests/t.rs` line 3 at `pos`.
 fn apply_test_reference(p: &Projector, pos: u64) {
-    apply_json(
-        p,
-        pos,
-        TYPE_EDGE_INFERRED,
-        serde_json::json!({ "file": "tests/t.rs", "name": "open", "lang": "rust", "line": 3, "is_test": true }),
-    );
+    apply_edge_inferred_evidence(p, pos, "tests/t.rs", "open", 3);
 }
 
 /// GIVEN a test referencing `open`, WHEN the one fn `open` stands beside a field, a property or

@@ -6464,18 +6464,13 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-49b57537de27",
+    "id": "dup-2c822fd14970",
     "classification": "near",
     "sites": [
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
         "name": "apply_edge_inferred",
         "content_hash": "85f0929eee0497a3"
-      },
-      {
-        "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
-        "name": "apply_edge_inferred_evidence",
-        "content_hash": "8bc67119bff75c79"
       },
       {
         "file": "crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs",
@@ -6506,9 +6501,14 @@
         "file": "tests/code_ingest_events.rs",
         "name": "apply_ref_fresh",
         "content_hash": "6028722bd16ba494"
+      },
+      {
+        "file": "tests/common/fixtures/fold.rs",
+        "name": "apply_edge_inferred_evidence",
+        "content_hash": "0f2960dde0091247"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, tests/code_ingest_events.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs, tests/code_ingest_events.rs, tests/common/fixtures/fold.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
