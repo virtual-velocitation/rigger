@@ -10,6 +10,7 @@ use crate::contextgraph::{
 };
 use crate::eventstore::Event;
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
+use crate::grounder::symbols::registry::for_extension;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
@@ -23,7 +24,7 @@ use std::collections::BTreeSet;
 /// place every lowering of a file passes through ([`lower_file`]), is what lets
 /// `extract_events`'s own existing "nothing survived" branch return the empty-boundary sentinel
 /// for it, exactly as it
-/// already does for a whole `tests/`-dir file or an in-file `#[cfg(test)]` re-wrap - never a
+/// already does for a whole dev-only file or an in-file `#[cfg(test)]` re-wrap - never a
 /// second, bespoke sentinel-construction path for a third shape. `Cow` so the overwhelmingly
 /// common (non-excluded) path borrows `fs` unchanged rather than cloning it. [`lower_file`] is
 /// its one caller.
@@ -189,7 +190,7 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 /// ARE (`fs`) and where the file LIVES (`file`) are in hand together. Two exclusions, applied in
 /// this order:
 ///
-/// 1. **Whole file under a `tests/` directory** ([`is_under_tests_dir`]): no `CodeEntityExtracted`
+/// 1. **Whole file at a dev-only path** ([`is_dev_only`]): no `CodeEntityExtracted`
 ///    and no `EdgeInferred` for any item the file defines or references, product-shaped or not.
 ///    `fs` is left untouched (still PARSED, for grounding); this file contributes no REAL
 ///    entity or edge, exactly like a file that extracts to nothing - it still stamps
@@ -207,7 +208,7 @@ fn lower_file(path: &str, symbols: &FileSymbols, excluded: bool) -> Vec<Event> {
 /// criterion does not own.)
 pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let lang = lang_str(fs.lang);
-    if is_under_tests_dir(file) {
+    if is_dev_only(file) {
         return vec![empty_structural_boundary_event(file, lang, fs.partial)];
     }
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
@@ -304,7 +305,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 }
 
 /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): the STRUCTURAL batch-boundary sentinel for a
-/// file whose surviving (non-`is_test`, non-`tests/`-dir) definition and reference set is EMPTY -
+/// file whose surviving (non-`is_test`, non-dev-only-path) definition and reference set is EMPTY -
 /// riding the existing `EdgeInferred` shape with an EMPTY `name` (never a real reference's name)
 /// and `is_test: false` (never [`proof_events`]'s own EVIDENCE sentinel,
 /// [`empty_evidence_boundary_event`], which sets `is_test: true` and is this function's evidence-
@@ -319,7 +320,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 /// file's PRIOR extraction left - while its own empty-name guard recognizes the sentinel and
 /// creates no node, no `KIND_FILE` container, and no edge (the fold's "never a node and never an
 /// edge on the canvas" promise for excluded content, spec 86 criterion 1, holds through the
-/// migration too). Two callers reach this: a WHOLE `tests/`-dir file ([`is_under_tests_dir`], the
+/// migration too). Two callers reach this: a WHOLE dev-only file ([`is_dev_only`], the
 /// central migration case named in the Design - every entity it ever held was test code) and the
 /// general "extracted to nothing" case at the end of [`extract_events`] (whatever survived
 /// filtering, if anything, amounted to zero definitions and zero references). Both are ONE rule,
@@ -359,9 +360,9 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// contracts - "extract_events emits nothing for excluded content" and "no evidence is ever lost" -
 /// both hold, in two disjoint functions rather than one straining to prove both at once.
 ///
-/// A reference counts as evidence when EITHER: the whole file is under a `tests/` directory
-/// ([`is_under_tests_dir`] - every reference in an out-of-tree test file is test-origin, whatever
-/// its own `is_test` marking, since the file itself is nothing but test code), OR the reference
+/// A reference counts as evidence when EITHER: the whole file is at a dev-only path
+/// ([`is_dev_only`] - every reference in a test, bench or example file is test-origin, whatever
+/// its own `is_test` marking, since the file itself exercises production code), OR the reference
 /// itself is `is_test` (a `#[cfg(test)]`/`#[test]` region inside an otherwise-included product
 /// file - the common in-file `mod tests` idiom). A DEFINITION is never evidence (only a reference,
 /// a USE of a product entity, proves it); a product (non-test) reference in an included file is
@@ -392,7 +393,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// used to return an empty `Vec` here, so this function stamped no boundary. That was fine for a
 /// file that NEVER had evidence, but silently wrong for one TRANSITIONING from evidence to none: a
 /// file's WHOLE batch (`extract_events` alongside this function, concatenated by
-/// [`lower_file`]) can itself be empty - a `tests/`-dir file's structural side is ALWAYS
+/// [`lower_file`]) can itself be empty - a dev-only file's structural side is ALWAYS
 /// empty - so the file's batch was dropped entirely and `fold_test_evidence`/`supersede_file_proof`
 /// never even ran, stranding this file's own prior `proof_evidence` contribution on whichever
 /// entities it named, forever. Mirroring criterion 3's own already-established empty-after-
@@ -407,7 +408,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// Sorted by name then line (mirroring `extract_events`'s own ref ordering), so identical source
 /// yields byte-identical evidence events regardless of parse order.
 ///
-/// Disclosed, non-blocking scope limit (mirrors criterion 1's own disclosed Go-language gap): a
+/// Disclosed, non-blocking scope limit: a
 /// file pulled in only by an OUT-OF-LINE `#[cfg(test)] mod name;` declaration elsewhere
 /// ([`out_of_line_test_module_files`]) still contributes a STRUCTURAL batch since round 5
 /// (`extract_events` runs on it hollowed, via [`lower_file`], the composition that hollows it
@@ -415,9 +416,8 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// never called
 /// for it (its own references carry no `is_test` marking of their own - the attribute lives on the
 /// DECLARING file's side, invisible to this per-file view, per [`out_of_line_test_module_files`]'s
-/// own doc), so a test-only file reached only that way contributes no evidence. Not named by spec
-/// 86's Design/Done-when text, which is written in terms of a `tests/` directory and
-/// `#[cfg(test)]`/`#[test]` regions.
+/// own doc), so a test-only file reached that way contributes no evidence, one [`is_dev_only`]
+/// names too (a `src/foo/tests/mod.rs` that `#[cfg(test)] mod tests;` declares) included.
 ///
 /// Like criterion 3's identical structural sentinel, [`empty_evidence_boundary_event`]'s payload
 /// is a CONSTANT per `(file, lang)` with no generation-distinguishing field, so a LATER occurrence
@@ -427,7 +427,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Eve
 /// the graph's current one too, never against every generation ever recorded, so a later
 /// occurrence is recorded again whenever another generation came between.
 pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
-    let whole_file_test = is_under_tests_dir(file);
+    let whole_file_test = is_dev_only(file);
     let lang = lang_str(fs.lang);
     let mut refs: Vec<&SymRef> = fs
         .refs
@@ -518,24 +518,39 @@ fn set_fresh(e: &mut Event) {
     }
 }
 
-/// Spec 86 criterion 1: whether `file` (a '/'-separated, project-relative path, matching what
-/// [`extract_events`]'s `file` parameter and every batch key already carry) is UNDER a `tests/`
-/// directory - the Rust (and this repo's own) convention for out-of-tree integration test
-/// sources, distinct from an in-file `#[cfg(test)]` module. Matched on DIRECTORY components only
-/// (every segment except the file's own name), so `tests/foo.rs` and `crate/tests/bar.rs` are
-/// excluded while `src/testsuite.rs` (a product file that merely reads close to "tests") is not -
-/// the file's own component is never compared against the exact segment `"tests"`.
+/// DEV-ONLY PATHS (spec 116 criterion 1): whether `path` (a '/'-separated, project-relative
+/// path, matching what [`extract_events`]'s `file` parameter and every batch key already carry)
+/// names dev-only code by where it lives. The ONE path predicate the graph and ranking share:
+/// [`extract_events`] lowers such a file to its boundary alone, [`proof_events`] emits its every
+/// reference as evidence, [`crate::grounder::design::extract`]'s link pass drops a link to it,
+/// and the grounder's ranking marks its every location test. Case-sensitive, read off the path
+/// alone, in two parts:
 ///
-/// `pub(crate)`, not `fn`: the CONSTRAINTS WALK amendment to spec 86 assigns a second consumer to
-/// this SAME rule - a design doc's inline-code mention of a `tests/`-rooted path is excluded from
-/// the design-intent link pass too, "by the SAME exclusion rule... it needs no criterion of its
-/// own because criterion 1's fixture-proven exclusion is the one rule both extraction passes
-/// obey." [`crate::grounder::design::extract::doc_links`] reuses this exact function rather than
-/// re-deriving the directory-component check a second time.
-pub(crate) fn is_under_tests_dir(file: &str) -> bool {
-    let mut segments: Vec<&str> = file.split('/').collect();
-    segments.pop(); // the file's own name is never a directory component
-    segments.contains(&"tests")
+/// - Ungated, in every language: a DIRECTORY component (every segment except the file's own
+///   name, [`dir_of`]) `tests`, `benches`, `examples` or `__tests__`. So `tests/foo.rs` and
+///   `crate/benches/b.rs` are dev-only while `src/testsuite.rs` and `src/tests.rs` are not.
+/// - Gated on the language [`for_extension`] gives the text after the file name's last `.`: Go
+///   `*_test.go`; Python `test_*.py` and `*_test.py`; JS and TS `*.test.*` and `*.spec.*`; C# a
+///   directory component ending `Test` or `Tests` (its last dot-separated segment ending so,
+///   neither suffix holding a `.`). A file whose extension registers no language, one indexed
+///   under a `--language` override included, matches the ungated part only.
+pub(crate) fn is_dev_only(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let lang = name
+        .rsplit_once('.')
+        .and_then(|(_, ext)| for_extension(ext))
+        .map(|entry| entry.lang);
+    let dev_dir = |dir: &str| {
+        matches!(dir, "tests" | "benches" | "examples" | "__tests__")
+            || (lang == Some(Lang::CSharp) && (dir.ends_with("Test") || dir.ends_with("Tests")))
+    };
+    dir_of(path).split('/').any(dev_dir)
+        || match lang {
+            Some(Lang::Go) => name.ends_with("_test.go"),
+            Some(Lang::Python) => name.starts_with("test_") || name.ends_with("_test.py"),
+            Some(Lang::Js | Lang::Ts) => name.contains(".test.") || name.contains(".spec."),
+            Some(Lang::Rust | Lang::CSharp) | None => false,
+        }
 }
 
 /// The directory component of a project-relative `path` (every segment except the file's own

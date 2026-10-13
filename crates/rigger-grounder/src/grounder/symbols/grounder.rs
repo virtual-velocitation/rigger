@@ -362,7 +362,8 @@ enum HitKind {
 /// `name_coverage` - the terms the entity's name holds - ranks first, so a query that names an
 /// entity by its shape (`impl EventStore for` -> the impl blocks named `impl EventStore for
 /// Store`) finds it above a name that holds one incidental word (`for`). `test` - the location is
-/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file under a `tests` directory) - ranks
+/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file at a dev-only path,
+/// [`is_dev_only`](crate::grounder::symbols::events::is_dev_only)) - ranks
 /// next, so a test double never outranks the product code it stands in for. `coverage` - the
 /// terms the name OR the file path holds - ranks third, so the words that name the module narrow
 /// the match (`sqlite store open` -> `open_connection` in `store/sqlite.rs` above `reopen_window`
@@ -425,7 +426,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
         let lower_path = path.to_lowercase();
-        let test_file = crate::grounder::symbols::events::is_under_tests_dir(path);
+        let test_file = crate::grounder::symbols::events::is_dev_only(path);
         let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).

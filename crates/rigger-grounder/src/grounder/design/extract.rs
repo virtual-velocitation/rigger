@@ -18,12 +18,13 @@
 //! (These "criteria" are spec 29b's own three, unrelated to spec 86's below.)
 //!
 //! Spec 86 criterion 1's CONSTRAINTS WALK (TESTS ARE NOT NODES) additionally owns ONE corner of
-//! [`doc_links`]: a design doc's inline-code mention of a `tests/`-rooted path - inline SPECIFIES/
+//! [`doc_links`]: a design doc's mention of a dev-only path - inline SPECIFIES/
 //! CONSTRAINS/GOVERNS carrier or markdown-citation REFERENCES carrier alike - is excluded from
-//! this pass too, by the SAME rule the code-entity pass already applies to a whole file under
-//! `tests/` ([`crate::grounder::symbols::events::is_under_tests_dir`], reused here rather than
-//! re-derived). Without this, the always-compiled fold would still mint a bare `KIND_ARTIFACT`
-//! node for the mention that `concepts::intent_layer` walks (its own filter only requires the
+//! this pass too, by the SAME predicate the code-entity pass applies to a whole dev-only file
+//! ([`crate::grounder::symbols::events::is_dev_only`], spec 116 criterion 1, reused here rather
+//! than re-derived, and read over the mention without its `#anchor`). Without this, the
+//! always-compiled fold would still mint a bare `KIND_ARTIFACT` node for the mention that
+//! `concepts::intent_layer` walks (its own filter only requires the
 //! OTHER endpoint be a doc), so test-scoped code would re-enter the intent layer through this
 //! link-carried back door even though criterion 1's code-entity pass correctly keeps it out of the
 //! graph as a NODE. A bare identifier naming a test-only symbol (no `/`) never reaches this pass
@@ -38,7 +39,7 @@ use std::collections::BTreeSet;
 use rigger_domain::spec::{code_spans, fenced_code_lines};
 
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
-use crate::grounder::symbols::events::is_under_tests_dir;
+use crate::grounder::symbols::events::is_dev_only;
 
 /// Extract every design-intent concept from one file at relative path `path` with `contents`.
 ///
@@ -276,10 +277,10 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         // Inline-code CODE-path mentions -> the doc's kind-specific design->code relation ("this
         // doc designs / constrains / governs this code").
         for span in code_spans(line) {
-            // Spec 86 criterion 1's CONSTRAINTS WALK (module doc): a tests/-rooted mention is
-            // excluded from the design-intent link pass too, by the SAME rule the code-entity
-            // pass applies to a whole file under tests/ - never a second, independent check.
-            if is_code_path(&span) && !is_under_tests_dir(&span) {
+            // Module doc: a mention of a dev-only path is excluded from the design-intent link
+            // pass too, by the SAME predicate the code-entity pass applies to a whole dev-only
+            // file - never a second, independent check.
+            if is_code_path(&span) && !is_dev_only(sans_anchor(&span)) {
                 out.insert(DesignLink {
                     from: from.clone(),
                     rel: code_rel,
@@ -291,9 +292,9 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         // `design-doc` only (the criterion's FROM kind for `references`).
         if kind == ConceptKind::DesignDoc {
             for target in link_targets(line) {
-                // Same spec-86-criterion-1 exclusion as the inline-code carrier above, applied to
-                // the citation carrier - a tests/-rooted markdown-link target excludes identically.
-                if is_repo_path(&target) && !is_under_tests_dir(&target) {
+                // The same exclusion as the inline-code carrier above, applied to the citation
+                // carrier - a markdown-link target at a dev-only path excludes identically.
+                if is_repo_path(&target) && !is_dev_only(sans_anchor(&target)) {
                     out.insert(DesignLink {
                         from: from.clone(),
                         rel: LinkRel::References,
@@ -358,7 +359,7 @@ fn is_code_path(s: &str) -> bool {
     if s.is_empty() || s.contains(char::is_whitespace) || s.contains("://") {
         return false;
     }
-    let path = s.split('#').next().unwrap_or(s);
+    let path = sans_anchor(s);
     if !path.contains('/') || is_doc_ext(path) {
         return false;
     }
@@ -380,9 +381,14 @@ fn is_repo_path(target: &str) -> bool {
     s.contains('/') || s.contains('.')
 }
 
+/// `s` (a path mention) without its `#anchor`: the path the mention names.
+fn sans_anchor(s: &str) -> &str {
+    s.split_once('#').map_or(s, |(path, _)| path)
+}
+
 /// Whether `p` (a path, ignoring any `#anchor`) is a markdown doc.
 fn is_doc_ext(p: &str) -> bool {
-    let p = p.split('#').next().unwrap_or(p).to_lowercase();
+    let p = sans_anchor(p).to_lowercase();
     p.ends_with(".md") || p.ends_with(".markdown")
 }
 
@@ -710,7 +716,7 @@ mod tests {
         // Spec 86 criterion 1's CONSTRAINTS WALK: a design doc's inline-code mention of a
         // `tests/`-rooted path is excluded from the design-intent link pass too, by the SAME
         // exclusion rule the code-entity pass already applies to a whole file under `tests/`
-        // (`is_under_tests_dir`, reused here) - never a second, independent rule. Without this, the
+        // (`is_dev_only`, reused here) - never a second, independent rule. Without this, the
         // fold would still mint a bare KIND_ARTIFACT node for the mention (ensure_node on the
         // TYPE_DOC_LINK_EXTRACTED edge's `to` endpoint) that `concepts::intent_layer` would then
         // walk, since its own filter only checks the OTHER endpoint is a doc - so test-scoped code

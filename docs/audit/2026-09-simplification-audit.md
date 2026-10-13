@@ -1730,7 +1730,7 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-conductor
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-conductor/src/canary_store.rs:820-822` `any_finding_is_critical`
-- `crates/rigger-grounder/src/grounder/design/extract.rs:159-161` `is_handbook_path`
+- `crates/rigger-grounder/src/grounder/design/extract.rs:160-162` `is_handbook_path`
 
 #### `dup-b6dc10b9c376` (near, 14 sites)
 
@@ -3878,7 +3878,7 @@ Proposed home: `a new shared module (sites span 3 files: crates/rigger-domain/sr
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `crates/rigger-domain/src/spec.rs:546-553` `starts_new_element`
-- `crates/rigger-grounder/src/grounder/design/extract.rs:391-394` `is_markdown`
+- `crates/rigger-grounder/src/grounder/design/extract.rs:397-400` `is_markdown`
 - `tests/simplification_audit.rs:2860-2867` `looks_error_shaping`
 
 #### `dup-42b8a5023d8d` (near, 2 sites)
@@ -4212,7 +4212,7 @@ Proposed home: `one shared `project_batches` helper (e.g. relocated into `tests/
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `crates/rigger-grounder/src/grounder/design/events.rs:97-99` `project_batches`
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:59-61` `project_batches`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:60-62` `project_batches`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:233-240` `project_batches`
 
 #### `dup-4b942d7302a6` (near, 2 sites)
@@ -4239,7 +4239,7 @@ Proposed home: `one shared `extract_events` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:208-304` `extract_events`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:209-305` `extract_events`
 - `crates/rigger-grounder/src/grounder/workflowdef.rs:169-199` `extract_events`
 
 #### `dup-207b5aa153cb` (near, 3 sites)
@@ -4248,8 +4248,8 @@ Proposed home: `a new shared module (sites span 2 files: crates/rigger-grounder/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:775-786` `kind_str`
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:790-799` `lang_str`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:790-801` `kind_str`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:805-814` `lang_str`
 - `crates/rigger-store-sqlite/src/eventstore/sqlite.rs:1487-1492` `direction_sql`
 
 #### `dup-ff3bcd827c2f` (semantic, 3 sites)
@@ -4286,8 +4286,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:995-1048` `a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1447-1484` `structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:996-1049` `a_resolved_name_grounds_on_its_definer_and_call_sites_never_on_a_comment_mention`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1448-1485` `structural_view_is_cross_language_a_python_referencer_of_a_rust_symbol_is_included`
 
 #### `dup-9c17d63a062c` (exact, 3 sites)
 
@@ -4295,9 +4295,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1127-1137` `blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1173-1183` `blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1188-1198` `blast_radius_text_search_matches_a_span_only_on_identifier_boundaries`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1128-1138` `blast_radius_grounds_a_path_the_tree_holds_on_that_file_alone`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1174-1184` `blast_radius_text_search_matches_a_trailing_underscore_span_as_a_prefix`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1189-1199` `blast_radius_text_search_matches_a_span_only_on_identifier_boundaries`
 
 #### `dup-d36198b3982d` (near, 2 sites)
 
@@ -4305,8 +4305,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1587-1598` `a_reference_ranks_below_a_definition_of_the_same_name`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1837-1851` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1588-1599` `a_reference_ranks_below_a_definition_of_the_same_name`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1838-1852` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
 
 #### `dup-56485f8d4262` (near, 3 sites)
 
@@ -4314,9 +4314,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1754-1800` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1803-1829` `reindex_replaces_only_a_changed_files_symbols`
-- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:2128-2155` `reindex_over_a_deleted_file_stops_grounding_it`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1755-1801` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:1804-1830` `reindex_replaces_only_a_changed_files_symbols`
+- `crates/rigger-grounder/src/grounder/symbols/grounder.rs:2129-2156` `reindex_over_a_deleted_file_stops_grounding_it`
 
 #### `dup-415d2df07b98` (near, 2 sites)
 
@@ -5267,7 +5267,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8982 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85072026`, `sample_indices` over all 8983 functions scanned in `src/` and `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change elsewhere never reshuffles a drawn row, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth out of the draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
 - `crates/rigger-conductor/src/conductor.rs:4996-5037` `split_reject` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-conductor/src/conductor.rs:15077-15099` `branch_is_foreign_when_only_one_axis_differs` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5281,7 +5281,7 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded rank (seed `85
 - `crates/rigger-domain/src/review.rs:772-809` `a_finding_line_has_five_pipe_fields_with_the_severity_second` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-domain/src/spec.rs:2249-2256` `strip_inline_code_direct_exact_output_pins_a_zero_width_quote_pair` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:4476-4478` `locked` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
-- `crates/rigger-grounder/src/grounder/symbols/events.rs:571-583` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
+- `crates/rigger-grounder/src/grounder/symbols/events.rs:586-598` `normalize_logical_path` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `crates/rigger-grounder/src/ingest.rs:1897-1916` `answered` - duplicate found by reading and closed: its view of a sink answer's batch is `wire_owned`; the root sink suite's `Handed::answer` re-rolled that view as its own `typed` and now calls `wire_owned` too
 - `crates/rigger-worktree-git/src/worktree.rs:1847-1869` `reclaim_cache_sibling` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
 - `src/cli/mod.rs:4432-4458` `footprint_reclaim_lines` - NOT READ - drawn after the 2026-09-27 reading pass; read it and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`
@@ -5330,7 +5330,7 @@ Instrument: for each of the five named ports (`eventstore::EventStore`, `context
 
 FOUND, one violation:
 
-Violation 1 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:394-426` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `crates/rigger-conductor/src/conductor.rs:11246`, itself called from `crates/rigger-conductor/src/conductor.rs:11228` above the `14213` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 400 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 406 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f2eee0c78cd6`: `crates/rigger-grounder/src/grounder/design/events.rs:97-99`, `crates/rigger-grounder/src/grounder/symbols/events.rs:59-61`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:233-240` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:56`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (400) and the concrete `design` module (406) directly. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
+Violation 1 (`Grounder`): `crates/rigger-grounder/src/ingest.rs:394-426` (`walk_batches`, called from production `conductor::RunCtx::ingest_project_batches` at `crates/rigger-conductor/src/conductor.rs:11246`, itself called from `crates/rigger-conductor/src/conductor.rs:11228` above the `14213` `#[cfg(test)]` boundary) calls `crate::grounder::symbols::events::project_batches_paced` directly by concrete module path at line 400 to reuse the `symbols` grounder's already-persisted index for a one-time whole-project ingest walk, then at line 406 - same function, same missing-port defect, not a separate third violation - calls `crate::grounder::design::events::project_batches` directly by concrete module path for the design-doc half of the same walk. These two calls are two of the three named sites of section 2's own catalogued duplicate cluster (`dup-f2eee0c78cd6`: `crates/rigger-grounder/src/grounder/design/events.rs:97-99`, `crates/rigger-grounder/src/grounder/symbols/events.rs:60-62`, and `crates/rigger-grounder/src/grounder/workflowdef.rs:233-240` - all three named `project_batches`), so this boundary violation and that duplication finding are two symptoms of one root cause - `ingest.rs` naming each concrete grounder submodule because no port exposes either. The `Grounder` port (`crates/rigger-domain/src/grounder.rs:56`: `ground`, `reindex`, `blast_radius`, `index_stamp`) serves real-time per-query grounding of an agent's prompt; none of its methods exposes "hand me every indexed file's projected events for a whole-project batch ingest," so `ingest.rs` - itself a domain ingest authority, not an adapter and not the composition root - has no port to depend on for either call and reaches the concrete `symbols` module (400) and the concrete `design` module (406) directly. Fix direction for a follow-up spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` or a standalone `SymbolProjector` trait) covering both concrete modules, so `ingest.rs` depends on one abstraction instead of either concrete grounder module for its whole-project walk.
 
 Also reaching `grounder::symbols::store::content_hash` from `crates/rigger-grounder/src/ingest.rs:649` and `crates/rigger-conductor/src/canary_store.rs:153`: DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. `content_hash` (`crates/rigger-grounder/src/grounder/symbols/store.rs:47-57`) is documented at its own definition as the content-identity primitive the `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s own doc comment (`crates/rigger-conductor/src/canary_store.rs:131`) reuses it by deliberate author intent rather than growing another open-coded FNV-1a copy - a generic hashing utility that happens to live in the `symbols` module, not a grounding operation reached through the port. The broader duplication this primitive is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per `crates/rigger-domain/src/community.rs:67`'s own comment) is a separately tracked cross-cutting refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.
 
