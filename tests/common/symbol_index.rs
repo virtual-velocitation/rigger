@@ -1,6 +1,7 @@
 //! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file
-//! index, saving it through the real `store` boundary and reading the bytes back, and loading a
-//! hand-authored legacy `index.json`. Included by each suite through `#[path]`; a suite uses the
+//! index, saving it through the real `store` boundary and reading the bytes back, loading a
+//! hand-authored legacy `index.json`, and projecting a file's references with their callers.
+//! Included by each suite, and by the grounder crate for its unit tests, through `#[path]`; a suite uses the
 //! subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Parser-free, so it compiles in every feature lane.
 
@@ -83,6 +84,18 @@ pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) ->
     let bytes = &saved.bytes;
     assert!(bytes.contains(key), "{why}; got:\n{bytes}");
     saved.reload()
+}
+
+/// Every reference of `fs` as `(line, name, caller)`, sorted: the one projection the caller-rule
+/// tests of the extractor and of the registry compare whole.
+pub fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
+    let mut refs: Vec<_> = fs
+        .refs
+        .iter()
+        .map(|r| (r.line, r.name.as_str(), r.enclosing.as_deref()))
+        .collect();
+    refs.sort();
+    refs
 }
 
 /// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as

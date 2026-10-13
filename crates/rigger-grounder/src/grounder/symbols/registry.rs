@@ -434,7 +434,7 @@ mod tests {
             "each function and each const, local or not, is a definition"
         );
         assert_eq!(
-            crate::grounder::symbols::extract::tests::refs_with_callers(&fs),
+            crate::symbol_index::refs_with_callers(&fs),
             vec![
                 (2, "f", Some("outer")),
                 (4, "g", Some("y")),
@@ -456,11 +456,9 @@ mod tests {
         let persisted = |grammar: &str| -> (bool, bool) {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().to_str().unwrap();
-            let path = store::index_path(root);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, format!(r#"{{"grammar":"{grammar}","files":{{}}}}"#)).unwrap();
+            crate::symbol_index::persist_stamped(root, grammar, r#"{"files":{}}"#);
             let index: SymbolIndex =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                serde_json::from_slice(&std::fs::read(store::index_path(root)).unwrap()).unwrap();
             (index.is_current(), store::load(root).is_some())
         };
         assert_eq!(

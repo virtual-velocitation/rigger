@@ -73,6 +73,17 @@ mod graph_fixtures;
 #[path = "../../../tests/common/fixtures/caller_sources.rs"]
 mod caller_sources;
 
+/// The symbol index fixtures the extractor's and the registry's caller-rule tests share with the
+/// root crate's tests (the stamped `index.json` writer, the reference projection), compiled here
+/// from the same file. It names the crate as `rigger::...`; only the default lane's tests read it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/symbol_index.rs"]
+mod symbol_index;
+
 /// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
 /// here from the same file. It names no crate, so both lanes compile it.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
