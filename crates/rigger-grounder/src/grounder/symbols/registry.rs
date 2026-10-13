@@ -466,17 +466,7 @@ mod tests {
     /// being its own.
     #[test]
     fn a_go_definition_named_with_the_blank_identifier_makes_no_def() {
-        let fs = crate::symbol_index::extracted(
-            "go",
-            "\
-package main
-type T struct{}
-func _() { probe() }
-func (T) _() { reach() }
-type _ int
-func named() { other() }
-",
-        );
+        let fs = crate::symbol_index::extracted("go", crate::name_filter_sources::GO_BLANK_SOURCE);
         assert_eq!(
             crate::symbol_index::defs_by_line(&fs),
             vec![(2, "T", Kind::Type), (6, "named", Kind::Function)],
@@ -501,7 +491,8 @@ func named() { other() }
     /// no `require` call and a Python attribute read being no call.
     #[test]
     fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {
-        let js = crate::symbol_index::extracted("js", "const _ = require('lodash');\n");
+        let js =
+            crate::symbol_index::extracted("js", crate::name_filter_sources::JS_UNDERSCORE_SOURCE);
         assert_eq!(
             crate::symbol_index::defs_by_line(&js),
             vec![(1, "_", Kind::Constant)],
@@ -512,7 +503,8 @@ func named() { other() }
             vec![],
             "the upstream JS query tags no `require` call"
         );
-        let py = crate::symbol_index::extracted("py", "import gettext\n_ = gettext.gettext\n");
+        let py =
+            crate::symbol_index::extracted("py", crate::name_filter_sources::PY_UNDERSCORE_SOURCE);
         assert_eq!(
             crate::symbol_index::defs_by_line(&py),
             vec![(2, "_", Kind::Constant)],

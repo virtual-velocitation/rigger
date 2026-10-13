@@ -10,8 +10,8 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
+    Graph, Projection, KIND_CODE_ENTITY, KIND_COMMUNITY, META_ACTOR, REL_CALLS, REL_IN_COMMUNITY,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
 use rigger::retention::GenerationIngested;
@@ -90,6 +90,30 @@ pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
         .collect();
     edges.sort();
     edges
+}
+
+/// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
+pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+    live_edges(p)
+        .into_iter()
+        .filter(|(_, rel, ..)| rel == REL_CALLS)
+        .map(|(from, _, to, ..)| (from, to))
+        .collect()
+}
+
+/// Every code entity `p` serves as `(id, kind)`, sorted; a placeholder, a name some reference
+/// reaches and no definition gives, has no kind.
+pub fn live_code_entities(p: &Projector) -> Vec<(String, Option<String>)> {
+    let mut entities: Vec<_> = p
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|n| n.kind == KIND_CODE_ENTITY)
+        .map(|n| (n.id, n.attrs.get("kind").cloned()))
+        .collect();
+    entities.sort();
+    entities
 }
 
 /// Fold `events` into `p` through the public fold, and insist they landed: the one spelling of

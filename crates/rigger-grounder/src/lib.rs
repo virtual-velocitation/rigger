@@ -73,6 +73,16 @@ mod graph_fixtures;
 #[path = "../../../tests/common/fixtures/caller_sources.rs"]
 mod caller_sources;
 
+/// THE NAME FILTER SOURCES the name-filter tests extract, compiled here from the same file as the
+/// root crate's tests. It names no crate; only the default lane's tests extract them.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/name_filter_sources.rs"]
+mod name_filter_sources;
+
 /// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
 /// tests (the stamped `index.json` writer, a source read through the registry, the definition
 /// and reference projections), compiled here from the same file. It names the crate as

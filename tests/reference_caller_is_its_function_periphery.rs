@@ -32,20 +32,12 @@ use symbol_index::{def, rust_file, SavedIndex};
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
-    use rigger::contextgraph::REL_CALLS;
+    let (_project, graph) = common::cli::built_graph(&[
+        ("lib.rs", common::fixtures::RUST_CALLER_SOURCE),
+        ("a.js", common::fixtures::JS_CALLER_SOURCE),
+    ]);
 
-    let dir = common::cli::temp_project();
-    let root = dir.path();
-    std::fs::write(root.join("lib.rs"), common::fixtures::RUST_CALLER_SOURCE).unwrap();
-    std::fs::write(root.join("a.js"), common::fixtures::JS_CALLER_SOURCE).unwrap();
-
-    common::cli::run_rigger_ok(root, &["graph", "build"]);
-
-    let calls: Vec<(String, String)> = common::fixtures::live_edges(&common::cli::open_graph(root))
-        .into_iter()
-        .filter(|(_, rel, ..)| rel == REL_CALLS)
-        .map(|(from, _, to, ..)| (from, to))
-        .collect();
+    let calls = common::fixtures::live_calls(&graph);
     let expected: Vec<(String, String)> = [
         ("a.js::h", "a.js::k"),
         ("a.js::outer", "a.js::f"),

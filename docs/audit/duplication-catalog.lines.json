@@ -3079,33 +3079,33 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 547,
-        "end_line": 547
+        "start_line": 559,
+        "end_line": 559
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 579,
-        "end_line": 579
+        "start_line": 591,
+        "end_line": 591
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 812,
-        "end_line": 812
+        "start_line": 824,
+        "end_line": 824
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 813,
-        "end_line": 813
+        "start_line": 825,
+        "end_line": 825
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 926,
-        "end_line": 926
+        "start_line": 938,
+        "end_line": 938
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1023,
-        "end_line": 1023
+        "start_line": 1035,
+        "end_line": 1035
       },
       {
         "file": "tests/common/fixtures/config.rs",
@@ -5529,8 +5529,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 578,
-        "end_line": 580
+        "start_line": 590,
+        "end_line": 592
       }
     ]
   },
@@ -5864,8 +5864,8 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1034,
-        "end_line": 1034
+        "start_line": 1046,
+        "end_line": 1046
       },
       {
         "file": "tests/common/fixtures/sqlite.rs",
@@ -6789,18 +6789,18 @@
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 501,
-        "end_line": 508
-      },
-      {
-        "file": "tests/common/cli.rs",
-        "start_line": 515,
+        "start_line": 513,
         "end_line": 520
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1087,
-        "end_line": 1092
+        "start_line": 527,
+        "end_line": 532
+      },
+      {
+        "file": "tests/common/cli.rs",
+        "start_line": 1099,
+        "end_line": 1104
       },
       {
         "file": "tests/compaction_generations_periphery.rs",
@@ -7509,18 +7509,18 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 526,
-        "end_line": 528
+        "start_line": 538,
+        "end_line": 540
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1081,
-        "end_line": 1083
+        "start_line": 1093,
+        "end_line": 1095
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 1096,
-        "end_line": 1098
+        "start_line": 1108,
+        "end_line": 1110
       }
     ]
   },
@@ -7529,8 +7529,8 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 872,
-        "end_line": 879
+        "start_line": 884,
+        "end_line": 891
       },
       {
         "file": "tests/common/workflow_probe.rs",
@@ -7544,13 +7544,13 @@
     "sites": [
       {
         "file": "tests/common/cli.rs",
-        "start_line": 908,
-        "end_line": 928
+        "start_line": 920,
+        "end_line": 940
       },
       {
         "file": "tests/common/cli.rs",
-        "start_line": 932,
-        "end_line": 948
+        "start_line": 944,
+        "end_line": 960
       },
       {
         "file": "tests/store_secrets.rs",
@@ -7624,13 +7624,13 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 254,
-        "end_line": 256
+        "start_line": 278,
+        "end_line": 280
       },
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 261,
-        "end_line": 263
+        "start_line": 285,
+        "end_line": 287
       }
     ]
   },
@@ -7639,8 +7639,8 @@
     "sites": [
       {
         "file": "tests/common/fixtures/fold.rs",
-        "start_line": 352,
-        "end_line": 361
+        "start_line": 376,
+        "end_line": 385
       },
       {
         "file": "tests/community_resolution_knob.rs",

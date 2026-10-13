@@ -465,6 +465,18 @@ pub fn open_graph(root: &Path) -> Projector {
     Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
 }
 
+/// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a
+/// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
+pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
+    let dir = temp_project();
+    for (path, source) in files {
+        std::fs::write(dir.path().join(path), source).unwrap();
+    }
+    run_rigger_ok(dir.path(), &["graph", "build"]);
+    let graph = open_graph(dir.path());
+    (dir, graph)
+}
+
 /// Every `graph.db*` entry under `.rigger/` of `root` ([`super::fixtures::dir_snapshot`]).
 pub fn graph_files(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
     super::fixtures::dir_snapshot(&rigger_file(root, ""), "graph.db")
