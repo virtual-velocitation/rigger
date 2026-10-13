@@ -93,7 +93,9 @@
 //!    proves nothing
 //!    (`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`);
 //!    and a design doc's mention of such a path mints no node
-//!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`). The
+//!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`), the
+//!    mention read by the path it names, without a `:line` suffix and by its own extension
+//!    (`a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api`). The
 //!    ranking use of the predicate is driven through the binary, in `tests/cli.rs`
 //!    (`ground_ranks_a_go_test_files_definition_below_the_production_one_it_shadows`).
 
@@ -1888,6 +1890,59 @@ fn a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_ap
             ("docs/architecture.md", "references", "pkg/x.go"),
         ],
         "each carrier links the production file and no dev-only path"
+    );
+}
+
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), the design pass through the fold, at the
+/// two edges of the path a mention names. A `:line` or `:line-line` suffix names the same file:
+/// a so-suffixed mention of a Go `*_test.go` file mints no node at either carrier, while the
+/// production file's suffixed mention is a node as written. A suffix that is no line span is
+/// part of the path, which then registers no language and is no pattern's. And the gate reads
+/// the path's own extension: the dotfile `Acme.Tests/.cs` has none, so it is cited as a node
+/// where `Acme.Tests/A.cs` beside it is dropped.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dev_only_design_doc_mention_is_read_by_the_path_it_names_through_the_public_api() {
+    use rigger::contextgraph::Projection;
+    use rigger::grounder::design::events::{concept_events, link_events};
+    use rigger::grounder::design::extract::{extract_concepts, extract_links};
+
+    let md = "# Reference architecture\n\n\
+              See `pkg/x_test.go:12`, `pkg/x_test.go:12-20`, `pkg/x.go:12` and \
+              `pkg/x_test.go:1a` inline, and cite [the case](pkg/x_test.go:12), \
+              [the class](Acme.Tests/A.cs) and [the dotfile](Acme.Tests/.cs).\n";
+    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
+    events.extend(link_events(&extract_links("docs/architecture.md", md)));
+    let g = fold_events(events)
+        .subgraph(&["docs/architecture.md".to_string()], 3)
+        .unwrap();
+
+    let mut links: Vec<(&str, &str, &str)> = g
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.rel.as_str(), e.to.as_str()))
+        .collect();
+    links.sort_unstable();
+    assert_eq!(
+        links,
+        vec![
+            ("docs/architecture.md", "SPECIFIES", "pkg/x.go:12"),
+            ("docs/architecture.md", "SPECIFIES", "pkg/x_test.go:1a"),
+            ("docs/architecture.md", "references", "Acme.Tests/.cs"),
+        ],
+        "a line-suffixed or C# test-directory mention links nothing; the rest link as written"
+    );
+    let mut node_ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+    node_ids.sort_unstable();
+    assert_eq!(
+        node_ids,
+        vec![
+            "Acme.Tests/.cs",
+            "docs/architecture.md",
+            "pkg/x.go:12",
+            "pkg/x_test.go:1a",
+        ],
+        "the doc reaches exactly the mentions that name no dev-only path"
     );
 }
 

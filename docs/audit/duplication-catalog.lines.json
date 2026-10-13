@@ -7410,6 +7410,21 @@
     ]
   },
   {
+    "id": "dup-a6d696c0cf08",
+    "sites": [
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 1858,
+        "end_line": 1894
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "start_line": 1905,
+        "end_line": 1947
+      }
+    ]
+  },
+  {
     "id": "dup-4fbc57c56116",
     "sites": [
       {
