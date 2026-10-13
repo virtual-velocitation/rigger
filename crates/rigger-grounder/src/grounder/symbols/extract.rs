@@ -336,7 +336,7 @@ fn test_regions(
 /// BEFORE the item it gates) and an INNER `#![cfg(test)]` (the FIRST node INSIDE the item's own
 /// body, gating the item that body belongs to - `mod tests { #![cfg(test)] .. }`) are two
 /// grammar-distinct shapes for the identical Rust idiom. Two checks now cover both, both riding
-/// the SAME shared walk ([`attribute_stack_names_test`]) in opposite directions over different
+/// the SAME shared walk ([`scan_attribute_stack`]) in opposite directions over different
 /// sibling sets: `node.prev_sibling()` for an item that sits AFTER an inner attribute as a normal
 /// sibling inside a shared body (e.g. a plain helper following `#![cfg(test)]` in the same `mod`'s
 /// `declaration_list` - also how the pre-existing OUTER `#[cfg(test)]` shape is found, unchanged);

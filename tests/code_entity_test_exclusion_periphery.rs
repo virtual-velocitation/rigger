@@ -2766,17 +2766,12 @@ rigger::test_cases! {
     /// UNEXCLUDED - which this fixture pins by asserting the real target's entity is ABSENT from
     /// the graph.
     ///
-    /// The `let _ = 1;` placeholder statement before the declaration is deliberate, not filler: it
-    /// keeps the `mod helper;` declaration from being the function body's OWN first named child. A
-    /// leading statement there would otherwise walk into a DIFFERENT, pre-existing, out-of-scope
-    /// defect this fixture is not about (`leading_inner_test_attribute`, extract.rs, predates round
-    /// 9 entirely): it does not distinguish an OUTER `#[cfg(test)]` attached to a following sibling
-    /// item from a genuine INNER `#![cfg(test)]` marking the body's own container, so a body whose
-    /// first child happens to be an outer-attributed item reads as if the CONTAINER itself were
-    /// test-attributed. Flagged separately as
-    /// `sdet-u86c1-r9-leading-attribute-inner-outer-conflation` (out of this round's
-    /// #[path]-contract scope, not fixed here) rather than folded silently into this fixture, which
-    /// stays a clean, single-variable proof of the `&&`/`||` distinction alone.
+    /// The placeholder statement before the declaration keeps the `mod helper;` declaration from
+    /// being the function body's OWN first named child. The body read
+    /// (`leading_inner_test_attribute`, extract.rs) counts INNER attributes only, so an OUTER
+    /// `#[cfg(test)]` a body opens with marks the item after it and never the body's container,
+    /// and `outer_fn` stays product code with or without the placeholder; the fixture keeps it
+    /// so it stays a single-variable proof of the `&&`/`||` distinction alone.
     #[cfg(feature = "symbols")]
     a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module: assert_ingested_graph(
 &[
