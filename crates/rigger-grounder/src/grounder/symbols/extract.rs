@@ -1095,6 +1095,136 @@ start!();
         );
     }
 
+    /// The caller [`enclosing_def`] gives `pos` over hand-built `(range, leaf, kind)`
+    /// definition ranges.
+    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
+        let ranges: Vec<_> = ranges
+            .iter()
+            .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
+            .collect();
+        enclosing_def(&ranges, pos)
+    }
+
+    /// The four function-like kinds, the caller rule's first choice.
+    const FUNCTION_LIKE: [Kind; 4] = [Kind::Function, Kind::Method, Kind::Constructor, Kind::Macro];
+
+    /// Every kind tree 2 holds that is a caller only when no function-like definition encloses
+    /// the reference.
+    const NOT_FUNCTION_LIKE: [Kind; 6] = [
+        Kind::Type,
+        Kind::Trait,
+        Kind::Impl,
+        Kind::Module,
+        Kind::Constant,
+        Kind::Other,
+    ];
+
+    /// The caller filter, pinned per kind over hand-built ranges: each function-like kind
+    /// enclosing a reference is its caller past an inner definition of every other kind; the
+    /// innermost of two function-like definitions wins; and with no function-like definition
+    /// around it, the innermost definition of any kind does.
+    #[test]
+    fn the_caller_filter_takes_each_function_like_kind_past_an_inner_definition() {
+        for outer in FUNCTION_LIKE {
+            for inner in NOT_FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("outer".to_string()),
+                    "{outer:?} around {inner:?}"
+                );
+            }
+            for inner in FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("inner".to_string()),
+                    "{inner:?} inside {outer:?}"
+                );
+            }
+        }
+        for outer in NOT_FUNCTION_LIKE {
+            for inner in NOT_FUNCTION_LIKE {
+                assert_eq!(
+                    caller(&[(10..50, "outer", outer), (20..30, "inner", inner)], 25),
+                    Some("inner".to_string()),
+                    "{inner:?} inside {outer:?}, no function around either"
+                );
+            }
+        }
+    }
+
+    /// A `declaration` is no caller: a reference inside its range takes the next enclosing
+    /// definition, function-like first, else the file; and a definition nested in a
+    /// declaration's range is still found.
+    #[test]
+    fn a_declaration_is_excluded_from_the_caller_ranges() {
+        let decl = (20..30, "decl", Kind::Declaration);
+        assert_eq!(caller(&[decl.clone()], 25), None);
+        assert_eq!(
+            caller(&[(10..50, "host", Kind::Trait), decl.clone()], 25),
+            Some("host".to_string())
+        );
+        assert_eq!(
+            caller(&[(10..50, "host", Kind::Function), decl.clone()], 25),
+            Some("host".to_string())
+        );
+        assert_eq!(
+            caller(
+                &[
+                    (0..60, "f", Kind::Function),
+                    (10..50, "host", Kind::Trait),
+                    decl.clone()
+                ],
+                25
+            ),
+            Some("f".to_string())
+        );
+        for inner in [Kind::Constant, Kind::Function] {
+            assert_eq!(
+                caller(
+                    &[(20..30, "decl", Kind::Declaration), (22..28, "in", inner)],
+                    25
+                ),
+                Some("in".to_string()),
+                "{inner:?} inside a declaration's range"
+            );
+        }
+    }
+
+    /// Within one class of definition the smallest containing range wins, a range holding its
+    /// start and not its end, equal spans breaking on the lower start and identical ranges on
+    /// the lesser name; no range gives no caller.
+    #[test]
+    fn the_innermost_containing_range_wins_and_ties_break_on_start_then_name() {
+        let one = [(10..20, "f", Kind::Function)];
+        assert_eq!(caller(&one, 9), None);
+        assert_eq!(caller(&one, 10), Some("f".to_string()));
+        assert_eq!(caller(&one, 19), Some("f".to_string()));
+        assert_eq!(caller(&one, 20), None);
+        assert_eq!(caller(&[], 0), None);
+        for kind in [Kind::Function, Kind::Constant] {
+            assert_eq!(
+                caller(&[(10..19, "outer", kind), (12..14, "inner", kind)], 13),
+                Some("inner".to_string()),
+                "{kind:?}: the smaller span, early in its outer"
+            );
+            assert_eq!(
+                caller(&[(10..20, "outer", kind), (18..20, "inner", kind)], 19),
+                Some("inner".to_string()),
+                "{kind:?}: the smaller span, at its outer's end"
+            );
+            assert_eq!(
+                caller(&[(15..25, "a", kind), (10..20, "z", kind)], 17),
+                Some("z".to_string()),
+                "{kind:?}: equal spans break on the lower start, ahead of the name"
+            );
+            assert_eq!(
+                caller(&[(10..20, "b", kind), (10..20, "a", kind)], 15),
+                Some("a".to_string()),
+                "{kind:?}: identical ranges break on the lesser name"
+            );
+        }
+    }
+
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();

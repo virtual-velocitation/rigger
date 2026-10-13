@@ -1144,6 +1144,15 @@ mod tests {
         );
     }
 
+    /// The caller rule's kinds (spec 116 criterion 2) each lower to their own kind string.
+    #[test]
+    fn the_caller_rule_s_kinds_lower_to_their_kind_strings() {
+        assert_eq!(
+            [Kind::Constructor, Kind::Macro, Kind::Declaration].map(super::kind_str),
+            ["constructor", "macro", "declaration"]
+        );
+    }
+
     /// A `FileSymbols` carrying a product-shaped (non-test) definition and reference alongside a
     /// non-empty index - reused across the spec-86 tests below so each fixture is built the same
     /// way and only ITS `file` path or `is_test` marking varies.
