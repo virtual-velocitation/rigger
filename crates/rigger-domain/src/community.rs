@@ -537,8 +537,10 @@ mod tests {
     use super::*;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::edge;
+    use crate::test_support::kinded_def_node;
     use crate::test_support::node_with_optional_attrs;
     use crate::test_support::pair_map;
+    use crate::test_support::plain;
     use std::collections::BTreeMap as Map;
 
     /// Build a coupling `Graph` from a list of undirected structural edges `(from, to, rel, tier)`,
@@ -1103,5 +1105,75 @@ mod tests {
         // The isolated node's community is a genuine singleton (internally connected trivially), and
         // every community stays internally connected.
         assert_internally_connected(&g, &a);
+    }
+
+    /// The coupling pairs of `c`, each once, by id.
+    fn coupled(c: &Coupling) -> Vec<(&str, &str)> {
+        let mut pairs = Vec::new();
+        for (i, neighbors) in c.adj.iter().enumerate() {
+            for &(j, _) in neighbors.iter().filter(|(j, _)| i < *j) {
+                pairs.push((c.nodes[i].as_str(), c.nodes[j].as_str()));
+            }
+        }
+        pairs
+    }
+
+    /// Spec 116 criterion 4: `src/b.rs` references `x` through a bare placeholder while
+    /// `src/a.rs` contains a data member `x` of kind `member`, and `src/c.rs` the fn `x` when
+    /// `with_fn`. The placeholder never resolves onto the member, which keeps its own edge.
+    fn from_graph_beside_a_member(member: &str, with_fn: bool, pairs: &[(&str, &str)]) {
+        let mut g = Graph {
+            nodes: vec![
+                plain("src/a.rs", KIND_FILE),
+                kinded_def_node("src/a.rs::x", member),
+                plain("src/b.rs", KIND_FILE),
+                plain("src/b.rs::x", KIND_CODE_ENTITY),
+            ],
+            edges: vec![
+                edge("src/a.rs", "src/a.rs::x", REL_CONTAINS, TIER_EXTRACTED),
+                edge("src/b.rs", "src/b.rs::x", REL_REFERENCES, TIER_INFERRED),
+            ],
+        };
+        if with_fn {
+            g.nodes.push(plain("src/c.rs", KIND_FILE));
+            g.nodes.push(kinded_def_node("src/c.rs::x", "function"));
+            let contains = edge("src/c.rs", "src/c.rs::x", REL_CONTAINS, TIER_EXTRACTED);
+            g.edges.push(contains);
+        }
+        assert_eq!(coupled(&Coupling::from_graph(&g)), pairs);
+    }
+
+    const MEMBER_KEEPS_ITS_EDGE: (&str, &str) = ("src/a.rs", "src/a.rs::x");
+
+    crate::test_cases! {
+        a_placeholder_never_resolves_onto_a_field: from_graph_beside_a_member(
+            "field",
+            false,
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+        );
+        a_placeholder_never_resolves_onto_a_property: from_graph_beside_a_member(
+            "property",
+            false,
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+        );
+        a_placeholder_never_resolves_onto_a_declaration: from_graph_beside_a_member(
+            "declaration",
+            false,
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::x")],
+        );
+        a_placeholder_resolves_past_a_field_onto_the_one_fn: from_graph_beside_a_member(
+            "field",
+            true,
+            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/c.rs::x"), ("src/c.rs", "src/c.rs::x")],
+        );
+        a_placeholder_beside_a_constant_and_a_fn_stays_unresolved: from_graph_beside_a_member(
+            "constant",
+            true,
+            &[
+                MEMBER_KEEPS_ITS_EDGE,
+                ("src/b.rs", "src/b.rs::x"),
+                ("src/c.rs", "src/c.rs::x"),
+            ],
+        );
     }
 }

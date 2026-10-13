@@ -51,6 +51,35 @@ pub const CODE_KIND_MACRO: &str = "macro";
 /// The code kind of a declaration: a function, method or constructor with no body. Never a
 /// caller: a reference in its signature takes the next enclosing definition.
 pub const CODE_KIND_DECLARATION: &str = "declaration";
+/// The code kind of a function with a body.
+pub const CODE_KIND_FUNCTION: &str = "function";
+/// The code kind of a method with a body.
+pub const CODE_KIND_METHOD: &str = "method";
+/// The code kind of a type.
+pub const CODE_KIND_TYPE: &str = "type";
+/// The code kind of a trait.
+pub const CODE_KIND_TRAIT: &str = "trait";
+/// The code kind of an impl block.
+pub const CODE_KIND_IMPL: &str = "impl";
+/// The code kind of a module.
+pub const CODE_KIND_MODULE: &str = "module";
+/// The code kind of a constant.
+pub const CODE_KIND_CONSTANT: &str = "constant";
+/// The code kind of a definition no other kind names.
+pub const CODE_KIND_OTHER: &str = "other";
+/// The code kind of a field, a data member of a type.
+pub const CODE_KIND_FIELD: &str = "field";
+/// The code kind of a property, a data member read through accessors.
+pub const CODE_KIND_PROPERTY: &str = "property";
+/// The code kinds no call resolves onto.
+pub const NON_TARGET_KINDS: [&str; 0] = [];
+
+/// Whether a named code entity of `kind` (its `kind` attr, `None` when it carries none) is a
+/// call target: a definition a call, a tier, a proof or a retirement resolves against. False
+/// exactly for a kind in [`NON_TARGET_KINDS`].
+pub fn is_call_target(kind: Option<&str>) -> bool {
+    kind.is_none_or(|k| !NON_TARGET_KINDS.contains(&k))
+}
 /// A source file container node (spec 29a): the `<rel-path>` node that a file's extracted
 /// code entities hang off. Folded alongside the entities, so a query can reach a file's
 /// structure the same way it reaches the decisions that govern the file.

@@ -10376,3 +10376,77 @@ mod metadata_card_c2 {
         );
     }
 }
+
+/// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files re-projection.
+#[cfg(test)]
+mod call_target_c4 {
+    use super::*;
+    use crate::contextgraph::{KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED};
+    use crate::test_support::edge;
+    use crate::test_support::kinded_def_node;
+    use crate::test_support::plain;
+
+    /// A community holds the data member `src/a.rs::x` of kind `member`
+    /// and the bare placeholder `src/b.rs::x`, `src/c.rs` defining the fn `x` when `with_fn`.
+    /// `reproject_files` folds the member under its own file and never resolves the
+    /// placeholder onto it.
+    fn reproject_files_beside_a_member(
+        member: &str,
+        with_fn: bool,
+        files: &[&str],
+        unresolved: &[(&str, &[&str])],
+    ) {
+        const COM: &str = "community/1/0";
+        let mut g = Graph {
+            nodes: vec![
+                plain(COM, KIND_COMMUNITY),
+                kinded_def_node("src/a.rs::x", member),
+                plain("src/b.rs::x", KIND_CODE_ENTITY),
+            ],
+            edges: vec![
+                edge("src/a.rs::x", COM, REL_IN_COMMUNITY, TIER_INFERRED),
+                edge("src/b.rs::x", COM, REL_IN_COMMUNITY, TIER_INFERRED),
+            ],
+        };
+        if with_fn {
+            g.nodes.push(kinded_def_node("src/c.rs::x", "function"));
+        }
+        let re = reproject(&g, COM, &Lens::Files);
+        assert_eq!(
+            re.clusters
+                .iter()
+                .map(|c| (c.key.as_str(), c.count))
+                .collect::<Vec<_>>(),
+            files.iter().map(|f| (*f, 1)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            re.unresolved
+                .iter()
+                .map(|u| (u.id.as_str(), u.candidates.clone()))
+                .collect::<Vec<_>>(),
+            unresolved
+                .iter()
+                .map(|(id, cands)| (*id, cands.iter().map(|c| c.to_string()).collect()))
+                .collect::<Vec<(&str, Vec<String>)>>()
+        );
+        assert_eq!(re.total, 2);
+    }
+
+    crate::test_cases! {
+        reproject_files_resolves_no_placeholder_onto_a_field:
+            reproject_files_beside_a_member("field", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_no_placeholder_onto_a_property:
+            reproject_files_beside_a_member("property", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_no_placeholder_onto_a_declaration:
+            reproject_files_beside_a_member("declaration", false, &["src/a.rs"], &[("src/b.rs::x", &[])]);
+        reproject_files_resolves_a_placeholder_past_a_field_onto_the_one_fn:
+            reproject_files_beside_a_member("field", true, &["src/a.rs", "src/c.rs"], &[]);
+        reproject_files_lists_a_constant_beside_a_fn_as_candidates:
+            reproject_files_beside_a_member(
+                "constant",
+                true,
+                &["src/a.rs"],
+                &[("src/b.rs::x", &["src/a.rs::x", "src/c.rs::x"])],
+            );
+    }
+}

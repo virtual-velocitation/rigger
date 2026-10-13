@@ -10,18 +10,19 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 
 use super::query::name_suffix;
 use super::{
-    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold,
-    Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC,
-    KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE,
-    KIND_STAGE, OWED_LOST_FOLD, OWED_OLDER_RULE, REBUILD_OWED, REL_ABOUT, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    is_call_target, CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite,
+    EntryBatch, EntryFold, Error, FoldAccess, Graph, Located, Node, Projection, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
+    REBUILD_OWED, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES,
+    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -3231,6 +3232,17 @@ fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, 
     )
     .optional()
     .map_err(be)
+}
+
+/// The SQL predicate [`is_call_target`] is, over a node row's `attrs`: true unless its `kind` is
+/// one of [`NON_TARGET_KINDS`], an absent `kind` coalescing to the empty string, which is none
+/// of them.
+fn call_target_sql() -> String {
+    let kinds: Vec<String> = NON_TARGET_KINDS.iter().map(|k| format!("'{k}'")).collect();
+    format!(
+        "COALESCE(json_extract(attrs, '$.kind'), '') NOT IN ({})",
+        kinds.join(", ")
+    )
 }
 
 /// Whether the node `id` carries a `name` attr in `project` (spec 52) - i.e. it is a code-entity
@@ -8884,6 +8896,285 @@ mod tests {
         );
     }
 
+    /// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET: a `field`, `property` or
+    /// `declaration` node is to every call-side reader what a bare placeholder is, over
+    /// hand-built events. `src/a.rs` holds the member `x` beside its fn `f`; `src/c.rs` holds the
+    /// fn `x`; `src/b.rs`'s fn `g` calls `x` across files.
+    mod call_target {
+        use super::*;
+        use crate::contextgraph::{
+            CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
+            CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD,
+            CODE_KIND_MODULE, CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE,
+        };
+
+        const A: &str = "src/a.rs";
+        const B: &str = "src/b.rs";
+        const C: &str = "src/c.rs";
+
+        fn walk(p: &Projector, seed: &str, direction: Direction) -> CallGraph {
+            p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
+                .unwrap()
+        }
+
+        /// The reached nodes carrying a frontier, each with its candidates.
+        fn frontiers(cg: &CallGraph) -> Vec<(String, Vec<String>)> {
+            let mut marked: Vec<(String, Vec<String>)> = cg
+                .nodes
+                .iter()
+                .filter_map(|n| Some((n.node.id.clone(), n.frontier.clone()?)))
+                .collect();
+            marked.sort();
+            marked
+        }
+
+        /// `a.rs`'s `f` calls `x`, which `c.rs` defines as a fn and `a.rs` as `member` (as
+        /// nothing when `None`): the call resolves down onto `c.rs`'s fn, its edges are tiered
+        /// as a cross-file reference, and the up walk from that fn reaches `f`.
+        fn a_same_file_call_naming_a_member_reaches_the_other_files_fn(member: Option<&str>) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            if let Some(kind) = member {
+                apply_code_entity(&p, 2, A, "x", kind, 2, "rust");
+            }
+            apply_def(&p, 3, C, "x", 1, true);
+            apply_call(&p, 4, A, "x", "f");
+
+            let g = p.whole().unwrap();
+            assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::x"), TIER_INFERRED);
+            assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::x"), TIER_INFERRED);
+
+            let down = walk(&p, "src/a.rs::f", Direction::Down);
+            assert_eq!(call_node_ids(&down), ["src/a.rs::f", "src/c.rs::x"]);
+            assert_eq!(
+                call_edge_pairs(&down),
+                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
+            );
+            assert_eq!(frontiers(&down), []);
+
+            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/a.rs::f", "src/c.rs::x"]);
+            assert_eq!(
+                call_edge_pairs(&up),
+                [("src/a.rs::f".to_string(), "src/c.rs::x".to_string())]
+            );
+            assert_eq!(frontiers(&up), []);
+        }
+
+        /// No fn defines `x`: a same-file call and a cross-file call naming it stay ambiguous
+        /// whether `a.rs`'s `member` of that leaf folds before the calls or after them.
+        fn a_member_tiers_no_reference_to_its_leaf(member: &str, member_first: bool) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            apply_def(&p, 2, B, "g", 1, true);
+            if member_first {
+                apply_code_entity(&p, 3, A, "x", member, 2, "rust");
+            }
+            apply_call(&p, 4, A, "x", "f");
+            apply_call(&p, 5, B, "x", "g");
+            if !member_first {
+                apply_code_entity(&p, 6, A, "x", member, 2, "rust");
+            }
+
+            let g = p.whole().unwrap();
+            for target in ["src/a.rs::x", "src/b.rs::x"] {
+                assert_eq!(
+                    [
+                        edge_tier(&g, REL_CALLS, target),
+                        edge_tier(&g, REL_REFERENCES, target)
+                    ],
+                    [TIER_AMBIGUOUS, TIER_AMBIGUOUS],
+                    "the edges onto {target}"
+                );
+            }
+        }
+
+        /// `b.rs`'s `g` calls `x`, which `c.rs` defines as a fn and each `(file, kind)` of
+        /// `others` defines too: the down walk from `g` lands on `landing`, and it and the up
+        /// walk from `c.rs`'s fn mark exactly `frontier`, the candidates the call targets are.
+        fn the_walks_frontier_holds(
+            others: &[(&str, &str)],
+            landing: &str,
+            frontier: Option<&[&str]>,
+        ) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, B, "g", 1, true);
+            apply_def(&p, 2, C, "x", 1, true);
+            for (pos, (file, kind)) in (3..).zip(others) {
+                apply_code_entity(&p, pos, file, "x", kind, 1, "rust");
+            }
+            apply_call(&p, 9, B, "x", "g");
+
+            let marked = |id: &str| -> Vec<(String, Vec<String>)> {
+                frontier
+                    .iter()
+                    .map(|cands| {
+                        (
+                            id.to_string(),
+                            cands.iter().map(|c| c.to_string()).collect(),
+                        )
+                    })
+                    .collect()
+            };
+            let down = walk(&p, "src/b.rs::g", Direction::Down);
+            assert_eq!(call_node_ids(&down), ["src/b.rs::g", landing]);
+            assert_eq!(frontiers(&down), marked(landing));
+            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/b.rs::g", "src/c.rs::x"]);
+            assert_eq!(frontiers(&up), marked("src/b.rs::g"));
+        }
+
+        /// The up walk seeded at `a.rs`'s `x`, which `f` calls in its file and `g` across
+        /// files, `c.rs` defining the fn `x`: a `member` has no caller, a bare placeholder
+        /// (`None`) keeps its direct one.
+        fn the_up_walk_seeded_at_x_reaches(member: Option<&str>, nodes: &[&str]) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, A, "f", 1, true);
+            apply_def(&p, 2, B, "g", 1, true);
+            apply_def(&p, 3, C, "x", 1, true);
+            if let Some(kind) = member {
+                apply_code_entity(&p, 4, A, "x", kind, 2, "rust");
+            }
+            apply_call(&p, 5, A, "x", "f");
+            apply_call(&p, 6, B, "x", "g");
+
+            let up = walk(&p, "src/a.rs::x", Direction::Up);
+            assert_eq!(call_node_ids(&up), nodes);
+            assert_eq!(up.edges.len(), nodes.len() - 1);
+        }
+
+        /// The up walk from `c.rs`'s fn `t` reaches `a.rs`'s `member` `x`, the caller a
+        /// hand-built call names, and ascends no further: neither to `f`, which calls `x` in its
+        /// file, nor to `g`, which calls it across files.
+        fn the_up_walk_stops_at_a_member_it_reaches(member: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_def(&p, 1, C, "t", 1, true);
+            apply_def(&p, 2, A, "f", 1, true);
+            apply_def(&p, 3, B, "g", 1, true);
+            apply_code_entity(&p, 4, A, "x", member, 2, "rust");
+            apply_call(&p, 5, A, "t", "x");
+            apply_call(&p, 6, A, "x", "f");
+            apply_call(&p, 7, B, "x", "g");
+
+            let up = walk(&p, "src/c.rs::t", Direction::Up);
+            assert_eq!(call_node_ids(&up), ["src/a.rs::x", "src/c.rs::t"]);
+            assert_eq!(call_layer(&up, "src/a.rs::x"), Some(1));
+            assert_eq!(
+                call_edge_pairs(&up),
+                [("src/a.rs::x".to_string(), "src/c.rs::t".to_string())]
+            );
+        }
+
+        /// `locate` answers a `member`'s leaf: the member alone, and one of the sorted
+        /// candidates when another file's fn shares the leaf.
+        fn locate_answers_a_members_leaf(member: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, A, "x", member, 2, "rust");
+            match p.locate("x").unwrap() {
+                Located::One(site) => assert_eq!(
+                    (site.id.as_str(), site.kind.as_str(), site.line),
+                    ("src/a.rs::x", member, 2)
+                ),
+                other => panic!("expected the member alone, got {other:?}"),
+            }
+            apply_def(&p, 2, C, "x", 1, true);
+            match p.locate("x").unwrap() {
+                Located::Many(cands) => assert_eq!(
+                    cands.into_iter().map(|c| c.id).collect::<Vec<_>>(),
+                    ["src/a.rs::x", "src/c.rs::x"]
+                ),
+                other => panic!("expected both candidates, got {other:?}"),
+            }
+        }
+
+        crate::test_cases! {
+            a_call_beside_no_member_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(None);
+            a_call_naming_a_field_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("field"));
+            a_call_naming_a_property_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("property"));
+            a_call_naming_a_declaration_reaches_the_other_files_fn:
+                a_same_file_call_naming_a_member_reaches_the_other_files_fn(Some("declaration"));
+            a_field_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("field", true);
+            a_field_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("field", false);
+            a_property_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("property", true);
+            a_property_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("property", false);
+            a_declaration_folded_first_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("declaration", true);
+            a_declaration_folded_last_tiers_no_reference_to_its_leaf:
+                a_member_tiers_no_reference_to_its_leaf("declaration", false);
+            a_field_a_property_and_a_declaration_of_a_fns_leaf_add_no_candidate:
+                the_walks_frontier_holds(
+                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/p.rs", "property")],
+                    "src/c.rs::x",
+                    None,
+                );
+            a_constant_of_a_fns_leaf_is_still_a_candidate:
+                the_walks_frontier_holds(
+                    &[("src/a.rs", "field"), ("src/d.rs", "declaration"), ("src/k.rs", "constant")],
+                    "src/b.rs::x",
+                    Some(&["src/c.rs::x", "src/k.rs::x"]),
+                );
+            a_field_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("field"), &["src/a.rs::x"]);
+            a_property_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("property"), &["src/a.rs::x"]);
+            a_declaration_seed_has_no_caller:
+                the_up_walk_seeded_at_x_reaches(Some("declaration"), &["src/a.rs::x"]);
+            a_bare_placeholder_seed_keeps_its_direct_caller:
+                the_up_walk_seeded_at_x_reaches(None, &["src/a.rs::f", "src/a.rs::x"]);
+            the_up_walk_stops_at_a_field_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("field");
+            the_up_walk_stops_at_a_property_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("property");
+            the_up_walk_stops_at_a_declaration_it_reaches:
+                the_up_walk_stops_at_a_member_it_reaches("declaration");
+            locate_answers_a_fields_leaf: locate_answers_a_members_leaf("field");
+            locate_answers_a_propertys_leaf: locate_answers_a_members_leaf("property");
+            locate_answers_a_declarations_leaf: locate_answers_a_members_leaf("declaration");
+        }
+
+        /// `call_target_sql()` and `is_call_target` answer alike, and as this table states, for
+        /// every code kind constant the tree holds and for a node carrying no `kind`.
+        #[test]
+        fn the_sql_predicate_and_is_call_target_agree_over_every_kind() {
+            let kinds = [
+                (Some(CODE_KIND_FUNCTION), true),
+                (Some(CODE_KIND_METHOD), true),
+                (Some(CODE_KIND_TYPE), true),
+                (Some(CODE_KIND_TRAIT), true),
+                (Some(CODE_KIND_IMPL), true),
+                (Some(CODE_KIND_MODULE), true),
+                (Some(CODE_KIND_CONSTANT), true),
+                (Some(CODE_KIND_CONSTRUCTOR), true),
+                (Some(CODE_KIND_MACRO), true),
+                (Some(CODE_KIND_OTHER), true),
+                (Some(CODE_KIND_DECLARATION), false),
+                (Some(CODE_KIND_PROPERTY), false),
+                (Some(CODE_KIND_FIELD), false),
+                (None, true),
+            ];
+            let conn = Connection::open_in_memory().unwrap();
+            let sql = format!(
+                "SELECT {} FROM (SELECT json_patch('{{\"name\":\"x\"}}', json_object('kind', ?1)) AS attrs)",
+                call_target_sql()
+            );
+            for (kind, target) in kinds {
+                let by_sql: bool = conn.query_row(&sql, params![kind], |r| r.get(0)).unwrap();
+                assert_eq!(
+                    (by_sql, is_call_target(kind)),
+                    (target, target),
+                    "kind {kind:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_blast_radius_computed_event_folds_to_nothing_idempotently() {
         // spec 16 unit 3: BlastRadiusComputed is PURE AUDIT - the projector matches no fold arm
@@ -10870,6 +11161,56 @@ mod tests {
                 .unwrap_or_default()
         }
 
+        /// Spec 116 criterion 4, no proof moves onto a data member: `src/a.rs` defines a
+        /// `member` `x`, `src/c.rs` the fn `x` when `order` names `fn`, and `evidence_file`
+        /// records one test reference to `x`, folded in `order`. The fn is proven once when it
+        /// folds, the member never.
+        fn a_member_takes_no_proof_of_its_leaf(member: &str, evidence_file: &str, order: &[&str]) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            for (pos, step) in (1..).zip(order) {
+                match *step {
+                    "fn" => apply_def(&p, pos, "src/c.rs", "x", 1, true),
+                    "member" => apply_code_entity(&p, pos, "src/a.rs", "x", member, 2, "rust"),
+                    "evidence" => apply_edge_inferred_evidence(&p, pos, evidence_file, "x", 7),
+                    other => panic!("no step {other}"),
+                }
+            }
+            let g = p.whole().unwrap();
+            assert_eq!(
+                proven_by(&g, "src/a.rs::x"),
+                0,
+                "the member; got {:?}",
+                g.nodes
+            );
+            assert_eq!(proof_evidence(&g, "src/a.rs::x"), Vec::<String>::new());
+            let landed: Vec<String> = order
+                .iter()
+                .filter(|step| **step == "fn")
+                .map(|_| format!("{evidence_file}:7"))
+                .collect();
+            assert_eq!(proven_by(&g, "src/c.rs::x"), landed.len());
+            assert_eq!(proof_evidence(&g, "src/c.rs::x"), landed);
+        }
+
+        crate::test_cases! {
+            a_field_folded_before_the_fn_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "fn", "evidence"]);
+            a_field_folded_after_the_proof_landed_takes_none:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["fn", "evidence", "member"]);
+            a_field_folded_after_a_waiting_proof_leaves_it_for_the_fn:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["evidence", "member", "fn"]);
+            a_field_takes_no_proof_recorded_in_its_own_file:
+                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["member", "fn", "evidence"]);
+            a_field_alone_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("field", "tests/t.rs", &["member", "evidence"]);
+            a_field_alone_takes_no_proof_that_waited_for_it:
+                a_member_takes_no_proof_of_its_leaf("field", "src/a.rs", &["evidence", "member"]);
+            a_property_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("property", "src/a.rs", &["evidence", "member", "fn"]);
+            a_declaration_takes_no_proof:
+                a_member_takes_no_proof_of_its_leaf("declaration", "src/a.rs", &["evidence", "member", "fn"]);
+        }
+
         /// `product.rs::product_fn`, referenced by one test-origin reference per `(file, line)`
         /// in `references`, is proven that many times, its evidence naming each `file:line` in
         /// fold order.
@@ -11522,6 +11863,46 @@ mod tests {
             assert_eq!(live_edges(&p), edges);
             assert_eq!(node_ids(&p), nodes);
             assert_eq!(p.retired_code_entity_count().unwrap(), retired);
+        }
+
+        /// Spec 116 criterion 4: `src/f.rs`'s fn `x` retires at its file's next generation
+        /// while `src/a.rs` keeps a definition of that leaf of kind `beside` (none when `None`).
+        /// The call `src/b.rs`'s `g` makes to `x`, inferred while the fn stood, ends at `tier`:
+        /// beside a data member as with nothing beside it.
+        fn a_fn_retiring_leaves_its_cross_file_call(beside: Option<&str>, tier: &str) {
+            let p = Projector::open(":memory:", "test").unwrap();
+            let x = def("x", 1, true);
+            apply_keyed(&p, 1, TYPE_CODE_ENTITY_EXTRACTED, x, "gc/src/f.rs@h1#0", 10);
+            if let Some(kind) = beside {
+                apply_code_entity(&p, 2, "src/a.rs", "x", kind, 2, "rust");
+            }
+            apply_def(&p, 3, "src/b.rs", "g", 1, true);
+            apply_call(&p, 4, "src/b.rs", "x", "g");
+            let tiers = |p: &Projector| {
+                let g = p.whole().unwrap();
+                [
+                    edge_tier(&g, REL_CALLS, "src/b.rs::x"),
+                    edge_tier(&g, REL_REFERENCES, "src/b.rs::x"),
+                ]
+            };
+            assert_eq!(tiers(&p), [TIER_INFERRED, TIER_INFERRED]);
+
+            let y = def("y", 1, true);
+            apply_keyed(&p, 5, TYPE_CODE_ENTITY_EXTRACTED, y, "gc/src/f.rs@h2#0", 20);
+            assert_eq!(tiers(&p), [tier, tier]);
+        }
+
+        crate::test_cases! {
+            a_fn_retiring_alone_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(None, TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_field_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("field"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_property_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("property"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_declaration_demotes_its_cross_file_call:
+                a_fn_retiring_leaves_its_cross_file_call(Some("declaration"), TIER_AMBIGUOUS);
+            a_fn_retiring_beside_a_constant_keeps_its_cross_file_call_inferred:
+                a_fn_retiring_leaves_its_cross_file_call(Some("constant"), TIER_INFERRED);
         }
 
         const F: &str = "docs/f.md";

@@ -283,3 +283,10 @@ pub fn def_node(id: &str, name: &str) -> Node {
         &[("title", None), ("name", Some(name))],
     )
 }
+
+/// A code-entity DEFINITION node of code kind `kind`, named by its id's leaf: what the
+/// extraction fold records for a definition of that kind.
+pub fn kinded_def_node(id: &str, kind: &str) -> Node {
+    let (_, leaf) = id.split_once("::").expect("a code entity id");
+    node_with_attrs(id, KIND_CODE_ENTITY, &[("name", leaf), ("kind", kind)])
+}

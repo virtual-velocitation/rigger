@@ -2266,3 +2266,91 @@ mod cluster_detail_budget_ranking_tests {
         );
     }
 }
+
+/// Spec 116 criterion 4, A DATA MEMBER IS NO CALL TARGET, at the files lens: a bare placeholder
+/// never resolves onto a data member, which folds under its own file.
+#[cfg(test)]
+mod call_target_tests {
+    use super::*;
+    use crate::test_support::kinded_def_node;
+    use crate::test_support::plain;
+
+    /// The files-lens key of each of `ids` in a graph of `defs` - `(id, kind)` definitions -
+    /// and the bare placeholder `src/b.rs::x`.
+    fn files_keys(defs: &[(&str, &str)], ids: &[&str]) -> Vec<Option<String>> {
+        let mut nodes = vec![plain("src/b.rs::x", KIND_CODE_ENTITY)];
+        nodes.extend(defs.iter().map(|(id, kind)| kinded_def_node(id, kind)));
+        let g = Graph {
+            nodes,
+            edges: Vec::new(),
+        };
+        let buckets = Buckets::new(&g, &Lens::Files);
+        ids.iter()
+            .map(|id| {
+                let node = g.nodes.iter().find(|n| n.id == *id).unwrap();
+                whole_graph_lens_key(&buckets, node)
+            })
+            .collect()
+    }
+
+    fn files(keys: &[Option<&str>]) -> Vec<Option<String>> {
+        keys.iter().map(|k| k.map(str::to_string)).collect()
+    }
+
+    /// A placeholder beside only a `member` of its leaf folds nowhere; the member folds under
+    /// its own file.
+    fn a_lone_member_resolves_no_placeholder(member: &str) {
+        assert_eq!(
+            files_keys(&[("src/a.rs::x", member)], &["src/b.rs::x", "src/a.rs::x"]),
+            files(&[None, Some("src/a.rs")])
+        );
+    }
+
+    crate::test_cases! {
+        a_lone_field_resolves_no_placeholder: a_lone_member_resolves_no_placeholder("field");
+        a_lone_property_resolves_no_placeholder:
+            a_lone_member_resolves_no_placeholder("property");
+        a_lone_declaration_resolves_no_placeholder:
+            a_lone_member_resolves_no_placeholder("declaration");
+    }
+
+    #[test]
+    fn a_placeholder_resolves_past_every_member_onto_the_one_fn() {
+        assert_eq!(
+            files_keys(
+                &[
+                    ("src/a.rs::x", "field"),
+                    ("src/c.rs::x", "function"),
+                    ("src/d.rs::x", "declaration"),
+                    ("src/p.rs::x", "property"),
+                ],
+                &["src/b.rs::x", "src/a.rs::x", "src/d.rs::x", "src/p.rs::x"]
+            ),
+            files(&[
+                Some("src/c.rs"),
+                Some("src/a.rs"),
+                Some("src/d.rs"),
+                Some("src/p.rs")
+            ])
+        );
+    }
+
+    #[test]
+    fn the_candidate_index_holds_call_targets_only() {
+        let g = Graph {
+            nodes: vec![
+                kinded_def_node("src/a.rs::x", "field"),
+                kinded_def_node("src/k.rs::x", "constant"),
+                kinded_def_node("src/c.rs::x", "function"),
+                kinded_def_node("src/d.rs::x", "declaration"),
+                kinded_def_node("src/p.rs::x", "property"),
+                kinded_def_node("src/p.rs::y", "property"),
+            ],
+            edges: Vec::new(),
+        };
+        assert_eq!(
+            defs_by_entity_suffix(&g),
+            BTreeMap::from([("x", vec!["src/c.rs::x", "src/k.rs::x"])])
+        );
+    }
+}

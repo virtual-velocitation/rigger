@@ -24025,6 +24025,28 @@ mod tests {
         );
     }
 
+    /// Spec 116 criterion 4: a field, a property and a declaration take no slot of the code
+    /// neighborhood; a fn and a constant beside them keep theirs.
+    #[test]
+    fn the_code_neighborhood_lists_no_data_member_and_no_declaration() {
+        let out = render_code_neighborhood(
+            &[
+                ("core.rs", "run", "function", 1),
+                ("core.rs", "state", "field", 2),
+                ("core.rs", "size", "property", 3),
+                ("core.rs", "open", "declaration", 4),
+                ("core.rs", "LIMIT", "constant", 5),
+            ],
+            &["core.rs".to_string()],
+        );
+        assert_eq!(
+            out,
+            format!(
+                "{CODE_NEIGHBORHOOD_HEADER}\n- core.rs:1  function run\n- core.rs:5  constant LIMIT\n\n"
+            )
+        );
+    }
+
     #[test]
     fn lessons_prompt_injection_is_capped_under_budget_with_elision_note() {
         // sdet-u1gap17-lessons-cap-render-untested / Gap 17 / spec 07 line 36: the lessons

@@ -4001,6 +4001,14 @@
   },
   {
     "file": "crates/rigger-conductor/src/conductor.rs",
+    "name": "the_code_neighborhood_lists_no_data_member_and_no_declaration",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a105cf9640ffd8fa"
+  },
+  {
+    "file": "crates/rigger-conductor/src/conductor.rs",
     "name": "lessons_prompt_injection_is_capped_under_budget_with_elision_note",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -12870,5 +12878,13 @@
     "proposed_module": "dash::tests::metadata_card_c2",
     "reason": "defined inside `metadata_card_c2`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
     "content_hash": "58fbdd41e409d003"
+  },
+  {
+    "file": "crates/rigger-dash/src/dash.rs",
+    "name": "reproject_files_beside_a_member",
+    "is_test": true,
+    "proposed_module": "dash::tests::call_target_c4",
+    "reason": "defined inside `call_target_c4`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "67a192716665bd01"
   }
 ]
