@@ -3564,8 +3564,10 @@ mod tests {
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
     /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
     /// clean `git status`, the boundary audit, the content gates and red-before-green), the whole
-    /// suite left to the gates, the audit's closing rule and the test homes with the tool that
-    /// searches them.
+    /// suite left to the gates, the audit's closing rule, the test homes with the tool that
+    /// searches them, and the two counted checks: the roots a retired spelling is counted over
+    /// with the command that counts it, and the audit record owed for every added test-side
+    /// shape.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -3612,6 +3614,12 @@ mod tests {
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
             "search all three with Read, awk or python3",
+            "`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`",
+            "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
+             included",
+            "`git ls-files src crates tests docs skills scaffold .rigger | xargs awk",
+            "Every test-side shape you add, merged or not, is recorded as one \
+             `<unit>-test-shape-audit` DecisionMade naming each site FIXED or CHECKED",
         ] {
             assert!(
                 block.contains(wanted),
